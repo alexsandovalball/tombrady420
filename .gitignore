@@ -1,13 +1,179 @@
-﻿.env
+﻿# Environment and secrets
+.env
+.env.*
 .env.local
+
+# Credentials and service account files
+credentials.json
+service_account.json
+google-credentials.json
+aws_credentials
+aws_secret_access_key
+azure_credentials
+*.pem
+*.key
+
+# Python bytecode and caches
 __pycache__/
-*.pyc
-catalog.db
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution and packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+*.egg
+*.whl
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
 .venv/
 venv/
-.DS_Store
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Poetry and Pipenv
+.poetry/
+.cache/pypoetry/
+Pipfile.lock
+
+# IDEs and editors
 .vscode/
 .idea/
+*.iml
+*.iws
+out/
+*.sublime-workspace
+*.sublime-project
+*~
+#*#         # Emacs temporary files
+.emacs.d/
+*.swp
+*.swo
+*.swn
+
+# OS files
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+desktop.ini
+
+# Logs and runtime files
 *.log
-dist/
-build/
+logs/
+*.log.*
+/tmp/
+temp/
+tmp/
+*.pid
+*.seed
+*.pid.lock
+
+# Test, coverage, and profiling
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.pytest_cache/
+pytestdebug.log
+.prof
+.profiler
+.vcrpy/
+.hypothesis/
+
+# Type checkers and linters
+.mypy_cache/
+.pyre/
+.pytype/
+.pyright/
+.ruff_cache/
+.pylint.d/
+
+# Database and data files
+*.sqlite
+*.sqlite3
+*.db
+catalog.db
+database.db
+*.db-journal
+
+# Media, uploads, and caches
+media/
+uploads/
+static/uploads/
+tmp_uploads/
+cache/
+thumbnails/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.heic
+
+# Large archives and artifacts
+*.tar.gz
+*.zip
+*.rar
+*.7z
+
+# Docker and container
+docker-compose.override.yml
+docker-compose.*.yml
+Dockerfile*
+.dockerignore
+
+# Kubernetes and Helm
+.kube/
+helm-debug.log
+
+# CI and platform files
+.github/workflows/*.yml
+.github/actions/*
+render.yaml
+render.yaml.local
+Procfile
+app.yaml
+*.env.production
+
+# Node and frontend
+node_modules/
+npm-debug.log
+yarn-error.log
+yarn-debug.log
+.pnp.*
+.pnp.js
+
+# Terraform
+.terraform/
+terraform.tfstate
+terraform.tfstate.backup
+.terraform.lock.hcl
+
+# VS Code test data and JetBrains caches
+.vscode-test/
+*.ipr
+
+# Optional: ignore local config while keeping examples tracked
+# config.local.yaml
+
+# End of file
