@@ -192,4 +192,112 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Treat all non-command messages as search queries (private chats)."""
+    # Ignore commands
     if update.message and update.message.text and update.message.text.startswith("/"):
+        return
+
+    # Ignore channel posts here
+    if update.channel_post:
+        return
+
+    # Rate limiting (simple)
+    user = update.effective_user
+    if not user:
+        return
+
+    user_id = user.id
+    current_ts = asyncio.get_event_loop().time()
+    last_ts = user_last_message.get(user_id, 0)
+    if current_ts - last_ts < 1.0:
+        try:
+            if update.message:
+                await update.message.reply_text("⏳ Please wait a moment before sending another message.")
+        except Exception:
+            pass
+        return
+
+    user_last_message[user_id] = current_ts
+
+    # Treat as search query
+    if update.message and update.message.text:
+        await handle_search(update, context)
+
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Update {update} caused error {context.error}", exc_info=True)
+    if update and update.effective_chat:
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌ An unexpected error occurred. Please try again later.",
+            )
+        except Exception:
+            pass
+
+
+async def post_init(application: Application):
+    """Initialize DB on startup; raise if it fails so the app logs the error."""
+    try:
+        await db.init_db()
+        logger.info("Database initialized")
+    except Exception as e:
+        logger.exception("Failed to initialize database in post_init: %s", e)
+        raise
+
+
+def build_application():
+    """
+    Build and return the telegram Application instance without starting it.
+    This allows a webhook server to import `application` and push updates into its queue.
+    """
+    bot_token = os.getenv("BOT_TOKEN")
+    if not bot_token:
+        logger.error("BOT_TOKEN not found in environment.")
+        raise RuntimeError("BOT_TOKEN not set")
+
+    application = Application.builder().token(bot_token).post_init(post_init).build()
+
+    # Command handlers
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("menu", menu_command))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("nuke", nuke_command))
+
+    # Callback queries and message handlers
+    application.add_handler(CallbackQueryHandler(callback_query_handler))
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, message_handler)
+    )
+    application.add_error_handler(error_handler)
+
+    # Channel monitoring (only add if CHANNEL_ID or CHANNEL_USERNAME is set)
+    channel_id = get_channel_id()
+    channel_username = get_channel_username()
+    if channel_id:
+        application.add_handler(
+            MessageHandler(filters.Chat(chat_id=channel_id) & filters.ChatType.CHANNEL, channel_post_handler)
+        )
+        logger.info(f"Channel monitoring enabled for {channel_id}")
+    elif channel_username:
+        application.add_handler(
+            MessageHandler(filters.Chat(username=channel_username.lstrip("@")) & filters.ChatType.CHANNEL, channel_post_handler)
+        )
+        logger.info(f"Channel monitoring enabled for {channel_username}")
+    else:
+        logger.warning("No CHANNEL_ID or CHANNEL_USERNAME set. Channel monitoring disabled.")
+
+    return application
+
+
+# Build the application object so it can be imported by a webhook server (webhook_server.py)
+application = build_application()
+
+
+if __name__ == "__main__":
+    # When executed directly, run polling (local/dev mode).
+    logger.info("Starting bot in polling mode...")
+    try:
+        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    except Exception as e:
+        logger.exception("Application run_polling exited with exception: %s", e)
+        raise
