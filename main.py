@@ -60,16 +60,13 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
         if await db.is_message_ignored(msg_id, chat_id):
-            logger.debug("Message ignored: %s/%s", chat_id, msg_id)
             return
 
         if not has_media(update):
-            logger.debug("No media in message %s/%s", chat_id, msg_id)
             return
 
         file_id, file_type = get_file_id_and_type(update)
         if not file_id:
-            logger.debug("No file_id found for message %s/%s", chat_id, msg_id)
             return
 
         caption = message.caption if getattr(message, "caption", None) else (message.text or "")
@@ -137,7 +134,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
         # Search pagination
         if action in ("search_page", "searchpage", "search"):
-            # value here is the page number; query text is embedded in data
             parts = data.split("|")
             if len(parts) >= 3:
                 query_text = parts[1]
@@ -273,4 +269,18 @@ def build_application():
     channel_username = get_channel_username()
     if channel_id:
         application.add_handler(
-            MessageHandler(filters.Chat(chat_id=channel_id) & filters.ChatType.CH
+            MessageHandler(filters.Chat(chat_id=channel_id) & filters.ChatType.CHANNEL, channel_post_handler)
+        )
+        logger.info(f"Channel monitoring enabled for {channel_id}")
+    elif channel_username:
+        application.add_handler(
+            MessageHandler(filters.Chat(username=channel_username.lstrip("@")) & filters.ChatType.CHANNEL, channel_post_handler)
+        )
+        logger.info(f"Channel monitoring enabled for {channel_username}")
+    else:
+        logger.warning("No CHANNEL_ID or CHANNEL_USERNAME set. Channel monitoring disabled.")
+
+    return application
+
+
+# Build the application object so it can be imported by a
