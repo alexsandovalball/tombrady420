@@ -130,35 +130,54 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     if not query:
         return
 
+    # Always try to stop the client spinner immediately and log if that fails
     try:
         await query.answer()
     except Exception:
-        pass
+        logger.exception("Failed to answer callback query (non-fatal)")
+
+    # Log full callback context for debugging
+    try:
+        q_msg = query.message
+        logger.info(
+            "Callback received: data=%s from_user=%s user_id=%s chat_id=%s message_id=%s",
+            query.data,
+            getattr(query.from_user, "username", None),
+            getattr(query.from_user, "id", None),
+            getattr(q_msg.chat, "id", None) if q_msg else None,
+            getattr(q_msg, "message_id", None) if q_msg else None,
+        )
+    except Exception:
+        logger.exception("Failed to log callback query context")
 
     data = (query.data or "").strip()
     action, value = _split_callback(data)
 
     try:
+        # Catalog pagination
         if action in ("catalog_page", "catalogpage", "catalog"):
             page = int(value) if value else 1
             await handle_catalog_pagination(update, context, page)
             return
 
+        # Search pagination
         if action in ("search_page", "searchpage", "search"):
             page = int(value) if value else 1
             await handle_search_pagination(update, context, page)
             return
 
+        # Product view - delegate to product handler
         if action in ("product", "productview", "item"):
+            # product handler should be resilient; if it raises, we catch below
             await handle_product_callback(update, context)
             return
 
+        # Delete/remove product
         if action in ("delete", "remove"):
-            # Route delete callbacks to the product_view delete handler which removes
-            # all rows for a media_group or message at once.
             await handle_delete_callback(update, context)
             return
 
+        # Menu shortcut
         if action in ("menu", "catalog_menu"):
             page = 1
             if value:
@@ -169,23 +188,38 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await handle_catalog_pagination(update, context, page)
             return
 
+        # No-op button
         if action == "noop":
             return
 
-        await query.answer("Unknown action", show_alert=True)
+        # Unknown action fallback
+        logger.warning("Unknown callback action: %s (raw=%s)", action, data)
+        try:
+            await query.answer("Unknown action", show_alert=True)
+        except Exception:
+            logger.exception("Failed to notify user about unknown action")
 
     except ValueError:
-        logger.error(f"Invalid callback data format: {data}")
+        logger.error("Invalid callback data format: %s", data)
         try:
             await query.answer("Invalid action format", show_alert=True)
         except Exception:
-            pass
-    except Exception as e:
-        logger.error(f"Error handling callback query: {e}", exc_info=True)
+            logger.exception("Failed to answer invalid format")
+    except Exception:
+        # Catch everything so the client never hangs; log full traceback
+        logger.exception("Unhandled exception in callback_query_handler for data=%s", data)
         try:
-            await query.answer("An error occurred", show_alert=True)
+            # Prefer editing the inline message if bot owns it, otherwise send a new message
+            if query.message and getattr(query.message.from_user, "is_bot", False):
+                try:
+                    await query.edit_message_text("❌ An internal error occurred. Please try again.")
+                except Exception:
+                    # If edit fails, send a new message
+                    await context.bot.send_message(chat_id=query.from_user.id, text="❌ An internal error occurred. Please try again.")
+            else:
+                await context.bot.send_message(chat_id=query.from_user.id, text="❌ An internal error occurred. Please try again.")
         except Exception:
-            pass
+            logger.exception("Failed to notify user after exception in callback handler")
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -211,14 +245,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if update.message:
                 await update.message.reply_text("⏳ Please wait a moment before sending another message.")
         except Exception:
-            pass
+            logger.exception("Failed to send rate-limit reply")
         return
 
     user_last_message[user_id] = current_ts
 
     # Treat as search query
     if update.message and update.message.text:
-        await handle_search(update, context)
+        try:
+            await handle_search(update, context)
+        except Exception:
+            logger.exception("Error while handling search command from message")
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -230,7 +267,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text="❌ An unexpected error occurred. Please try again later.",
             )
         except Exception:
-            pass
+            logger.exception("Failed to notify user about an unexpected error")
 
 
 async def post_init(application: Application):
@@ -263,6 +300,7 @@ def build_application():
 
     # Callback queries and message handlers
     application.add_handler(CallbackQueryHandler(callback_query_handler))
+    # Private text messages (non-commands) -> message_handler
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, message_handler)
     )
