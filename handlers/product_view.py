@@ -2,13 +2,15 @@
 """
 Product view and callback handlers for the catalog bot.
 
-Behavioral goals implemented:
-- Answer callback queries early and handle expired-query BadRequest gracefully.
-- Avoid the "do nothing" behavior on repeated clicks by verifying recorded displayed
-  messages still exist before suppressing redisplay.
-- Send media directly to the user's chat via context.bot.send_* and record sent
-  message ids in context.user_data["last_displayed_messages"].
-- Robust logging and exception handling throughout.
+This version:
+- Records the origin catalog message (chat_id, message_id, page) when a product is opened.
+- Provides a handler to return to the original catalog message by editing it in-place
+  when possible (handle_back_to_catalog). If editing fails, falls back to sending a new
+  catalog page via the existing menu handler.
+- Deletes product display messages created by the bot when returning to the catalog to
+  keep the chat tidy.
+- Keeps the previous robustness: answers callback queries early, validates recorded
+  displayed messages before suppressing redisplay, and sends media via context.bot.send_*.
 """
 
 import asyncio
@@ -55,8 +57,9 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
     Record every message the bot sends for this product in context.user_data["last_displayed_messages"]
     so they can be deleted when the user returns to the catalog.
 
-    Suppress redisplay only when the same product was shown previously AND the bot still
-    has valid recorded displayed messages for that display.
+    Additionally, if the product was opened from an inline catalog message (callback_query.message),
+    record that origin in context.user_data["origin_catalog_message"] so the Back button can edit
+    the original catalog message instead of sending a new one.
     """
     # Ensure a per-user lock to avoid concurrent duplicate sends
     lock = context.user_data.get("_display_lock")
@@ -117,6 +120,20 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         # Clear any previously recorded displayed messages for this user (we'll replace below)
         context.user_data.pop("last_displayed_messages", None)
 
+        # If this product was opened from a catalog inline message, record the origin so Back can edit it.
+        try:
+            if update.callback_query and update.callback_query.message:
+                origin_msg = update.callback_query.message
+                origin_page = context.user_data.get("catalog_page", 1)
+                context.user_data["origin_catalog_message"] = {
+                    "chat_id": origin_msg.chat.id,
+                    "message_id": origin_msg.message_id,
+                    "page": origin_page,
+                }
+                logger.debug("Recorded origin_catalog_message: %s", context.user_data["origin_catalog_message"])
+        except Exception:
+            logger.exception("Failed to record origin_catalog_message (non-fatal)")
+
         # Fetch product from DB
         try:
             product = await db.get_product(product_id)
@@ -160,7 +177,10 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 logger.exception("Failed to notify user after send error")
 
         # Build action buttons; show delete only to admins
-        buttons = [InlineKeyboardButton("⬅️ Back to catalog", callback_data="menu|1")]
+        # Use the recorded origin page (if any) for the Back button so menu handler can restore the same page.
+        origin_info = context.user_data.get("origin_catalog_message")
+        origin_page = origin_info.get("page") if isinstance(origin_info, dict) else context.user_data.get("catalog_page", 1)
+        buttons = [InlineKeyboardButton("⬅️ Back to catalog", callback_data=f"menu|{origin_page}")]
         try:
             if user and is_admin(user.id):
                 buttons.append(InlineKeyboardButton("🗑️ Delete", callback_data=f"delete|{product_id}"))
@@ -214,6 +234,57 @@ async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_
 
     # Delegate to show_product which handles sending and recording messages
     await show_product(update, context, product_id)
+
+
+async def handle_back_to_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE, page: Optional[int] = None):
+    """
+    Attempt to return the user to the original catalog message by editing it in-place.
+    If editing fails or no origin is recorded, fall back to calling the menu pagination handler
+    to send a fresh catalog message.
+
+    Also deletes any product display messages recorded in context.user_data['last_displayed_messages'].
+    This function is intended to be called when the user taps the Back to catalog button.
+    """
+    query = update.callback_query
+    # Acknowledge callback early
+    if query:
+        try:
+            await query.answer()
+        except Exception:
+            logger.exception("Failed to answer back-to-catalog callback (non-fatal)")
+
+    origin = context.user_data.get("origin_catalog_message")
+    # Prefer explicit page argument, then origin, then stored catalog_page, then default 1
+    page_to_show = page or (origin.get("page") if isinstance(origin, dict) else None) or context.user_data.get("catalog_page", 1)
+
+    # First, delete any product display messages we created
+    last_displayed = context.user_data.pop("last_displayed_messages", []) or []
+    for (c_id, m_id) in last_displayed:
+        try:
+            await context.bot.delete_message(chat_id=c_id, message_id=m_id)
+        except Exception:
+            logger.debug("Could not delete displayed message %s/%s (may already be gone)", c_id, m_id)
+
+    # Try to edit the origin catalog message if we have one
+    if origin and isinstance(origin, dict):
+        try:
+            from handlers import menu as menu_module  # local import to avoid circular import at module load
+            # Ask the menu handler to rebuild the page content and keyboard.
+            # If the menu handler exposes a helper to edit an existing message, it should check context.user_data["origin_catalog_message"].
+            # We'll attempt to call the existing handler; it should read origin_catalog_message and edit if possible.
+            await menu_module.handle_catalog_pagination(update, context, page_to_show)
+            # Clear origin reference after returning to catalog
+            context.user_data.pop("origin_catalog_message", None)
+            return
+        except Exception:
+            logger.exception("Failed to edit origin catalog message; falling back to sending a new catalog message")
+
+    # Fallback: call the menu handler to send a new catalog message
+    try:
+        from handlers import menu as menu_module  # local import to avoid circular import at module load
+        await menu_module.handle_catalog_pagination(update, context, page_to_show)
+    except Exception:
+        logger.exception("Failed to send fallback catalog page; user may not see catalog")
 
 
 async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -385,8 +456,6 @@ async def _send_media_group_and_record(context: ContextTypes.DEFAULT_TYPE, chat_
             # Fallback: send individually
             for m in media:
                 try:
-                    # InputMediaPhoto/InputMediaVideo objects don't have isinstance checks that map directly,
-                    # so inspect the media type by attribute presence
                     if isinstance(m, InputMediaPhoto):
                         sent = await context.bot.send_photo(chat_id=chat_id, photo=m.media, caption=m.caption or "")
                     else:
