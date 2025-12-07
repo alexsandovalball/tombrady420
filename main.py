@@ -19,7 +19,7 @@ from telegram.ext import (
 from database import Database
 from handlers.start import start_command
 from handlers.menu import menu_command, handle_catalog_pagination
-from handlers.search import handle_search, handle_search_pagination
+from handlers.search import handle_search, handle_search_pagination, handle_back_to_search
 from handlers.admin import stats_command, delete_product, nuke_command
 from handlers.product_view import show_product, handle_product_callback, handle_delete_callback
 from utils.helpers import get_file_id_and_type, has_media, get_channel_id, get_channel_username
@@ -58,9 +58,6 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             msg_id,
             media_group_id,
         )
-        logger.debug("caption: %r", getattr(message, "caption", None))
-        logger.debug("caption_entities: %r", getattr(message, "caption_entities", None))
-        logger.debug("text: %r", getattr(message, "text", None))
 
         if await db.is_message_ignored(msg_id, chat_id):
             logger.debug("Message ignored: %s/%s", chat_id, msg_id)
@@ -85,19 +82,9 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     ex_caption = (ex.get("caption") or "").strip()
                     if ex_caption:
                         caption = ex_caption
-                        logger.debug("Reused caption from existing group: %r", caption)
                         break
             except Exception:
                 logger.exception("Error while looking up existing media_group captions")
-
-        logger.info(
-            "Saving product from channel post: message_id=%s chat_id=%s media_group_id=%s type=%s caption_len=%s",
-            msg_id,
-            chat_id,
-            media_group_id,
-            file_type,
-            len(caption) if caption else 0,
-        )
 
         product_id = await db.add_product(
             file_id=file_id,
@@ -133,25 +120,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     if not query:
         return
 
-    # Always try to stop the client spinner immediately and log if that fails
     try:
         await query.answer()
     except Exception:
         logger.exception("Failed to answer callback query (non-fatal)")
-
-    # Log full callback context for debugging
-    try:
-        q_msg = query.message
-        logger.info(
-            "Callback received: data=%s from_user=%s user_id=%s chat_id=%s message_id=%s",
-            query.data,
-            getattr(query.from_user, "username", None),
-            getattr(query.from_user, "id", None),
-            getattr(q_msg.chat, "id", None) if q_msg else None,
-            getattr(q_msg, "message_id", None) if q_msg else None,
-        )
-    except Exception:
-        logger.exception("Failed to log callback query context")
 
     data = (query.data or "").strip()
     action, value = _split_callback(data)
@@ -165,17 +137,25 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
         # Search pagination
         if action in ("search_page", "searchpage", "search"):
-            page = int(value) if value else 1
-            await handle_search_pagination(update, context, page)
+            # value here is the page number; query text is embedded in data
+            parts = data.split("|")
+            if len(parts) >= 3:
+                query_text = parts[1]
+                page = int(parts[2])
+                await handle_search_pagination(update, context, query_text, page)
             return
 
-        # Product view - delegate to product handler
+        # Back to search
+        if action in ("search_back", "backsearch"):
+            await handle_back_to_search(update, context)
+            return
+
+        # Product view
         if action in ("product", "productview", "item"):
-            # product handler should be resilient; if it raises, we catch below
             await handle_product_callback(update, context)
             return
 
-        # Delete/remove product
+        # Delete product
         if action in ("delete", "remove"):
             await handle_delete_callback(update, context)
             return
@@ -191,33 +171,22 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await handle_catalog_pagination(update, context, page)
             return
 
-        # No-op button
         if action == "noop":
             return
 
-        # Unknown action fallback
         logger.warning("Unknown callback action: %s (raw=%s)", action, data)
         try:
             await query.answer("Unknown action", show_alert=True)
         except Exception:
             logger.exception("Failed to notify user about unknown action")
 
-    except ValueError:
-        logger.error("Invalid callback data format: %s", data)
-        try:
-            await query.answer("Invalid action format", show_alert=True)
-        except Exception:
-            logger.exception("Failed to answer invalid format")
     except Exception:
-        # Catch everything so the client never hangs; log full traceback
         logger.exception("Unhandled exception in callback_query_handler for data=%s", data)
         try:
-            # Prefer editing the inline message if bot owns it, otherwise send a new message
             if query.message and getattr(query.message.from_user, "is_bot", False):
                 try:
                     await query.edit_message_text("❌ An internal error occurred. Please try again.")
                 except Exception:
-                    # If edit fails, send a new message
                     await context.bot.send_message(chat_id=query.from_user.id, text="❌ An internal error occurred. Please try again.")
             else:
                 await context.bot.send_message(chat_id=query.from_user.id, text="❌ An internal error occurred. Please try again.")
@@ -227,15 +196,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Treat all non-command messages as search queries (private chats)."""
-    # Ignore commands
     if update.message and update.message.text and update.message.text.startswith("/"):
         return
-
-    # Ignore channel posts here
     if update.channel_post:
         return
 
-    # Rate limiting (simple)
     user = update.effective_user
     if not user:
         return
@@ -244,16 +209,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_ts = asyncio.get_event_loop().time()
     last_ts = user_last_message.get(user_id, 0)
     if current_ts - last_ts < 1.0:
-        try:
-            if update.message:
-                await update.message.reply_text("⏳ Please wait a moment before sending another message.")
-        except Exception:
-            logger.exception("Failed to send rate-limit reply")
+        if update.message:
+            await update.message.reply_text("⏳ Please wait a moment before sending another message.")
         return
 
     user_last_message[user_id] = current_ts
 
-    # Treat as search query
     if update.message and update.message.text:
         try:
             await handle_search(update, context)
@@ -274,7 +235,6 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def post_init(application: Application):
-    """Initialize DB on startup; raise if it fails so the app logs the error."""
     try:
         await db.init_db()
         logger.info("Database initialized")
@@ -284,10 +244,6 @@ async def post_init(application: Application):
 
 
 def build_application():
-    """
-    Build and return the telegram Application instance without starting it.
-    This allows a webhook server to import `application` and push updates into its queue.
-    """
     bot_token = os.getenv("BOT_TOKEN")
     if not bot_token:
         logger.error("BOT_TOKEN not found in environment.")
@@ -307,40 +263,14 @@ def build_application():
 
     # Callback queries and message handlers
     application.add_handler(CallbackQueryHandler(callback_query_handler))
-    # Private text messages (non-commands) -> message_handler
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, message_handler)
     )
     application.add_error_handler(error_handler)
 
-    # Channel monitoring (only add if CHANNEL_ID or CHANNEL_USERNAME is set)
+    # Channel monitoring
     channel_id = get_channel_id()
     channel_username = get_channel_username()
     if channel_id:
         application.add_handler(
-            MessageHandler(filters.Chat(chat_id=channel_id) & filters.ChatType.CHANNEL, channel_post_handler)
-        )
-        logger.info(f"Channel monitoring enabled for {channel_id}")
-    elif channel_username:
-        application.add_handler(
-            MessageHandler(filters.Chat(username=channel_username.lstrip("@")) & filters.ChatType.CHANNEL, channel_post_handler)
-        )
-        logger.info(f"Channel monitoring enabled for {channel_username}")
-    else:
-        logger.warning("No CHANNEL_ID or CHANNEL_USERNAME set. Channel monitoring disabled.")
-
-    return application
-
-
-# Build the application object so it can be imported by a webhook server (webhook_server.py)
-application = build_application()
-
-
-if __name__ == "__main__":
-    # When executed directly, run polling (local/dev mode).
-    logger.info("Starting bot in polling mode...")
-    try:
-        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-    except Exception as e:
-        logger.exception("Application run_polling exited with exception: %s", e)
-        raise
+            MessageHandler(filters.Chat(chat_id=channel_id) & filters.ChatType.CH
