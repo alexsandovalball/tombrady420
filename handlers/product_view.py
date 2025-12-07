@@ -1,5 +1,6 @@
 # handlers/product_view.py
 import asyncio
+from typing import List, Tuple
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo
 from telegram.ext import ContextTypes
 from database import Database
@@ -13,11 +14,7 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
     Show a product by ID. If it's part of a media_group, send the whole album.
     Record every message the bot sends for this product in context.user_data["last_displayed_messages"]
     so they can be deleted when the user returns to the catalog.
-
-    This function uses a per-user asyncio.Lock stored in context.user_data to prevent
-    concurrent duplicate displays when the same callback/update is processed more than once.
-    It also stores the last shown product id to avoid re-displaying the same product
-    if the handler is invoked repeatedly for the same product.
+    Uses a per-user lock and last-shown guard to avoid duplicate displays.
     """
     # Ensure a per-user lock to avoid concurrent duplicate sends
     lock = context.user_data.get("_display_lock")
@@ -29,7 +26,6 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         # Prevent re-displaying the same product repeatedly
         last_shown = context.user_data.get("_last_shown_product")
         if last_shown == product_id:
-            # Already displayed this product for this user recently; skip to avoid duplicates
             return
         context.user_data["_last_shown_product"] = product_id
 
@@ -45,7 +41,7 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
             await target_msg.reply_text("❌ Product not found.")
             return
 
-        sent_message_refs = []  # list of (chat_id, message_id)
+        sent_message_refs: List[Tuple[int, int]] = []  # list of (chat_id, message_id)
 
         media_group_id = product.get("media_group_id")
         if media_group_id:
@@ -88,11 +84,9 @@ async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_
     if not query:
         return
 
-    # Acknowledge the callback immediately to stop client-side retries/spinner
     try:
         await query.answer()
     except Exception:
-        # ignore answer errors (already answered or network hiccup)
         pass
 
     data = query.data or ""
@@ -111,7 +105,6 @@ async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_
             product_id = None
 
     if product_id is None:
-        # Provide a short alert to the user
         try:
             await query.answer("Invalid product reference", show_alert=True)
         except Exception:
@@ -119,6 +112,106 @@ async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_
         return
 
     await show_product(update, context, product_id)
+
+
+async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handle delete|<product_id> callback.
+    If the product belongs to a media_group, delete all rows for that group.
+    Otherwise delete all rows for the message_id (covers multi-file single-message cases).
+    Also delete any bot-sent messages recorded in context.user_data['last_displayed_messages']
+    that correspond to the deleted product ids.
+    """
+    query = update.callback_query
+    if not query:
+        return
+
+    # Acknowledge immediately
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    data = query.data or ""
+    parts = data.split("|")
+    if len(parts) < 2:
+        try:
+            await query.answer("Invalid delete request", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    try:
+        product_id = int(parts[1])
+    except ValueError:
+        try:
+            await query.answer("Invalid product id", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    # Load product to determine media_group or message_id
+    product = await db.get_product(product_id)
+    if not product:
+        try:
+            await query.message.reply_text("Product not found or already deleted.")
+        except Exception:
+            pass
+        return
+
+    chat_id = product.get("chat_id")
+    media_group_id = product.get("media_group_id")
+    message_id = product.get("message_id")
+
+    deleted_ids: List[int] = []
+    if media_group_id:
+        deleted_ids = await db.delete_products_by_media_group(media_group_id, chat_id)
+    else:
+        # Delete all rows that share the same message_id (covers multi-file single message)
+        deleted_ids = await db.delete_products_by_message(message_id, chat_id)
+
+    # Clean up any bot-sent messages that were recorded for this user
+    last_displayed = context.user_data.get("last_displayed_messages") or []
+    if last_displayed:
+        # last_displayed is list of (chat_id, message_id) for messages the bot sent when showing product
+        # We attempt to delete those messages if they exist and if they correspond to the deleted product(s).
+        bot = context.bot
+        remaining = []
+        for (c_id, m_id) in last_displayed:
+            try:
+                await bot.delete_message(chat_id=c_id, message_id=m_id)
+            except Exception:
+                # If deletion fails, keep it in remaining so we don't lose the record
+                remaining.append((c_id, m_id))
+        # Replace with remaining (if any)
+        if remaining:
+            context.user_data["last_displayed_messages"] = remaining
+        else:
+            context.user_data.pop("last_displayed_messages", None)
+
+    # Optionally inform the user
+    try:
+        if deleted_ids:
+            await query.message.reply_text(f"Deleted {len(deleted_ids)} item(s) from the catalog.")
+        else:
+            await query.message.reply_text("Nothing to delete (already removed).")
+    except Exception:
+        pass
+
+    # If the catalog message exists in this chat, edit it to remove the deleted item(s)
+    # (menu handler uses db.get_catalog_items so it will reflect deletions on next pagination)
+    try:
+        # Try to update the catalog in-place if the callback came from a catalog message
+        if query.message and query.message.text and query.message.text.startswith("Catalog"):
+            # Rebuild the same page the user was on
+            page = context.user_data.get("catalog_page", 1)
+            # Call the menu pagination handler logic by importing the menu module to rebuild UI
+            # We avoid circular imports by importing locally
+            from handlers import menu as menu_module  # ensure handlers package has __init__.py
+            await menu_module.handle_catalog_pagination(update, context, page)
+    except Exception:
+        # ignore UI update errors
+        pass
 
 
 async def _send_single_and_record(target_msg, product: dict):

@@ -21,7 +21,7 @@ from handlers.start import start_command
 from handlers.menu import menu_command, handle_catalog_pagination
 from handlers.search import handle_search, handle_search_pagination
 from handlers.admin import stats_command, delete_product, nuke_command
-from handlers.product_view import show_product, handle_product_callback
+from handlers.product_view import show_product, handle_product_callback, handle_delete_callback
 from utils.helpers import get_file_id_and_type, has_media, get_channel_id, get_channel_username
 
 # Load environment variables
@@ -154,11 +154,9 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             return
 
         if action in ("delete", "remove"):
-            if not value:
-                await query.answer("Invalid product id.", show_alert=True)
-                return
-            product_id = int(value)
-            await delete_product(update, context, product_id)
+            # Route delete callbacks to the product_view delete handler which removes
+            # all rows for a media_group or message at once.
+            await handle_delete_callback(update, context)
             return
 
         if action in ("menu", "catalog_menu"):

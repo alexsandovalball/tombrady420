@@ -222,6 +222,59 @@ class Database:
                 logger.info(f"Product deleted: ID={product_id}")
             return deleted
 
+    async def delete_products_by_media_group(self, media_group_id: str, chat_id: int) -> List[int]:
+        """
+        Delete all products that share the same media_group_id in a chat.
+        Returns a list of deleted product ids.
+        """
+        if not media_group_id:
+            return []
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT id FROM products WHERE media_group_id = ? AND chat_id = ?",
+                (media_group_id, chat_id)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                ids = [r["id"] for r in rows] if rows else []
+
+            if not ids:
+                return []
+
+            await db.execute(
+                "DELETE FROM products WHERE media_group_id = ? AND chat_id = ?",
+                (media_group_id, chat_id)
+            )
+            await db.commit()
+            logger.info("Deleted %d products for media_group_id=%s chat_id=%s", len(ids), media_group_id, chat_id)
+            return ids
+
+    async def delete_products_by_message(self, message_id: int, chat_id: int) -> List[int]:
+        """
+        Delete all products that match a specific message_id and chat_id.
+        Returns a list of deleted product ids.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT id FROM products WHERE message_id = ? AND chat_id = ?",
+                (message_id, chat_id)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                ids = [r["id"] for r in rows] if rows else []
+
+            if not ids:
+                return []
+
+            await db.execute(
+                "DELETE FROM products WHERE message_id = ? AND chat_id = ?",
+                (message_id, chat_id)
+            )
+            await db.commit()
+            logger.info("Deleted %d products for message_id=%s chat_id=%s", len(ids), message_id, chat_id)
+            return ids
+
     async def get_product_by_message(self, message_id: int, chat_id: int) -> Optional[Dict[str, Any]]:
         """Get product by message_id and chat_id (first match)."""
         async with aiosqlite.connect(self.db_path) as db:
