@@ -1,4 +1,5 @@
 # handlers/product_view.py
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo
 from telegram.ext import ContextTypes
 from database import Database
@@ -12,52 +13,88 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
     Show a product by ID. If it's part of a media_group, send the whole album.
     Record every message the bot sends for this product in context.user_data["last_displayed_messages"]
     so they can be deleted when the user returns to the catalog.
+
+    This function uses a per-user asyncio.Lock stored in context.user_data to prevent
+    concurrent duplicate displays when the same callback/update is processed more than once.
+    It also stores the last shown product id to avoid re-displaying the same product
+    if the handler is invoked repeatedly for the same product.
     """
-    product = await db.get_product(product_id)
-    target_msg = (update.message or (update.callback_query and update.callback_query.message))
-    if not target_msg:
-        return
+    # Ensure a per-user lock to avoid concurrent duplicate sends
+    lock = context.user_data.get("_display_lock")
+    if lock is None:
+        lock = asyncio.Lock()
+        context.user_data["_display_lock"] = lock
 
-    # Clear any previously recorded displayed messages for this user (we'll replace below)
-    context.user_data.pop("last_displayed_messages", None)
+    async with lock:
+        # Prevent re-displaying the same product repeatedly
+        last_shown = context.user_data.get("_last_shown_product")
+        if last_shown == product_id:
+            # Already displayed this product for this user recently; skip to avoid duplicates
+            return
+        context.user_data["_last_shown_product"] = product_id
 
-    if not product:
-        await target_msg.reply_text("❌ Product not found.")
-        return
+        product = await db.get_product(product_id)
+        target_msg = (update.message or (update.callback_query and update.callback_query.message))
+        if not target_msg:
+            return
 
-    sent_message_refs = []  # list of (chat_id, message_id)
+        # Clear any previously recorded displayed messages for this user (we'll replace below)
+        context.user_data.pop("last_displayed_messages", None)
 
-    media_group_id = product.get("media_group_id")
-    if media_group_id:
-        items = await db.get_products_by_media_group(media_group_id, product.get("chat_id"))
-        if items:
-            refs = await _send_media_group_and_record(target_msg, items)
-            sent_message_refs.extend(refs)
+        if not product:
+            await target_msg.reply_text("❌ Product not found.")
+            return
+
+        sent_message_refs = []  # list of (chat_id, message_id)
+
+        media_group_id = product.get("media_group_id")
+        if media_group_id:
+            items = await db.get_products_by_media_group(media_group_id, product.get("chat_id"))
+            if items:
+                refs = await _send_media_group_and_record(target_msg, items)
+                sent_message_refs.extend(refs)
+            else:
+                msg = await _send_single_and_record(target_msg, product)
+                if msg:
+                    sent_message_refs.append((msg.chat.id, msg.message_id))
         else:
             msg = await _send_single_and_record(target_msg, product)
             if msg:
                 sent_message_refs.append((msg.chat.id, msg.message_id))
-    else:
-        msg = await _send_single_and_record(target_msg, product)
-        if msg:
-            sent_message_refs.append((msg.chat.id, msg.message_id))
 
-    # Build action buttons; show delete only to admins
-    user = update.effective_user
-    buttons = [InlineKeyboardButton("⬅️ Back to catalog", callback_data="menu|1")]
-    if user and is_admin(user.id):
-        buttons.append(InlineKeyboardButton("🗑️ Delete", callback_data=f"delete|{product_id}"))
+        # Build action buttons; show delete only to admins
+        user = update.effective_user
+        buttons = [InlineKeyboardButton("⬅️ Back to catalog", callback_data="menu|1")]
+        if user and is_admin(user.id):
+            buttons.append(InlineKeyboardButton("🗑️ Delete", callback_data=f"delete|{product_id}"))
 
-    # Updated actions text as requested
-    actions_msg = await target_msg.reply_text("ACTIONS : DM @FLYAWAYPEP", reply_markup=InlineKeyboardMarkup([buttons]))
-    sent_message_refs.append((actions_msg.chat.id, actions_msg.message_id))
+        # Updated actions text as requested
+        actions_msg = await target_msg.reply_text(
+            "ACTIONS : DM @FLYAWAYPEP",
+            reply_markup=InlineKeyboardMarkup([buttons])
+        )
+        sent_message_refs.append((actions_msg.chat.id, actions_msg.message_id))
 
-    # Save the list so menu/search handlers can delete them when user goes back
-    context.user_data["last_displayed_messages"] = sent_message_refs
+        # Save the list so menu/search handlers can delete them when user goes back
+        context.user_data["last_displayed_messages"] = sent_message_refs
 
 
 async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Parse callback data and show the referenced product.
+    Acknowledge the callback_query to prevent the client from retrying or showing a spinner.
+    """
     query = update.callback_query
+    if not query:
+        return
+
+    # Acknowledge the callback immediately to stop client-side retries/spinner
+    try:
+        await query.answer()
+    except Exception:
+        # ignore answer errors (already answered or network hiccup)
+        pass
+
     data = query.data or ""
     product_id = None
     if "|" in data:
@@ -74,7 +111,11 @@ async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_
             product_id = None
 
     if product_id is None:
-        await query.answer("Invalid product reference", show_alert=True)
+        # Provide a short alert to the user
+        try:
+            await query.answer("Invalid product reference", show_alert=True)
+        except Exception:
+            pass
         return
 
     await show_product(update, context, product_id)
@@ -95,7 +136,10 @@ async def _send_single_and_record(target_msg, product: dict):
         elif file_type in ("animation", "gif"):
             return await target_msg.reply_animation(file_id, caption=caption)
         else:
-            return await target_msg.reply_document(file_id, caption=f"{caption}\n\n(type: {file_type or 'unknown'})")
+            return await target_msg.reply_document(
+                file_id,
+                caption=f"{caption}\n\n(type: {file_type or 'unknown'})"
+            )
     except Exception:
         return None
 
