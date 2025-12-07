@@ -10,7 +10,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.getenv("DB_PATH", "catalog.db")
+# Use a persistent path by default; Render persistent disk will be mounted at /data
+DB_PATH = os.getenv("DB_PATH", "/data/catalog.db")
+
+# Ensure the directory exists before any DB connections
+_db_dir = os.path.dirname(DB_PATH) or "."
+os.makedirs(_db_dir, exist_ok=True)
+logger.info("Using persistent database path: %s", DB_PATH)
 
 
 class Database:
