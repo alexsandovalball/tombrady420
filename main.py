@@ -283,4 +283,14 @@ def build_application():
     return application
 
 
-# Build the application object so it can be imported by a
+# Build the application object so it can be imported by a webhook server (webhook_server.py)
+application = build_application()
+
+if __name__ == "__main__":
+    # When executed directly, run polling (local/dev mode).
+    logger.info("Starting bot in polling mode...")
+    try:
+        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    except Exception as e:
+        logger.exception("Application run_polling exited with exception: %s", e)
+        raise
