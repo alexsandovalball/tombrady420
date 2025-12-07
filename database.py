@@ -239,4 +239,8 @@ async def init_db():
     """
     Initialize the database schema using the module-level Database instance.
 
-    Call
+    Call this from your FastAPI startup event before starting the telegram Application:
+        await init_db()
+    """
+    logger.info("Initializing database via module-level init_db() at %s", DB_PATH)
+    await db.init_db()
