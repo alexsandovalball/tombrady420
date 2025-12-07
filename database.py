@@ -22,6 +22,12 @@ class Database:
     async def init_db(self):
         """Initialize database with schema and ensure media_group_id exists."""
         async with aiosqlite.connect(self.db_path) as db:
+            # Ensure WAL mode for better concurrency (optional but helpful)
+            try:
+                await db.execute("PRAGMA journal_mode=WAL;")
+            except Exception:
+                pass
+
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS products (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,19 +79,63 @@ class Database:
         chat_id: int,
         media_group_id: Optional[str] = None
     ) -> int:
-        """Add a new product to the database. Returns product id or -1 if exists."""
+        """
+        Add a new product to the database in an idempotent way.
+
+        Strategy:
+        1. Try to INSERT OR IGNORE the row (so repeated attempts won't raise).
+        2. SELECT the id for the row matching file_id and chat_id (most reliable).
+        3. If not found by file_id/chat_id, fall back to selecting by message_id/chat_id/file_id.
+        Returns the product id (existing or newly created) or -1 on failure.
+        """
         async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
             try:
-                cursor = await db.execute("""
-                    INSERT INTO products (file_id, file_type, caption, message_id, chat_id, media_group_id, created_at)
+                # Use INSERT OR IGNORE to avoid IntegrityError on duplicates
+                await db.execute("""
+                    INSERT OR IGNORE INTO products
+                        (file_id, file_type, caption, message_id, chat_id, media_group_id, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (file_id, file_type, caption or "", message_id, chat_id, media_group_id, datetime.now()))
                 await db.commit()
-                product_id = cursor.lastrowid
-                logger.info(f"Product added: ID={product_id}, message_id={message_id}, media_group_id={media_group_id}")
-                return product_id
-            except aiosqlite.IntegrityError:
-                logger.debug(f"Product already exists: message_id={message_id}, chat_id={chat_id}, file_id={file_id}")
+
+                # Try to fetch by file_id + chat_id (idempotency key)
+                async with db.execute(
+                    "SELECT id FROM products WHERE file_id = ? AND chat_id = ? LIMIT 1",
+                    (file_id, chat_id)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    if row:
+                        product_id = row["id"]
+                        logger.info(
+                            "Product ensured (idempotent): ID=%s, message_id=%s, chat_id=%s, file_id=%s",
+                            product_id, message_id, chat_id, file_id
+                        )
+                        return product_id
+
+                # Fallback: try to fetch by message_id + chat_id + file_id
+                async with db.execute(
+                    "SELECT id FROM products WHERE message_id = ? AND chat_id = ? AND file_id = ? LIMIT 1",
+                    (message_id, chat_id, file_id)
+                ) as cursor2:
+                    row2 = await cursor2.fetchone()
+                    if row2:
+                        product_id = row2["id"]
+                        logger.info(
+                            "Product found by message_id fallback: ID=%s, message_id=%s, chat_id=%s",
+                            product_id, message_id, chat_id
+                        )
+                        return product_id
+
+                # If we reach here, insertion didn't create a row and selects failed
+                logger.error(
+                    "Failed to insert or locate product after INSERT OR IGNORE: file_id=%s chat_id=%s message_id=%s",
+                    file_id, chat_id, message_id
+                )
+                return -1
+
+            except Exception as exc:
+                logger.exception("Unexpected error in add_product: %s", exc)
                 return -1
 
     async def get_product(self, product_id: int) -> Optional[Dict[str, Any]]:
@@ -143,104 +193,4 @@ class Database:
                 logger.info(f"Product deleted: ID={product_id}")
             return deleted
 
-    async def get_product_by_message(self, message_id: int, chat_id: int) -> Optional[Dict[str, Any]]:
-        """Get product by message_id and chat_id (first match)."""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("SELECT * FROM products WHERE message_id = ? AND chat_id = ? LIMIT 1", (message_id, chat_id)) as cursor:
-                row = await cursor.fetchone()
-                return dict(row) if row else None
-
-    async def get_products_by_media_group(self, media_group_id: str, chat_id: int) -> List[Dict[str, Any]]:
-        """Get all products that share the same media_group_id in a chat, ordered by created_at."""
-        if not media_group_id:
-            return []
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("""
-                SELECT * FROM products
-                WHERE media_group_id = ? AND chat_id = ?
-                ORDER BY created_at ASC
-            """, (media_group_id, chat_id)) as cursor:
-                rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
-
-    async def get_stats(self) -> Dict[str, Any]:
-        """Get statistics for admin."""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT COUNT(*) FROM products") as cursor:
-                total = (await cursor.fetchone())[0]
-            async with db.execute("SELECT COUNT(*) FROM products WHERE DATE(created_at) = DATE('now')") as cursor:
-                today = (await cursor.fetchone())[0]
-            return {"total": total, "today": today}
-
-    async def save_pagination_state(self, user_id: int, state_type: str, query: Optional[str], page: int):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                INSERT OR REPLACE INTO pagination_state (user_id, state_type, query, page, created_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, (user_id, state_type, query or "", page, datetime.now()))
-            await db.commit()
-
-    async def get_pagination_state(self, user_id: int, state_type: str, query: Optional[str]) -> Optional[int]:
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("""
-                SELECT page FROM pagination_state WHERE user_id = ? AND state_type = ? AND query = ?
-            """, (user_id, state_type, query or "")) as cursor:
-                row = await cursor.fetchone()
-                return row[0] if row else None
-
-    async def cleanup_old_pagination_states(self, minutes: int = 10):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                DELETE FROM pagination_state WHERE datetime(created_at) < datetime('now', '-' || ? || ' minutes')
-            """, (minutes,))
-            await db.commit()
-
-    async def save_last_search(self, user_id: int, query: str, page: int):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                INSERT OR REPLACE INTO user_last_search (user_id, query, page, updated_at)
-                VALUES (?, ?, ?, ?)
-            """, (user_id, query, page, datetime.now()))
-            await db.commit()
-
-    async def get_last_search(self, user_id: int) -> Optional[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("SELECT query, page FROM user_last_search WHERE user_id = ?", (user_id,)) as cursor:
-                row = await cursor.fetchone()
-                return {"query": row["query"], "page": row["page"]} if row else None
-
-    async def add_ignored_message(self, message_id: int, chat_id: int):
-        async with aiosqlite.connect(self.db_path) as db:
-            try:
-                await db.execute("""
-                    INSERT OR IGNORE INTO ignored_messages (message_id, chat_id, created_at)
-                    VALUES (?, ?, ?)
-                """, (message_id, chat_id, datetime.now()))
-                await db.commit()
-            except Exception as e:
-                logger.error(f"Error adding to ignore list: {e}")
-
-    async def is_message_ignored(self, message_id: int, chat_id: int) -> bool:
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT 1 FROM ignored_messages WHERE message_id = ? AND chat_id = ?", (message_id, chat_id)) as cursor:
-                row = await cursor.fetchone()
-                return row is not None
-
-
-# Expose a module-level Database instance and a simple init helper
-# so other modules can initialize the schema on startup.
-db = Database(DB_PATH)
-
-
-async def init_db():
-    """
-    Initialize the database schema using the module-level Database instance.
-
-    Call this from your FastAPI startup event before starting the telegram Application:
-        await init_db()
-    """
-    logger.info("Initializing database via module-level init_db() at %s", DB_PATH)
-    await db.init_db()
+    async def get_product_by_message(self, message_id: int, chat_id: int
