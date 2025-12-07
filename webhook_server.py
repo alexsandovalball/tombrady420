@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request, Response
 
 from telegram import Update
 from main import application  # imports the built Application object
+from database import init_db  # ensure DB schema is created on startup
 
 # Logging setup
 logger = logging.getLogger("webhook")
@@ -20,16 +21,21 @@ app = FastAPI()
 @app.on_event("startup")
 async def startup_event():
     """
-    Ensure the telegram Application is initialized and started when FastAPI starts.
-    This lets the Application consume application.update_queue and run handlers.
+    Initialize the database schema, then ensure the telegram Application is
+    initialized and started when FastAPI starts. This lets the Application
+    consume application.update_queue and run handlers.
     """
     try:
+        logger.info("Initializing database...")
+        await init_db()
+        logger.info("Database initialized")
+
         logger.info("Starting telegram Application...")
         await application.initialize()
         await application.start()
         logger.info("Telegram Application started")
     except Exception:
-        logger.exception("Failed to start telegram Application")
+        logger.exception("Failed to start telegram Application or initialize DB")
         raise
 
 @app.on_event("shutdown")

@@ -228,3 +228,15 @@ class Database:
             async with db.execute("SELECT 1 FROM ignored_messages WHERE message_id = ? AND chat_id = ?", (message_id, chat_id)) as cursor:
                 row = await cursor.fetchone()
                 return row is not None
+
+
+# Expose a module-level Database instance and a simple init helper
+# so other modules can initialize the schema on startup.
+db = Database(DB_PATH)
+
+
+async def init_db():
+    """
+    Initialize the database schema using the module-level Database instance.
+
+    Call
