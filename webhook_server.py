@@ -10,11 +10,15 @@ from database import init_db  # ensure DB schema is created on startup
 # Logging setup
 logger = logging.getLogger("webhook")
 logger.setLevel(logging.INFO)
+logger.propagate = False
 if not logger.handlers:
     handler = logging.StreamHandler()
     formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     handler.setFormatter(formatter)
     logger.addHandler(handler)
+
+# Reduce noisy library logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 app = FastAPI()
 
