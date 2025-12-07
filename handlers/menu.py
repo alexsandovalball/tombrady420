@@ -43,7 +43,8 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["catalog_page"] = page
 
     offset = (page - 1) * PAGE_SIZE
-    products = await db.get_all_products(limit=PAGE_SIZE, offset=offset)
+    # Use catalog items (one representative per media_group_id) to avoid duplicate buttons
+    products = await db.get_catalog_items(limit=PAGE_SIZE, offset=offset)
     if not products:
         await update.message.reply_text("📦 Catalog is empty.")
         return
@@ -53,11 +54,16 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         label = _short_caption(p.get("caption", "")) or f"Product {p['id']}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"product|{p['id']}")])
 
-    nav_row = [InlineKeyboardButton(f"Page {page}", callback_data="noop"),
-               InlineKeyboardButton("➡️ Next", callback_data=f"catalog_page|{page+1}")]
+    nav_row = [
+        InlineKeyboardButton(f"Page {page}", callback_data="noop"),
+        InlineKeyboardButton("➡️ Next", callback_data=f"catalog_page|{page+1}")
+    ]
     keyboard.append(nav_row)
 
-    await update.message.reply_text("Catalog — select an item to view its media:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text(
+        "Catalog — select an item to view its media:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 
 async def handle_catalog_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int):
@@ -77,7 +83,8 @@ async def handle_catalog_pagination(update: Update, context: ContextTypes.DEFAUL
     context.user_data["catalog_page"] = page
 
     offset = (page - 1) * PAGE_SIZE
-    products = await db.get_all_products(limit=PAGE_SIZE, offset=offset)
+    # Use catalog items (one representative per media_group_id) to avoid duplicate buttons
+    products = await db.get_catalog_items(limit=PAGE_SIZE, offset=offset)
     if not products:
         try:
             await query.message.reply_text("No more products.")

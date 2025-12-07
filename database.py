@@ -82,12 +82,15 @@ class Database:
         """
         Add a new product to the database in an idempotent way.
 
+        Strategy:
+        - Use INSERT OR IGNORE to avoid IntegrityError on duplicates.
+        - Then SELECT the row by file_id+chat_id (idempotency key).
+        - Fallback to selecting by message_id+chat_id+file_id.
         Returns the product id (existing or newly created) or -1 on failure.
         """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             try:
-                # Insert or ignore to avoid IntegrityError on duplicates
                 await db.execute("""
                     INSERT OR IGNORE INTO products
                         (file_id, file_type, caption, message_id, chat_id, media_group_id, created_at)
@@ -95,7 +98,7 @@ class Database:
                 """, (file_id, file_type, caption or "", message_id, chat_id, media_group_id, datetime.now()))
                 await db.commit()
 
-                # Fetch by file_id + chat_id (idempotency key)
+                # Primary idempotency lookup: file_id + chat_id
                 async with db.execute(
                     "SELECT id FROM products WHERE file_id = ? AND chat_id = ? LIMIT 1",
                     (file_id, chat_id)
@@ -109,7 +112,7 @@ class Database:
                         )
                         return product_id
 
-                # Fallback: try to fetch by message_id + chat_id + file_id
+                # Fallback lookup: message_id + chat_id + file_id
                 async with db.execute(
                     "SELECT id FROM products WHERE message_id = ? AND chat_id = ? AND file_id = ? LIMIT 1",
                     (message_id, chat_id, file_id)
@@ -142,7 +145,7 @@ class Database:
                 return dict(row) if row else None
 
     async def get_all_products(self, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
-        """Get all products with pagination."""
+        """Get all products with pagination (raw rows)."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             query = "SELECT * FROM products ORDER BY created_at DESC"
@@ -152,8 +155,39 @@ class Database:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
 
+    async def get_catalog_items(self, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
+        """
+        Return catalog items for menu display:
+        - For messages with a media_group_id, return a single representative row per group
+          (the row with the smallest id for that group).
+        - For messages without a media_group_id, return the row itself.
+        This prevents showing the same caption multiple times when a message contains multiple media.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            base_query = """
+            SELECT * FROM (
+                SELECT * FROM products WHERE media_group_id IS NULL
+                UNION
+                SELECT * FROM products WHERE id IN (
+                    SELECT MIN(id) FROM products WHERE media_group_id IS NOT NULL GROUP BY media_group_id
+                )
+            ) AS catalog_items
+            ORDER BY created_at DESC
+            """
+
+            params: tuple = ()
+            if limit is not None:
+                base_query += " LIMIT ? OFFSET ?"
+                params = (int(limit), int(offset))
+
+            async with db.execute(base_query, params) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
     async def count_products(self) -> int:
-        """Get total number of products."""
+        """Get total number of products (raw rows)."""
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("SELECT COUNT(*) FROM products") as cursor:
                 row = await cursor.fetchone()
