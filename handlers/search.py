@@ -31,6 +31,22 @@ async def _delete_last_displayed_messages(context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("last_displayed_messages", None)
 
 
+def _dedupe_products(products):
+    """
+    Deduplicate products by media_group_id (album) or message_id (single),
+    keeping the first occurrence as the representative entry.
+    """
+    unique = {}
+    for p in products or []:
+        key = p.get("media_group_id") or p.get("message_id")
+        if key is None:
+            # Fallback: use product id if both are missing
+            key = p.get("id")
+        if key not in unique:
+            unique[key] = p
+    return list(unique.values())
+
+
 async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handle a search query typed by the user.
@@ -45,6 +61,7 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _delete_last_displayed_messages(context)
 
     products = await db.search_products(query_text, limit=PAGE_SIZE, offset=0)
+    products = _dedupe_products(products)
     if not products:
         await update.message.reply_text(f"No results found for '{query_text}'.")
         return
@@ -55,7 +72,7 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton(label, callback_data=f"product|{p['id']}")])
 
     nav_row = [
-        InlineKeyboardButton(f"Page 1", callback_data="noop"),
+        InlineKeyboardButton("Page 1", callback_data="noop"),
         InlineKeyboardButton("➡️ Next", callback_data=f"search_page|{query_text}|2"),
     ]
     keyboard.append(nav_row)
@@ -90,8 +107,12 @@ async def handle_search_pagination(update: Update, context: ContextTypes.DEFAULT
 
     offset = (page - 1) * PAGE_SIZE
     products = await db.search_products(query_text, limit=PAGE_SIZE, offset=offset)
+    products = _dedupe_products(products)
     if not products:
-        await q.message.reply_text("No more results.")
+        try:
+            await q.message.reply_text("No more results.")
+        except Exception:
+            logger.debug("Failed to send 'No more results.' message")
         return
 
     keyboard = []
@@ -122,7 +143,10 @@ async def handle_search_pagination(update: Update, context: ContextTypes.DEFAULT
             logger.debug("Search message already up to date")
         else:
             logger.exception("Failed to edit search pagination message")
-            await q.message.reply_text(text, reply_markup=reply_markup)
+            try:
+                await q.message.reply_text(text, reply_markup=reply_markup)
+            except Exception:
+                logger.debug("Fallback send after edit failure also failed")
 
 
 async def handle_back_to_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -145,13 +169,22 @@ async def handle_back_to_search(update: Update, context: ContextTypes.DEFAULT_TY
         page = origin.get("page", 1)
         offset = (page - 1) * PAGE_SIZE
         products = await db.search_products(query_text, limit=PAGE_SIZE, offset=offset)
+        products = _dedupe_products(products)
 
         if not products:
-            await context.bot.edit_message_text(
-                chat_id=origin["chat_id"],
-                message_id=origin["message_id"],
-                text=f"No results found for '{query_text}'.",
-            )
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=origin["chat_id"],
+                    message_id=origin["message_id"],
+                    text=f"No results found for '{query_text}'.",
+                )
+            except BadRequest as e:
+                if "Message is not modified" in str(e):
+                    logger.debug("Search message already shows empty results")
+                else:
+                    logger.exception("Failed to edit empty search message")
+            except Exception:
+                logger.exception("Unexpected error editing empty search message")
             return
 
         keyboard = []
@@ -179,11 +212,14 @@ async def handle_back_to_search(update: Update, context: ContextTypes.DEFAULT_TY
                 logger.debug("Search message already up to date")
             else:
                 logger.exception("Failed to edit search message; fallback to sending new one")
-                await context.bot.send_message(
-                    chat_id=origin["chat_id"],
-                    text=f"Search results for '{query_text}':",
-                    reply_markup=reply_markup,
-                )
+                try:
+                    await context.bot.send_message(
+                        chat_id=origin["chat_id"],
+                        text=f"Search results for '{query_text}':",
+                        reply_markup=reply_markup,
+                    )
+                except Exception:
+                    logger.exception("Fallback send after edit failure also failed")
     else:
         # Fallback: no origin recorded, just rerun search
         await handle_search(update, context)
