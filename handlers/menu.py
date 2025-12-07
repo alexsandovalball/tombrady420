@@ -1,6 +1,7 @@
 # handlers/menu.py
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
+from telegram.error import BadRequest
 from database import Database
 import logging
 
@@ -139,9 +140,16 @@ async def handle_catalog_pagination(update: Update, context: ContextTypes.DEFAUL
             context.user_data["catalog_message"] = {"chat_id": origin["chat_id"], "message_id": origin["message_id"]}
             context.user_data.pop("origin_catalog_message", None)
             return
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                # Safe to ignore: content is already correct
+                logger.debug("Catalog message already up to date, no edit needed")
+                context.user_data.pop("origin_catalog_message", None)
+                return
+            else:
+                logger.exception("Failed to edit origin_catalog_message; will try other fallbacks")
         except Exception:
-            logger.exception("Failed to edit origin_catalog_message; will try other fallbacks")
-            # fall through to other options
+            logger.exception("Unexpected error editing origin_catalog_message")
 
     # If the callback came from a catalog message the bot owns, try to edit that message
     try:
@@ -150,8 +158,14 @@ async def handle_catalog_pagination(update: Update, context: ContextTypes.DEFAUL
                 await query.message.edit_text(text, reply_markup=reply_markup)
                 context.user_data["catalog_message"] = {"chat_id": query.message.chat.id, "message_id": query.message.message_id}
                 return
+            except BadRequest as e:
+                if "Message is not modified" in str(e):
+                    logger.debug("Callback catalog message already up to date, no edit needed")
+                    return
+                else:
+                    logger.exception("Failed to edit callback catalog message; will send a new one")
             except Exception:
-                logger.exception("Failed to edit callback catalog message; will send a new one")
+                logger.exception("Unexpected error editing callback catalog message")
     except Exception:
         logger.exception("Error while attempting to edit callback message (non-fatal)")
 
