@@ -48,7 +48,8 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
     if user and is_admin(user.id):
         buttons.append(InlineKeyboardButton("🗑️ Delete", callback_data=f"delete|{product_id}"))
 
-    actions_msg = await target_msg.reply_text("Actions:", reply_markup=InlineKeyboardMarkup([buttons]))
+    # Updated actions text as requested
+    actions_msg = await target_msg.reply_text("ACTIONS : DM @FLYAWAYPEP", reply_markup=InlineKeyboardMarkup([buttons]))
     sent_message_refs.append((actions_msg.chat.id, actions_msg.message_id))
 
     # Save the list so menu/search handlers can delete them when user goes back
