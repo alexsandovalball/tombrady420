@@ -279,5 +279,5 @@ This project is provided as-is for educational and commercial use.
 
 ## Support
 
-For issues or questions, check the logs in the console output. The bot includes comprehensive error handling and logging.
+For issues or questions, check the logs in the console output. The bot includes comprehensive error handling and logging thanks
 
