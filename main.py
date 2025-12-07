@@ -24,6 +24,9 @@ from handlers.admin import stats_command, delete_product, nuke_command
 from handlers.product_view import show_product, handle_product_callback, handle_delete_callback
 from utils.helpers import get_file_id_and_type, has_media, get_channel_id, get_channel_username
 
+# Debug handlers (temporary for debugging; remove in production)
+from handlers.debug import dbcheck_command, dump_user_data
+
 # Load environment variables
 load_dotenv()
 
@@ -297,6 +300,10 @@ def build_application():
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("nuke", nuke_command))
+
+    # Debug commands (temporary)
+    application.add_handler(CommandHandler("dbcheck", dbcheck_command))
+    application.add_handler(CommandHandler("dumpuserdata", dump_user_data))
 
     # Callback queries and message handlers
     application.add_handler(CallbackQueryHandler(callback_query_handler))
