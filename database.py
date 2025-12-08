@@ -73,6 +73,16 @@ class Database:
                     PRIMARY KEY (message_id, chat_id)
                 )
             """)
+            # New: store users who interacted with the bot
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    last_name TEXT,
+                    last_seen TIMESTAMP
+                )
+            """)
             await db.commit()
             logger.info("Database initialized successfully")
 
@@ -369,6 +379,45 @@ class Database:
             async with db.execute("SELECT 1 FROM ignored_messages WHERE message_id = ? AND chat_id = ?", (message_id, chat_id)) as cursor:
                 row = await cursor.fetchone()
                 return row is not None
+
+    # -------------------------
+    # New: users helpers
+    # -------------------------
+    async def save_user(
+        self,
+        user_id: int,
+        username: Optional[str] = None,
+        first_name: Optional[str] = None,
+        last_name: Optional[str] = None,
+        last_seen: Optional[datetime] = None,
+    ):
+        """Insert or update a user record."""
+        async with aiosqlite.connect(self.db_path) as db:
+            try:
+                await db.execute("""
+                    INSERT INTO users (user_id, username, first_name, last_name, last_seen)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        username=excluded.username,
+                        first_name=excluded.first_name,
+                        last_name=excluded.last_name,
+                        last_seen=excluded.last_seen
+                """, (user_id, username, first_name, last_name, last_seen or datetime.now()))
+                await db.commit()
+            except Exception as e:
+                logger.exception("Failed to save user %s: %s", user_id, e)
+
+    async def get_all_users(self) -> List[Dict[str, Any]]:
+        """Return all users ordered by most recent interaction."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT user_id, username, first_name, last_name, last_seen
+                FROM users
+                ORDER BY COALESCE(last_seen, '1970-01-01') DESC
+            """) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
 
 
 # Expose a module-level Database instance and a simple init helper

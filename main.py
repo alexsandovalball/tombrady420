@@ -5,6 +5,7 @@ import os
 import logging
 import re
 import asyncio
+from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import (
@@ -20,7 +21,7 @@ from database import Database
 from handlers.start import start_command
 from handlers.menu import menu_command, handle_catalog_pagination
 from handlers.search import handle_search, handle_search_pagination, handle_back_to_search
-from handlers.admin import stats_command, delete_product, nuke_command
+from handlers.admin import stats_command, delete_product, nuke_command, list_users_command
 from handlers.product_view import show_product, handle_product_callback, handle_delete_callback
 from utils.helpers import get_file_id_and_type, has_media, get_channel_id, get_channel_username
 
@@ -117,6 +118,20 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     if not query:
         return
 
+    # Capture user info on interaction
+    user = update.effective_user
+    if user:
+        try:
+            await db.save_user(
+                user_id=user.id,
+                username=user.username or None,
+                first_name=user.first_name or None,
+                last_name=user.last_name or None,
+                last_seen=datetime.utcnow(),
+            )
+        except Exception:
+            logger.debug("Failed to save user info")
+
     try:
         await query.answer()
     except Exception:
@@ -197,7 +212,20 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.channel_post:
         return
 
+    # Capture user info on interaction
     user = update.effective_user
+    if user:
+        try:
+            await db.save_user(
+                user_id=user.id,
+                username=user.username or None,
+                first_name=user.first_name or None,
+                last_name=user.last_name or None,
+                last_seen=datetime.utcnow(),
+            )
+        except Exception:
+            logger.debug("Failed to save user info")
+
     if not user:
         return
 
@@ -252,6 +280,7 @@ def build_application():
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("nuke", nuke_command))
+    application.add_handler(CommandHandler("users", list_users_command))  # new admin command
 
     # Debug commands (temporary)
     application.add_handler(CommandHandler("dbcheck", dbcheck_command))

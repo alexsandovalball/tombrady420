@@ -126,3 +126,57 @@ async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("🧨 Catalog nuked.")
     logger.info("Admin %s nuked the catalog", user.id)
+
+
+# -------------------------
+# New: /users admin command
+# -------------------------
+async def list_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin command to list all users who interacted with the bot.
+    Requires a users table and db.get_all_users() implemented.
+    """
+    admin = update.effective_user
+    if not admin or not is_admin(admin.id):
+        await update.message.reply_text("You are not authorized to use this command.")
+        return
+
+    try:
+        users = await db.get_all_users()  # expected: list of dicts with user_id, username, first_name, last_name, last_seen
+        if not users:
+            await update.message.reply_text("👥 No users found yet.")
+            return
+
+        # Telegram message limit safety: chunk output if long
+        header = "👥 Registered users:\n"
+        chunks = []
+        current = header
+        for u in users:
+            uid = u.get("user_id")
+            uname = (u.get("username") or "").strip()
+            uname_display = f"@{uname}" if uname else "—"
+            fname = u.get("first_name") or ""
+            lname = u.get("last_name") or ""
+            last_seen = u.get("last_seen")
+            ls_str = f" • last_seen: {last_seen}" if last_seen else ""
+            line = f"- ID: {uid} • {uname_display} • {fname} {lname}{ls_str}\n"
+
+            # If adding the next line would exceed a safe threshold, start a new chunk
+            if len(current) + len(line) > 3800:  # conservative limit under Telegram's ~4096
+                chunks.append(current.rstrip("\n"))
+                current = line
+            else:
+                current += line
+        if current.strip():
+            chunks.append(current.rstrip("\n"))
+
+        # Send chunks sequentially
+        for i, text in enumerate(chunks):
+            try:
+                await update.message.reply_text(text)
+            except Exception:
+                logger.debug("Failed to send users chunk %s", i)
+
+    except Exception as e:
+        logger.exception("Error listing users: %s", e)
+        await update.message.reply_text("❌ Failed to fetch user list.")
