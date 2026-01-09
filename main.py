@@ -289,5 +289,4 @@ def build_application():
     # Channel monitoring
     channel_id = get_channel_id()
     channel_username = get_channel_username()
-    if channel_id:
-        application.add_handler
+   
