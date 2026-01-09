@@ -296,6 +296,4 @@ def build_application():
         logger.error("BOT_TOKEN not found in environment.")
         raise RuntimeError("BOT_TOKEN not set")
 
-    application = Application.builder().token(bot_token).post_init(post_init).build()
-
-    # Command handlers
+    application = Application.builder().token(bot_token).post_init
