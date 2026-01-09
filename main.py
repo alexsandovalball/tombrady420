@@ -286,4 +286,5 @@ def build_application():
     # Callback queries
     application.add_handler(CallbackQueryHandler(callback_query_handler))
     application.add_handler(CallbackQueryHandler(handle_nuke_step1, pattern="^nuke_step1_yes$"))
-    application.add
+    application.add_handler(CallbackQueryHandler(handle_nuke_final, pattern="^nuke_final_yes$"))
+    application.add_handler(CallbackQueryHandler(handle_nuke_cancel, pattern="^nuke_cancel$
