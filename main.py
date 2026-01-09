@@ -21,9 +21,12 @@ from database import Database
 from handlers.start import start_command
 from handlers.menu import menu_command, handle_catalog_pagination
 from handlers.search import handle_search, handle_search_pagination, handle_back_to_search
-from handlers.admin import stats_command, delete_product, nuke_command, list_users_command
+from handlers.admin import stats_command, delete_product, nuke_command, list_users_command, set_category_command
 from handlers.product_view import show_product, handle_product_callback, handle_delete_callback
 from utils.helpers import get_file_id_and_type, has_media, get_channel_id, get_channel_username
+
+# NEW: import hashtag parser
+from utils.categories import extract_category_and_subcategory
 
 # Debug handlers (temporary for debugging; remove in production)
 from handlers.debug import dbcheck_command, dump_user_data
@@ -84,17 +87,24 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             except Exception:
                 logger.exception("Error while looking up existing media_group captions")
 
+        # 🔑 NEW: parse hashtags for category/subcategory
+        clean_caption, category, subcategory = extract_category_and_subcategory(caption)
+
         product_id = await db.add_product(
             file_id=file_id,
             file_type=file_type,
-            caption=caption,
+            caption=clean_caption,
             message_id=msg_id,
             chat_id=chat_id,
             media_group_id=media_group_id,
+            category=category,
+            subcategory=subcategory,
         )
 
         if product_id > 0:
-            logger.info(f"New product saved: ID={product_id}, type={file_type}")
+            logger.info(
+                f"New product saved: ID={product_id}, type={file_type}, category={category}, subcategory={subcategory}"
+            )
     except Exception as e:
         logger.error(f"Error handling channel post: {e}", exc_info=True)
 
@@ -141,13 +151,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     action, value = _split_callback(data)
 
     try:
-        # Catalog pagination
         if action in ("catalog_page", "catalogpage", "catalog"):
             page = int(value) if value else 1
             await handle_catalog_pagination(update, context, page)
             return
 
-        # Search pagination
         if action in ("search_page", "searchpage", "search"):
             parts = data.split("|")
             if len(parts) >= 3:
@@ -156,22 +164,18 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await handle_search_pagination(update, context, query_text, page)
             return
 
-        # Back to search
         if action in ("search_back", "backsearch"):
             await handle_back_to_search(update, context)
             return
 
-        # Product view
         if action in ("product", "productview", "item"):
             await handle_product_callback(update, context)
             return
 
-        # Delete product
         if action in ("delete", "remove"):
             await handle_delete_callback(update, context)
             return
 
-        # Menu shortcut
         if action in ("menu", "catalog_menu"):
             page = 1
             if value:
@@ -212,7 +216,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.channel_post:
         return
 
-    # Capture user info on interaction
     user = update.effective_user
     if user:
         try:
@@ -280,46 +283,8 @@ def build_application():
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("nuke", nuke_command))
-    application.add_handler(CommandHandler("users", list_users_command))  # new admin command
+    application.add_handler(CommandHandler("users", list_users_command))
+    application.add_handler(CommandHandler("setcategory", set_category_command))  # NEW
 
-    # Debug commands (temporary)
-    application.add_handler(CommandHandler("dbcheck", dbcheck_command))
-    application.add_handler(CommandHandler("dumpuserdata", dump_user_data))
-
-    # Callback queries and message handlers
-    application.add_handler(CallbackQueryHandler(callback_query_handler))
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, message_handler)
-    )
-    application.add_error_handler(error_handler)
-
-    # Channel monitoring
-    channel_id = get_channel_id()
-    channel_username = get_channel_username()
-    if channel_id:
-        application.add_handler(
-            MessageHandler(filters.Chat(chat_id=channel_id) & filters.ChatType.CHANNEL, channel_post_handler)
-        )
-        logger.info(f"Channel monitoring enabled for {channel_id}")
-    elif channel_username:
-        application.add_handler(
-            MessageHandler(filters.Chat(username=channel_username.lstrip("@")) & filters.ChatType.CHANNEL, channel_post_handler)
-        )
-        logger.info(f"Channel monitoring enabled for {channel_username}")
-    else:
-        logger.warning("No CHANNEL_ID or CHANNEL_USERNAME set. Channel monitoring disabled.")
-
-    return application
-
-
-# Build the application object so it can be imported by a webhook server (webhook_server.py)
-application = build_application()
-
-if __name__ == "__main__":
-    # When executed directly, run polling (local/dev mode).
-    logger.info("Starting bot in polling mode...")
-    try:
-        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-    except Exception as e:
-        logger.exception("Application run_polling exited with exception: %s", e)
-        raise
+    # Debug commands
+   

@@ -15,168 +15,58 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("You are not authorized to use this command.")
         return
     stats = await db.get_stats()
-    await update.message.reply_text(f"📊 Total products: {stats.get('total', 0)}\nAdded today: {stats.get('today', 0)}")
+    await update.message.reply_text(
+        f"📊 Total products: {stats.get('total', 0)}\nAdded today: {stats.get('today', 0)}"
+    )
 
 
 async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE, product_id: int = None):
-    """
-    Delete a product by ID. Can be invoked as a callback (update.callback_query) or command.
-    Only admins can delete. Deletion removes DB entry and attempts to delete the original channel message.
-    If channel message deletion fails (e.g., message already removed), DB entry is still removed and the message
-    is added to the ignored list so it won't be reprocessed.
-    """
-    caller = update.effective_user
-    if not caller or not is_admin(caller.id):
-        if update.callback_query:
-            await update.callback_query.answer("You are not authorized to delete products.", show_alert=True)
-        else:
-            await update.message.reply_text("You are not authorized to delete products.")
-        return
-
-    # Parse product_id from message text if not provided
-    if product_id is None:
-        if update.message and update.message.text:
-            parts = update.message.text.strip().split()
-            if len(parts) >= 2 and parts[1].isdigit():
-                product_id = int(parts[1])
-
-    if product_id is None:
-        if update.callback_query:
-            await update.callback_query.answer("Invalid product id.", show_alert=True)
-        else:
-            await update.message.reply_text("Invalid product id.")
-        return
-
-    product = await db.get_product(product_id)
-    if not product:
-        if update.callback_query:
-            await update.callback_query.answer("Product not found.", show_alert=True)
-        else:
-            await update.message.reply_text("Product not found.")
-        return
-
-    chat_id = product.get("chat_id")
-    message_id = product.get("message_id")
-
-    # Attempt to delete message from channel (if present)
-    deletion_ok = False
-    try:
-        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-        deletion_ok = True
-    except Exception as e:
-        logger.warning("Could not delete message from channel: %s (chat_id=%s, message_id=%s)", e, chat_id, message_id)
-
-    # Remove from DB (always)
-    removed = await db.delete_product(product_id)
-
-    # Add to ignored_messages so channel handler won't re-add it if reposted
-    try:
-        await db.add_ignored_message(message_id, chat_id)
-    except Exception as e:
-        logger.warning("Failed to add ignored message (chat_id=%s, message_id=%s): %s", chat_id, message_id, e)
-
-    # Notify admin with clear result
-    result_text = f"🗑️ Product {product_id} deleted. Channel deletion: {'success' if deletion_ok else 'failed (message not found)'}."
-    if update.callback_query:
-        try:
-            await update.callback_query.answer()
-        except Exception:
-            pass
-        try:
-            await update.callback_query.message.reply_text(result_text)
-        except Exception:
-            try:
-                await context.bot.send_message(chat_id=caller.id, text=result_text)
-            except Exception:
-                pass
-    else:
-        try:
-            await update.message.reply_text(result_text)
-        except Exception:
-            try:
-                await context.bot.send_message(chat_id=caller.id, text=result_text)
-            except Exception:
-                pass
-
-    logger.info("Admin %s deleted product %s (channel deletion: %s)", caller.id, product_id, deletion_ok)
+    # ... keep your existing delete_product code unchanged ...
+    pass
 
 
 async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # ... keep your existing nuke_command code unchanged ...
+    pass
+
+
+async def list_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # ... keep your existing list_users_command code unchanged ...
+    pass
+
+
+# -------------------------
+# NEW: /setcategory command
+# -------------------------
+async def set_category_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Admin-only command to delete all products (requires /nuke CONFIRM).
+    Admin command to set or override category/subcategory for a product.
+    Usage: /setcategory <product_id> <category> [subcategory]
     """
     user = update.effective_user
     if not user or not is_admin(user.id):
         await update.message.reply_text("You are not authorized to use this command.")
         return
 
-    args = context.args or []
-    if not args or args[0].upper() != "CONFIRM":
-        await update.message.reply_text("To nuke the catalog, run: /nuke CONFIRM")
-        return
-
-    products = await db.get_all_products()
-    for p in products:
-        try:
-            await context.bot.delete_message(chat_id=p["chat_id"], message_id=p["message_id"])
-        except Exception:
-            pass
-        await db.add_ignored_message(p["message_id"], p["chat_id"])
-        await db.delete_product(p["id"])
-
-    await update.message.reply_text("🧨 Catalog nuked.")
-    logger.info("Admin %s nuked the catalog", user.id)
-
-
-# -------------------------
-# New: /users admin command
-# -------------------------
-async def list_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Admin command to list all users who interacted with the bot.
-    Requires a users table and db.get_all_users() implemented.
-    """
-    admin = update.effective_user
-    if not admin or not is_admin(admin.id):
-        await update.message.reply_text("You are not authorized to use this command.")
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text("Usage: /setcategory <product_id> <category> [subcategory]")
         return
 
     try:
-        users = await db.get_all_users()  # expected: list of dicts with user_id, username, first_name, last_name, last_seen
-        if not users:
-            await update.message.reply_text("👥 No users found yet.")
-            return
+        product_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("Product ID must be an integer.")
+        return
 
-        # Telegram message limit safety: chunk output if long
-        header = "👥 Registered users:\n"
-        chunks = []
-        current = header
-        for u in users:
-            uid = u.get("user_id")
-            uname = (u.get("username") or "").strip()
-            uname_display = f"@{uname}" if uname else "—"
-            fname = u.get("first_name") or ""
-            lname = u.get("last_name") or ""
-            last_seen = u.get("last_seen")
-            ls_str = f" • last_seen: {last_seen}" if last_seen else ""
-            line = f"- ID: {uid} • {uname_display} • {fname} {lname}{ls_str}\n"
+    category = args[1].upper()
+    subcategory = " ".join(args[2:]).upper() if len(args) > 2 else None
 
-            # If adding the next line would exceed a safe threshold, start a new chunk
-            if len(current) + len(line) > 3800:  # conservative limit under Telegram's ~4096
-                chunks.append(current.rstrip("\n"))
-                current = line
-            else:
-                current += line
-        if current.strip():
-            chunks.append(current.rstrip("\n"))
-
-        # Send chunks sequentially
-        for i, text in enumerate(chunks):
-            try:
-                await update.message.reply_text(text)
-            except Exception:
-                logger.debug("Failed to send users chunk %s", i)
-
-    except Exception as e:
-        logger.exception("Error listing users: %s", e)
-        await update.message.reply_text("❌ Failed to fetch user list.")
+    success = await db.set_product_category(product_id, category, subcategory)
+    if success:
+        await update.message.reply_text(
+            f"✅ Product {product_id} categorized as '{category}/{subcategory or '—'}'."
+        )
+        logger.info("Admin %s set category for product %s: %s/%s", user.id, product_id, category, subcategory)
+    else:
+        await update.message.reply_text("❌ Failed to set category.")
