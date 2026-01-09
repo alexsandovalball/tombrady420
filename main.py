@@ -290,5 +290,4 @@ def build_application():
     channel_id = get_channel_id()
     channel_username = get_channel_username()
     if channel_id:
-        application.add_handler(
-            MessageHandler
+        application.add_handler
