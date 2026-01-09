@@ -1,50 +1,290 @@
-2026-01-09T09:04:08.124616052Z     return self.main(*args, **kwargs)
-2026-01-09T09:04:08.124624843Z            ^^^^^^^^^^^^^^^^^^^^^^^^^^
-2026-01-09T09:04:08.124628103Z   File "/opt/render/project/src/.venv/lib/python3.11/site-packages/click/core.py", line 1406, in main
-2026-01-09T09:04:08.124888066Z     rv = self.invoke(ctx)
-2026-01-09T09:04:08.124894556Z          ^^^^^^^^^^^^^^^^
-2026-01-09T09:04:08.124900946Z   File "/opt/render/project/src/.venv/lib/python3.11/site-packages/click/core.py", line 1269, in invoke
-2026-01-09T09:04:08.125184081Z     return ctx.invoke(self.callback, **ctx.params)
-2026-01-09T09:04:08.12575352Z            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-2026-01-09T09:04:08.12575997Z   File "/opt/render/project/src/.venv/lib/python3.11/site-packages/click/core.py", line 824, in invoke
-2026-01-09T09:04:08.12576395Z     return callback(*args, **kwargs)
-2026-01-09T09:04:08.125766901Z            ^^^^^^^^^^^^^^^^^^^^^^^^^
-2026-01-09T09:04:08.125769671Z   File "/opt/render/project/src/.venv/lib/python3.11/site-packages/uvicorn/main.py", line 410, in main
-2026-01-09T09:04:08.125772501Z     run(
-2026-01-09T09:04:08.125775151Z   File "/opt/render/project/src/.venv/lib/python3.11/site-packages/uvicorn/main.py", line 578, in run
-2026-01-09T09:04:08.125777501Z     server.run()
-2026-01-09T09:04:08.125780191Z   File "/opt/render/project/src/.venv/lib/python3.11/site-packages/uvicorn/server.py", line 61, in run
-2026-01-09T09:04:08.125782742Z     return asyncio.run(self.serve(sockets=sockets))
-2026-01-09T09:04:08.125785452Z            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-2026-01-09T09:04:08.125788162Z   File "/opt/render/project/python/Python-3.11.5/lib/python3.11/asyncio/runners.py", line 190, in run
-2026-01-09T09:04:08.126010253Z     return runner.run(main)
-2026-01-09T09:04:08.126021474Z            ^^^^^^^^^^^^^^^^
-2026-01-09T09:04:08.126029504Z   File "/opt/render/project/python/Python-3.11.5/lib/python3.11/asyncio/runners.py", line 118, in run
-2026-01-09T09:04:08.12614025Z     return self._loop.run_until_complete(task)
-2026-01-09T09:04:08.12615169Z            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-2026-01-09T09:04:08.126155261Z   File "/opt/render/project/python/Python-3.11.5/lib/python3.11/asyncio/base_events.py", line 653, in run_until_complete
-2026-01-09T09:04:08.12633951Z     return future.result()
-2026-01-09T09:04:08.1263445Z            ^^^^^^^^^^^^^^^
-2026-01-09T09:04:08.12634766Z   File "/opt/render/project/src/.venv/lib/python3.11/site-packages/uvicorn/server.py", line 68, in serve
-2026-01-09T09:04:08.126463136Z     config.load()
-2026-01-09T09:04:08.126467596Z   File "/opt/render/project/src/.venv/lib/python3.11/site-packages/uvicorn/config.py", line 473, in load
-2026-01-09T09:04:08.126650816Z     self.loaded_app = import_from_string(self.app)
-2026-01-09T09:04:08.126658656Z                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-2026-01-09T09:04:08.126661756Z   File "/opt/render/project/src/.venv/lib/python3.11/site-packages/uvicorn/importer.py", line 24, in import_from_string
-2026-01-09T09:04:08.126786053Z     raise exc from None
-2026-01-09T09:04:08.126791683Z   File "/opt/render/project/src/.venv/lib/python3.11/site-packages/uvicorn/importer.py", line 21, in import_from_string
-2026-01-09T09:04:08.126881537Z     module = importlib.import_module(module_str)
-2026-01-09T09:04:08.126891288Z              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-2026-01-09T09:04:08.126895088Z   File "/opt/render/project/python/Python-3.11.5/lib/python3.11/importlib/__init__.py", line 126, in import_module
-2026-01-09T09:04:08.127059787Z     return _bootstrap._gcd_import(name[level:], package, level)
-2026-01-09T09:04:08.127099769Z            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-2026-01-09T09:04:08.127104589Z   File "<frozen importlib._bootstrap>", line 1204, in _gcd_import
-2026-01-09T09:04:08.127107389Z   File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
-2026-01-09T09:04:08.127110209Z   File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
-2026-01-09T09:04:08.127112929Z   File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
-2026-01-09T09:04:08.127115899Z   File "<frozen importlib._bootstrap_external>", line 940, in exec_module
-2026-01-09T09:04:08.12712594Z   File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
-2026-01-09T09:04:08.12712947Z   File "/opt/render/project/src/webhook_server.py", line 7, in <module>
-2026-01-09T09:04:08.127221115Z     from main import application  # imports the built Application object
-2026-01-09T09:04:08.127226895Z     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-2026-01-09T09:04:08.127229325Z ImportError: cannot import name 'application' from 'main' (/opt/render/project/src/main.py)
+"""
+Main entry point for the Telegram media catalog bot.
+"""
+import os
+import logging
+import re
+import asyncio
+from datetime import datetime
+from dotenv import load_dotenv
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
+    ContextTypes,
+)
+
+from database import Database
+from handlers.start import start_command
+from handlers.menu import menu_command, handle_catalog_pagination
+from handlers.search import handle_search, handle_search_pagination, handle_back_to_search
+from handlers.admin import stats_command, delete_product, nuke_command, list_users_command, set_category_command
+from handlers.product_view import show_product, handle_product_callback, handle_delete_callback
+from utils.helpers import get_file_id_and_type, has_media, get_channel_id, get_channel_username
+
+# NEW: import hashtag parser
+from utils.categories import extract_category_and_subcategory
+
+# Debug handlers (temporary for debugging; remove in production)
+from handlers.debug import dbcheck_command, dump_user_data
+
+# Load environment variables
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
+
+db = Database()
+user_last_message = {}
+
+
+async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle new posts in the monitored channel and save each media item with media_group_id."""
+    try:
+        message = update.channel_post
+        if not message:
+            return
+
+        chat_id = message.chat.id
+        msg_id = message.message_id
+        media_group_id = getattr(message, "media_group_id", None)
+
+        logger.debug(
+            "Channel post received: chat_id=%s message_id=%s media_group_id=%s",
+            chat_id,
+            msg_id,
+            media_group_id,
+        )
+
+        if await db.is_message_ignored(msg_id, chat_id):
+            return
+
+        if not has_media(update):
+            return
+
+        file_id, file_type = get_file_id_and_type(update)
+        if not file_id:
+            return
+
+        caption = message.caption if getattr(message, "caption", None) else (message.text or "")
+        caption = caption.strip() if isinstance(caption, str) else ""
+
+        if media_group_id and not caption:
+            try:
+                existing = await db.get_products_by_media_group(media_group_id, chat_id)
+                for ex in existing:
+                    ex_caption = (ex.get("caption") or "").strip()
+                    if ex_caption:
+                        caption = ex_caption
+                        break
+            except Exception:
+                logger.exception("Error while looking up existing media_group captions")
+
+        # 🔑 NEW: parse hashtags for category/subcategory
+        clean_caption, category, subcategory = extract_category_and_subcategory(caption)
+
+        product_id = await db.add_product(
+            file_id=file_id,
+            file_type=file_type,
+            caption=clean_caption,
+            message_id=msg_id,
+            chat_id=chat_id,
+            media_group_id=media_group_id,
+            category=category,
+            subcategory=subcategory,
+        )
+
+        if product_id > 0:
+            logger.info(
+                f"New product saved: ID={product_id}, type={file_type}, category={category}, subcategory={subcategory}"
+            )
+    except Exception as e:
+        logger.error(f"Error handling channel post: {e}", exc_info=True)
+
+
+def _split_callback(data: str):
+    """Split callback data into (action, value)."""
+    if not data:
+        return None, None
+    data = data.strip()
+    parts = re.split(r"[|_]", data)
+    if len(parts) == 1:
+        return parts[0], None
+    action = "_".join(parts[:-1])
+    value = parts[-1]
+    return action, value
+
+
+async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline button callbacks with robust parsing and safe error handling."""
+    query = update.callback_query
+    if not query:
+        return
+
+    # Capture user info on interaction
+    user = update.effective_user
+    if user:
+        try:
+            await db.save_user(
+                user_id=user.id,
+                username=user.username or None,
+                first_name=user.first_name or None,
+                last_name=user.last_name or None,
+                last_seen=datetime.utcnow(),
+            )
+        except Exception:
+            logger.debug("Failed to save user info")
+
+    try:
+        await query.answer()
+    except Exception:
+        logger.exception("Failed to answer callback query (non-fatal)")
+
+    data = (query.data or "").strip()
+    action, value = _split_callback(data)
+
+    try:
+        if action in ("catalog_page", "catalogpage", "catalog"):
+            page = int(value) if value else 1
+            await handle_catalog_pagination(update, context, page)
+            return
+
+        if action in ("search_page", "searchpage", "search"):
+            parts = data.split("|")
+            if len(parts) >= 3:
+                query_text = parts[1]
+                page = int(parts[2])
+                await handle_search_pagination(update, context, query_text, page)
+            return
+
+        if action in ("search_back", "backsearch"):
+            await handle_back_to_search(update, context)
+            return
+
+        if action in ("product", "productview", "item"):
+            await handle_product_callback(update, context)
+            return
+
+        if action in ("delete", "remove"):
+            await handle_delete_callback(update, context)
+            return
+
+        if action in ("menu", "catalog_menu"):
+            page = 1
+            if value:
+                try:
+                    page = int(value)
+                except ValueError:
+                    page = 1
+            await handle_catalog_pagination(update, context, page)
+            return
+
+        if action == "noop":
+            return
+
+        logger.warning("Unknown callback action: %s (raw=%s)", action, data)
+        try:
+            await query.answer("Unknown action", show_alert=True)
+        except Exception:
+            logger.exception("Failed to notify user about unknown action")
+
+    except Exception:
+        logger.exception("Unhandled exception in callback_query_handler for data=%s", data)
+        try:
+            if query.message and getattr(query.message.from_user, "is_bot", False):
+                try:
+                    await query.edit_message_text("❌ An internal error occurred. Please try again.")
+                except Exception:
+                    await context.bot.send_message(chat_id=query.from_user.id, text="❌ An internal error occurred. Please try again.")
+            else:
+                await context.bot.send_message(chat_id=query.from_user.id, text="❌ An internal error occurred. Please try again.")
+        except Exception:
+            logger.exception("Failed to notify user after exception in callback handler")
+
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Treat all non-command messages as search queries (private chats)."""
+    if update.message and update.message.text and update.message.text.startswith("/"):
+        return
+    if update.channel_post:
+        return
+
+    user = update.effective_user
+    if user:
+        try:
+            await db.save_user(
+                user_id=user.id,
+                username=user.username or None,
+                first_name=user.first_name or None,
+                last_name=user.last_name or None,
+                last_seen=datetime.utcnow(),
+            )
+        except Exception:
+            logger.debug("Failed to save user info")
+
+    if not user:
+        return
+
+    user_id = user.id
+    current_ts = asyncio.get_event_loop().time()
+    last_ts = user_last_message.get(user_id, 0)
+    if current_ts - last_ts < 1.0:
+        if update.message:
+            await update.message.reply_text("⏳ Please wait a moment before sending another message.")
+        return
+
+    user_last_message[user_id] = current_ts
+
+    if update.message and update.message.text:
+        try:
+            await handle_search(update, context)
+        except Exception:
+            logger.exception("Error while handling search command from message")
+
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Update {update} caused error {context.error}", exc_info=True)
+    if update and update.effective_chat:
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌ An unexpected error occurred. Please try again later.",
+            )
+        except Exception:
+            logger.exception("Failed to notify user about an unexpected error")
+
+
+async def post_init(application: Application):
+    try:
+        await db.init_db()
+        logger.info("Database initialized")
+    except Exception as e:
+        logger.exception("Failed to initialize database in post_init: %s", e)
+        raise
+
+
+def build_application():
+    bot_token = os.getenv("BOT_TOKEN")
+    if not bot_token:
+        logger.error("BOT_TOKEN not found in environment.")
+        raise RuntimeError("BOT_TOKEN not set")
+
+    application = Application.builder().token(bot_token).post_init(post_init).build()
+
+    # Command handlers
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("menu", menu_command))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("nuke", nuke_command))
+    application.add_handler(CommandHandler("users", list_users_command))
+    application.add_handler(CommandHandler("setcategory", set_category_command))  # NEW
+
+    # Debug commands
+    application.add_handler(Command
