@@ -75,7 +75,6 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         caption = message.caption if getattr(message, "caption", None) else (message.text or "")
         caption = caption.strip() if isinstance(caption, str) else ""
 
-        # For media groups with empty caption, reuse the group's first non-empty caption
         if media_group_id and not caption:
             try:
                 existing = await db.get_products_by_media_group(media_group_id, chat_id)
@@ -87,7 +86,6 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             except Exception:
                 logger.exception("Error while looking up existing media_group captions")
 
-        # Parse hashtags for category/subcategory and clean caption
         clean_caption, category, subcategory = extract_category_and_subcategory(caption)
 
         product_id = await db.add_product(
@@ -123,12 +121,11 @@ def _split_callback(data: str):
 
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle inline button callbacks with robust parsing and safe error handling."""
+    """Generic handler for inline button callbacks."""
     query = update.callback_query
     if not query:
         return
 
-    # Capture user info on interaction
     user = update.effective_user
     if user:
         try:
@@ -145,19 +142,17 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     try:
         await query.answer()
     except Exception:
-        logger.exception("Failed to answer callback query (non-fatal)")
+        logger.exception("Failed to answer callback query")
 
     data = (query.data or "").strip()
     action, value = _split_callback(data)
 
     try:
-        # Catalog pagination
         if action in ("catalog_page", "catalogpage", "catalog"):
             page = int(value) if value else 1
             await handle_catalog_pagination(update, context, page)
             return
 
-        # Search pagination
         if action in ("search_page", "searchpage", "search"):
             parts = data.split("|")
             if len(parts) >= 3:
@@ -166,49 +161,34 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await handle_search_pagination(update, context, query_text, page)
             return
 
-        # Back to search
         if action in ("search_back", "backsearch"):
             await handle_back_to_search(update, context)
             return
 
-        # Product view
         if action in ("product", "productview", "item"):
             await handle_product_callback(update, context)
             return
 
-        # Delete product
         if action in ("delete", "remove"):
             await handle_delete_callback(update, context)
             return
 
-        # Menu shortcut
         if action in ("menu", "catalog_menu"):
-            page = 1
-            if value:
-                try:
-                    page = int(value)
-                except ValueError:
-                    page = 1
+            page = int(value) if value else 1
             await handle_catalog_pagination(update, context, page)
             return
 
         if action == "noop":
             return
 
-        logger.warning("Unknown callback action: %s (raw=%s)", action, data)
+        logger.warning("Unknown callback action: %s", data)
         try:
             await query.answer("Unknown action", show_alert=True)
         except Exception:
-            logger.exception("Failed to notify user about unknown action")
+            pass
 
     except Exception:
-        logger.exception("Unhandled exception in callback_query_handler for data=%s", data)
-        try:
-            await context.bot.send_message(
-                chat_id=query.from_user.id, text="❌ An internal error occurred. Please try again."
-            )
-        except Exception:
-            logger.exception("Failed to notify user after exception in callback handler")
+        logger.exception("Unhandled exception in callback_query_handler")
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -218,7 +198,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.channel_post:
         return
 
-    # Capture user info on interaction
     user = update.effective_user
     if user:
         try:
@@ -235,7 +214,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         return
 
-    # Simple anti-spam gate
     user_id = user.id
     current_ts = asyncio.get_event_loop().time()
     last_ts = user_last_message.get(user_id, 0)
@@ -250,7 +228,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await handle_search(update, context)
         except Exception:
-            logger.exception("Error while handling search command from message")
+            logger.exception("Error while handling search command")
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -270,7 +248,7 @@ async def post_init(application: Application):
         await db.init_db()
         logger.info("Database initialized")
     except Exception as e:
-        logger.exception("Failed to initialize database in post_init: %s", e)
+        logger.exception("Failed to initialize database: %s", e)
         raise
 
 
@@ -294,12 +272,12 @@ def build_application():
     application.add_handler(CommandHandler("dbcheck", dbcheck_command))
     application.add_handler(CommandHandler("dumpuserdata", dump_user_data))
 
-    # Specific callback query handlers (register BEFORE the generic handler)
+    # Specific callback query handlers FIRST
     application.add_handler(CallbackQueryHandler(handle_nuke_step1, pattern="^nuke_step1_yes$"))
     application.add_handler(CallbackQueryHandler(handle_nuke_final, pattern="^nuke_final_yes$"))
     application.add_handler(CallbackQueryHandler(handle_nuke_cancel, pattern="^nuke_cancel$"))
 
-    # Generic callback query handler
+    # Generic callback query handler LAST
     application.add_handler(CallbackQueryHandler(callback_query_handler))
 
     # Message handlers
@@ -313,33 +291,4 @@ def build_application():
     channel_username = get_channel_username()
     if channel_id:
         application.add_handler(
-            MessageHandler(filters.Chat(chat_id=channel_id) & filters.ChatType.CHANNEL, channel_post_handler)
-        )
-        logger.info(f"Channel monitoring enabled for {channel_id}")
-    elif channel_username:
-        application.add_handler(
-            MessageHandler(
-                filters.Chat(username=channel_username.lstrip("@")) & filters.ChatType.CHANNEL,
-                channel_post_handler,
-            )
-        )
-        logger.info(f"Channel monitoring enabled for {channel_username}")
-    else:
-        logger.warning("No CHANNEL_ID or CHANNEL_USERNAME set. Channel monitoring disabled.")
-
-    return application
-
-
-# Expose application object for webhook_server.py
-application = build_application()
-
-if __name__ == "__main__":
-    logger.info("Starting bot in polling mode...")
-    try:
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,
-        )
-    except Exception as e:
-        logger.exception("Application run_polling exited with exception: %s", e)
-        raise
+            MessageHandler
