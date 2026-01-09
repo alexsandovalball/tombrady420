@@ -126,34 +126,10 @@ class Database:
                 logger.exception("Unexpected error in add_product: %s", exc)
                 return -1
 
-    async def get_product(self, product_id: int) -> Optional[Dict[str, Any]]:
-        """Get a product by ID."""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("SELECT * FROM products WHERE id = ?", (product_id,)) as cursor:
-                row = await cursor.fetchone()
-                return dict(row) if row else None
-
-    async def get_all_products(self, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
-        """Get all products with pagination."""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            query = "SELECT * FROM products ORDER BY created_at DESC"
-            if limit is not None:
-                query += f" LIMIT {int(limit)} OFFSET {int(offset)}"
-            async with db.execute(query) as cursor:
-                rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
-
     async def get_catalog_items(self, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
-        """
-        Return catalog items for menu display:
-        - For messages with a media_group_id, return a single representative row per group.
-        - For messages without a media_group_id, return the row itself.
-        """
+        """Return catalog items for menu display."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-
             base_query = """
             SELECT * FROM (
                 SELECT * FROM products WHERE media_group_id IS NULL
@@ -164,59 +140,13 @@ class Database:
             ) AS catalog_items
             ORDER BY created_at DESC
             """
-
             params: tuple = ()
             if limit is not None:
                 base_query += " LIMIT ? OFFSET ?"
                 params = (int(limit), int(offset))
-
             async with db.execute(base_query, params) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
-
-    async def count_products(self) -> int:
-        """Get total number of products."""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT COUNT(*) FROM products") as cursor:
-                row = await cursor.fetchone()
-                return row[0] if row else 0
-
-    async def search_products(self, query: str, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
-        """Search products by caption (LIKE)."""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            sql = "SELECT * FROM products WHERE caption LIKE ? ORDER BY created_at DESC"
-            if limit is not None:
-                sql += f" LIMIT {int(limit)} OFFSET {int(offset)}"
-            async with db.execute(sql, (f"%{query}%",)) as cursor:
-                rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
-
-    async def get_all_products_for_search(self) -> List[Dict[str, Any]]:
-        """Get all products for fuzzy search (no pagination)."""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("SELECT * FROM products ORDER BY created_at DESC") as cursor:
-                rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
-
-    async def delete_product(self, product_id: int) -> bool:
-        """Delete a product by ID."""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("DELETE FROM products WHERE id = ?", (product_id,))
-            await db.commit()
-            return cursor.rowcount > 0
-
-    async def get_stats(self) -> Dict[str, Any]:
-        """Get statistics for admin."""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT COUNT(*) FROM products") as cursor:
-                total_row = await cursor.fetchone()
-                total = total_row[0] if total_row else 0
-            async with db.execute("SELECT COUNT(*) FROM products WHERE DATE(created_at) = DATE('now')") as cursor:
-                today_row = await cursor.fetchone()
-                today = today_row[0] if today_row else 0
-            return {"total": total, "today": today}
 
     async def set_product_category(self, product_id: int, category: str, subcategory: Optional[str] = None) -> bool:
         """Update category/subcategory for a product."""
@@ -232,4 +162,66 @@ class Database:
                 logger.exception("Failed to set category: %s", e)
                 return False
 
-    async def get_products_by_category(self, category:
+    async def get_products_by_category(self, category: str, subcategory: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Fetch products filtered by category/subcategory."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            if subcategory:
+                query = "SELECT * FROM products WHERE category = ? AND subcategory = ? ORDER BY created_at DESC"
+                params = (category, subcategory)
+            else:
+                query = "SELECT * FROM products WHERE category = ? ORDER BY created_at DESC"
+                params = (category,)
+            async with db.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    async def get_stats(self) -> Dict[str, Any]:
+        """Get statistics for admin."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT COUNT(*) FROM products") as cursor:
+                total_row = await cursor.fetchone()
+                total = total_row[0] if total_row else 0
+            async with db.execute("SELECT COUNT(*) FROM products WHERE DATE(created_at) = DATE('now')") as cursor:
+                today_row = await cursor.fetchone()
+                today = today_row[0] if today_row else 0
+            return {"total": total, "today": today}
+
+    async def save_user(self, user_id: int, username: Optional[str] = None,
+                        first_name: Optional[str] = None, last_name: Optional[str] = None,
+                        last_seen: Optional[datetime] = None):
+        """Insert or update a user record."""
+        async with aiosqlite.connect(self.db_path) as db:
+            try:
+                await db.execute("""
+                    INSERT INTO users (user_id, username, first_name, last_name, last_seen)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        username=excluded.username,
+                        first_name=excluded.first_name,
+                        last_name=excluded.last_name,
+                        last_seen=excluded.last_seen
+                """, (user_id, username, first_name, last_name, last_seen or datetime.now()))
+                await db.commit()
+            except Exception as e:
+                logger.exception("Failed to save user %s: %s", user_id, e)
+
+    async def get_all_users(self) -> List[Dict[str, Any]]:
+        """Return all users ordered by most recent interaction."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT user_id, username, first_name, last_name, last_seen
+                FROM users
+                ORDER BY COALESCE(last_seen, '1970-01-01') DESC
+            """) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+
+# Expose a module-level Database instance
+db = Database(DB_PATH)
+
+async def init_db():
+    logger.info("Initializing database via module-level init_db() at %s", DB_PATH)
+    await db.init_db()
