@@ -289,4 +289,38 @@ def build_application():
     # Channel monitoring
     channel_id = get_channel_id()
     channel_username = get_channel_username()
-   
+    if channel_id:
+        application.add_handler(
+            MessageHandler(
+                filters.Chat(chat_id=channel_id) & filters.ChatType.CHANNEL,
+                channel_post_handler,
+            )
+        )
+        logger.info(f"Channel monitoring enabled for {channel_id}")
+    elif channel_username:
+        application.add_handler(
+            MessageHandler(
+                filters.Chat(username=channel_username.lstrip("@")) & filters.ChatType.CHANNEL,
+                channel_post_handler,
+            )
+        )
+        logger.info(f"Channel monitoring enabled for {channel_username}")
+    else:
+        logger.warning("No CHANNEL_ID or CHANNEL_USERNAME set. Channel monitoring disabled.")
+
+    return application
+
+
+# Expose application object for webhook_server.py
+application = build_application()
+
+if __name__ == "__main__":
+    logger.info("Starting bot in polling mode...")
+    try:
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
+        )
+    except Exception as e:
+        logger.exception("Application run_polling exited with exception: %s", e)
+        raise
