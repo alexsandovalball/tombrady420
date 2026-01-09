@@ -63,16 +63,8 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         msg_id = message.message_id
         media_group_id = getattr(message, "media_group_id", None)
 
-        logger.debug(
-            "Channel post received: chat_id=%s message_id=%s media_group_id=%s",
-            chat_id,
-            msg_id,
-            media_group_id,
-        )
-
         if await db.is_message_ignored(msg_id, chat_id):
             return
-
         if not has_media(update):
             return
 
@@ -83,7 +75,6 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         caption = message.caption if getattr(message, "caption", None) else (message.text or "")
         caption = caption.strip() if isinstance(caption, str) else ""
 
-        # For media groups with empty caption, reuse the group's first non-empty caption
         if media_group_id and not caption:
             try:
                 existing = await db.get_products_by_media_group(media_group_id, chat_id)
@@ -95,7 +86,6 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             except Exception:
                 logger.exception("Error while looking up existing media_group captions")
 
-        # Parse hashtags for category/subcategory and clean caption
         clean_caption, category, subcategory = extract_category_and_subcategory(caption)
 
         product_id = await db.add_product(
@@ -136,7 +126,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     if not query:
         return
 
-    # Capture user info on interaction
     user = update.effective_user
     if user:
         try:
@@ -159,13 +148,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     action, value = _split_callback(data)
 
     try:
-        # Catalog pagination
         if action in ("catalog_page", "catalogpage", "catalog"):
             page = int(value) if value else 1
             await handle_catalog_pagination(update, context, page)
             return
 
-        # Search pagination
         if action in ("search_page", "searchpage", "search"):
             parts = data.split("|")
             if len(parts) >= 3:
@@ -174,22 +161,18 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await handle_search_pagination(update, context, query_text, page)
             return
 
-        # Back to search
         if action in ("search_back", "backsearch"):
             await handle_back_to_search(update, context)
             return
 
-        # Product view
         if action in ("product", "productview", "item"):
             await handle_product_callback(update, context)
             return
 
-        # Delete product
         if action in ("delete", "remove"):
             await handle_delete_callback(update, context)
             return
 
-        # Menu shortcut
         if action in ("menu", "catalog_menu"):
             page = 1
             if value:
@@ -212,17 +195,9 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     except Exception:
         logger.exception("Unhandled exception in callback_query_handler for data=%s", data)
         try:
-            if query.message and getattr(query.message.from_user, "is_bot", False):
-                try:
-                    await query.edit_message_text("❌ An internal error occurred. Please try again.")
-                except Exception:
-                    await context.bot.send_message(
-                        chat_id=query.from_user.id, text="❌ An internal error occurred. Please try again."
-                    )
-            else:
-                await context.bot.send_message(
-                    chat_id=query.from_user.id, text="❌ An internal error occurred. Please try again."
-                )
+            await context.bot.send_message(
+                chat_id=query.from_user.id, text="❌ An internal error occurred. Please try again."
+            )
         except Exception:
             logger.exception("Failed to notify user after exception in callback handler")
 
@@ -234,7 +209,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.channel_post:
         return
 
-    # Capture user info on interaction
     user = update.effective_user
     if user:
         try:
@@ -251,7 +225,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         return
 
-    # Simple anti-spam gate
     user_id = user.id
     current_ts = asyncio.get_event_loop().time()
     last_ts = user_last_message.get(user_id, 0)
@@ -296,4 +269,21 @@ def build_application():
         logger.error("BOT_TOKEN not found in environment.")
         raise RuntimeError("BOT_TOKEN not set")
 
-    application = Application.builder().token(bot_token).post_init
+    application = Application.builder().token(bot_token).post_init(post_init).build()
+
+    # Command handlers
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("menu", menu_command))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("nuke", nuke_command))
+    application.add_handler(CommandHandler("users", list_users_command))
+    application.add_handler(CommandHandler("setcategory", set_category_command))
+
+    # Debug commands
+    application.add_handler(CommandHandler("dbcheck", dbcheck_command))
+    application.add_handler(CommandHandler("dumpuserdata", dump_user_data))
+
+    # Callback queries
+    application.add_handler(CallbackQueryHandler(callback_query_handler))
+    application.add_handler(CallbackQueryHandler(handle_nuke_step1, pattern="^nuke_step1_yes$"))
+    application.add
