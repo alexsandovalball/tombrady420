@@ -294,11 +294,13 @@ def build_application():
     application.add_handler(CommandHandler("dbcheck", dbcheck_command))
     application.add_handler(CommandHandler("dumpuserdata", dump_user_data))
 
-    # Callback queries
-    application.add_handler(CallbackQueryHandler(callback_query_handler))
+    # Specific callback query handlers (register BEFORE the generic handler)
     application.add_handler(CallbackQueryHandler(handle_nuke_step1, pattern="^nuke_step1_yes$"))
     application.add_handler(CallbackQueryHandler(handle_nuke_final, pattern="^nuke_final_yes$"))
     application.add_handler(CallbackQueryHandler(handle_nuke_cancel, pattern="^nuke_cancel$"))
+
+    # Generic callback query handler
+    application.add_handler(CallbackQueryHandler(callback_query_handler))
 
     # Message handlers
     application.add_handler(
