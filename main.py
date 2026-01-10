@@ -28,12 +28,21 @@ from handlers.menu import (
     handle_category_callback,
     handle_category_sub_callback,
     handle_menu_categories_callback,
-    # If you implement admin interactive callbacks in handlers.menu, keep these;
-    # otherwise remove or implement them in the appropriate module.
-    handle_admin_setcategory_request,
-    handle_category_admin_callback,
-    handle_category_sub_admin_callback,
 )
+
+# Optional admin interactive callbacks: try to import from handlers.menu if present
+try:
+    from handlers.menu import (
+        handle_admin_setcategory_request,
+        handle_category_admin_callback,
+        handle_category_sub_admin_callback,
+    )
+    _HAS_ADMIN_MENU_CALLBACKS = True
+except ImportError:
+    _HAS_ADMIN_MENU_CALLBACKS = False
+    logging.getLogger(__name__).info(
+        "Optional admin menu callbacks not found in handlers.menu; continuing without them."
+    )
 
 from handlers.search import handle_search, handle_search_pagination, handle_back_to_search
 from handlers.admin import (
@@ -314,10 +323,13 @@ def build_application():
     application.add_handler(CallbackQueryHandler(handle_nuke_final, pattern="^nuke_final_yes$"))
     application.add_handler(CallbackQueryHandler(handle_nuke_cancel, pattern="^nuke_cancel$"))
 
-    # Admin interactive tagging callbacks (must be registered before category handlers)
-    application.add_handler(CallbackQueryHandler(handle_admin_setcategory_request, pattern=r"^admin_setcat\|"))
-    application.add_handler(CallbackQueryHandler(handle_category_admin_callback, pattern=r"^category_admin\|"))
-    application.add_handler(CallbackQueryHandler(handle_category_sub_admin_callback, pattern=r"^category_sub_admin\|"))
+    # Admin interactive tagging callbacks (register only if available)
+    if _HAS_ADMIN_MENU_CALLBACKS:
+        application.add_handler(CallbackQueryHandler(handle_admin_setcategory_request, pattern=r"^admin_setcat\|"))
+        application.add_handler(CallbackQueryHandler(handle_category_admin_callback, pattern=r"^category_admin\|"))
+        application.add_handler(CallbackQueryHandler(handle_category_sub_admin_callback, pattern=r"^category_sub_admin\|"))
+    else:
+        logger.info("Skipping admin interactive callback registration because handlers.menu does not expose them.")
 
     # Category navigation handlers (must be registered before the generic router)
     application.add_handler(CallbackQueryHandler(handle_category_callback, pattern=r"^category\|"))
