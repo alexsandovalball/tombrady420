@@ -12,7 +12,8 @@ This version:
 - Keeps the previous robustness: answers callback queries early, validates recorded
   displayed messages before suppressing redisplay, and sends media via context.bot.send_*.
 - Adds a small helper ingest_and_save_product(...) to normalize/validate category tags
-  and persist products consistently.
+  and persist products consistently. The helper now treats a media_group as a single
+  representative product to avoid duplicate entries for multi-photo posts.
 """
 
 import asyncio
@@ -50,12 +51,8 @@ async def ingest_and_save_product(
     media_group_id: Optional[str] = None,
 ) -> int:
     """
-    Extract category/subcategory from message caption/text, validate against taxonomy,
-    normalize values, save the product row via db.add_product, send an admin preview,
-    and bulk-tag media_group items so representative rows are searchable.
-
-    NOTE: this function requires the handler `context` so it can use context.bot
-    to send admin preview messages (Message.bot may not be available in some update types).
+    Normalize tags and save a single representative product for a media_group.
+    If a representative already exists for (media_group_id, chat_id) return its id.
 
     Returns the product id on success, or -1 on failure.
     """
@@ -63,16 +60,10 @@ async def ingest_and_save_product(
         caption_raw = getattr(message, "caption", None) or getattr(message, "text", None) or ""
         clean_caption, cat_raw, sub_raw = extract_category_and_subcategory(caption_raw)
 
-        # Validate against taxonomy (returns canonical keys or (None, None))
+        # Validate and normalize
         cat_valid, sub_valid = validate_category_and_subcategory(cat_raw, sub_raw)
-
-        # Normalize storage form: uppercase, trimmed; subcategory stored in compact form
         category = cat_valid.strip().upper() if cat_valid else None
-        if sub_valid:
-            # store canonical compact form (no spaces/underscores) to make matching robust
-            subcategory = sub_valid.strip().upper().replace(" ", "").replace("_", "")
-        else:
-            subcategory = None
+        subcategory = sub_valid.strip().upper().replace(" ", "").replace("_", "") if sub_valid else None
 
         # Log parsed result for debugging
         logger.info(
@@ -85,7 +76,37 @@ async def ingest_and_save_product(
             msg_id,
         )
 
-        # Save product (db.add_product returns id or -1)
+        # If this is part of a media_group, try to find an existing representative
+        if media_group_id:
+            try:
+                existing = await db.get_products_by_media_group(media_group_id, chat_id)
+                if existing:
+                    # Prefer a row that already has category/subcategory set
+                    for ex in existing:
+                        if ex.get("category") or ex.get("subcategory"):
+                            rep_id = ex.get("id")
+                            logger.info("Found existing representative for media_group %s -> id=%s", media_group_id, rep_id)
+                            # Ensure we still propagate category/subcategory to group rows
+                            if category:
+                                try:
+                                    await db.update_products_by_media_group(media_group_id, chat_id, category, subcategory)
+                                except Exception:
+                                    logger.exception("Failed to bulk-update media_group categories for %s", media_group_id)
+                            return int(rep_id)
+                    # No categorized row found; use the first row as representative
+                    rep_id = existing[0].get("id")
+                    if category:
+                        try:
+                            await db.update_products_by_media_group(media_group_id, chat_id, category, subcategory)
+                        except Exception:
+                            logger.exception("Failed to bulk-update media_group categories for %s", media_group_id)
+                    logger.info("Using existing row id=%s as representative for media_group %s", rep_id, media_group_id)
+                    return int(rep_id)
+            except Exception:
+                logger.exception("Error while checking existing media_group rows for %s", media_group_id)
+                # fall through to insert representative if check fails
+
+        # Insert a new representative product row
         product_id = await db.add_product(
             file_id=file_id,
             file_type=file_type,
@@ -107,9 +128,10 @@ async def ingest_and_save_product(
             msg_id,
         )
 
-        # Send admin preview with Set category button so admins can correct or assign taxonomy
+        # Send admin preview using context.bot
         try:
-            ADMIN_IDS = {8589411468}  # replace with your Telegram id(s)
+            # Replace ADMIN_IDS with your admin Telegram user ids
+            ADMIN_IDS = {8589411468}
             admin_buttons = [
                 [InlineKeyboardButton("Set category", callback_data=f"admin_setcat|{product_id}")],
                 [InlineKeyboardButton("Delete", callback_data=f"admin_delete|{product_id}")],
@@ -124,8 +146,7 @@ async def ingest_and_save_product(
         except Exception:
             logger.exception("Failed to prepare/send admin preview for product %s", product_id)
 
-        # If this item belongs to a media_group, ensure all items in the group are tagged
-        # so the representative row (MIN(id)) will match category queries.
+        # If media_group_id present and we have a category, propagate to all group rows
         if media_group_id and category:
             try:
                 await db.update_products_by_media_group(media_group_id, chat_id, category, subcategory)
