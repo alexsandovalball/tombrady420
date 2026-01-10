@@ -154,6 +154,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     try:
         if action in ("catalog_page", "catalogpage", "catalog"):
+            # This branch is kept for backward compatibility; wrapper in build_application
             page = int(value) if value else 1
             await handle_catalog_pagination(update, context, page)
             return
@@ -198,6 +199,18 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Treat all non-command messages as search queries (private chats)."""
+    # DEBUG: log incoming message metadata to help diagnose search issues
+    try:
+        if update and getattr(update, "message", None):
+            logger.debug(
+                "message_handler invoked: user=%s text=%s chat_type=%s",
+                getattr(update.effective_user, "id", None),
+                getattr(update.message, "text", None),
+                getattr(update.effective_chat, "type", None),
+            )
+    except Exception:
+        logger.exception("Failed to log incoming message in message_handler")
+
     if update.message and update.message.text and update.message.text.startswith("/"):
         return
     if update.channel_post:
@@ -377,7 +390,35 @@ def build_application():
     application.add_handler(CallbackQueryHandler(handle_category_callback, pattern=r"^category\|"))
     application.add_handler(CallbackQueryHandler(handle_category_sub_callback, pattern=r"^category_sub\|"))
     application.add_handler(CallbackQueryHandler(handle_menu_categories_callback, pattern=r"^menu_categories$"))
-    application.add_handler(CallbackQueryHandler(handle_catalog_pagination, pattern=r"^category_page\|"))
+
+    # Wrap catalog pagination handler so we extract page from callback data and call the existing handler
+    def _wrap_catalog_pagination(handler):
+        async def _inner(update, context):
+            try:
+                data = (update.callback_query.data or "").strip()
+                parts = data.split("|")
+                # Expecting patterns like: category_page|CATEGORY|SUBCATEGORY|<page>
+                # Last part should be page if present; fallback to 1
+                page = 1
+                if parts:
+                    # If last part is numeric, use it; otherwise default to 1
+                    last = parts[-1]
+                    try:
+                        page = int(last) if last != "" else 1
+                    except Exception:
+                        # If last part is not numeric, try to find numeric part in the list
+                        for p in reversed(parts):
+                            try:
+                                page = int(p)
+                                break
+                            except Exception:
+                                continue
+                await handler(update, context, page)
+            except Exception:
+                logger.exception("Wrapped catalog pagination handler failed")
+        return _inner
+
+    application.add_handler(CallbackQueryHandler(_wrap_catalog_pagination(handle_catalog_pagination), pattern=r"^category_page\|"))
 
     # Product and delete specific handlers (so they are handled before the generic router)
     application.add_handler(CallbackQueryHandler(handle_product_callback, pattern=r"^(product\||\d+$)"))
@@ -390,6 +431,16 @@ def build_application():
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, message_handler)
     )
+
+    # Add a test command to invoke search directly for debugging
+    async def _test_search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            await handle_search(update, context)
+        except Exception:
+            logger.exception("test_search_cmd failed")
+
+    application.add_handler(CommandHandler("testsearch", _test_search_cmd))
+
     application.add_error_handler(error_handler)
 
     # Channel monitoring

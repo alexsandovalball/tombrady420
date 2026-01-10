@@ -81,8 +81,8 @@ async def _build_catalog_page(
 
     keyboard: List[List[InlineKeyboardButton]] = []
     for p in products:
-        label = _short_caption(p.get("caption", "")) or f"Product {p['id']}"
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"product|{p['id']}")])
+        label = _short_caption(p.get("caption", "")) or f"Product {p.get('id')}"
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"product|{p.get('id')}")])
 
     nav_row: List[InlineKeyboardButton] = []
     if page > 1:
@@ -198,7 +198,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_catalog_pagination(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    page: int,
+    page: Optional[int] = None,
     category: Optional[str] = None,
     subcategory: Optional[str] = None,
 ):
@@ -210,6 +210,30 @@ async def handle_catalog_pagination(
     otherwise edit the callback message if it is a catalog message; fallback to sending a new message.
     """
     query = update.callback_query
+
+    # If page was not provided by the caller, attempt to parse it from callback data
+    if page is None:
+        try:
+            data = (query.data or "").strip() if query else ""
+            parts = data.split("|") if data else []
+            # Expect patterns like: category_page|CATEGORY|SUBCATEGORY|<page> or catalog_page|<page>
+            parsed_page = None
+            if parts:
+                # Try last part first
+                last = parts[-1]
+                if last.isdigit():
+                    parsed_page = int(last)
+                else:
+                    # search backwards for a numeric token
+                    for token in reversed(parts):
+                        if token.isdigit():
+                            parsed_page = int(token)
+                            break
+            page = parsed_page or 1
+        except Exception:
+            logger.exception("Failed to parse page from callback data; defaulting to 1")
+            page = 1
+
     # Acknowledge early if we have a query
     if query:
         try:
@@ -218,7 +242,10 @@ async def handle_catalog_pagination(
             logger.exception("Failed to answer catalog pagination callback (non-fatal)")
 
     # Delete previous product display messages (if any)
-    await _delete_last_displayed_messages(context)
+    try:
+        await _delete_last_displayed_messages(context)
+    except Exception:
+        logger.exception("Failed to delete last displayed messages before pagination")
 
     if page < 1:
         page = 1
@@ -282,19 +309,21 @@ async def handle_catalog_pagination(
 
     # If the callback came from a catalog message the bot owns, try to edit that message
     try:
-        if query and query.message and getattr(query.message.from_user, "is_bot", False) and query.message.text and query.message.text.startswith(("Catalog", "Categories", "Categories —", "CATEGORIES")):
-            try:
-                await query.message.edit_text(text, reply_markup=reply_markup)
-                context.user_data["catalog_message"] = {"chat_id": query.message.chat.id, "message_id": query.message.message_id}
-                return
-            except BadRequest as e:
-                if "Message is not modified" in str(e):
-                    logger.debug("Callback catalog message already up to date, no edit needed")
+        if query and query.message and getattr(query.message.from_user, "is_bot", False) and query.message.text:
+            msg_text = (query.message.text or "").lower()
+            if any(k in msg_text for k in ("catalog", "categories")):
+                try:
+                    await query.message.edit_text(text, reply_markup=reply_markup)
+                    context.user_data["catalog_message"] = {"chat_id": query.message.chat.id, "message_id": query.message.message_id}
                     return
-                else:
-                    logger.exception("Failed to edit callback catalog message; will send a new one")
-            except Exception:
-                logger.exception("Unexpected error editing callback catalog message")
+                except BadRequest as e:
+                    if "Message is not modified" in str(e):
+                        logger.debug("Callback catalog message already up to date, no edit needed")
+                        return
+                    else:
+                        logger.exception("Failed to edit callback catalog message; will send a new one")
+                except Exception:
+                    logger.exception("Unexpected error editing callback catalog message")
     except Exception:
         logger.exception("Error while attempting to edit callback message (non-fatal)")
 

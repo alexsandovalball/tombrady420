@@ -1,4 +1,3 @@
-# database.py
 """
 Database models and operations for the media catalog bot.
 Uses SQLite with aiosqlite for async operations.
@@ -185,7 +184,8 @@ class Database:
                 cat = category.strip().upper() if category else None
                 sub = subcategory.strip().upper() if subcategory else None
 
-                # Use INSERT OR IGNORE to avoid duplicates; created_at set explicitly
+                # Use INSERT OR IGNORE to avoid duplicates; created_at set explicitly as ISO string
+                created_at = datetime.utcnow().isoformat()
                 cursor = await db.execute(
                     """
                     INSERT OR IGNORE INTO products
@@ -201,7 +201,7 @@ class Database:
                         media_group_id,
                         cat,
                         sub,
-                        datetime.utcnow(),
+                        created_at,
                     ),
                 )
                 await db.commit()
@@ -482,12 +482,13 @@ class Database:
         """Get statistics for admin: total products and products added today."""
         try:
             async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
                 async with db.execute("SELECT COUNT(*) AS cnt FROM products") as cur:
                     total_row = await cur.fetchone()
-                    total = total_row["cnt"] if total_row and "cnt" in total_row.keys() else (total_row[0] if total_row else 0)
+                    total = int(total_row["cnt"]) if total_row and "cnt" in total_row.keys() else 0
                 async with db.execute("SELECT COUNT(*) AS cnt FROM products WHERE DATE(created_at) = DATE('now')") as cur2:
                     today_row = await cur2.fetchone()
-                    today = today_row["cnt"] if today_row and "cnt" in today_row.keys() else (today_row[0] if today_row else 0)
+                    today = int(today_row["cnt"]) if today_row and "cnt" in today_row.keys() else 0
                 return {"total": int(total), "today": int(today)}
         except Exception:
             logger.exception("get_stats failed")
@@ -565,7 +566,7 @@ async def init_db() -> None:
     """
     Convenience wrapper to initialize the module-level db instance.
 
-    This coroutine is intentionally lightweight and simply delegates to db.init_db().
+    This coroutine is intentionally lightweight and simply delegates to db.init_db(). 
     It exists so other modules can import `init_db` and run it with `await init_db()` or
     `asyncio.get_event_loop().run_until_complete(init_db())` when appropriate.
     """
