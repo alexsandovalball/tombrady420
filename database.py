@@ -340,6 +340,83 @@ class Database:
             return []
 
     # -------------------------
+    # New helper methods required by handlers/product_view
+    # -------------------------
+    async def get_product(self, product_id: int) -> Optional[Dict[str, Any]]:
+        """Return a single product row by id or None if not found."""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("SELECT * FROM products WHERE id = ? LIMIT 1", (int(product_id),)) as cur:
+                    row = await cur.fetchone()
+                    return dict(row) if row else None
+        except Exception:
+            logger.exception("get_product failed for id=%s", product_id)
+            return None
+
+    async def get_products_by_media_group(self, media_group_id: str, chat_id: int) -> List[Dict[str, Any]]:
+        """Return all products that belong to a media_group in a chat, ordered by id."""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(
+                    "SELECT * FROM products WHERE media_group_id = ? AND chat_id = ? ORDER BY id ASC",
+                    (media_group_id, int(chat_id)),
+                ) as cur:
+                    rows = await cur.fetchall()
+                    return [dict(r) for r in rows]
+        except Exception:
+            logger.exception("get_products_by_media_group failed for %s/%s", media_group_id, chat_id)
+            return []
+
+    async def delete_products_by_media_group(self, media_group_id: str, chat_id: int) -> List[int]:
+        """
+        Delete rows for a media_group and return list of deleted ids.
+        Uses a select-then-delete pattern to return ids reliably across SQLite versions.
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(
+                    "SELECT id FROM products WHERE media_group_id = ? AND chat_id = ?",
+                    (media_group_id, int(chat_id)),
+                ) as cur:
+                    rows = await cur.fetchall()
+                    ids = [int(r["id"]) for r in rows] if rows else []
+                if ids:
+                    # Delete matching rows
+                    placeholders = ",".join("?" for _ in ids)
+                    await db.execute(f"DELETE FROM products WHERE id IN ({placeholders})", tuple(ids))
+                    await db.commit()
+                return ids
+        except Exception:
+            logger.exception("delete_products_by_media_group failed for %s/%s", media_group_id, chat_id)
+            return []
+
+    async def delete_products_by_message(self, message_id: int, chat_id: int) -> List[int]:
+        """
+        Delete rows for a given message_id/chat_id and return list of deleted ids.
+        Useful for multi-file single-message cases.
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(
+                    "SELECT id FROM products WHERE message_id = ? AND chat_id = ?",
+                    (int(message_id), int(chat_id)),
+                ) as cur:
+                    rows = await cur.fetchall()
+                    ids = [int(r["id"]) for r in rows] if rows else []
+                if ids:
+                    placeholders = ",".join("?" for _ in ids)
+                    await db.execute(f"DELETE FROM products WHERE id IN ({placeholders})", tuple(ids))
+                    await db.commit()
+                return ids
+        except Exception:
+            logger.exception("delete_products_by_message failed for %s/%s", message_id, chat_id)
+            return []
+
+    # -------------------------
     # Stats and users
     # -------------------------
     async def get_stats(self) -> Dict[str, Any]:
