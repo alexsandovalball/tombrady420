@@ -65,6 +65,8 @@ from handlers.admin import (
     handle_nuke_cancel,
     # admin convenience command to inspect deployed DB
     list_products_command,
+    # admin DB maintenance
+    backfill_db_command,
 )
 from handlers.product_view import (
     show_product,
@@ -129,8 +131,10 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
         # Use centralized ingest helper which normalizes and validates category/subcategory
         try:
+            # NOTE: ingest_and_save_product now requires context as the second argument
             product_id = await ingest_and_save_product(
                 message=message,
+                context=context,
                 file_id=file_id,
                 file_type=file_type,
                 msg_id=msg_id,
@@ -322,6 +326,8 @@ def build_application():
     application.add_handler(CommandHandler("setcategory", set_category_command))
     # Admin convenience command to inspect deployed DB
     application.add_handler(CommandHandler("list_products", list_products_command))
+    # Admin DB backfill (normalize categories / propagate media_group tags)
+    application.add_handler(CommandHandler("backfill_db", backfill_db_command))
 
     # Debug commands
     application.add_handler(CommandHandler("dbcheck", dbcheck_command))

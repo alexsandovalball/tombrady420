@@ -1,11 +1,13 @@
 # handlers/admin.py
 import logging
+import sqlite3
+import traceback
 from typing import List, Dict, Any, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 
-from database import db  # shared module-level instance
+from database import db, DB_PATH  # shared module-level instance and DB path
 from utils.helpers import is_admin
 from config.taxonomy import CATEGORIES
 from utils.taxonomy_utils import validate_category_and_subcategory
@@ -392,3 +394,82 @@ async def set_category_command(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception:
         logger.exception("Error setting category for product %s", product_id)
         await _safe_reply_text(update, "❌ Failed to set category due to an internal error.")
+
+
+# -------------------------
+# DB backfill command (admin-only)
+# -------------------------
+async def _run_sql_and_count(db_path: str, sql: str) -> int:
+    """Run a single SQL statement and return number of rows changed."""
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(sql)
+        conn.commit()
+        return conn.total_changes
+    finally:
+        conn.close()
+
+
+async def backfill_db_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin-only command to normalize category/subcategory values and propagate tags
+    to media_group representative rows. Usage: /backfill_db
+    Returns the number of rows changed for each step.
+    """
+    user = update.effective_user
+    if not user or not is_admin(user.id):
+        try:
+            if update.message:
+                await update.message.reply_text("❌ You are not authorized to run this command.")
+        except Exception:
+            pass
+        return
+
+    try:
+        if update.message:
+            await update.message.reply_text("⚙️ Running DB backfill. This may take a moment...")
+
+        # 1) Normalize category and subcategory storage
+        normalize_sql = """
+        UPDATE products
+        SET category = UPPER(TRIM(category)),
+            subcategory = CASE
+                WHEN subcategory IS NULL OR TRIM(subcategory) = '' THEN NULL
+                ELSE UPPER(REPLACE(REPLACE(TRIM(subcategory), ' ', ''), '_', ''))
+            END;
+        """
+        changed_normalize = await _run_sql_and_count(DB_PATH, normalize_sql)
+
+        # 2) Propagate tags to media_group rows (fill missing category/subcategory from any item in the same group)
+        propagate_sql = """
+        UPDATE products
+        SET category = COALESCE(category, (
+            SELECT category FROM products p2
+            WHERE p2.media_group_id = products.media_group_id AND p2.category IS NOT NULL LIMIT 1
+        )),
+            subcategory = COALESCE(subcategory, (
+            SELECT subcategory FROM products p3
+            WHERE p3.media_group_id = products.media_group_id AND p3.subcategory IS NOT NULL LIMIT 1
+        ))
+        WHERE media_group_id IS NOT NULL;
+        """
+        changed_propagate = await _run_sql_and_count(DB_PATH, propagate_sql)
+
+        # Report results
+        msg = (
+            f"✅ Backfill complete.\n"
+            f"Rows changed by normalization: {changed_normalize}\n"
+            f"Rows changed by media_group propagation: {changed_propagate}"
+        )
+        if update.message:
+            await update.message.reply_text(msg)
+    except Exception as e:
+        tb = traceback.format_exc()
+        try:
+            if update.message:
+                await update.message.reply_text("❌ Backfill failed. See logs for details.")
+        except Exception:
+            pass
+        # Log full traceback to server logs
+        logger.exception("backfill_db_command failed: %s\n%s", e, tb)

@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 # -------------------------
 async def ingest_and_save_product(
     message: Any,
+    context: ContextTypes.DEFAULT_TYPE,
     file_id: str,
     file_type: str,
     msg_id: int,
@@ -53,9 +54,10 @@ async def ingest_and_save_product(
     normalize values, save the product row via db.add_product, send an admin preview,
     and bulk-tag media_group items so representative rows are searchable.
 
+    NOTE: this function requires the handler `context` so it can use context.bot
+    to send admin preview messages (Message.bot may not be available in some update types).
+
     Returns the product id on success, or -1 on failure.
-    This helper is intended to be called from your channel_post handler where the
-    incoming message and file metadata are available.
     """
     try:
         caption_raw = getattr(message, "caption", None) or getattr(message, "text", None) or ""
@@ -71,6 +73,17 @@ async def ingest_and_save_product(
             subcategory = sub_valid.strip().upper().replace(" ", "").replace("_", "")
         else:
             subcategory = None
+
+        # Log parsed result for debugging
+        logger.info(
+            "Parsed caption=%r -> category=%r subcategory=%r media_group_id=%r chat=%s msg=%s",
+            caption_raw,
+            category,
+            subcategory,
+            media_group_id,
+            chat_id,
+            msg_id,
+        )
 
         # Save product (db.add_product returns id or -1)
         product_id = await db.add_product(
@@ -105,7 +118,7 @@ async def ingest_and_save_product(
             preview_text = (clean_caption if clean_caption else (getattr(message, "caption", "") or "")) + f"\n\nProduct ID: {product_id}"
             for admin in ADMIN_IDS:
                 try:
-                    await message.bot.send_message(chat_id=admin, text=preview_text, reply_markup=admin_markup)
+                    await context.bot.send_message(chat_id=admin, text=preview_text, reply_markup=admin_markup)
                 except Exception:
                     logger.exception("Failed to send admin product message for product %s to admin %s", product_id, admin)
         except Exception:
