@@ -70,6 +70,198 @@ async def _safe_edit_message(query, text: str, reply_markup: Optional[InlineKeyb
 
 
 # -------------------------
+# Admin interactive Set category callbacks
+# -------------------------
+async def handle_admin_setcategory_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Callback: admin_setcat|<product_id>
+    Show top-level category keyboard to the admin for the given product.
+    """
+    query = update.callback_query
+    if not query:
+        return
+
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    user = update.effective_user
+    if not user or not is_admin(user.id):
+        try:
+            await query.edit_message_text("❌ You are not authorized to set categories.")
+        except Exception:
+            logger.debug("Failed to edit message for unauthorized admin_setcat attempt")
+        return
+
+    parts = (query.data or "").split("|")
+    if len(parts) < 2:
+        try:
+            await query.answer("Invalid request", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    try:
+        product_id = int(parts[1])
+    except Exception:
+        try:
+            await query.answer("Invalid product id", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    # Save product id in user_data for follow-up callbacks
+    context.user_data["admin_set_product_id"] = product_id
+
+    # Build category keyboard from CATEGORIES
+    buttons = [[InlineKeyboardButton(cat, callback_data=f"category_admin|{cat}")] for cat in CATEGORIES.keys()]
+    buttons.append([InlineKeyboardButton("Cancel", callback_data="admin_cancel")])
+
+    try:
+        await query.edit_message_text(f"Select category for product {product_id}:", reply_markup=InlineKeyboardMarkup(buttons))
+    except Exception:
+        logger.exception("Failed to show admin category keyboard for product %s", product_id)
+
+
+async def handle_category_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Callback: category_admin|<CATEGORY>
+    If the category has subcategories, show them; otherwise set the category immediately.
+    """
+    query = update.callback_query
+    if not query:
+        return
+
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    user = update.effective_user
+    if not user or not is_admin(user.id):
+        try:
+            await query.edit_message_text("❌ You are not authorized to set categories.")
+        except Exception:
+            logger.debug("Failed to edit message for unauthorized category_admin attempt")
+        return
+
+    parts = (query.data or "").split("|")
+    if len(parts) < 2:
+        try:
+            await query.answer("Invalid request", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    category = parts[1]
+    product_id = context.user_data.get("admin_set_product_id")
+    if not product_id:
+        try:
+            await query.edit_message_text("Session expired. Please press Set category again.")
+        except Exception:
+            logger.debug("Failed to notify about expired admin_set_product_id")
+        return
+
+    subs = CATEGORIES.get(category) or []
+    # Filter out implicit ALL entries and empty values
+    display_subs = [s for s in subs if s and s.strip() and s.strip().upper() != "ALL"]
+
+    if display_subs:
+        buttons = []
+        for s in display_subs:
+            compact = s.strip().upper().replace(" ", "").replace("_", "")
+            buttons.append([InlineKeyboardButton(s, callback_data=f"category_sub_admin|{category}|{compact}")])
+        buttons.append([InlineKeyboardButton("Cancel", callback_data="admin_cancel")])
+        try:
+            await query.edit_message_text(f"Select subcategory for {category}:", reply_markup=InlineKeyboardMarkup(buttons))
+        except Exception:
+            logger.exception("Failed to show admin subcategory keyboard for product %s", product_id)
+        return
+
+    # No subcategories: set immediately
+    try:
+        success = await db.set_product_category(product_id, category, None)
+        if success:
+            prod = await db.get_product(product_id)
+            if prod and prod.get("media_group_id"):
+                try:
+                    await db.update_products_by_media_group(prod.get("media_group_id"), prod.get("chat_id"), category, None)
+                except Exception:
+                    logger.exception("Failed to propagate category to media_group for product %s", product_id)
+            await query.edit_message_text(f"✅ Product {product_id} categorized as {category}.")
+        else:
+            await query.edit_message_text("❌ Failed to set category.")
+    except Exception:
+        logger.exception("Failed to set category for product %s", product_id)
+        try:
+            await query.edit_message_text("❌ Internal error while setting category.")
+        except Exception:
+            pass
+
+
+async def handle_category_sub_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Callback: category_sub_admin|<CATEGORY>|<COMPACT_SUB>
+    Set the category and subcategory for the product and propagate to media_group rows.
+    """
+    query = update.callback_query
+    if not query:
+        return
+
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    user = update.effective_user
+    if not user or not is_admin(user.id):
+        try:
+            await query.edit_message_text("❌ You are not authorized to set categories.")
+        except Exception:
+            logger.debug("Failed to edit message for unauthorized category_sub_admin attempt")
+        return
+
+    parts = (query.data or "").split("|")
+    if len(parts) < 3:
+        try:
+            await query.answer("Invalid request", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    category = parts[1]
+    compact_sub = parts[2]
+    product_id = context.user_data.get("admin_set_product_id")
+    if not product_id:
+        try:
+            await query.edit_message_text("Session expired. Please press Set category again.")
+        except Exception:
+            logger.debug("Failed to notify about expired admin_set_product_id in sub callback")
+        return
+
+    sub_to_store = compact_sub.strip().upper()
+    try:
+        success = await db.set_product_category(product_id, category, sub_to_store)
+        if success:
+            prod = await db.get_product(product_id)
+            if prod and prod.get("media_group_id"):
+                try:
+                    await db.update_products_by_media_group(prod.get("media_group_id"), prod.get("chat_id"), category, sub_to_store)
+                except Exception:
+                    logger.exception("Failed to propagate subcategory to media_group for product %s", product_id)
+            await query.edit_message_text(f"✅ Product {product_id} categorized as {category}/{sub_to_store}.")
+        else:
+            await query.edit_message_text("❌ Failed to set category/subcategory.")
+    except Exception:
+        logger.exception("Failed to set subcategory for product %s", product_id)
+        try:
+            await query.edit_message_text("❌ Internal error while setting subcategory.")
+        except Exception:
+            pass
+
+
+# -------------------------
 # /stats command
 # -------------------------
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

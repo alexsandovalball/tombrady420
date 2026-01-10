@@ -12,8 +12,9 @@ This version:
 - Keeps the previous robustness: answers callback queries early, validates recorded
   displayed messages before suppressing redisplay, and sends media via context.bot.send_*.
 - Adds a small helper ingest_and_save_product(...) to normalize/validate category tags
-  and persist products consistently. The helper now treats a media_group as a single
-  representative product to avoid duplicate entries for multi-photo posts.
+  and persist products consistently. The helper treats a media_group as a single
+  representative product to avoid duplicate entries for multi-photo posts and uses
+  callback_data values that match existing handlers (delete|<id>).
 """
 
 import asyncio
@@ -134,7 +135,8 @@ async def ingest_and_save_product(
             ADMIN_IDS = {8589411468}
             admin_buttons = [
                 [InlineKeyboardButton("Set category", callback_data=f"admin_setcat|{product_id}")],
-                [InlineKeyboardButton("Delete", callback_data=f"admin_delete|{product_id}")],
+                # Use the existing delete callback pattern so the product delete handler is invoked
+                [InlineKeyboardButton("Delete", callback_data=f"delete|{product_id}")],
             ]
             admin_markup = InlineKeyboardMarkup(admin_buttons)
             preview_text = (clean_caption if clean_caption else (getattr(message, "caption", "") or "")) + f"\n\nProduct ID: {product_id}"
