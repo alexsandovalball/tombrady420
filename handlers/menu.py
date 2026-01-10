@@ -3,7 +3,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 from database import db
-from config.taxonomy import CATEGORIES
+from config.taxonomy import CATEGORIES, DISPLAY_NAMES
 import logging
 from typing import Optional, Tuple, List, Dict, Any
 
@@ -16,6 +16,26 @@ def _short_caption(caption: str, length: int = 40) -> str:
         return "No caption"
     caption = caption.strip().replace("\n", " ")
     return caption if len(caption) <= length else caption[: length - 1].rstrip() + "…"
+
+
+def _display_label(key: str) -> str:
+    """
+    Return a human-friendly UPPERCASE label for taxonomy key.
+    Uses DISPLAY_NAMES mapping first, then falls back to replacing underscores
+    and uppercasing. Case-insensitive fallback for safety.
+    """
+    if not key:
+        return ""
+    # exact match
+    if key in DISPLAY_NAMES:
+        return DISPLAY_NAMES[key]
+    # case-insensitive match
+    lk = key.lower()
+    for k, v in DISPLAY_NAMES.items():
+        if k.lower() == lk:
+            return v
+    # fallback: replace underscores and uppercase
+    return key.replace("_", " ").upper()
 
 
 async def _delete_last_displayed_messages(context: ContextTypes.DEFAULT_TYPE):
@@ -88,9 +108,9 @@ async def _build_catalog_page(
     keyboard.append(nav_row)
 
     if category:
-        # Header shows category and optional subcategory in UPPERCASE with spaces
-        cat_label = category.replace("_", " ").upper()
-        sub_label = f" — {subcategory.replace('_', ' ').upper()}" if subcategory else ""
+        # Header shows category and optional subcategory using display labels
+        cat_label = _display_label(category)
+        sub_label = f" — {_display_label(subcategory)}" if subcategory else ""
         header = f"{cat_label}{sub_label}"
         text = f"{header}\n\nSELECT AN ITEM TO VIEW ITS MEDIA:"
     else:
@@ -130,8 +150,7 @@ async def _build_categories_menu() -> Tuple[str, InlineKeyboardMarkup]:
         cats.append(bottom_last)
 
     for cat in cats:
-        # Display label: replace underscores with spaces and uppercase
-        label = cat.replace("_", " ").upper()
+        label = _display_label(cat)
         keyboard.append([InlineKeyboardButton(label, callback_data=f"category|{cat}")])
 
     text = "CATEGORIES — CHOOSE A CATEGORY TO BROWSE:"
@@ -315,15 +334,13 @@ async def handle_category_callback(update: Update, context: ContextTypes.DEFAULT
     # "All" button shows all products in category
     buttons.append([InlineKeyboardButton("ALL", callback_data=f"category_sub|{cat}|")])
     for s in subs:
-        # Display subcategory label as uppercase with spaces
-        label = s.replace("_", " ").upper()
-        buttons.append([InlineKeyboardButton(label, callback_data=f"category_sub|{cat}|{s}")])
+        buttons.append([InlineKeyboardButton(_display_label(s), callback_data=f"category_sub|{cat}|{s}")])
 
     # Add a Back to categories button
     buttons.append([InlineKeyboardButton("⬅️ BACK TO CATEGORIES", callback_data="menu_categories")])
 
     try:
-        await query.message.edit_text(f"{cat.replace('_', ' ').upper()} — CHOOSE SUBCATEGORY:", reply_markup=InlineKeyboardMarkup(buttons))
+        await query.message.edit_text(f"{_display_label(cat)} — CHOOSE SUBCATEGORY:", reply_markup=InlineKeyboardMarkup(buttons))
     except BadRequest as e:
         if "Message is not modified" in str(e):
             logger.debug("Category message already up to date")
