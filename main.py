@@ -28,49 +28,12 @@ root.setLevel(logging.INFO)
 
 # Use the module-level db instance (ensure database.py exposes `db` and DB_PATH)
 from database import db, DB_PATH
-from handlers.start import start_command
 
-# Menu handlers (import category/subcategory callbacks too)
-from handlers.menu import (
-    menu_command,
-    handle_catalog_pagination,
-    handle_category_callback,
-    handle_category_sub_callback,
-    handle_menu_categories_callback,
-)
-
-# Admin handlers (interactive callbacks live in handlers.admin)
-from handlers.admin import (
-    stats_command,
-    delete_product,
-    nuke_command,
-    list_users_command,
-    set_category_command,
-    handle_nuke_step1,
-    handle_nuke_final,
-    handle_nuke_cancel,
-    # admin convenience command to inspect deployed DB
-    list_products_command,
-    # admin DB maintenance
-    backfill_db_command,
-    # interactive admin callbacks for Set category flow
-    handle_admin_setcategory_request,
-    handle_category_admin_callback,
-    handle_category_sub_admin_callback,
-)
-
-from handlers.search import handle_search, handle_search_pagination, handle_back_to_search
-from handlers.product_view import (
-    show_product,
-    handle_product_callback,
-    handle_delete_callback,
-    ingest_and_save_product,
-)
+# Utility helpers used by handlers defined in this module
 from utils.helpers import get_file_id_and_type, has_media, get_channel_id, get_channel_username
 from utils.categories import extract_category_and_subcategory
 
-# Debug handlers (temporary; remove in production)
-from handlers.debug import dbcheck_command, dump_user_data
+# Debug handlers will be imported later inside build_application to avoid import-time side effects
 
 # Load environment variables
 load_dotenv()
@@ -123,7 +86,7 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
         # Use centralized ingest helper which normalizes and validates category/subcategory
         try:
-            # NOTE: ingest_and_save_product now requires context as the second argument
+            # ingest_and_save_product will be imported and bound into globals() inside build_application()
             product_id = await ingest_and_save_product(
                 message=message,
                 context=context,
@@ -289,6 +252,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(application: Application):
     try:
+        # Ensure DB is initialized during async startup
         await db.init_db()
         logger.info("Database initialized")
         # Log the DB_PATH used by the running process so you can verify which DB file is active
@@ -302,12 +266,88 @@ async def post_init(application: Application):
 
 
 def build_application():
+    """
+    Create the Application instance, register handlers, and return it.
+    All imports of handler modules are performed here to avoid import-time side effects.
+    """
     bot_token = os.getenv("BOT_TOKEN")
     if not bot_token:
         logger.error("BOT_TOKEN not found in environment.")
         raise RuntimeError("BOT_TOKEN not set")
 
     application = Application.builder().token(bot_token).post_init(post_init).build()
+
+    # Import handler callables here (deferred import to avoid import-time side effects)
+    try:
+        # Command handlers and callbacks
+        from handlers.start import start_command
+        from handlers.menu import (
+            menu_command,
+            handle_catalog_pagination,
+            handle_category_callback,
+            handle_category_sub_callback,
+            handle_menu_categories_callback,
+        )
+        from handlers.admin import (
+            stats_command,
+            delete_product,
+            nuke_command,
+            list_users_command,
+            set_category_command,
+            handle_nuke_step1,
+            handle_nuke_final,
+            handle_nuke_cancel,
+            list_products_command,
+            backfill_db_command,
+            handle_admin_setcategory_request,
+            handle_category_admin_callback,
+            handle_category_sub_admin_callback,
+        )
+        from handlers.search import handle_search, handle_search_pagination, handle_back_to_search
+        from handlers.product_view import (
+            show_product,
+            handle_product_callback,
+            handle_delete_callback,
+            ingest_and_save_product,
+        )
+        from handlers.debug import dbcheck_command, dump_user_data
+
+        # Bind imported names into this module's globals so the top-level handlers can call them
+        globals().update(
+            {
+                "start_command": start_command,
+                "menu_command": menu_command,
+                "handle_catalog_pagination": handle_catalog_pagination,
+                "handle_category_callback": handle_category_callback,
+                "handle_category_sub_callback": handle_category_sub_callback,
+                "handle_menu_categories_callback": handle_menu_categories_callback,
+                "stats_command": stats_command,
+                "delete_product": delete_product,
+                "nuke_command": nuke_command,
+                "list_users_command": list_users_command,
+                "set_category_command": set_category_command,
+                "handle_nuke_step1": handle_nuke_step1,
+                "handle_nuke_final": handle_nuke_final,
+                "handle_nuke_cancel": handle_nuke_cancel,
+                "list_products_command": list_products_command,
+                "backfill_db_command": backfill_db_command,
+                "handle_admin_setcategory_request": handle_admin_setcategory_request,
+                "handle_category_admin_callback": handle_category_admin_callback,
+                "handle_category_sub_admin_callback": handle_category_sub_admin_callback,
+                "handle_search": handle_search,
+                "handle_search_pagination": handle_search_pagination,
+                "handle_back_to_search": handle_back_to_search,
+                "show_product": show_product,
+                "handle_product_callback": handle_product_callback,
+                "handle_delete_callback": handle_delete_callback,
+                "ingest_and_save_product": ingest_and_save_product,
+                "dbcheck_command": dbcheck_command,
+                "dump_user_data": dump_user_data,
+            }
+        )
+    except Exception:
+        logger.exception("Failed to import handler modules; check handler filenames and package layout")
+        raise
 
     # Command handlers
     application.add_handler(CommandHandler("start", start_command))

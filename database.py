@@ -1,6 +1,5 @@
+# database.py
 """
-database.py
-
 Database models and operations for the media catalog bot.
 Uses SQLite with aiosqlite for async operations.
 
@@ -10,6 +9,7 @@ This module provides:
 - Helper queries used by handlers (catalog listing, category listing, stats, users)
 - A module-level `db` instance and `init_db()` convenience function
 """
+
 from __future__ import annotations
 
 import aiosqlite
@@ -22,8 +22,14 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = os.getenv("DB_PATH", "data/catalog.db")
 _db_dir = os.path.dirname(DB_PATH) or "."
-os.makedirs(_db_dir, exist_ok=True)
-logger.info("Using persistent database path: %s", DB_PATH)
+# Ensure directory exists; this is safe at import time and avoids later failures
+try:
+    os.makedirs(_db_dir, exist_ok=True)
+    logger.info("Using persistent database path: %s", DB_PATH)
+except Exception:
+    logger.exception("Failed to ensure database directory exists for path: %s", DB_PATH)
+
+__all__ = ["db", "DB_PATH", "init_db"]
 
 
 class Database:
@@ -556,5 +562,11 @@ db = Database(DB_PATH)
 
 
 async def init_db() -> None:
-    """Convenience wrapper to initialize the module-level db instance."""
+    """
+    Convenience wrapper to initialize the module-level db instance.
+
+    This coroutine is intentionally lightweight and simply delegates to db.init_db().
+    It exists so other modules can import `init_db` and run it with `await init_db()` or
+    `asyncio.get_event_loop().run_until_complete(init_db())` when appropriate.
+    """
     await db.init_db()

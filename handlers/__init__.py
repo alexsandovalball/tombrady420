@@ -1,4 +1,4 @@
-# handlers/init.py
+# handlers/__init__.py
 """
 Handlers package initializer.
 Ensures DB migrations run at startup and imports handler modules so they register.
@@ -11,25 +11,32 @@ from database import init_db  # module-level convenience that runs migrations an
 
 logger = logging.getLogger(__name__)
 
-# Run DB init/migrations during startup.
+# Guarded DB init: avoid running init_db at import time when an event loop is already running.
 # If this file is executed inside an async startup function, replace the run_until_complete call
 # with: await init_db()
 try:
-    asyncio.get_event_loop().run_until_complete(init_db())
-    logger.info("Database init_db() completed at startup")
+    loop = asyncio.get_event_loop()
+    if not loop.is_running():
+        loop.run_until_complete(init_db())
+        logger.info("Database init_db() completed at startup")
+    else:
+        # Event loop already running (e.g., under Uvicorn). Skip init here; main.post_init will handle it.
+        logger.debug("Event loop already running; skipping import-time init_db()")
+except RuntimeError:
+    # get_event_loop() can raise RuntimeError in some contexts; skip init here.
+    logger.debug("RuntimeError while checking event loop; skipping import-time init_db()")
 except Exception:
     logger.exception("Failed to run init_db() at startup")
 
 # Import handler modules so their registration code runs.
-# Adjust these imports to match the actual module names in your handlers package.
-# If your handlers expose explicit register(dispatcher) functions, call them after importing.
+# Use relative imports because this is the package initializer.
 try:
-    from handlers import admin
-    from handlers import menu
-    from handlers import product_view
-    from handlers import search
-    from handlers import start
-    from handlers import debug
+    from . import admin
+    from . import menu
+    from . import product_view
+    from . import search
+    from . import start
+    from . import debug
 except Exception:
     logger.exception("Failed to import one or more handler modules; check handler filenames and package layout")
 
