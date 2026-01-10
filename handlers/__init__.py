@@ -12,8 +12,7 @@ from database import init_db  # module-level convenience that runs migrations an
 logger = logging.getLogger(__name__)
 
 # Guarded DB init: avoid running init_db at import time when an event loop is already running.
-# If this file is executed inside an async startup function, replace the run_until_complete call
-# with: await init_db()
+# If this file is executed inside an async startup function, call: await init_db()
 try:
     loop = asyncio.get_event_loop()
     if not loop.is_running():

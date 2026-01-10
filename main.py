@@ -18,27 +18,27 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# Ensure root logger writes to stdout so Render (and other hosts) capture runtime logs
+# Ensure root logger writes to stdout so hosts capture runtime logs
 root = logging.getLogger()
 if not root.handlers:
     stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+    stream_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
     root.addHandler(stream_handler)
 root.setLevel(logging.INFO)
 
-# Use the module-level db instance (ensure database.py exposes `db` and DB_PATH)
+# Use the module-level db instance (database.py exposes `db` and DB_PATH)
 from database import db, DB_PATH
 
 # Utility helpers used by handlers defined in this module
 from utils.helpers import get_file_id_and_type, has_media, get_channel_id, get_channel_username
 from utils.categories import extract_category_and_subcategory
 
-# Debug handlers will be imported later inside build_application to avoid import-time side effects
-
 # Load environment variables
 load_dotenv()
 
-# Configure logging (kept for compatibility; root handler already set above)
+# Configure module logger
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -69,7 +69,6 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         if not file_id:
             return
 
-        # Preserve existing caption selection logic (use caption from message or from existing media group)
         caption = message.caption if getattr(message, "caption", None) else (message.text or "")
         caption = caption.strip() if isinstance(caption, str) else ""
 
@@ -84,7 +83,6 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             except Exception:
                 logger.exception("Error while looking up existing media_group captions")
 
-        # Use centralized ingest helper which normalizes and validates category/subcategory
         try:
             # ingest_and_save_product will be imported and bound into globals() inside build_application()
             product_id = await ingest_and_save_product(
