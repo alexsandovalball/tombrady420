@@ -1,4 +1,4 @@
-"""
+﻿"""
 Database models and operations for the media catalog bot.
 Uses SQLite with aiosqlite for async operations.
 
@@ -289,6 +289,39 @@ class Database:
                     return [dict(r) for r in rows]
         except Exception:
             logger.exception("Failed to fetch catalog items")
+            return []
+
+
+    async def search_products(self, query: str, limit: Optional[int] = None, offset: int = 0) -> List[Dict[str, Any]]:
+        """
+        Search products by caption, category, or subcategory (case-insensitive).
+        Returns a list of product dicts ordered by created_at DESC.
+        """
+        try:
+            if not query:
+                return []
+
+            q_norm = f"%{query.strip().upper()}%"
+
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                sql = """
+                    SELECT * FROM products
+                    WHERE UPPER(TRIM(caption)) LIKE ?
+                       OR UPPER(TRIM(category)) LIKE ?
+                       OR UPPER(TRIM(subcategory)) LIKE ?
+                    ORDER BY created_at DESC
+                """
+                params: Tuple = (q_norm, q_norm, q_norm)
+                if limit is not None:
+                    sql += " LIMIT ? OFFSET ?"
+                    params = tuple(list(params) + [int(limit), int(offset)])
+
+                async with db.execute(sql, params) as cur:
+                    rows = await cur.fetchall()
+                    return [dict(r) for r in rows]
+        except Exception:
+            logger.exception("search_products failed for query=%s", query)
             return []
 
     # -------------------------
