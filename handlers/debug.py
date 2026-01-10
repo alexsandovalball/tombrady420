@@ -1,4 +1,4 @@
-# handlers/debug.py
+﻿# handlers/debug.py
 import logging
 from typing import Any
 from telegram import Update
@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 db = Database()
 
 async def dbcheck_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Usage: /dbcheck <product_id> — prints DB row for product (safe debug)."""
+    """Usage: /dbcheck <product_id> â€” prints DB row for product (safe debug)."""
     if not context.args:
         await update.message.reply_text("Usage: /dbcheck <product_id>")
         return

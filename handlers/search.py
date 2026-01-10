@@ -1,4 +1,4 @@
-# handlers/search.py
+﻿# handlers/search.py
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -14,7 +14,7 @@ def _short_caption(caption: str, length: int = 40) -> str:
     if not caption:
         return "No caption"
     caption = caption.strip().replace("\n", " ")
-    return caption if len(caption) <= length else caption[: length - 1].rstrip() + "…"
+    return caption if len(caption) <= length else caption[: length - 1].rstrip() + "â€¦"
 
 
 async def _delete_last_displayed_messages(context: ContextTypes.DEFAULT_TYPE):
@@ -54,7 +54,7 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     query_text = update.message.text.strip()
     if not query_text:
-        await update.message.reply_text("❌ Please enter a search term.")
+        await update.message.reply_text("âŒ Please enter a search term.")
         return
 
     # Delete previous product display messages
@@ -73,7 +73,7 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     nav_row = [
         InlineKeyboardButton("Page 1", callback_data="noop"),
-        InlineKeyboardButton("➡️ Next", callback_data=f"search_page|{query_text}|2"),
+        InlineKeyboardButton("âž¡ï¸ Next", callback_data=f"search_page|{query_text}|2"),
     ]
     keyboard.append(nav_row)
 
@@ -122,9 +122,9 @@ async def handle_search_pagination(update: Update, context: ContextTypes.DEFAULT
 
     nav_row = []
     if page > 1:
-        nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"search_page|{query_text}|{page-1}"))
+        nav_row.append(InlineKeyboardButton("â¬…ï¸ Previous", callback_data=f"search_page|{query_text}|{page-1}"))
     nav_row.append(InlineKeyboardButton(f"Page {page}", callback_data="noop"))
-    nav_row.append(InlineKeyboardButton("➡️ Next", callback_data=f"search_page|{query_text}|{page+1}"))
+    nav_row.append(InlineKeyboardButton("âž¡ï¸ Next", callback_data=f"search_page|{query_text}|{page+1}"))
     keyboard.append(nav_row)
 
     text = f"Search results for '{query_text}':"
@@ -194,9 +194,9 @@ async def handle_back_to_search(update: Update, context: ContextTypes.DEFAULT_TY
 
         nav_row = []
         if page > 1:
-            nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"search_page|{query_text}|{page-1}"))
+            nav_row.append(InlineKeyboardButton("â¬…ï¸ Previous", callback_data=f"search_page|{query_text}|{page-1}"))
         nav_row.append(InlineKeyboardButton(f"Page {page}", callback_data="noop"))
-        nav_row.append(InlineKeyboardButton("➡️ Next", callback_data=f"search_page|{query_text}|{page+1}"))
+        nav_row.append(InlineKeyboardButton("âž¡ï¸ Next", callback_data=f"search_page|{query_text}|{page+1}"))
         keyboard.append(nav_row)
 
         reply_markup = InlineKeyboardMarkup(keyboard)

@@ -11,6 +11,8 @@ This version:
   keep the chat tidy.
 - Keeps the previous robustness: answers callback queries early, validates recorded
   displayed messages before suppressing redisplay, and sends media via context.bot.send_*.
+- Adds a small helper ingest_and_save_product(...) to normalize/validate category tags
+  and persist products consistently.
 """
 
 import asyncio
@@ -28,11 +30,66 @@ from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from utils.helpers import is_admin
+from utils.categories import extract_category_and_subcategory
+from utils.taxonomy_utils import validate_category_and_subcategory
 from database import db  # use module-level db instance (ensures migrations/init run once)
 
 logger = logging.getLogger(__name__)
 
 
+# -------------------------
+# Ingest helper
+# -------------------------
+async def ingest_and_save_product(
+    message: Any,
+    file_id: str,
+    file_type: str,
+    msg_id: int,
+    chat_id: int,
+    media_group_id: Optional[str] = None,
+) -> int:
+    """
+    Extract category/subcategory from message caption/text, validate against taxonomy,
+    and save the product row via db.add_product.
+
+    Returns the product id on success, or -1 on failure.
+    This helper is intended to be called from your channel_post handler where the
+    incoming message and file metadata are available.
+    """
+    try:
+        caption_raw = getattr(message, "caption", None) or getattr(message, "text", None) or ""
+        clean_caption, cat_raw, sub_raw = extract_category_and_subcategory(caption_raw)
+        cat_valid, sub_valid = validate_category_and_subcategory(cat_raw, sub_raw)
+
+        product_id = await db.add_product(
+            file_id=file_id,
+            file_type=file_type,
+            caption=clean_caption,
+            message_id=msg_id,
+            chat_id=chat_id,
+            media_group_id=media_group_id,
+            category=cat_valid,
+            subcategory=sub_valid,
+        )
+
+        logger.info(
+            "ingest_and_save_product: saved id=%s file_id=%s category=%s subcategory=%s chat=%s msg=%s",
+            product_id,
+            file_id,
+            cat_valid,
+            sub_valid,
+            chat_id,
+            msg_id,
+        )
+        return int(product_id) if isinstance(product_id, int) else -1
+    except Exception:
+        logger.exception("ingest_and_save_product failed for file_id=%s chat=%s msg=%s", file_id, chat_id, msg_id)
+        return -1
+
+
+# -------------------------
+# Product display and callbacks (unchanged behavior)
+# -------------------------
 def _parse_product_id_from_callback(data: str) -> Optional[int]:
     """Parse callback data like 'product|38' or 'product_38' or just '38'."""
     if not data:

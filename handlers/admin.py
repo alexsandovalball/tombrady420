@@ -7,6 +7,8 @@ from telegram.error import BadRequest
 
 from database import db  # shared module-level instance
 from utils.helpers import is_admin
+from config.taxonomy import CATEGORIES
+from utils.taxonomy_utils import validate_category_and_subcategory
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +219,7 @@ async def handle_nuke_final(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.warning("NUKE executed by user_id=%s; deleted=%s out of %s", user.id, deleted_count, total)
     except Exception:
         logger.exception("Nuke failed during execution")
-        await _safe_edit_message(query, "❌ Nuke failed due to an internal error.")
+        await _safe_reply_text(update, "❌ Nuke failed due to an internal error.")
 
 
 async def handle_nuke_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -278,6 +280,33 @@ async def list_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # -------------------------
+# /listcategories command
+# -------------------------
+async def list_categories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Show the hardwired taxonomy to admins.
+    Usage: /listcategories
+    """
+    user = update.effective_user
+    if not user or not is_admin(user.id):
+        await _safe_reply_text(update, "❌ You are not authorized to use this command.")
+        return
+
+    try:
+        lines: List[str] = []
+        for cat, subs in CATEGORIES.items():
+            if subs:
+                # show subcategories as comma-separated
+                lines.append(f"{cat} -> {', '.join(subs)}")
+            else:
+                lines.append(f"{cat} -> (no subcategories)")
+        await _safe_reply_text(update, "Allowed categories and subcategories:\n" + "\n".join(lines))
+    except Exception:
+        logger.exception("Failed to list categories")
+        await _safe_reply_text(update, "❌ Failed to list categories.")
+
+
+# -------------------------
 # /setcategory command
 # -------------------------
 async def set_category_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -301,19 +330,25 @@ async def set_category_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await _safe_reply_text(update, "Product ID must be an integer.")
         return
 
-    category = args[1].upper().strip()
-    subcategory: Optional[str] = " ".join(args[2:]).upper().strip() if len(args) > 2 else None
-    if subcategory == "":
-        subcategory = None
+    # Accept category and subcategory with spaces; normalize/validate via taxonomy utils
+    category_input = args[1]
+    subcategory_input = " ".join(args[2:]) if len(args) > 2 else None
 
-    logger.info("Admin %s setting category for product %s -> %s/%s", user.id, product_id, category, subcategory)
+    # Validate against hardwired taxonomy
+    cat_valid, sub_valid = validate_category_and_subcategory(category_input, subcategory_input)
+
+    if not cat_valid:
+        await _safe_reply_text(update, "❌ Invalid category. Use /listcategories to see allowed values.")
+        return
+
+    logger.info("Admin %s setting category for product %s -> %s/%s", user.id, product_id, cat_valid, sub_valid)
     try:
-        success = await db.set_product_category(product_id, category, subcategory)
+        success = await db.set_product_category(product_id, cat_valid, sub_valid)
         if success:
             await _safe_reply_text(
-                update, f"✅ Product {product_id} categorized as '{category}/{subcategory or '—'}'."
+                update, f"✅ Product {product_id} categorized as '{cat_valid}/{sub_valid or '—'}'."
             )
-            logger.info("Admin %s set category for product %s: %s/%s", user.id, product_id, category, subcategory)
+            logger.info("Admin %s set category for product %s: %s/%s", user.id, product_id, cat_valid, sub_valid)
         else:
             await _safe_reply_text(update, "❌ Failed to set category.")
     except Exception:

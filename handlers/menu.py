@@ -2,11 +2,12 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
-from database import Database
+from database import db
+from config.taxonomy import CATEGORIES
 import logging
+from typing import Optional, Tuple, List, Dict, Any
 
 logger = logging.getLogger(__name__)
-db = Database()
 PAGE_SIZE = 5
 
 
@@ -35,63 +36,125 @@ async def _delete_last_displayed_messages(context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("last_displayed_messages", None)
 
 
-async def _build_catalog_page(context: ContextTypes.DEFAULT_TYPE, page: int):
+async def _build_catalog_page(
+    context: ContextTypes.DEFAULT_TYPE, page: int, category: Optional[str] = None, subcategory: Optional[str] = None
+) -> Tuple[Optional[str], Optional[InlineKeyboardMarkup]]:
     """
     Build the catalog text and InlineKeyboardMarkup for the given page.
+    If category is provided, filter products by category (and optional subcategory).
     Returns (text, reply_markup).
     """
     offset = (page - 1) * PAGE_SIZE
-    products = await db.get_catalog_items(limit=PAGE_SIZE, offset=offset)
+
+    # If a category is provided, use the category-specific query
+    if category:
+        # subcategory may be empty string to indicate "All"
+        sub = subcategory if subcategory else None
+        products = await db.get_products_by_category(category, subcategory=sub, limit=PAGE_SIZE, offset=offset)
+    else:
+        products = await db.get_catalog_items(limit=PAGE_SIZE, offset=offset)
+
     if not products:
         return None, None
 
-    keyboard = []
+    keyboard: List[List[InlineKeyboardButton]] = []
     for p in products:
         label = _short_caption(p.get("caption", "")) or f"Product {p['id']}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"product|{p['id']}")])
 
-    nav_row = []
+    nav_row: List[InlineKeyboardButton] = []
     if page > 1:
-        nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"catalog_page|{page-1}"))
+        # Preserve category/subcategory in pagination callbacks if present
+        if category:
+            # encode category/subcategory into callback so pagination can preserve filter
+            if subcategory:
+                nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"category_page|{category}|{subcategory}|{page-1}"))
+            else:
+                nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"category_page|{category}||{page-1}"))
+        else:
+            nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"catalog_page|{page-1}"))
+    # Current page button (noop)
     nav_row.append(InlineKeyboardButton(f"Page {page}", callback_data="noop"))
-    nav_row.append(InlineKeyboardButton("➡️ Next", callback_data=f"catalog_page|{page+1}"))
+    if category:
+        if subcategory:
+            nav_row.append(InlineKeyboardButton("➡️ Next", callback_data=f"category_page|{category}|{subcategory}|{page+1}"))
+        else:
+            nav_row.append(InlineKeyboardButton("➡️ Next", callback_data=f"category_page|{category}||{page+1}"))
+    else:
+        nav_row.append(InlineKeyboardButton("➡️ Next", callback_data=f"catalog_page|{page+1}"))
+
     keyboard.append(nav_row)
 
-    text = "Catalog — select an item to view its media:"
+    if category:
+        # Header shows category and optional subcategory
+        header = f"{category.title()}" + (f" — {subcategory.title()}" if subcategory else "")
+        text = f"{header}\n\nSelect an item to view its media:"
+    else:
+        text = "Catalog — select an item to view its media:"
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    return text, reply_markup
+
+
+async def _build_categories_menu() -> Tuple[str, InlineKeyboardMarkup]:
+    """
+    Build the top-level categories menu from the hardwired taxonomy.
+    Returns (text, reply_markup).
+    """
+    keyboard: List[List[InlineKeyboardButton]] = []
+    # Sort categories for stable ordering
+    for cat in sorted(CATEGORIES.keys()):
+        keyboard.append([InlineKeyboardButton(cat.title(), callback_data=f"category|{cat}")])
+
+    text = "Categories — choose a category to browse:"
     reply_markup = InlineKeyboardMarkup(keyboard)
     return text, reply_markup
 
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Show the first page of the catalog as selectable buttons.
-    Delete any previously displayed product media first.
+    Show the categories menu as the first screen. Delete any previously displayed product media first.
     """
     # Delete previous product display messages (if any)
     await _delete_last_displayed_messages(context)
 
-    page = 1
-    context.user_data["catalog_page"] = page
-
-    text, reply_markup = await _build_catalog_page(context, page)
-    if not text:
-        await update.message.reply_text("📦 Catalog is empty.")
-        return
-
     # When user explicitly requests /menu, clear any recorded origin so we start fresh
     context.user_data.pop("origin_catalog_message", None)
+    context.user_data.pop("catalog_page", None)
+    context.user_data.pop("catalog_message", None)
 
-    msg = await update.message.reply_text(text, reply_markup=reply_markup)
-    # Save reference to the catalog message so product_view can record origin if needed
+    text, reply_markup = await _build_categories_menu()
+    # Send categories menu
     try:
-        context.user_data["catalog_message"] = {"chat_id": msg.chat.id, "message_id": msg.message_id}
+        if update.message:
+            msg = await update.message.reply_text(text, reply_markup=reply_markup)
+        else:
+            # fallback: send to effective chat
+            dest = update.effective_chat.id if update.effective_chat else None
+            if dest:
+                msg = await context.bot.send_message(chat_id=dest, text=text, reply_markup=reply_markup)
+            else:
+                logger.error("menu_command: no destination to send categories menu")
+                return
+        # Save reference to the catalog message so product_view can record origin if needed
+        try:
+            context.user_data["catalog_message"] = {"chat_id": msg.chat.id, "message_id": msg.message_id}
+        except Exception:
+            logger.exception("Failed to save catalog_message reference")
     except Exception:
-        logger.exception("Failed to save catalog_message reference")
+        logger.exception("Failed to send categories menu")
 
 
-async def handle_catalog_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int):
+async def handle_catalog_pagination(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    page: int,
+    category: Optional[str] = None,
+    subcategory: Optional[str] = None,
+):
     """
     Show a specific page of the catalog as buttons.
+    If category is provided, show products filtered by that category/subcategory.
     Delete any previously displayed product media first.
     Prefer editing the original catalog message (origin_catalog_message) when available;
     otherwise edit the callback message if it is a catalog message; fallback to sending a new message.
@@ -111,7 +174,7 @@ async def handle_catalog_pagination(update: Update, context: ContextTypes.DEFAUL
         page = 1
     context.user_data["catalog_page"] = page
 
-    text, reply_markup = await _build_catalog_page(context, page)
+    text, reply_markup = await _build_catalog_page(context, page, category=category, subcategory=subcategory)
     if not text:
         # No products on this page
         try:
@@ -153,7 +216,7 @@ async def handle_catalog_pagination(update: Update, context: ContextTypes.DEFAUL
 
     # If the callback came from a catalog message the bot owns, try to edit that message
     try:
-        if query and query.message and getattr(query.message.from_user, "is_bot", False) and query.message.text and query.message.text.startswith("Catalog"):
+        if query and query.message and getattr(query.message.from_user, "is_bot", False) and query.message.text and query.message.text.startswith(("Catalog", "Categories", "Categories —")):
             try:
                 await query.message.edit_text(text, reply_markup=reply_markup)
                 context.user_data["catalog_message"] = {"chat_id": query.message.chat.id, "message_id": query.message.message_id}
@@ -182,3 +245,122 @@ async def handle_catalog_pagination(update: Update, context: ContextTypes.DEFAUL
             context.user_data["catalog_message"] = {"chat_id": msg.chat.id, "message_id": msg.message_id}
     except Exception:
         logger.exception("Failed to send fallback catalog message")
+
+
+# -------------------------
+# Category and subcategory callbacks
+# -------------------------
+async def handle_category_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Callback data: category|<CAT>
+    Show subcategories for the chosen category and an 'All' button.
+    """
+    query = update.callback_query
+    if not query:
+        return
+    try:
+        await query.answer()
+    except Exception:
+        logger.exception("Failed to answer category callback (non-fatal)")
+
+    data = (query.data or "").strip()
+    parts = data.split("|", 1)
+    if len(parts) < 2:
+        try:
+            await query.answer("Invalid category", show_alert=True)
+        except Exception:
+            logger.exception("Failed to notify user about invalid category")
+        return
+
+    cat = parts[1].strip().upper()
+    # Validate category exists in taxonomy
+    if cat not in CATEGORIES:
+        try:
+            await query.answer("Unknown category", show_alert=True)
+        except Exception:
+            logger.exception("Failed to notify user about unknown category")
+        return
+
+    subs = CATEGORIES.get(cat, [])
+    buttons: List[List[InlineKeyboardButton]] = []
+    # "All" button shows all products in category
+    buttons.append([InlineKeyboardButton("All", callback_data=f"category_sub|{cat}|")])
+    for s in subs:
+        buttons.append([InlineKeyboardButton(s.title().replace("_", " "), callback_data=f"category_sub|{cat}|{s}")])
+
+    # Add a Back to categories button
+    buttons.append([InlineKeyboardButton("⬅️ Back to categories", callback_data="menu_categories")])
+
+    try:
+        await query.message.edit_text(f"{cat.title()} — choose subcategory:", reply_markup=InlineKeyboardMarkup(buttons))
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            logger.debug("Category message already up to date")
+        else:
+            logger.exception("Failed to edit message to show subcategories")
+    except Exception:
+        logger.exception("Unexpected error while showing subcategories")
+
+
+async def handle_category_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Callback data: category_sub|<CAT>|<SUB>
+    If SUB is empty, show all products in CAT. Otherwise show products filtered by CAT/SUB.
+    """
+    query = update.callback_query
+    if not query:
+        return
+    try:
+        await query.answer()
+    except Exception:
+        logger.exception("Failed to answer category_sub callback (non-fatal)")
+
+    data = (query.data or "").strip()
+    parts = data.split("|")
+    # Expecting at least ['category_sub', CAT, SUB?]
+    if len(parts) < 2:
+        try:
+            await query.answer("Invalid request", show_alert=True)
+        except Exception:
+            logger.exception("Failed to notify user about invalid category_sub request")
+        return
+
+    cat = parts[1].strip().upper()
+    sub = parts[2].strip().upper() if len(parts) >= 3 and parts[2] else None
+
+    if cat not in CATEGORIES:
+        try:
+            await query.answer("Unknown category", show_alert=True)
+        except Exception:
+            logger.exception("Failed to notify user about unknown category")
+        return
+
+    # If sub provided, validate it
+    if sub and sub not in CATEGORIES.get(cat, []):
+        # treat as All if invalid
+        sub = None
+
+    # Show first page of filtered catalog
+    await handle_catalog_pagination(update, context, page=1, category=cat, subcategory=sub)
+
+
+# Helper to show categories again (callback data "menu_categories")
+async def handle_menu_categories_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    try:
+        await query.answer()
+    except Exception:
+        logger.exception("Failed to answer menu_categories callback (non-fatal)")
+
+    text, reply_markup = await _build_categories_menu()
+    try:
+        await query.message.edit_text(text, reply_markup=reply_markup)
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            logger.debug("Categories message already up to date")
+        else:
+            logger.exception("Failed to edit message to show categories")
+    except Exception:
+        logger.exception("Unexpected error while showing categories")

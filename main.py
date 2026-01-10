@@ -17,7 +17,8 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from database import Database
+# Use the module-level db instance (ensure database.py exposes `db` and init_db)
+from database import db
 from handlers.start import start_command
 from handlers.menu import menu_command, handle_catalog_pagination
 from handlers.search import handle_search, handle_search_pagination, handle_back_to_search
@@ -31,7 +32,12 @@ from handlers.admin import (
     handle_nuke_final,
     handle_nuke_cancel,
 )
-from handlers.product_view import show_product, handle_product_callback, handle_delete_callback
+from handlers.product_view import (
+    show_product,
+    handle_product_callback,
+    handle_delete_callback,
+    ingest_and_save_product,
+)
 from utils.helpers import get_file_id_and_type, has_media, get_channel_id, get_channel_username
 from utils.categories import extract_category_and_subcategory
 
@@ -48,7 +54,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-db = Database()
+# NOTE: use the shared module-level db instance imported above
 user_last_message = {}
 
 
@@ -72,6 +78,7 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         if not file_id:
             return
 
+        # Preserve existing caption selection logic (use caption from message or from existing media group)
         caption = message.caption if getattr(message, "caption", None) else (message.text or "")
         caption = caption.strip() if isinstance(caption, str) else ""
 
@@ -86,23 +93,30 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             except Exception:
                 logger.exception("Error while looking up existing media_group captions")
 
-        clean_caption, category, subcategory = extract_category_and_subcategory(caption)
-
-        product_id = await db.add_product(
-            file_id=file_id,
-            file_type=file_type,
-            caption=clean_caption,
-            message_id=msg_id,
-            chat_id=chat_id,
-            media_group_id=media_group_id,
-            category=category,
-            subcategory=subcategory,
-        )
-
-        if product_id > 0:
-            logger.info(
-                f"New product saved: ID={product_id}, type={file_type}, category={category}, subcategory={subcategory}"
+        # Use centralized ingest helper which normalizes and validates category/subcategory
+        try:
+            product_id = await ingest_and_save_product(
+                message=message,
+                file_id=file_id,
+                file_type=file_type,
+                msg_id=msg_id,
+                chat_id=chat_id,
+                media_group_id=media_group_id,
             )
+
+            if product_id and int(product_id) > 0:
+                logger.info(
+                    "New product saved: ID=%s, type=%s (channel=%s msg=%s)",
+                    product_id,
+                    file_type,
+                    chat_id,
+                    msg_id,
+                )
+            else:
+                logger.warning("Product save returned non-positive id for file_id=%s", file_id)
+        except Exception:
+            logger.exception("Failed to ingest and save product for file_id=%s", file_id)
+
     except Exception as e:
         logger.error(f"Error handling channel post: {e}", exc_info=True)
 
@@ -272,10 +286,14 @@ def build_application():
     application.add_handler(CommandHandler("dbcheck", dbcheck_command))
     application.add_handler(CommandHandler("dumpuserdata", dump_user_data))
 
-    # Specific callback query handlers FIRST
+    # Specific callback query handlers FIRST (more specific patterns before generic)
     application.add_handler(CallbackQueryHandler(handle_nuke_step1, pattern="^nuke_step1_yes$"))
     application.add_handler(CallbackQueryHandler(handle_nuke_final, pattern="^nuke_final_yes$"))
     application.add_handler(CallbackQueryHandler(handle_nuke_cancel, pattern="^nuke_cancel$"))
+
+    # Product and delete specific handlers (so they are handled before the generic router)
+    application.add_handler(CallbackQueryHandler(handle_product_callback, pattern=r"^(product\||\d+$)"))
+    application.add_handler(CallbackQueryHandler(handle_delete_callback, pattern=r"^delete\|"))
 
     # Generic callback query handler LAST
     application.add_handler(CallbackQueryHandler(callback_query_handler))
