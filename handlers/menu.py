@@ -169,6 +169,9 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("origin_catalog_message", None)
     context.user_data.pop("catalog_page", None)
     context.user_data.pop("catalog_message", None)
+    # Clear selected filters when opening top-level menu
+    context.user_data.pop("selected_category", None)
+    context.user_data.pop("selected_subcategory", None)
 
     text, reply_markup = await _build_categories_menu()
     # Send categories menu
@@ -220,6 +223,22 @@ async def handle_catalog_pagination(
     if page < 1:
         page = 1
     context.user_data["catalog_page"] = page
+
+    # If caller didn't pass explicit category/subcategory, prefer stored selected filters
+    if category is None:
+        category = context.user_data.get("selected_category")
+    if subcategory is None:
+        subcategory = context.user_data.get("selected_subcategory")
+
+    # Persist selected filters so subsequent navigation and origin recording can restore them
+    if category:
+        context.user_data["selected_category"] = category
+    else:
+        context.user_data.pop("selected_category", None)
+    if subcategory:
+        context.user_data["selected_subcategory"] = subcategory
+    else:
+        context.user_data.pop("selected_subcategory", None)
 
     text, reply_markup = await _build_catalog_page(context, page, category=category, subcategory=subcategory)
     if not text:
@@ -329,7 +348,27 @@ async def handle_category_callback(update: Update, context: ContextTypes.DEFAULT
             logger.exception("Failed to notify user about unknown category")
         return
 
-    subs = CATEGORIES.get(cat, [])
+    subs = CATEGORIES.get(cat, []) or []
+
+    # normalize subs and ignore implicit ALL entries and empty values
+    display_subs = [s for s in subs if s and s.strip() and s.strip().upper() != "ALL"]
+
+    # If there are no real subcategories, open the category page immediately
+    if not display_subs:
+        # Persist selected category and clear subcategory
+        context.user_data["selected_category"] = cat
+        context.user_data.pop("selected_subcategory", None)
+        # Use handle_catalog_pagination to show first page of this category
+        try:
+            await handle_catalog_pagination(update, context, page=1, category=cat)
+        except Exception:
+            # Fallback: try without explicit category (handler will read selected_category)
+            try:
+                await handle_catalog_pagination(update, context, page=1)
+            except Exception:
+                logger.exception("Failed to open category page for %s", cat)
+        return
+
     buttons: List[List[InlineKeyboardButton]] = []
     # "All" button shows all products in category
     buttons.append([InlineKeyboardButton("ALL", callback_data=f"category_sub|{cat}|")])
@@ -388,8 +427,16 @@ async def handle_category_sub_callback(update: Update, context: ContextTypes.DEF
         # treat as All if invalid
         sub = None
 
+    # Persist selected filters so back/restore works
+    context.user_data["selected_category"] = cat
+    if sub:
+        # store compact form for consistency with DB (no spaces/underscores)
+        context.user_data["selected_subcategory"] = sub.strip().upper().replace(" ", "").replace("_", "")
+    else:
+        context.user_data.pop("selected_subcategory", None)
+
     # Show first page of filtered catalog
-    await handle_catalog_pagination(update, context, page=1, category=cat, subcategory=sub)
+    await handle_catalog_pagination(update, context, page=1, category=cat, subcategory=context.user_data.get("selected_subcategory"))
 
 
 # Helper to show categories again (callback data "menu_categories")
@@ -401,6 +448,10 @@ async def handle_menu_categories_callback(update: Update, context: ContextTypes.
         await query.answer()
     except Exception:
         logger.exception("Failed to answer menu_categories callback (non-fatal)")
+
+    # Clear selected filters when returning to top-level categories
+    context.user_data.pop("selected_category", None)
+    context.user_data.pop("selected_subcategory", None)
 
     text, reply_markup = await _build_categories_menu()
     try:
