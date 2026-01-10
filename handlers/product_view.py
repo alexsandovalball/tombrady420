@@ -50,7 +50,8 @@ async def ingest_and_save_product(
 ) -> int:
     """
     Extract category/subcategory from message caption/text, validate against taxonomy,
-    and save the product row via db.add_product.
+    normalize values, save the product row via db.add_product, send an admin preview,
+    and bulk-tag media_group items so representative rows are searchable.
 
     Returns the product id on success, or -1 on failure.
     This helper is intended to be called from your channel_post handler where the
@@ -59,28 +60,65 @@ async def ingest_and_save_product(
     try:
         caption_raw = getattr(message, "caption", None) or getattr(message, "text", None) or ""
         clean_caption, cat_raw, sub_raw = extract_category_and_subcategory(caption_raw)
+
+        # Validate against taxonomy (returns canonical keys or (None, None))
         cat_valid, sub_valid = validate_category_and_subcategory(cat_raw, sub_raw)
 
+        # Normalize storage form: uppercase, trimmed; subcategory stored in compact form
+        category = cat_valid.strip().upper() if cat_valid else None
+        if sub_valid:
+            # store canonical compact form (no spaces/underscores) to make matching robust
+            subcategory = sub_valid.strip().upper().replace(" ", "").replace("_", "")
+        else:
+            subcategory = None
+
+        # Save product (db.add_product returns id or -1)
         product_id = await db.add_product(
             file_id=file_id,
             file_type=file_type,
             caption=clean_caption,
-            message_id=msg_id,
-            chat_id=chat_id,
+            message_id=int(msg_id),
+            chat_id=int(chat_id),
             media_group_id=media_group_id,
-            category=cat_valid,
-            subcategory=sub_valid,
+            category=category,
+            subcategory=subcategory,
         )
 
         logger.info(
             "ingest_and_save_product: saved id=%s file_id=%s category=%s subcategory=%s chat=%s msg=%s",
             product_id,
             file_id,
-            cat_valid,
-            sub_valid,
+            category,
+            subcategory,
             chat_id,
             msg_id,
         )
+
+        # Send admin preview with Set category button so admins can correct or assign taxonomy
+        try:
+            ADMIN_IDS = {8589411468}  # replace with your Telegram id(s)
+            admin_buttons = [
+                [InlineKeyboardButton("Set category", callback_data=f"admin_setcat|{product_id}")],
+                [InlineKeyboardButton("Delete", callback_data=f"admin_delete|{product_id}")],
+            ]
+            admin_markup = InlineKeyboardMarkup(admin_buttons)
+            preview_text = (clean_caption if clean_caption else (getattr(message, "caption", "") or "")) + f"\n\nProduct ID: {product_id}"
+            for admin in ADMIN_IDS:
+                try:
+                    await message.bot.send_message(chat_id=admin, text=preview_text, reply_markup=admin_markup)
+                except Exception:
+                    logger.exception("Failed to send admin product message for product %s to admin %s", product_id, admin)
+        except Exception:
+            logger.exception("Failed to prepare/send admin preview for product %s", product_id)
+
+        # If this item belongs to a media_group, ensure all items in the group are tagged
+        # so the representative row (MIN(id)) will match category queries.
+        if media_group_id and category:
+            try:
+                await db.update_products_by_media_group(media_group_id, chat_id, category, subcategory)
+            except Exception:
+                logger.exception("Failed to bulk-update media_group categories for %s", media_group_id)
+
         return int(product_id) if isinstance(product_id, int) else -1
     except Exception:
         logger.exception("ingest_and_save_product failed for file_id=%s chat=%s msg=%s", file_id, chat_id, msg_id)

@@ -17,8 +17,8 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# Use the module-level db instance (ensure database.py exposes `db` and init_db)
-from database import db
+# Use the module-level db instance (ensure database.py exposes `db` and DB_PATH)
+from database import db, DB_PATH
 from handlers.start import start_command
 
 # Menu handlers (import category/subcategory callbacks too)
@@ -28,6 +28,11 @@ from handlers.menu import (
     handle_category_callback,
     handle_category_sub_callback,
     handle_menu_categories_callback,
+    # If you implement admin interactive callbacks in handlers.menu, keep these;
+    # otherwise remove or implement them in the appropriate module.
+    handle_admin_setcategory_request,
+    handle_category_admin_callback,
+    handle_category_sub_admin_callback,
 )
 
 from handlers.search import handle_search, handle_search_pagination, handle_back_to_search
@@ -40,6 +45,8 @@ from handlers.admin import (
     handle_nuke_step1,
     handle_nuke_final,
     handle_nuke_cancel,
+    # admin convenience command to inspect deployed DB
+    list_products_command,
 )
 from handlers.product_view import (
     show_product,
@@ -270,6 +277,11 @@ async def post_init(application: Application):
     try:
         await db.init_db()
         logger.info("Database initialized")
+        # Log the DB_PATH used by the running process so you can verify which DB file is active
+        try:
+            logger.info("Using DB_PATH: %s", DB_PATH)
+        except Exception:
+            logger.exception("Failed to log DB_PATH")
     except Exception as e:
         logger.exception("Failed to initialize database: %s", e)
         raise
@@ -290,6 +302,8 @@ def build_application():
     application.add_handler(CommandHandler("nuke", nuke_command))
     application.add_handler(CommandHandler("users", list_users_command))
     application.add_handler(CommandHandler("setcategory", set_category_command))
+    # Admin convenience command to inspect deployed DB
+    application.add_handler(CommandHandler("list_products", list_products_command))
 
     # Debug commands
     application.add_handler(CommandHandler("dbcheck", dbcheck_command))
@@ -299,6 +313,11 @@ def build_application():
     application.add_handler(CallbackQueryHandler(handle_nuke_step1, pattern="^nuke_step1_yes$"))
     application.add_handler(CallbackQueryHandler(handle_nuke_final, pattern="^nuke_final_yes$"))
     application.add_handler(CallbackQueryHandler(handle_nuke_cancel, pattern="^nuke_cancel$"))
+
+    # Admin interactive tagging callbacks (must be registered before category handlers)
+    application.add_handler(CallbackQueryHandler(handle_admin_setcategory_request, pattern=r"^admin_setcat\|"))
+    application.add_handler(CallbackQueryHandler(handle_category_admin_callback, pattern=r"^category_admin\|"))
+    application.add_handler(CallbackQueryHandler(handle_category_sub_admin_callback, pattern=r"^category_sub_admin\|"))
 
     # Category navigation handlers (must be registered before the generic router)
     application.add_handler(CallbackQueryHandler(handle_category_callback, pattern=r"^category\|"))

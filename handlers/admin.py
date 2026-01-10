@@ -307,6 +307,44 @@ async def list_categories_command(update: Update, context: ContextTypes.DEFAULT_
 
 
 # -------------------------
+# /listproducts command (admin convenience)
+# -------------------------
+async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    List recent products for admins. Usage: /list_products
+    Shows id, category/subcategory, chat and message id, and a short caption preview.
+    """
+    user = update.effective_user
+    if not user or not is_admin(user.id):
+        await _safe_reply_text(update, "❌ You are not authorized to use this command.")
+        return
+
+    logger.info("list_products_command invoked by admin=%s", user.id)
+    try:
+        rows = await db.get_all_products()
+        if not rows:
+            await _safe_reply_text(update, "ℹ️ No products found.")
+            return
+
+        lines: List[str] = []
+        for r in rows[:50]:
+            pid = r.get("id")
+            cat = r.get("category") or "None"
+            sub = r.get("subcategory") or "None"
+            chat = r.get("chat_id")
+            msg = r.get("message_id")
+            cap = (r.get("caption") or "").replace("\n", " ")[:80]
+            lines.append(f"{pid} | {cat} / {sub} | chat={chat} msg={msg} | {cap}")
+
+        text = "Recent products:\n" + "\n".join(lines)
+        for chunk in [text[i:i+3900] for i in range(0, len(text), 3900)]:
+            await _safe_reply_text(update, chunk)
+    except Exception:
+        logger.exception("Failed to list products")
+        await _safe_reply_text(update, "❌ Failed to list products.")
+
+
+# -------------------------
 # /setcategory command
 # -------------------------
 async def set_category_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
