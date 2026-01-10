@@ -175,6 +175,10 @@ class Database:
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 db.row_factory = aiosqlite.Row
+                # Normalize category/subcategory before insert (store uppercase trimmed)
+                cat = category.strip().upper() if category else None
+                sub = subcategory.strip().upper() if subcategory else None
+
                 # Use INSERT OR IGNORE to avoid duplicates; created_at set explicitly
                 cursor = await db.execute(
                     """
@@ -189,8 +193,8 @@ class Database:
                         int(message_id),
                         int(chat_id),
                         media_group_id,
-                        category,
-                        subcategory,
+                        cat,
+                        sub,
                         datetime.utcnow(),
                     ),
                 )
@@ -288,39 +292,88 @@ class Database:
         """
         Set or clear category/subcategory for a product.
         Pass None to clear a value.
+        Kept for backward compatibility; delegates to update_product_category.
+        """
+        return await self.update_product_category(product_id, category, subcategory)
+
+    async def update_product_category(self, product_id: int, category: Optional[str], subcategory: Optional[str] = None) -> bool:
+        """
+        Update a single product's category/subcategory.
+        Normalizes values to UPPER(TRIM(...)).
         """
         try:
+            cat = category.strip().upper() if category else None
+            sub = subcategory.strip().upper() if subcategory else None
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute(
                     "UPDATE products SET category = ?, subcategory = ? WHERE id = ?",
-                    (category, subcategory, int(product_id)),
+                    (cat, sub, int(product_id)),
                 )
                 await db.commit()
-                return True
+            logger.info("Updated product %s -> category=%s subcategory=%s", product_id, cat, sub)
+            return True
         except Exception:
-            logger.exception("set_product_category failed for id=%s", product_id)
+            logger.exception("update_product_category failed for id=%s", product_id)
             return False
 
     async def get_products_by_category(self, category: str, subcategory: Optional[str] = None, limit: Optional[int] = None, offset: int = 0) -> List[Dict[str, Any]]:
-        """Return products filtered by category and optional subcategory."""
+        """
+        Return products filtered by category and optional subcategory.
+        Matching is case-insensitive and trims whitespace.
+        """
         try:
+            if not category:
+                return []
+            cat = category.strip().upper()
+            sub = subcategory.strip().upper() if subcategory else None
+
             async with aiosqlite.connect(self.db_path) as db:
                 db.row_factory = aiosqlite.Row
-                if subcategory:
-                    q = "SELECT * FROM products WHERE category = ? AND subcategory = ? ORDER BY created_at DESC"
-                    params = (category, subcategory)
+                if sub:
+                    q = """
+                        SELECT * FROM products
+                        WHERE UPPER(TRIM(category)) = ? AND UPPER(TRIM(subcategory)) = ?
+                        ORDER BY created_at DESC
+                    """
+                    params: Tuple = (cat, sub)
                 else:
-                    q = "SELECT * FROM products WHERE category = ? ORDER BY created_at DESC"
-                    params = (category,)
+                    q = """
+                        SELECT * FROM products
+                        WHERE UPPER(TRIM(category)) = ?
+                        ORDER BY created_at DESC
+                    """
+                    params = (cat,)
+
                 if limit is not None:
                     q += " LIMIT ? OFFSET ?"
                     params = tuple(list(params) + [int(limit), int(offset)])
+
                 async with db.execute(q, params) as cur:
                     rows = await cur.fetchall()
                     return [dict(r) for r in rows]
         except Exception:
             logger.exception("get_products_by_category failed for %s/%s", category, subcategory)
             return []
+
+    async def update_products_by_media_group(self, media_group_id: str, chat_id: int, category: Optional[str], subcategory: Optional[str] = None) -> bool:
+        """
+        Update all products that belong to a media_group in a chat.
+        Useful for bulk-tagging an album.
+        """
+        try:
+            cat = category.strip().upper() if category else None
+            sub = subcategory.strip().upper() if subcategory else None
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    "UPDATE products SET category = ?, subcategory = ? WHERE media_group_id = ? AND chat_id = ?",
+                    (cat, sub, media_group_id, int(chat_id)),
+                )
+                await db.commit()
+            logger.info("Updated media_group %s (chat=%s) -> category=%s subcategory=%s", media_group_id, chat_id, cat, sub)
+            return True
+        except Exception:
+            logger.exception("update_products_by_media_group failed for %s/%s", media_group_id, chat_id)
+            return False
 
     async def get_all_categories(self) -> List[Dict[str, Optional[str]]]:
         """
