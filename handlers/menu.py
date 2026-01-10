@@ -43,6 +43,8 @@ async def _build_catalog_page(
     Build the catalog text and InlineKeyboardMarkup for the given page.
     If category is provided, filter products by category (and optional subcategory).
     Returns (text, reply_markup).
+
+    Category and subcategory labels in the header are UPPERCASE with spaces preserved.
     """
     offset = (page - 1) * PAGE_SIZE
 
@@ -86,11 +88,13 @@ async def _build_catalog_page(
     keyboard.append(nav_row)
 
     if category:
-        # Header shows category and optional subcategory
-        header = f"{category.title()}" + (f" — {subcategory.title()}" if subcategory else "")
-        text = f"{header}\n\nSelect an item to view its media:"
+        # Header shows category and optional subcategory in UPPERCASE with spaces
+        cat_label = category.replace("_", " ").upper()
+        sub_label = f" — {subcategory.replace('_', ' ').upper()}" if subcategory else ""
+        header = f"{cat_label}{sub_label}"
+        text = f"{header}\n\nSELECT AN ITEM TO VIEW ITS MEDIA:"
     else:
-        text = "Catalog — select an item to view its media:"
+        text = "CATALOG — SELECT AN ITEM TO VIEW ITS MEDIA:"
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     return text, reply_markup
@@ -100,13 +104,37 @@ async def _build_categories_menu() -> Tuple[str, InlineKeyboardMarkup]:
     """
     Build the top-level categories menu from the hardwired taxonomy.
     Returns (text, reply_markup).
+
+    Categories are shown in UPPERCASE with underscores replaced by spaces.
+    DATED PROOFS and CLIENT TOUCHDOWNS are placed at the bottom (CLIENT TOUCHDOWNS last).
     """
     keyboard: List[List[InlineKeyboardButton]] = []
-    # Sort categories for stable ordering
-    for cat in sorted(CATEGORIES.keys()):
-        keyboard.append([InlineKeyboardButton(cat.title(), callback_data=f"category|{cat}")])
 
-    text = "Categories — choose a category to browse:"
+    # Prepare ordered category list: alphabetical except DATEDPROOFS and CLIENTTOUCHDOWNS last
+    cats = sorted(CATEGORIES.keys())
+
+    # Exact keys used in taxonomy for the special bottom categories
+    bottom_first = "DATEDPROOFS"
+    bottom_last = "CLIENTTOUCHDOWNS"
+
+    # Remove them if present, we'll append in desired order
+    if bottom_first in cats:
+        cats.remove(bottom_first)
+    if bottom_last in cats:
+        cats.remove(bottom_last)
+
+    # Append the special categories in the desired bottom order if they exist in taxonomy
+    if bottom_first in CATEGORIES:
+        cats.append(bottom_first)
+    if bottom_last in CATEGORIES:
+        cats.append(bottom_last)
+
+    for cat in cats:
+        # Display label: replace underscores with spaces and uppercase
+        label = cat.replace("_", " ").upper()
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"category|{cat}")])
+
+    text = "CATEGORIES — CHOOSE A CATEGORY TO BROWSE:"
     reply_markup = InlineKeyboardMarkup(keyboard)
     return text, reply_markup
 
@@ -216,7 +244,7 @@ async def handle_catalog_pagination(
 
     # If the callback came from a catalog message the bot owns, try to edit that message
     try:
-        if query and query.message and getattr(query.message.from_user, "is_bot", False) and query.message.text and query.message.text.startswith(("Catalog", "Categories", "Categories —")):
+        if query and query.message and getattr(query.message.from_user, "is_bot", False) and query.message.text and query.message.text.startswith(("Catalog", "Categories", "Categories —", "CATEGORIES")):
             try:
                 await query.message.edit_text(text, reply_markup=reply_markup)
                 context.user_data["catalog_message"] = {"chat_id": query.message.chat.id, "message_id": query.message.message_id}
@@ -254,6 +282,7 @@ async def handle_category_callback(update: Update, context: ContextTypes.DEFAULT
     """
     Callback data: category|<CAT>
     Show subcategories for the chosen category and an 'All' button.
+    Subcategory labels are UPPERCASE with spaces preserved.
     """
     query = update.callback_query
     if not query:
@@ -284,15 +313,17 @@ async def handle_category_callback(update: Update, context: ContextTypes.DEFAULT
     subs = CATEGORIES.get(cat, [])
     buttons: List[List[InlineKeyboardButton]] = []
     # "All" button shows all products in category
-    buttons.append([InlineKeyboardButton("All", callback_data=f"category_sub|{cat}|")])
+    buttons.append([InlineKeyboardButton("ALL", callback_data=f"category_sub|{cat}|")])
     for s in subs:
-        buttons.append([InlineKeyboardButton(s.title().replace("_", " "), callback_data=f"category_sub|{cat}|{s}")])
+        # Display subcategory label as uppercase with spaces
+        label = s.replace("_", " ").upper()
+        buttons.append([InlineKeyboardButton(label, callback_data=f"category_sub|{cat}|{s}")])
 
     # Add a Back to categories button
-    buttons.append([InlineKeyboardButton("⬅️ Back to categories", callback_data="menu_categories")])
+    buttons.append([InlineKeyboardButton("⬅️ BACK TO CATEGORIES", callback_data="menu_categories")])
 
     try:
-        await query.message.edit_text(f"{cat.title()} — choose subcategory:", reply_markup=InlineKeyboardMarkup(buttons))
+        await query.message.edit_text(f"{cat.replace('_', ' ').upper()} — CHOOSE SUBCATEGORY:", reply_markup=InlineKeyboardMarkup(buttons))
     except BadRequest as e:
         if "Message is not modified" in str(e):
             logger.debug("Category message already up to date")

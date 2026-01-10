@@ -20,7 +20,16 @@ from telegram.ext import (
 # Use the module-level db instance (ensure database.py exposes `db` and init_db)
 from database import db
 from handlers.start import start_command
-from handlers.menu import menu_command, handle_catalog_pagination
+
+# Menu handlers (import category/subcategory callbacks too)
+from handlers.menu import (
+    menu_command,
+    handle_catalog_pagination,
+    handle_category_callback,
+    handle_category_sub_callback,
+    handle_menu_categories_callback,
+)
+
 from handlers.search import handle_search, handle_search_pagination, handle_back_to_search
 from handlers.admin import (
     stats_command,
@@ -290,6 +299,12 @@ def build_application():
     application.add_handler(CallbackQueryHandler(handle_nuke_step1, pattern="^nuke_step1_yes$"))
     application.add_handler(CallbackQueryHandler(handle_nuke_final, pattern="^nuke_final_yes$"))
     application.add_handler(CallbackQueryHandler(handle_nuke_cancel, pattern="^nuke_cancel$"))
+
+    # Category navigation handlers (must be registered before the generic router)
+    application.add_handler(CallbackQueryHandler(handle_category_callback, pattern=r"^category\|"))
+    application.add_handler(CallbackQueryHandler(handle_category_sub_callback, pattern=r"^category_sub\|"))
+    application.add_handler(CallbackQueryHandler(handle_menu_categories_callback, pattern=r"^menu_categories$"))
+    application.add_handler(CallbackQueryHandler(handle_catalog_pagination, pattern=r"^category_page\|"))
 
     # Product and delete specific handlers (so they are handled before the generic router)
     application.add_handler(CallbackQueryHandler(handle_product_callback, pattern=r"^(product\||\d+$)"))
