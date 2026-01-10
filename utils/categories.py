@@ -1,53 +1,33 @@
+# utils/categories.py
 import re
+from typing import Tuple, Optional
 
-# Master category map with subcategories
-CATEGORY_MAP = {
-    "CARTRIDGES": ["AUTHENTICS", "REPLICAS"],
-    "EDIBLES": ["FLOWEREDIBLES", "SHROOMEDIBLES"],
-    "CONCENTRATES": [
-        "SNOWCAPS", "MOONROCKS", "HASHANDKIEF", "BADDER", "SHATTER",
-        "DISTILLATE", "THCAPOWDER", "RSO", "ROSIN", "SUGAR", "OTHERS"
-    ],
-    "PREROLLS": ["FLOWERPREROLLS", "INFUSEDFLOWERPREROLLS"],
-    "SHROOMS": [],
-    "FLOWER": [
-        "TOPSHELFCANDY", "PREMIUMEXOTICS", "EXOTICS",
-        "PREMIUMLIGHTDEPS", "LIGHTDEPS", "LIGHTASSIST", "LOWS"
-    ],
-    "DATEDPROOFS": [],          # NEW CATEGORY
-    "CLIENTTOUCHDOWNS": []      # NEW CATEGORY
-}
-
-
-def extract_category_and_subcategory(caption: str):
+def extract_category_and_subcategory(caption: Optional[str]) -> Tuple[str, Optional[str], Optional[str]]:
     """
-    Parse hashtags from caption and return (clean_caption, category, subcategory).
-    - Detects hashtags like #FLOWER #TOPSHELFCANDY
-    - Matches them against CATEGORY_MAP
-    - Removes hashtags from caption for display
+    Returns (clean_caption, CATEGORY, SUBCATEGORY)
+    Recognizes:
+      - [CATEGORY/SUBCATEGORY] at start
+      - #CATEGORY or #CATEGORY_SUBCATEGORY anywhere
+    Normalizes to uppercase; spaces -> underscores for bracket tags.
     """
     if not caption:
-        return caption, None, None
+        return "", None, None
+    text = caption.strip()
 
-    hashtags = re.findall(r"#(\w+)", caption)
-    category, subcategory = None, None
+    # [CATEGORY/SUBCATEGORY] at start
+    m = re.match(r"^\s*\[([A-Za-z0-9 _-]+)(?:/([A-Za-z0-9 _-]+))?\]\s*(.*)$", text)
+    if m:
+        cat = m.group(1).strip().upper().replace(" ", "_")
+        sub = m.group(2).strip().upper().replace(" ", "_") if m.group(2) else None
+        rest = m.group(3).strip()
+        return rest, cat, sub
 
-    for tag in hashtags:
-        tag_upper = tag.upper()
+    # #CATEGORY or #CATEGORY_SUB anywhere
+    m2 = re.search(r"#([A-Za-z0-9_]+)(?:_([A-Za-z0-9_]+))?", text)
+    if m2:
+        cat = m2.group(1).strip().upper()
+        sub = m2.group(2).strip().upper() if m2.group(2) else None
+        clean = re.sub(r"#([A-Za-z0-9_]+)(?:_([A-Za-z0-9_]+))?", "", text).strip()
+        return clean, cat, sub
 
-        # Check if it's a top-level category
-        if tag_upper in CATEGORY_MAP:
-            category = tag_upper
-        else:
-            # Check if it's a subcategory under any category
-            for cat, subs in CATEGORY_MAP.items():
-                normalized_subs = [s.replace(" ", "").upper() for s in subs]
-                if tag_upper in normalized_subs:
-                    category = cat
-                    subcategory = tag_upper
-                    break
-
-    # Remove hashtags from caption for display
-    clean_caption = re.sub(r"#\w+", "", caption).strip()
-
-    return clean_caption, category, subcategory
+    return text, None, None

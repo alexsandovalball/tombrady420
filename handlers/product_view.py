@@ -27,11 +27,10 @@ from telegram import (
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
-from database import Database
 from utils.helpers import is_admin
+from database import db  # use module-level db instance (ensures migrations/init run once)
 
 logger = logging.getLogger(__name__)
-db = Database()
 
 
 def _parse_product_id_from_callback(data: str) -> Optional[int]:
