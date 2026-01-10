@@ -1,6 +1,7 @@
 """
 Main entry point for the Telegram media catalog bot.
 """
+import sys
 import os
 import logging
 import re
@@ -16,6 +17,14 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
+
+# Ensure root logger writes to stdout so Render (and other hosts) capture runtime logs
+root = logging.getLogger()
+if not root.handlers:
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+    root.addHandler(stream_handler)
+root.setLevel(logging.INFO)
 
 # Use the module-level db instance (ensure database.py exposes `db` and DB_PATH)
 from database import db, DB_PATH
@@ -72,7 +81,7 @@ from handlers.debug import dbcheck_command, dump_user_data
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Configure logging (kept for compatibility; root handler already set above)
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
