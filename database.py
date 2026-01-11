@@ -58,7 +58,7 @@ class Database:
                     file_id TEXT NOT NULL,
                     file_type TEXT NOT NULL,
                     caption TEXT,
-                    message_id INTEGER NOT NULL,
+                    message_id INTEGER,
                     chat_id INTEGER NOT NULL,
                     media_group_id TEXT,
                     category TEXT,
@@ -121,6 +121,13 @@ class Database:
 
             await self._ensure_category_columns(db)
 
+            # Ensure a unique index on file_id exists to help prevent duplicates
+            try:
+                await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_products_file_id ON products(file_id)")
+                await db.commit()
+            except Exception:
+                logger.exception("Failed to ensure unique index on file_id (non-fatal)")
+
             logger.info("Database initialized successfully")
 
     async def _ensure_category_columns(self, db: aiosqlite.Connection) -> None:
@@ -159,7 +166,7 @@ class Database:
         file_id: str,
         file_type: str,
         caption: Optional[str],
-        message_id: int,
+        message_id: Optional[int],
         chat_id: int,
         media_group_id: Optional[str] = None,
         category: Optional[str] = None,
@@ -176,6 +183,9 @@ class Database:
                 cat = category.strip().upper() if category else None
                 sub = subcategory.strip().upper() if subcategory else None
 
+                # If message_id is None, store 0 to preserve compatibility with older schema that used NOT NULL
+                msg_id_val = int(message_id) if message_id is not None else 0
+
                 created_at = datetime.utcnow().isoformat()
                 cursor = await db.execute(
                     """
@@ -187,7 +197,7 @@ class Database:
                         file_id,
                         file_type,
                         caption or "",
-                        int(message_id),
+                        msg_id_val,
                         int(chat_id),
                         media_group_id,
                         cat,
@@ -201,14 +211,18 @@ class Database:
                 if last_id:
                     return int(last_id)
 
-                async with db.execute(
-                    "SELECT id FROM products WHERE message_id = ? AND chat_id = ? AND file_id = ? LIMIT 1",
-                    (int(message_id), int(chat_id), file_id),
-                ) as cur2:
-                    row2 = await cur2.fetchone()
-                    if row2:
-                        return int(row2["id"])
+                # If INSERT was ignored due to unique constraint, try to find the existing row.
+                # Prefer exact match by message_id/chat_id/file_id if message_id provided.
+                if message_id is not None:
+                    async with db.execute(
+                        "SELECT id FROM products WHERE message_id = ? AND chat_id = ? AND file_id = ? LIMIT 1",
+                        (msg_id_val, int(chat_id), file_id),
+                    ) as cur2:
+                        row2 = await cur2.fetchone()
+                        if row2:
+                            return int(row2["id"])
 
+                # Fallback: find by file_id and chat_id
                 async with db.execute(
                     "SELECT id FROM products WHERE file_id = ? AND chat_id = ? LIMIT 1",
                     (file_id, int(chat_id)),
@@ -221,6 +235,18 @@ class Database:
         except Exception:
             logger.exception("Unexpected error in add_product")
             return -1
+
+    async def update_product_caption(self, product_id: int, caption: str) -> bool:
+        """Update caption for a single product id."""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("UPDATE products SET caption = ? WHERE id = ?", (caption, int(product_id)))
+                await db.commit()
+            logger.info("Updated caption for product %s", product_id)
+            return True
+        except Exception:
+            logger.exception("update_product_caption failed for id=%s", product_id)
+            return False
 
     async def delete_product(self, product_id: int) -> bool:
         """Delete a product by id. Returns True if a row was deleted."""
@@ -408,6 +434,23 @@ class Database:
                     return dict(row) if row else None
         except Exception:
             logger.exception("get_product failed for id=%s", product_id)
+            return None
+
+    async def get_representative_product_for_media_group(self, media_group_id: str, chat_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Return the representative (first inserted) product row for a media_group in a chat.
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute(
+                    "SELECT * FROM products WHERE media_group_id = ? AND chat_id = ? ORDER BY id ASC LIMIT 1",
+                    (media_group_id, int(chat_id)),
+                ) as cur:
+                    row = await cur.fetchone()
+                    return dict(row) if row else None
+        except Exception:
+            logger.exception("get_representative_product_for_media_group failed for %s/%s", media_group_id, chat_id)
             return None
 
     async def get_products_by_media_group(self, media_group_id: str, chat_id: int) -> List[Dict[str, Any]]:

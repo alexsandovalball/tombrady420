@@ -38,8 +38,13 @@ async def ingest_and_save_product(
 ) -> int:
     """
     Normalize tags and save a single product row for this file.
-    For media_group posts, insert one row per file_id while still returning
-    a representative id for the group when appropriate.
+
+    Behavior:
+    - If media_group_id is present, treat the entire album as a single product.
+      The first update that arrives for the album creates a representative row.
+      Subsequent updates for the same media_group_id return the representative id
+      and do not insert additional rows.
+    - If media_group_id is not present, insert one row per file as before.
     Returns the product id on success, or -1 on failure.
     """
     try:
@@ -56,59 +61,6 @@ async def ingest_and_save_product(
         # Capture caption/text from the incoming message
         caption_raw = getattr(message, "caption", None) or getattr(message, "text", None) or ""
         clean_caption, cat_raw, sub_raw = extract_category_and_subcategory(caption_raw)
-
-        # DEDUPE: check for an existing product with the same file_id and preserve caption if missing
-        # This uses a direct sqlite check to avoid relying on unknown async helper names.
-        # It is intentionally conservative: it checks by file_id only.
-        try:
-            import sqlite3
-
-            _db_path = "data/catalog.db"
-            # If the db module exposes a path constant, prefer it
-            try:
-                # some database modules expose DB_PATH; use it if present
-                from database import DB_PATH as _maybe_db_path  # type: ignore
-
-                if _maybe_db_path:
-                    _db_path = _maybe_db_path
-            except Exception:
-                # ignore if DB_PATH not present
-                pass
-
-            _con = sqlite3.connect(_db_path)
-            _cur = _con.cursor()
-            _cur.execute("SELECT id, caption FROM products WHERE file_id = ?", (file_id,))
-            _row = _cur.fetchone()
-            if _row:
-                _existing_id, _existing_caption = _row[0], (_row[1] or "")
-                incoming_caption = (caption_raw or "").strip()
-                # If DB caption is empty but incoming caption is non-empty, update the row
-                if (not _existing_caption) and incoming_caption:
-                    try:
-                        _cur.execute("UPDATE products SET caption = ? WHERE id = ?", (incoming_caption, _existing_id))
-                        _con.commit()
-                        logger.info(
-                            "ingest_and_save_product: updated caption for existing id=%s file_id=%s media_group_id=%s",
-                            _existing_id,
-                            file_id,
-                            media_group_id,
-                        )
-                    except Exception:
-                        logger.exception("ingest_and_save_product: failed to update caption for id=%s", _existing_id)
-                else:
-                    logger.info(
-                        "ingest_and_save_product: skipping duplicate file_id=%s media_group_id=%s msg=%s chat=%s",
-                        file_id,
-                        media_group_id,
-                        msg_id,
-                        chat_id,
-                    )
-                _con.close()
-                return int(_existing_id) if isinstance(_existing_id, int) else -1
-            _con.close()
-        except Exception:
-            logger.exception("ingest_and_save_product dedupe check failed for file_id=%s", file_id)
-        # --- end dedupe ---
 
         # Validate and normalize category/subcategory
         cat_valid, sub_valid = validate_category_and_subcategory(cat_raw, sub_raw)
@@ -128,29 +80,67 @@ async def ingest_and_save_product(
             file_id,
         )
 
-        # If this is part of a media_group, check existing rows but DO NOT return
-        # early for the group. We must insert a row for each file unless that
-        # exact file_id already exists. (The dedupe above already checked file_id globally,
-        # but we keep this check as an additional guard when media_group_id is present.)
+        # Extract file_unique_id if available on the Telegram file object
+        file_unique_id = None
+        try:
+            msg_obj = message
+            if getattr(msg_obj, "photo", None):
+                file_unique_id = getattr(msg_obj.photo[-1], "file_unique_id", None)
+            elif getattr(msg_obj, "video", None):
+                file_unique_id = getattr(msg_obj.video, "file_unique_id", None)
+            elif getattr(msg_obj, "document", None):
+                file_unique_id = getattr(msg_obj.document, "file_unique_id", None)
+            elif getattr(msg_obj, "animation", None):
+                file_unique_id = getattr(msg_obj.animation, "file_unique_id", None)
+            elif getattr(msg_obj, "audio", None):
+                file_unique_id = getattr(msg_obj.audio, "file_unique_id", None)
+            elif getattr(msg_obj, "voice", None):
+                file_unique_id = getattr(msg_obj.voice, "file_unique_id", None)
+        except Exception:
+            logger.debug("Could not extract file_unique_id from message (non-fatal)")
+
+        # If this is part of a media_group, treat the album as a single product.
         if media_group_id:
             try:
                 existing = await db.get_products_by_media_group(media_group_id, chat_id)
-                # If a row with the same file_id already exists, return its id
-                for ex in existing or []:
-                    if ex.get("file_id") == file_id:
-                        logger.debug(
-                            "File already ingested for media_group %s: file_id=%s -> id=%s",
-                            media_group_id,
-                            file_id,
-                            ex.get("id"),
-                        )
-                        return int(ex.get("id"))
-                # Otherwise, proceed to insert a new row for this file_id.
+                if existing:
+                    # If any existing row already references this exact file_id, return it.
+                    for ex in existing:
+                        if ex.get("file_id") == file_id:
+                            logger.debug(
+                                "File already ingested for media_group %s: file_id=%s -> id=%s",
+                                media_group_id,
+                                file_id,
+                                ex.get("id"),
+                            )
+                            return int(ex.get("id"))
+                    # Representative row exists for this album; return its id (skip inserting another)
+                    rep_id = existing[0].get("id")
+                    # If the representative row has no caption but this update has one, update it
+                    try:
+                        rep_caption = existing[0].get("caption") or ""
+                        incoming_caption = (caption_raw or "").strip()
+                        if (not rep_caption) and incoming_caption:
+                            await db.update_product_caption(int(rep_id), incoming_caption)
+                            logger.info(
+                                "Updated caption for representative product id=%s from incoming media_group update",
+                                rep_id,
+                            )
+                    except Exception:
+                        logger.exception("Failed to update representative caption for media_group %s", media_group_id)
+                    logger.info(
+                        "Skipping insert for file_id=%s (media_group %s already saved as product %s)",
+                        file_id,
+                        media_group_id,
+                        rep_id,
+                    )
+                    return int(rep_id)
+                # No existing representative row: proceed to insert one (this will be the album's product)
             except Exception:
                 logger.exception("Error while checking existing media_group rows for %s", media_group_id)
                 # fall through to insert representative if check fails
 
-        # Insert a new product row for this file
+        # Insert a new product row for this file (either single media or first album item)
         product_id = await db.add_product(
             file_id=file_id,
             file_type=file_type,
@@ -160,6 +150,7 @@ async def ingest_and_save_product(
             media_group_id=media_group_id,
             category=category,
             subcategory=subcategory,
+            file_unique_id=file_unique_id,
         )
 
         logger.info(
@@ -174,7 +165,7 @@ async def ingest_and_save_product(
 
         # Send admin preview using context.bot
         try:
-            # Replace ADMIN_IDS with your admin Telegram user ids
+            # Replace ADMIN_IDS with your admin Telegram user ids (or use env var via utils/helpers)
             ADMIN_IDS = {8589411468}
             admin_buttons = [
                 [InlineKeyboardButton("Set category", callback_data=f"admin_setcat|{product_id}")],
@@ -306,14 +297,14 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         except Exception:
             logger.exception("Database error fetching product id=%s", product_id)
             try:
-                await context.bot.send_message(chat_id=dest_chat_id, text="âŒ Error fetching item from database.")
+                await context.bot.send_message(chat_id=dest_chat_id, text="âŒ Error fetching item from database.")
             except Exception:
                 logger.exception("Failed to notify user about DB error")
             return
 
         if not product:
             try:
-                await context.bot.send_message(chat_id=dest_chat_id, text="âŒ Product not found.")
+                await context.bot.send_message(chat_id=dest_chat_id, text="âŒ Product not found.")
             except Exception:
                 logger.exception("Failed to notify user that product was not found")
             return
@@ -338,17 +329,17 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         except Exception:
             logger.exception("Error while sending product media for product_id=%s", product_id)
             try:
-                await context.bot.send_message(chat_id=dest_chat_id, text="âŒ Failed to send media for this item.")
+                await context.bot.send_message(chat_id=dest_chat_id, text="âŒ Failed to send media for this item.")
             except Exception:
                 logger.exception("Failed to notify user after send error")
 
         # Build action buttons; show delete only to admins
         origin_info = context.user_data.get("origin_catalog_message")
         origin_page = origin_info.get("page") if isinstance(origin_info, dict) else context.user_data.get("catalog_page", 1)
-        buttons = [InlineKeyboardButton("â¬…ï¸ Back to catalog", callback_data=f"menu|{origin_page}")]
+        buttons = [InlineKeyboardButton("â¬…ï¸ Back to catalog", callback_data=f"menu|{origin_page}")]
         try:
             if user and is_admin(user.id):
-                buttons.append(InlineKeyboardButton("ðŸ—‘ï¸ Delete", callback_data=f"delete|{product_id}"))
+                buttons.append(InlineKeyboardButton("ðŸ—‘ï¸ Delete", callback_data=f"delete|{product_id}"))
         except Exception:
             logger.exception("is_admin check failed; continuing without admin button")
 
@@ -488,7 +479,7 @@ async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_T
     except Exception:
         logger.exception("DB error while loading product for delete id=%s", product_id)
         try:
-            await query.message.reply_text("âŒ Error accessing database.")
+            await query.message.reply_text("âŒ Error accessing database.")
         except Exception:
             logger.exception("Failed to notify user after DB error")
         return
@@ -513,7 +504,7 @@ async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_T
     except Exception:
         logger.exception("Error deleting product(s) for id=%s", product_id)
         try:
-            await query.message.reply_text("âŒ Error deleting item(s).")
+            await query.message.reply_text("âŒ Error deleting item(s).")
         except Exception:
             logger.exception("Failed to notify user after delete error")
         return
