@@ -30,7 +30,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 app = FastAPI()
 
-# Diagnostic toggle: set INCOMING_DIAG=1 to enable, 0 to disable
+# Diagnostic toggle: set INCOMING_DIAG=0/false to disable
 _INCOMING_DIAG_ENABLED = os.getenv("INCOMING_DIAG", "1").strip() not in ("0", "false", "False", "")
 
 if _INCOMING_DIAG_ENABLED:
@@ -46,7 +46,11 @@ else:
 # Simple in-memory recent-update dedupe (prevents immediate duplicate enqueue)
 _recent_updates_lock = asyncio.Lock()
 _recent_updates: Dict[int, float] = {}  # update_id -> timestamp
-_RECENT_UPDATE_TTL = 5.0  # seconds to consider duplicates
+# Expose TTL via env var RECENT_UPDATE_TTL (seconds)
+try:
+    _RECENT_UPDATE_TTL = float(os.getenv("RECENT_UPDATE_TTL", "5.0"))
+except Exception:
+    _RECENT_UPDATE_TTL = 5.0
 
 
 @app.on_event("startup")
@@ -63,6 +67,7 @@ async def startup_event():
         async def _log_startup_db_count():
             try:
                 import aiosqlite
+
                 async with aiosqlite.connect(DB_PATH) as _conn:
                     _conn.row_factory = aiosqlite.Row
                     async with _conn.execute("SELECT COUNT(*) AS cnt FROM products") as _cur:
@@ -149,7 +154,7 @@ async def _enqueue_update_object(update_obj: Any, raw_data: Dict[str, Any]) -> O
         return "Internal enqueue error"
 
 
-async def _process_payload_dict(data: Dict[str, Any]) -> (int, str):
+async def _process_payload_dict(data: Dict[str, Any]) -> (int, Optional[str]):
     """
     Convert a parsed JSON dict to a telegram.Update and enqueue it.
     Returns (status_code, message).
@@ -167,6 +172,7 @@ async def _process_payload_dict(data: Dict[str, Any]) -> (int, str):
         # Fallback to telegram.Update.de_json for older versions
         try:
             from telegram import Update as _Update  # local import to avoid import-time side effects
+
             update = _Update.de_json(data, getattr(application, "bot", None))
         except Exception:
             logger.exception("Failed to construct Update from payload")
@@ -176,7 +182,8 @@ async def _process_payload_dict(data: Dict[str, Any]) -> (int, str):
     if err:
         if err == "Server misconfiguration":
             return 500, err
-        return 200, None  # treat enqueue dedupe as success
+        # treat enqueue dedupe as success
+        return 200, None
     return 200, None
 
 
@@ -209,14 +216,12 @@ async def _base_webhook(request: Request) -> Response:
             body_text = None
 
         if body_text:
-            logger.debug("WEBHOOK RECEIVED (text payload)")
             try:
                 data = json.loads(body_text)
             except json.JSONDecodeError:
                 logger.warning("Invalid JSON payload received on /webhook")
                 return Response(status_code=400, content="Invalid JSON")
         else:
-            # If decode failed, attempt to parse bytes directly
             try:
                 data = json.loads(body_bytes)
             except Exception:
@@ -254,12 +259,12 @@ async def _diagnostic_wrapper(request: Request) -> Response:
                 _data = None
 
         # Log top-level keys and any media_group_id or caption present
-        try:
-            if isinstance(_data, dict) and _diag_logger:
+        if isinstance(_data, dict) and _diag_logger:
+            try:
                 keys = list(_data.keys())
                 _diag_logger.info("INCOMING UPDATE keys=%s", keys)
 
-                def _find(d, path=""):
+                def _find(d: Any, path: str = "") -> None:
                     if isinstance(d, dict):
                         for k, v in d.items():
                             if k == "media_group_id":
@@ -276,28 +281,20 @@ async def _diagnostic_wrapper(request: Request) -> Response:
                             _find(item, path + f"[{i}]")
 
                 _find(_data)
-        except Exception:
-            if _diag_logger:
+            except Exception:
                 _diag_logger.exception("Diagnostic parse failed")
+
+        if isinstance(_data, dict):
+            return await _base_webhook_from_dict(_data)
     except Exception:
-        # Diagnostic must never block the main handler
         if _diag_logger:
             _diag_logger.exception("Diagnostic wrapper failed to parse request")
-        _data = None
-
-    # If we successfully parsed JSON, forward it to the base handler that accepts dict
-    if isinstance(_data, dict):
-        return await _base_webhook_from_dict(_data)
-
-    # Fallback: let base handler read/parse the body itself
+        # fall through to base handler which will re-read the body
     return await _base_webhook(request)
 
 
 # Expose the webhook endpoint: use diagnostic wrapper if enabled
-if _INCOMING_DIAG_ENABLED:
-    webhook = _diagnostic_wrapper
-else:
-    webhook = _base_webhook
+webhook = _diagnostic_wrapper if _INCOMING_DIAG_ENABLED else _base_webhook
 
 # Register the webhook endpoint with FastAPI
 app.post("/webhook")(webhook)

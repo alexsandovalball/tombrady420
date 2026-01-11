@@ -111,6 +111,19 @@ class Database:
                 """
             )
 
+            # Persistent table to record whether a media_group preview has been sent.
+            # This prevents duplicate admin previews across restarts or multiple processes.
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS media_group_meta (
+                    media_group_id TEXT NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    preview_sent_at TIMESTAMP,
+                    PRIMARY KEY (media_group_id, chat_id)
+                )
+                """
+            )
+
             await db.commit()
             logger.info("Base schema ensured")
 
@@ -604,6 +617,55 @@ class Database:
             logger.exception("add_ignored_message failed for %s/%s", message_id, chat_id)
             return False
 
+    # -------------------------
+    # Media group preview persistence helpers
+    # -------------------------
+    async def mark_media_group_preview_sent(self, media_group_id: str, chat_id: int, ts: Optional[Any] = None) -> None:
+        """
+        Record that a preview has been sent for the given media_group_id/chat_id.
+        ts may be a datetime, ISO string, or a unix timestamp (int/float). If None, use current UTC time.
+        """
+        try:
+            if ts is None:
+                ts_iso = datetime.utcnow().isoformat()
+            else:
+                if isinstance(ts, (int, float)):
+                    ts_iso = datetime.utcfromtimestamp(float(ts)).isoformat()
+                elif isinstance(ts, datetime):
+                    ts_iso = ts.isoformat()
+                else:
+                    ts_iso = str(ts)
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    """
+                    INSERT INTO media_group_meta (media_group_id, chat_id, preview_sent_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(media_group_id, chat_id) DO UPDATE SET preview_sent_at = excluded.preview_sent_at
+                    """,
+                    (media_group_id, int(chat_id), ts_iso),
+                )
+                await db.commit()
+        except Exception:
+            logger.exception("mark_media_group_preview_sent failed for %s/%s", media_group_id, chat_id)
+
+    async def media_group_preview_sent(self, media_group_id: str, chat_id: int) -> Optional[str]:
+        """
+        Return the ISO timestamp string when a preview was sent for this media_group/chat,
+        or None if no record exists.
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute(
+                    "SELECT preview_sent_at FROM media_group_meta WHERE media_group_id = ? AND chat_id = ? LIMIT 1",
+                    (media_group_id, int(chat_id)),
+                ) as cur:
+                    row = await cur.fetchone()
+                    if row and row[0]:
+                        return str(row[0])
+                    return None
+        except Exception:
+            logger.exception("media_group_preview_sent check failed for %s/%s", media_group_id, chat_id)
+            return None
 
 # Module-level instance and convenience init
 db = Database(DB_PATH)

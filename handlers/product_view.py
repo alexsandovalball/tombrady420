@@ -4,6 +4,7 @@ Product view and callback handlers for the catalog bot.
 
 import asyncio
 import logging
+import time
 from typing import List, Tuple, Optional, Dict, Any
 
 from telegram import (
@@ -20,14 +21,24 @@ from utils.helpers import is_admin
 from utils.categories import extract_category_and_subcategory
 from utils.taxonomy_utils import validate_category_and_subcategory
 from database import db  # use module-level db instance (ensures migrations/init run once)
+from config import ADMIN_IDS, PREVIEW_TTL_SECONDS
 
 logger = logging.getLogger(__name__)
 
 # In-memory locks to serialize ingestion for the same message/media_group
 _ingest_locks: Dict[str, asyncio.Lock] = {}
 
+# In-memory recent-preview guard to avoid sending admin preview multiple times
+_recent_preview_lock = asyncio.Lock()
+_recent_previews: Dict[str, float] = {}  # key -> timestamp
 
-def _lock_key_for_item(chat_id: Optional[int], message_id: Optional[int], media_group_id: Optional[str], file_id: Optional[str]) -> str:
+
+def _lock_key_for_item(
+    chat_id: Optional[int],
+    message_id: Optional[int],
+    media_group_id: Optional[str],
+    file_id: Optional[str],
+) -> str:
     """
     Build a stable lock key for an incoming item.
     Prefer media_group_id when present (serialize per album), otherwise use message_id+file_id.
@@ -48,6 +59,25 @@ def _get_ingest_lock(key: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         _ingest_locks[key] = lock
     return lock
+
+
+async def _recent_preview_seen(media_group_key: str) -> bool:
+    """
+    Check and update the in-memory recent preview set.
+    Returns True if a recent preview exists (so caller should skip), False otherwise.
+    """
+    now = time.time()
+    async with _recent_preview_lock:
+        # purge expired entries
+        ttl = int(PREVIEW_TTL_SECONDS or 60)
+        to_delete = [k for k, ts in _recent_previews.items() if now - ts > ttl]
+        for k in to_delete:
+            _recent_previews.pop(k, None)
+        if media_group_key in _recent_previews:
+            return True
+        # mark as seen
+        _recent_previews[media_group_key] = now
+        return False
 
 
 # -------------------------
@@ -159,7 +189,12 @@ async def ingest_and_save_product(
             )
 
             # Debug: show DB result
-            logger.debug("DBG db.add_product returned product_id=%s for file_id=%s file_unique_id=%s", product_id, file_id, file_unique_id)
+            logger.debug(
+                "DBG db.add_product returned product_id=%s for file_id=%s file_unique_id=%s",
+                product_id,
+                file_id,
+                file_unique_id,
+            )
 
             if not product_id or int(product_id) <= 0:
                 logger.warning("Product save returned non-positive id for file_id=%s", file_id)
@@ -174,7 +209,9 @@ async def ingest_and_save_product(
                         existing_caption = (existing.get("caption") or "").strip()
                         if not existing_caption:
                             await db.update_product_caption(int(product_id), clean_caption)
-                            logger.info("Updated caption for existing product id=%s from incoming message", product_id)
+                            logger.info(
+                                "Updated caption for existing product id=%s from incoming message", product_id
+                            )
             except Exception:
                 logger.exception("Failed to update caption for product id=%s (non-fatal)", product_id)
 
@@ -191,34 +228,80 @@ async def ingest_and_save_product(
             msg_id,
         )
 
-        # Send admin preview using context.bot
+        # -------------------------
+        # Only send admin preview once per media_group (or for single-file posts)
+        # -------------------------
         try:
-            # Replace ADMIN_IDS with your admin Telegram user ids
-            ADMIN_IDS = {8589411468}
-            admin_buttons = [
-                [InlineKeyboardButton("Set category", callback_data=f"admin_setcat|{product_id}")],
-                [InlineKeyboardButton("Delete", callback_data=f"delete|{product_id}")],
-            ]
-            admin_markup = InlineKeyboardMarkup(admin_buttons)
-            preview_text = (clean_caption if clean_caption else (getattr(message, "caption", "") or "")) + f"\n\nProduct ID: {product_id}"
-            for admin in ADMIN_IDS:
+            send_admin_preview = False
+            # Single-file posts: always preview
+            if not media_group_id:
+                send_admin_preview = True
+            else:
+                # Multi-file album: check in-memory TTL guard first
+                mg_key = f"{chat_id}:{media_group_id}"
                 try:
-                    await context.bot.send_message(chat_id=admin, text=preview_text, reply_markup=admin_markup)
+                    seen = await _recent_preview_seen(mg_key)
                 except Exception:
-                    logger.exception("Failed to send admin product message for product %s to admin %s", product_id, admin)
-        except Exception:
-            logger.exception("Failed to prepare/send admin preview for product %s", product_id)
+                    # If guard fails for any reason, fall back to representative check
+                    seen = False
+                if not seen:
+                    # Only preview for the representative (first) product row
+                    try:
+                        rep = await db.get_representative_product_for_media_group(media_group_id, chat_id)
+                        if rep and int(rep.get("id")) == int(product_id):
+                            # Also check persistent DB flag to avoid duplicates across restarts/processes
+                            try:
+                                preview_ts = await db.media_group_preview_sent(media_group_id, chat_id)
+                            except Exception:
+                                preview_ts = None
+                            if not preview_ts:
+                                send_admin_preview = True
+                    except Exception:
+                        logger.exception("Failed to determine representative product for media_group %s", media_group_id)
+                        # conservative: do not send preview if we cannot determine representative
+                        send_admin_preview = False
 
+            if send_admin_preview:
+                admin_buttons = [
+                    [InlineKeyboardButton("Set category", callback_data=f"admin_setcat|{product_id}")],
+                    [InlineKeyboardButton("Delete", callback_data=f"delete|{product_id}")],
+                ]
+                admin_markup = InlineKeyboardMarkup(admin_buttons)
+                preview_text = (clean_caption if clean_caption else (getattr(message, "caption", "") or "")) + f"\n\nProduct ID: {product_id}"
+                for admin in ADMIN_IDS:
+                    try:
+                        await context.bot.send_message(chat_id=admin, text=preview_text, reply_markup=admin_markup)
+                    except Exception:
+                        logger.exception(
+                            "Failed to send admin product message for product %s to admin %s", product_id, admin
+                        )
+
+                # Persist that we've sent a preview for this media_group (best-effort)
+                if media_group_id:
+                    try:
+                        await db.mark_media_group_preview_sent(media_group_id, chat_id, time.time())
+                    except Exception:
+                        logger.exception("Failed to persist preview_sent flag for media_group %s", media_group_id)
+        except Exception:
+            logger.exception("Failed to prepare/send admin preview for product %s (non-fatal)", product_id)
+
+        # -------------------------
         # If media_group_id present and we have a category, propagate to all group rows
+        # Only do this once per media_group (when we're the representative)
+        # -------------------------
         if media_group_id and category:
             try:
-                await db.update_products_by_media_group(media_group_id, chat_id, category, subcategory)
+                rep = await db.get_representative_product_for_media_group(media_group_id, chat_id)
+                if rep and int(rep.get("id")) == int(product_id):
+                    await db.update_products_by_media_group(media_group_id, chat_id, category, subcategory)
             except Exception:
                 logger.exception("Failed to bulk-update media_group categories for %s", media_group_id)
 
         return int(product_id) if isinstance(product_id, int) else -1
     except Exception:
-        logger.exception("ingest_and_save_product failed for file_id=%s chat=%s msg=%s", file_id, chat_id, msg_id)
+        logger.exception(
+            "ingest_and_save_product failed for file_id=%s chat=%s msg=%s", file_id, chat_id, msg_id
+        )
         return -1
 
 
