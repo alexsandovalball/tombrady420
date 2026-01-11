@@ -8,7 +8,6 @@ Starts the telegram Application on startup and stops it on shutdown.
 from __future__ import annotations
 
 import logging
-import asyncio
 from typing import Optional
 
 from fastapi import FastAPI, Request, Response, HTTPException
@@ -42,9 +41,17 @@ async def _startup():
         logger.exception("Failed to initialize/start Telegram Application")
         # If initialization fails, ensure we don't leave a partially started app
         try:
-            await telegram_app.shutdown()
+            # attempt graceful shutdown if partially started
+            if telegram_app:
+                await telegram_app.shutdown()
         except Exception:
             logger.exception("Failed to shutdown partially initialized Telegram Application")
+        # attempt to close DB connection if present
+        try:
+            from database import db as database_instance  # local import to avoid circulars
+            await database_instance.close()
+        except Exception:
+            logger.debug("No DB connection to close or failed to close DB during startup failure")
         telegram_app = None
         raise
 
@@ -75,6 +82,12 @@ async def _shutdown():
     global telegram_app
     if not telegram_app:
         logger.info("Telegram Application not initialized; shutdown complete")
+        # still attempt to close DB if present
+        try:
+            from database import db as database_instance
+            await database_instance.close()
+        except Exception:
+            logger.debug("No DB connection to close on shutdown")
         return
 
     logger.info("Stopping Telegram Application")
@@ -99,6 +112,14 @@ async def _shutdown():
         await telegram_app.shutdown()
     except Exception:
         logger.exception("Error while shutting down telegram_app")
+
+    # Ensure DB connection closed
+    try:
+        from database import db as database_instance
+        await database_instance.close()
+        logger.info("Database connection closed")
+    except Exception:
+        logger.exception("Failed to close DB connection on shutdown")
 
     telegram_app = None
     logger.info("ASGI shutdown complete")
@@ -140,7 +161,11 @@ async def telegram_webhook(token: str, request: Request) -> Response:
 
     # Log a compact representation for debugging
     try:
-        logger.debug("WEBHOOK RECEIVED: update_id=%s, message=%s", getattr(update, "update_id", None), getattr(update, "message", None))
+        logger.debug(
+            "WEBHOOK RECEIVED: update_id=%s, message=%s",
+            getattr(update, "update_id", None),
+            getattr(update, "message", None),
+        )
     except Exception:
         logger.debug("WEBHOOK RECEIVED: could not extract summary")
 
