@@ -1,81 +1,142 @@
 # utils/categories.py
 import re
-from typing import Tuple, Optional
-from config.taxonomy import CATEGORIES
+import logging
+from dataclasses import dataclass
+from typing import Dict, Optional, Set
 
-BRACKET_RE = re.compile(r"^\s*\[([A-Za-z0-9 _-]+)(?:/([A-Za-z0-9 _-]+))?\]\s*(.*)$", re.IGNORECASE)
-HASHTAG_RE = re.compile(r"#([A-Za-z0-9_]+)")
+from config.taxonomy import CATEGORIES  # expects the structure shown in config/taxonomy.py
 
-def _map_to_taxonomy_key(tag: Optional[str]) -> Optional[str]:
+logger = logging.getLogger(__name__)
+
+# Precompiled regexes
+_NON_ALNUM_RE = re.compile(r"[^A-Z0-9]+")
+_SPACE_HYPHEN_RE = re.compile(r"[-\s]+")
+
+# Build canonical sets and lookup maps at import time for O(1) mapping
+_CANONICAL_KEYS: Set[str] = set(k.upper() for k in CATEGORIES.keys())
+
+# compact_map: compacted form (remove non-alnum) -> canonical key
+# underscore_map: underscore-normalized form -> canonical key
+compact_map: Dict[str, str] = {}
+underscore_map: Dict[str, str] = {}
+
+for key in _CANONICAL_KEYS:
+    compact = _NON_ALNUM_RE.sub("", key)  # e.g., TOPSHELF_CANDY -> TOPSHELFCANDY
+    compact_map[compact] = key
+    underscore = key.replace("-", "_")
+    underscore_map[underscore] = key
+
+# Index subcategories for quick validation (uppercase canonical)
+_subcategories_index: Dict[str, Set[str]] = {}
+for cat, subs in CATEGORIES.items():
+    _subcategories_index[cat.upper()] = set(s.upper() for s in (subs or []))
+
+
+@dataclass(frozen=True)
+class CategoryResult:
+    clean_caption: str
+    category: Optional[str]
+    subcategory: Optional[str]
+
+
+def _normalize_input(tag: str) -> str:
+    """Trim and uppercase an admin-provided tag."""
+    return tag.strip().upper()
+
+
+def _compact_form(tag: str) -> str:
+    """Return compacted form used for matching: remove non-alphanumeric characters."""
+    return _NON_ALNUM_RE.sub("", tag.upper())
+
+
+def _underscore_form(tag: str) -> str:
+    """Return underscore-normalized form used for matching: replace spaces/hyphens with underscore."""
+    return _SPACE_HYPHEN_RE.sub("_", tag.strip().upper())
+
+
+def map_admin_tag_to_taxonomy(tag: Optional[str]) -> Optional[str]:
     """
-    Map a tag variant to a canonical taxonomy key from CATEGORIES.
-    Accepts variants like:
-      - TOPSHELF_CANDY
-      - TOPSHELFCANDY
-      - Top Shelf Candy
-      - top-shelf-candy
-    Returns the exact key from CATEGORIES or None if no match.
+    Map an admin-provided tag to a canonical taxonomy key (category or subcategory).
+    Returns the canonical key (uppercase) or None if no match.
     """
     if not tag:
         return None
-    t = tag.strip().upper()
-    # direct match
-    if t in CATEGORIES:
+    t = _normalize_input(tag)
+
+    # direct canonical match
+    if t in _CANONICAL_KEYS:
         return t
-    # remove underscores/spaces/hyphens to try concatenated form
-    t_compact = re.sub(r"[_\s-]+", "", t)
-    if t_compact in CATEGORIES:
-        return t_compact
-    # try matching by removing underscores from taxonomy keys
-    for k in CATEGORIES:
-        if k.replace("_", "") == t_compact:
-            return k
-    # try underscore variant (defensive)
-    t_us = re.sub(r"[-\s]+", "_", t)
-    if t_us in CATEGORIES:
-        return t_us
+
+    # underscore-normalized match
+    t_us = _underscore_form(t)
+    if t_us in underscore_map:
+        return underscore_map[t_us]
+
+    # compact match
+    t_compact = _compact_form(t)
+    if t_compact in compact_map:
+        return compact_map[t_compact]
+
+    # try matching against subcategories as well (some subcategories may not be top-level keys)
+    # check compact against all subcategories
+    for cat, subs in _subcategories_index.items():
+        for sub in subs:
+            if sub == t:
+                return sub
+            if _NON_ALNUM_RE.sub("", sub) == t_compact:
+                return sub
+            if _SPACE_HYPHEN_RE.sub("_", sub) == t_us:
+                return sub
+
+    logger.debug("map_admin_tag_to_taxonomy: no mapping for tag '%s'", tag)
     return None
 
-def extract_category_and_subcategory(caption: Optional[str]) -> Tuple[str, Optional[str], Optional[str]]:
+
+def validate_subcategory_for_category(category_key: str, subcategory_key: Optional[str]) -> Optional[str]:
     """
-    Parse caption and return (clean_caption, CATEGORY, SUBCATEGORY).
-
-    Priority:
-      1. Bracket syntax at start: [CATEGORY/SUBCATEGORY] caption...
-      2. Hashtags anywhere: #CATEGORY #SUBCATEGORY caption...
-
-    CATEGORY and SUBCATEGORY are canonical keys from config.taxonomy.CATEGORIES
-    (uppercase, exact key names). If no tag is found, returns (original_caption, None, None).
+    Validate that subcategory_key belongs to category_key.
+    Returns canonical subcategory (uppercase) if valid, otherwise None.
     """
-    if not caption:
-        return "", None, None
-    text = caption.strip()
+    if not subcategory_key:
+        return None
+    if not category_key:
+        return None
+    cat_up = category_key.strip().upper()
+    sub_up = subcategory_key.strip().upper()
 
-    # 1) bracket syntax at start
-    m = BRACKET_RE.match(text)
-    if m:
-        raw_cat = m.group(1).strip()
-        raw_sub = m.group(2).strip() if m.group(2) else None
-        rest = (m.group(3) or "").strip()
-        cat_key = _map_to_taxonomy_key(raw_cat)
-        sub_key = _map_to_taxonomy_key(raw_sub) if raw_sub else None
-        # validate subcategory belongs to category
-        if cat_key and sub_key and sub_key not in CATEGORIES.get(cat_key, []):
+    allowed = _subcategories_index.get(cat_up, set())
+    if sub_up in allowed:
+        return sub_up
+
+    # try mapping the provided subcategory to a canonical key and re-check
+    mapped = map_admin_tag_to_taxonomy(sub_up)
+    if mapped and mapped in allowed:
+        return mapped
+
+    logger.debug("validate_subcategory_for_category: subcategory '%s' invalid for category '%s'", subcategory_key, category_key)
+    return None
+
+
+def apply_admin_categorization(caption: Optional[str], admin_category_input: Optional[str], admin_subcategory_input: Optional[str] = None) -> CategoryResult:
+    """
+    Apply admin-provided category and optional subcategory to a product.
+
+    - Does NOT parse the caption for tags.
+    - Maps admin inputs to canonical taxonomy keys.
+    - Validates subcategory membership and drops invalid subcategories.
+    - Returns CategoryResult with trimmed caption and canonical keys or None.
+    """
+    clean = (caption or "").strip()
+
+    cat_key = map_admin_tag_to_taxonomy(admin_category_input) if admin_category_input else None
+    sub_key = map_admin_tag_to_taxonomy(admin_subcategory_input) if admin_subcategory_input else None
+
+    if cat_key and sub_key:
+        valid_sub = validate_subcategory_for_category(cat_key, sub_key)
+        if not valid_sub:
+            logger.warning("Admin subcategory '%s' is not valid for category '%s'; ignoring subcategory", sub_key, cat_key)
             sub_key = None
-        if cat_key:
-            return rest, cat_key, sub_key
-        # fall through to hashtags if bracket category not recognized
+        else:
+            sub_key = valid_sub
 
-    # 2) hashtags anywhere
-    tags = HASHTAG_RE.findall(text)
-    if tags:
-        cat_key = _map_to_taxonomy_key(tags[0]) if len(tags) >= 1 else None
-        sub_key = _map_to_taxonomy_key(tags[1]) if len(tags) >= 2 else None
-        if cat_key and sub_key and sub_key not in CATEGORIES.get(cat_key, []):
-            sub_key = None
-        # remove all hashtag tokens from the caption to produce clean text
-        clean = HASHTAG_RE.sub("", text).strip()
-        return clean, cat_key, sub_key
-
-    # No tag found
-    return text, None, None
+    return CategoryResult(clean_caption=clean, category=cat_key, subcategory=sub_key)
