@@ -382,6 +382,31 @@ class Database:
             logger.exception("delete_products_by_media_group failed for %s/%s", media_group_id, chat_id)
             return []
 
+    async def delete_products_with_empty_caption(self, media_group_id: str, chat_id: int) -> List[int]:
+        """
+        Delete products in a media_group that have an empty or whitespace-only caption.
+        Returns list of deleted product ids.
+        """
+        try:
+            conn = self._ensure_conn()
+            async with conn.execute(
+                "SELECT id FROM products WHERE media_group_id = ? AND chat_id = ? AND (TRIM(COALESCE(caption, '')) = '')",
+                (media_group_id, int(chat_id)),
+            ) as cur:
+                rows = await cur.fetchall()
+            ids = [int(r["id"]) for r in rows] if rows else []
+            if not ids:
+                return []
+            await conn.execute(
+                "DELETE FROM products WHERE media_group_id = ? AND chat_id = ? AND (TRIM(COALESCE(caption, '')) = '')",
+                (media_group_id, int(chat_id)),
+            )
+            await conn.commit()
+            return ids
+        except Exception:
+            logger.exception("delete_products_with_empty_caption failed for %s/%s", media_group_id, chat_id)
+            return []
+
     async def delete_product(self, product_id: int) -> bool:
         """Delete a single product by id. Returns True if deleted, False otherwise."""
         try:

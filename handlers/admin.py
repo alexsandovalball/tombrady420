@@ -3,19 +3,16 @@
 Admin-related handlers: ingestion, preview sending, admin callbacks (category assignment).
 
 Key improvements applied:
-- Stateless admin callbacks (all necessary identifiers are encoded in callback_data).
-- Defensive parsing of callback payloads with robust validation.
-- Canonicalization and validation of category/subcategory via utils.taxonomy_utils.
-- Clear success/failure handling for DB operations and informative admin messages.
-- Safer logging (structured, no secrets), and comprehensive exception handling.
-- Avoids direct SQL or DB_PATH usage in handlers; expects DB helper functions on `db`.
+- Deduplicate captionless duplicates automatically when a captioned item exists in the same media_group.
+- Robust callback parsing that preserves media_group_id even when it contains colons.
+- Defensive validation and clearer logging.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Optional, List, Sequence
+from typing import Optional, List, Sequence, Tuple
 
 from telegram import Message, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -75,6 +72,11 @@ async def ingest_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """
     Ingest messages from the monitored channel or admins.
     Save each media file as a product row and, for media groups, attempt to send a single preview to admins.
+
+    Behavior changes:
+    - Compute a canonical media_group_id for the logical group.
+    - Prefer any non-empty caption from the group for the admin preview.
+    - If a non-empty caption exists, automatically delete other rows in the same group that have empty captions.
     """
     try:
         msg: Optional[Message] = update.effective_message
@@ -159,26 +161,30 @@ async def ingest_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if not canonical_mg:
             canonical_mg = f"{chat_id}:{message_id}"
 
+        logger.debug("Canonical media_group for %s/%s -> %s", chat_id, message_id, canonical_mg)
+
         # Prefer a caption from any product in the group (if available)
-        preview_caption = msg.caption or ""
+        preview_caption = (msg.caption or "").strip()
         try:
-            if canonical_mg and canonical_mg != f"{chat_id}:{message_id}":
-                # fetch group products and prefer any non-empty caption
-                group_products = await db.get_products_by_media_group(canonical_mg, chat_id)
-                for p in group_products:
-                    cap = (p.get("caption") or "").strip()
-                    if cap:
-                        preview_caption = cap
-                        break
+            group_products = await db.get_products_by_media_group(canonical_mg, chat_id)
+            non_empty_caption_found = False
+            for p in group_products:
+                cap = (p.get("caption") or "").strip()
+                if cap:
+                    preview_caption = cap
+                    non_empty_caption_found = True
+                    break
+
+            if non_empty_caption_found:
+                # Delete any rows in this group that have empty captions (they are duplicates)
+                try:
+                    deleted_ids = await db.delete_products_with_empty_caption(canonical_mg, chat_id)
+                    if deleted_ids:
+                        logger.info("Removed empty-caption duplicates for %s/%s -> deleted ids=%s", canonical_mg, chat_id, deleted_ids)
+                except Exception:
+                    logger.exception("Failed to delete empty-caption duplicates for %s/%s", canonical_mg, chat_id)
             else:
-                # For synthetic group, check saved products for caption
-                for pid in saved_ids:
-                    prod = await db.get_product(pid)
-                    if prod:
-                        cap = (prod.get("caption") or "").strip()
-                        if cap:
-                            preview_caption = cap
-                            break
+                preview_caption = preview_caption or "(No caption)"
         except Exception:
             logger.debug("Failed to determine preview caption for %s", canonical_mg, exc_info=True)
 
@@ -284,6 +290,7 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
       ADM:SKIP:<mg>:<chat>
       ADM:DELETE:<mg>:<chat>
       ADM:CANCEL:<mg>:<chat>
+    This implementation preserves media_group_id even when it contains colons by splitting from the right.
     """
     try:
         query = update.callback_query
@@ -300,20 +307,36 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.answer("Invalid admin action", show_alert=True)
             return
 
-        # Split into parts; allow media_group_id to contain colons by limiting splits
-        parts = data.split(":", 4)
-        action = parts[1] if len(parts) > 1 else None
+        # Remove "ADM:" prefix and split action from payload
+        rest = data[4:]
+        action, _, payload = rest.partition(":")
+        action = (action or "").upper()
+
+        def _split_payload_from_right(payload_str: str, expected_tail_tokens: int) -> Tuple[Optional[str], Optional[List[str]]]:
+            """
+            Return (head, tail_list) where head is the left-most part (may contain colons)
+            and tail_list contains expected_tail_tokens strings from the right.
+            If not enough tokens, returns (None, None).
+            """
+            if expected_tail_tokens <= 0:
+                return payload_str, []
+            parts = payload_str.rsplit(":", expected_tail_tokens)
+            if len(parts) < expected_tail_tokens + 1:
+                return None, None
+            head = parts[0]
+            tail = parts[1:]
+            return head, tail
 
         if action == "SETCAT":
-            # Expect parts: ["ADM","SETCAT","<mg>","<chat>","<cat>"]
-            if len(parts) < 5:
+            # Expect payload: <mg>:<chat>:<cat>
+            head, tail = _split_payload_from_right(payload, 2)
+            if head is None:
                 await query.answer("Malformed SETCAT data", show_alert=True)
                 return
-            mg = parts[2]
-            chat = parts[3]
-            cat = parts[4]
+            mg = head
+            chat = tail[0]
+            cat = tail[1]
 
-            # Validate category key
             cat_canon = canonicalize_key(cat)
             if cat_canon not in TAXONOMY:
                 await query.answer("Invalid category selected", show_alert=True)
@@ -330,10 +353,13 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     cb = f"ADM:SETSUB:{mg}:{chat}:{cat_canon}:{sub_canon}"
                     keyboard.append([InlineKeyboardButton(text=display_sub, callback_data=cb)])
                 keyboard.append([InlineKeyboardButton(text="Cancel", callback_data=f"ADM:CANCEL:{mg}:{chat}")])
-                await query.edit_message_text(
-                    text=f"Choose subcategory for {_display_label(cat_canon)}",
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                )
+                try:
+                    await query.edit_message_text(
+                        text=f"Choose subcategory for {_display_label(cat_canon)}",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                    )
+                except Exception:
+                    logger.exception("Failed to present subcategory choices for %s", mg)
                 return
             else:
                 # No subcategories: apply category immediately
@@ -349,20 +375,19 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 return
 
         elif action == "SETSUB":
-            # Expect parts: ["ADM","SETSUB","<mg>","<chat>:<cat>:<sub>"] or similar; robust parsing below
-            raw_parts = data.split(":")
-            if len(raw_parts) < 6:
+            # Expect payload: <mg>:<chat>:<cat>:<sub>
+            head, tail = _split_payload_from_right(payload, 3)
+            if head is None:
                 await query.answer("Malformed SETSUB data", show_alert=True)
                 return
-            mg = raw_parts[2]
-            chat = raw_parts[3]
-            cat = raw_parts[4]
-            sub = raw_parts[5]
+            mg = head
+            chat = tail[0]
+            cat = tail[1]
+            sub = tail[2]
 
             cat_canon = canonicalize_key(cat)
             sub_canon = canonicalize_key(sub)
 
-            # Validate category/subcategory pair
             cat_valid, sub_valid = validate_category_and_subcategory(cat_canon, sub_canon)
             if not cat_valid:
                 await query.answer("Invalid category", show_alert=True)
@@ -380,21 +405,26 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         elif action == "SKIP":
-            # Expect parts: ["ADM","SKIP","<mg>","<chat>"]
-            if len(parts) < 4:
+            # Expect payload: <mg>:<chat>
+            head, tail = _split_payload_from_right(payload, 1)
+            if head is None:
                 await query.answer("Malformed SKIP data", show_alert=True)
                 return
-            mg = parts[2]
-            await query.edit_message_text(text=f"Skipped categorization for {mg}")
+            mg = head
+            try:
+                await query.edit_message_text(text=f"Skipped categorization for {mg}")
+            except Exception:
+                logger.exception("Failed to mark skip for %s", mg)
             return
 
         elif action == "DELETE":
-            # Expect parts: ["ADM","DELETE","<mg>","<chat>"]
-            if len(parts) < 4:
+            # Expect payload: <mg>:<chat>
+            head, tail = _split_payload_from_right(payload, 1)
+            if head is None:
                 await query.answer("Malformed DELETE data", show_alert=True)
                 return
-            mg = parts[2]
-            chat = parts[3]
+            mg = head
+            chat = tail[0]
             try:
                 deleted = await db.delete_products_by_media_group(mg, int(chat))
                 count = len(deleted) if isinstance(deleted, (list, tuple)) else (deleted or 0)
@@ -405,12 +435,16 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         elif action == "CANCEL":
-            # Expect parts: ["ADM","CANCEL","<mg>","<chat>"]
-            if len(parts) < 4:
+            # Expect payload: <mg>:<chat>
+            head, tail = _split_payload_from_right(payload, 1)
+            if head is None:
                 await query.answer("Malformed CANCEL data", show_alert=True)
                 return
-            mg = parts[2]
-            await query.edit_message_text(text=f"Cancelled categorization for {mg}")
+            mg = head
+            try:
+                await query.edit_message_text(text=f"Cancelled categorization for {mg}")
+            except Exception:
+                logger.exception("Failed to cancel categorization for %s", mg)
             return
 
         else:
