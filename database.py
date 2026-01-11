@@ -128,6 +128,17 @@ class Database:
             except Exception:
                 logger.exception("Failed to ensure unique index on file_id (non-fatal)")
 
+            # Ensure file_unique_id index exists if column present
+            try:
+                async with db.execute("PRAGMA table_info(products);") as cur:
+                    cols = await cur.fetchall()
+                    col_names = {r[1] for r in cols}
+                if "file_unique_id" in col_names:
+                    await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_products_file_unique_id ON products(file_unique_id)")
+                    await db.commit()
+            except Exception:
+                logger.exception("Failed to ensure unique index on file_unique_id (non-fatal)")
+
             logger.info("Database initialized successfully")
 
     async def _ensure_category_columns(self, db: aiosqlite.Connection) -> None:
@@ -144,19 +155,21 @@ class Database:
                 to_add.append("ALTER TABLE products ADD COLUMN category TEXT;")
             if "subcategory" not in existing_cols:
                 to_add.append("ALTER TABLE products ADD COLUMN subcategory TEXT;")
+            if "file_unique_id" not in existing_cols:
+                to_add.append("ALTER TABLE products ADD COLUMN file_unique_id TEXT;")
             if to_add:
-                logger.info("Applying migrations to add product category columns")
+                logger.info("Applying migrations to add missing product columns")
                 for stmt in to_add:
                     try:
                         await db.execute(stmt)
                     except Exception as e:
                         logger.warning("Migration statement failed (ignored): %s -> %s", stmt, e)
                 await db.commit()
-                logger.info("Category columns added (if they were missing)")
+                logger.info("Product columns added (if they were missing)")
             else:
-                logger.debug("Category columns already present; no migration needed")
+                logger.debug("Product columns already present; no migration needed")
         except Exception:
-            logger.exception("Failed to ensure category columns")
+            logger.exception("Failed to ensure product columns")
 
     # -------------------------
     # Product operations
@@ -171,11 +184,13 @@ class Database:
         media_group_id: Optional[str] = None,
         category: Optional[str] = None,
         subcategory: Optional[str] = None,
+        file_unique_id: Optional[str] = None,
     ) -> int:
         """
         Add a new product to the database.
         Returns the product id on success, -1 on failure.
         If a matching product already exists (by unique constraint), returns its id.
+        Deduplication preference: file_unique_id (if provided), then file_id.
         """
         try:
             async with aiosqlite.connect(self.db_path) as db:
@@ -183,15 +198,15 @@ class Database:
                 cat = category.strip().upper() if category else None
                 sub = subcategory.strip().upper() if subcategory else None
 
-                # If message_id is None, store 0 to preserve compatibility with older schema that used NOT NULL
+                # If message_id is None, store 0 for compatibility with older rows
                 msg_id_val = int(message_id) if message_id is not None else 0
 
                 created_at = datetime.utcnow().isoformat()
                 cursor = await db.execute(
                     """
                     INSERT OR IGNORE INTO products
-                        (file_id, file_type, caption, message_id, chat_id, media_group_id, category, subcategory, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (file_id, file_type, caption, message_id, chat_id, media_group_id, category, subcategory, created_at, file_unique_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         file_id,
@@ -203,6 +218,7 @@ class Database:
                         cat,
                         sub,
                         created_at,
+                        file_unique_id,
                     ),
                 )
                 await db.commit()
@@ -212,7 +228,17 @@ class Database:
                     return int(last_id)
 
                 # If INSERT was ignored due to unique constraint, try to find the existing row.
-                # Prefer exact match by message_id/chat_id/file_id if message_id provided.
+                # Prefer match by file_unique_id if provided.
+                if file_unique_id:
+                    async with db.execute(
+                        "SELECT id FROM products WHERE file_unique_id = ? AND chat_id = ? LIMIT 1",
+                        (file_unique_id, int(chat_id)),
+                    ) as cur_fu:
+                        row_fu = await cur_fu.fetchone()
+                        if row_fu:
+                            return int(row_fu["id"])
+
+                # Next prefer exact match by message_id/chat_id/file_id if message_id provided.
                 if message_id is not None:
                     async with db.execute(
                         "SELECT id FROM products WHERE message_id = ? AND chat_id = ? AND file_id = ? LIMIT 1",
