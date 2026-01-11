@@ -3,6 +3,7 @@ ASGI entrypoint for hosting the Telegram bot application under FastAPI.
 Initializes the database and starts/stops the telegram Application during FastAPI lifecycle events.
 """
 
+import os
 import json
 import logging
 import asyncio
@@ -25,6 +26,19 @@ if not logger.handlers:
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 app = FastAPI()
+
+# Diagnostic toggle: set INCOMING_DIAG=1 to enable, 0 to disable
+_INCOMING_DIAG_ENABLED = os.getenv("INCOMING_DIAG", "1").strip() not in ("0", "false", "False", "")
+
+if _INCOMING_DIAG_ENABLED:
+    _diag_logger = logging.getLogger("webhook_incoming_diag")
+    _diag_logger.setLevel(logging.INFO)
+    if not _diag_logger.handlers:
+        _h = logging.StreamHandler()
+        _h.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+        _diag_logger.addHandler(_h)
+else:
+    _diag_logger = None
 
 
 @app.on_event("startup")
@@ -90,8 +104,8 @@ async def root():
     return {"ok": True}
 
 
-@app.post("/webhook")
-async def webhook(request: Request):
+# Base webhook handler: converts payload to Update and enqueues it
+async def _base_webhook(request: Request) -> Response:
     """
     Accept Telegram webhook POSTs, convert JSON to Update, and enqueue into the Application.
     Returns 200 on success, 400 for bad payload, 500 for internal errors.
@@ -105,7 +119,7 @@ async def webhook(request: Request):
             body_text = None
 
         if body_text:
-            logger.info("WEBHOOK RECEIVED: %s", body_text)
+            logger.debug("WEBHOOK RECEIVED (text payload)")
             try:
                 data = json.loads(body_text)
             except json.JSONDecodeError:
@@ -149,24 +163,17 @@ async def webhook(request: Request):
         logger.exception("WEBHOOK HANDLER ERROR")
         # Return 500 rather than re-raising to avoid crashing the ASGI worker on single bad update
         return Response(status_code=500, content="Internal server error")
-# --- incoming update diagnostic (auto-inserted) ---
-import logging as _logging_for_diag
-_diag_logger = _logging_for_diag.getLogger("webhook_incoming_diag")
-_diag_logger.setLevel(_logging_for_diag.INFO)
-if not _diag_logger.handlers:
-    _h = _logging_for_diag.StreamHandler()
-    _h.setFormatter(_logging_for_diag.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
-    _diag_logger.addHandler(_h)
 
-# Inserted diagnostic inside webhook() to print top-level keys and media_group_id if present
-_orig_webhook = webhook
-async def webhook(request):
+
+# Optional diagnostic wrapper that logs top-level keys and finds media_group_id/caption
+async def _diagnostic_wrapper(request: Request) -> Response:
     try:
         body_bytes = await request.body()
         try:
             body_text = body_bytes.decode("utf-8")
         except Exception:
             body_text = None
+
         if body_text:
             try:
                 _data = json.loads(body_text)
@@ -180,30 +187,43 @@ async def webhook(request):
 
         # Log top-level keys and any media_group_id or caption present
         try:
-            if isinstance(_data, dict):
+            if isinstance(_data, dict) and _diag_logger:
                 keys = list(_data.keys())
                 _diag_logger.info("INCOMING UPDATE keys=%s", keys)
-                # try to find media_group_id and caption in common places
+
                 def _find(d, path=""):
                     if isinstance(d, dict):
-                        for k,v in d.items():
+                        for k, v in d.items():
                             if k == "media_group_id":
                                 _diag_logger.info("FOUND media_group_id=%s at %s", v, path + "/" + k)
                             if k == "caption":
-                                _diag_logger.info("FOUND caption (len=%s) at %s", len(str(v)) if v else 0, path + "/" + k)
+                                _diag_logger.info(
+                                    "FOUND caption (len=%s) at %s",
+                                    len(str(v)) if v is not None else 0,
+                                    path + "/" + k,
+                                )
                             _find(v, path + "/" + k)
                     elif isinstance(d, list):
                         for i, item in enumerate(d):
                             _find(item, path + f"[{i}]")
+
                 _find(_data)
         except Exception:
-            _diag_logger.exception("Diagnostic parse failed")
-
+            if _diag_logger:
+                _diag_logger.exception("Diagnostic parse failed")
     except Exception:
-        pass
+        # Diagnostic must never block the main handler
+        if _diag_logger:
+            _diag_logger.exception("Diagnostic wrapper failed to parse request")
+    # Call base handler to perform normal processing
+    return await _base_webhook(request)
 
-    # call original handler
-    return await _orig_webhook(request)
-# replace webhook with wrapper
-webhook = webhook
-# --- end diagnostic ---
+
+# Expose the webhook endpoint: use diagnostic wrapper if enabled
+if _INCOMING_DIAG_ENABLED:
+    webhook = _diagnostic_wrapper
+else:
+    webhook = _base_webhook
+
+# Register the webhook endpoint with FastAPI
+app.post("/webhook")(webhook)

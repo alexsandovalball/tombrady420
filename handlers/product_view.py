@@ -27,35 +27,16 @@ logger = logging.getLogger(__name__)
 # -------------------------
 # Ingest helper
 # -------------------------
-async def ingest_and_save_product(message: Any, context: ContextTypes.DEFAULT_TYPE, file_id: str, file_type: str, msg_id: int = None, chat_id: int = None, media_group_id: str = None) -> int:
-    
-    # --- DEDUPE: skip duplicate file_id and preserve caption if missing in DB ---
-    try:
-        import sqlite3
-        _db = DB_PATH if "DB_PATH" in globals() else "data/catalog.db"
-        _con = sqlite3.connect(_db)
-        _cur = _con.cursor()
-        _cur.execute("SELECT id, caption FROM products WHERE file_id = ?", (file_id,))
-        _row = _cur.fetchone()
-        if _row:
-            _existing_id, _existing_caption = _row[0], (_row[1] or "")
-            # If DB caption is empty but incoming caption is non-empty, update the row
-            incoming_caption = (caption or "").strip() if 'caption' in globals() else ""
-            if (not _existing_caption) and incoming_caption:
-                try:
-                    _cur.execute("UPDATE products SET caption = ? WHERE id = ?", (incoming_caption, _existing_id))
-                    _con.commit()
-                    logger.info("ingest_and_save_product: updated caption for existing id=%s file_id=%s media_group_id=%s", _existing_id, file_id, media_group_id)
-                except Exception:
-                    logger.exception("ingest_and_save_product: failed to update caption for id=%s", _existing_id)
-            else:
-                logger.info("ingest_and_save_product: skipping duplicate file_id=%s media_group_id=%s msg=%s chat=%s", file_id, media_group_id, msg_id, chat_id)
-            _con.close()
-            return int(_existing_id) if isinstance(_existing_id, int) else -1
-        _con.close()
-    except Exception:
-        logger.exception("ingest_and_save_product dedupe check failed for file_id=%s", file_id)
-    # --- end dedupe ---"""
+async def ingest_and_save_product(
+    message: Any,
+    context: ContextTypes.DEFAULT_TYPE,
+    file_id: str,
+    file_type: str,
+    msg_id: int = None,
+    chat_id: int = None,
+    media_group_id: str = None,
+) -> int:
+    """
     Normalize tags and save a single product row for this file.
     For media_group posts, insert one row per file_id while still returning
     a representative id for the group when appropriate.
@@ -72,13 +53,69 @@ async def ingest_and_save_product(message: Any, context: ContextTypes.DEFAULT_TY
             chat_id,
         )
 
+        # Capture caption/text from the incoming message
         caption_raw = getattr(message, "caption", None) or getattr(message, "text", None) or ""
         clean_caption, cat_raw, sub_raw = extract_category_and_subcategory(caption_raw)
 
-        # Validate and normalize
+        # DEDUPE: check for an existing product with the same file_id and preserve caption if missing
+        # This uses a direct sqlite check to avoid relying on unknown async helper names.
+        # It is intentionally conservative: it checks by file_id only.
+        try:
+            import sqlite3
+
+            _db_path = "data/catalog.db"
+            # If the db module exposes a path constant, prefer it
+            try:
+                # some database modules expose DB_PATH; use it if present
+                from database import DB_PATH as _maybe_db_path  # type: ignore
+
+                if _maybe_db_path:
+                    _db_path = _maybe_db_path
+            except Exception:
+                # ignore if DB_PATH not present
+                pass
+
+            _con = sqlite3.connect(_db_path)
+            _cur = _con.cursor()
+            _cur.execute("SELECT id, caption FROM products WHERE file_id = ?", (file_id,))
+            _row = _cur.fetchone()
+            if _row:
+                _existing_id, _existing_caption = _row[0], (_row[1] or "")
+                incoming_caption = (caption_raw or "").strip()
+                # If DB caption is empty but incoming caption is non-empty, update the row
+                if (not _existing_caption) and incoming_caption:
+                    try:
+                        _cur.execute("UPDATE products SET caption = ? WHERE id = ?", (incoming_caption, _existing_id))
+                        _con.commit()
+                        logger.info(
+                            "ingest_and_save_product: updated caption for existing id=%s file_id=%s media_group_id=%s",
+                            _existing_id,
+                            file_id,
+                            media_group_id,
+                        )
+                    except Exception:
+                        logger.exception("ingest_and_save_product: failed to update caption for id=%s", _existing_id)
+                else:
+                    logger.info(
+                        "ingest_and_save_product: skipping duplicate file_id=%s media_group_id=%s msg=%s chat=%s",
+                        file_id,
+                        media_group_id,
+                        msg_id,
+                        chat_id,
+                    )
+                _con.close()
+                return int(_existing_id) if isinstance(_existing_id, int) else -1
+            _con.close()
+        except Exception:
+            logger.exception("ingest_and_save_product dedupe check failed for file_id=%s", file_id)
+        # --- end dedupe ---
+
+        # Validate and normalize category/subcategory
         cat_valid, sub_valid = validate_category_and_subcategory(cat_raw, sub_raw)
         category = cat_valid.strip().upper() if cat_valid else None
-        subcategory = sub_valid.strip().upper().replace(" ", "").replace("_", "") if sub_valid else None
+        subcategory = (
+            sub_valid.strip().upper().replace(" ", "").replace("_", "") if sub_valid else None
+        )
 
         logger.info(
             "Parsed caption=%r -> category=%r subcategory=%r media_group_id=%r chat=%s msg=%s file_id=%s",
@@ -93,7 +130,8 @@ async def ingest_and_save_product(message: Any, context: ContextTypes.DEFAULT_TY
 
         # If this is part of a media_group, check existing rows but DO NOT return
         # early for the group. We must insert a row for each file unless that
-        # exact file_id already exists.
+        # exact file_id already exists. (The dedupe above already checked file_id globally,
+        # but we keep this check as an additional guard when media_group_id is present.)
         if media_group_id:
             try:
                 existing = await db.get_products_by_media_group(media_group_id, chat_id)
@@ -117,8 +155,8 @@ async def ingest_and_save_product(message: Any, context: ContextTypes.DEFAULT_TY
             file_id=file_id,
             file_type=file_type,
             caption=clean_caption,
-            message_id=int(msg_id),
-            chat_id=int(chat_id),
+            message_id=int(msg_id) if msg_id is not None else None,
+            chat_id=int(chat_id) if chat_id is not None else None,
             media_group_id=media_group_id,
             category=category,
             subcategory=subcategory,
@@ -621,5 +659,3 @@ async def _send_media_group_and_record(context: ContextTypes.DEFAULT_TYPE, chat_
             logger.exception("Failed to send non-media item of type %s", ft)
 
     return sent_refs
-
-
