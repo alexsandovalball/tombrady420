@@ -7,16 +7,22 @@ Starts the telegram Application on startup and stops it on shutdown.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from typing import Optional
 
 from fastapi import FastAPI, Request, Response, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, JSONResponse
 from telegram import Update
 from telegram.ext import Application
 
 from main import build_application, startup_tasks, shutdown_tasks
 from config import USE_WEBHOOK, WEBHOOK_URL, LOG_LEVEL
+
+# Optional env var to allow permissive token checking while debugging.
+# Set ALLOW_INSECURE_WEBHOOK=true only temporarily for debugging.
+_ALLOW_INSECURE = os.getenv("ALLOW_INSECURE_WEBHOOK", "false").lower() in ("1", "true", "yes")
 
 # Configure logging once; Render captures stdout/stderr
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -136,21 +142,34 @@ async def telegram_webhook(token: str, request: Request) -> Response:
         logger.warning("Received webhook but telegram_app is not initialized")
         raise HTTPException(status_code=503, detail="Bot not initialized")
 
-    # Basic token check
+    # Basic token check (can be temporarily bypassed with ALLOW_INSECURE_WEBHOOK)
     bot_token = getattr(telegram_app.bot, "token", None)
     if not isinstance(bot_token, str):
         logger.error("telegram_app.bot.token is not a string (value=%r)", bot_token)
         raise HTTPException(status_code=500, detail="Server misconfiguration")
 
-    if token != bot_token:
-        logger.warning("Invalid token on webhook path: %s", token)
-        raise HTTPException(status_code=403, detail="Invalid token")
-
-    # Parse update JSON once
+    # Read and log raw body for debugging (helps confirm delivery)
     try:
-        payload = await request.json()
+        body_text = await request.text()
     except Exception as e:
-        logger.exception("Failed to read JSON body: %s", e)
+        logger.exception("Failed to read request body: %s", e)
+        raise HTTPException(status_code=400, detail="Failed to read request body")
+
+    logger.info("WEBHOOK RAW BODY token_path=%s body_preview=%s", token, (body_text[:2000] + "...") if len(body_text) > 2000 else body_text)
+
+    # Token enforcement
+    if token != bot_token:
+        if _ALLOW_INSECURE:
+            logger.warning("Webhook token mismatch (path=%s bot=%s) but ALLOW_INSECURE_WEBHOOK is enabled; continuing for debug", token, bot_token)
+        else:
+            logger.warning("Invalid token on webhook path: %s", token)
+            raise HTTPException(status_code=403, detail="Invalid token")
+
+    # Parse update JSON once (use json.loads on the logged body)
+    try:
+        payload = json.loads(body_text)
+    except Exception as e:
+        logger.exception("Failed to parse JSON body: %s", e)
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
     try:
@@ -161,18 +180,24 @@ async def telegram_webhook(token: str, request: Request) -> Response:
 
     # Log a compact representation for debugging
     try:
-        logger.debug(
-            "WEBHOOK RECEIVED: update_id=%s, message=%s",
-            getattr(update, "update_id", None),
-            getattr(update, "message", None),
-        )
+        # Prefer channel_post summary if present
+        if getattr(update, "channel_post", None) is not None:
+            summary = f"channel_post id={getattr(update.channel_post, 'message_id', None)} chat={getattr(update.channel_post, 'chat', None)}"
+        else:
+            summary = f"message id={getattr(update.message, 'message_id', None)} chat={getattr(update.message, 'chat', None)}"
+        logger.debug("WEBHOOK RECEIVED: update_id=%s summary=%s", getattr(update, "update_id", None), summary)
     except Exception:
         logger.debug("WEBHOOK RECEIVED: could not extract summary")
 
     # Enqueue update for the Application to process
     try:
-        # Use put_nowait if you prefer non-blocking; await put to be safe
+        if getattr(telegram_app, "update_queue", None) is None:
+            logger.error("telegram_app.update_queue is not available; ensure application.start() was called")
+            # Return 200 to avoid Telegram retry storms but log the misconfiguration
+            return PlainTextResponse("OK", status_code=200)
+
         await telegram_app.update_queue.put(update)
+        logger.debug("Enqueued update_id=%s", getattr(update, "update_id", None))
     except Exception:
         logger.exception("Failed to enqueue update")
         # Return 200 to avoid Telegram retry storms, but log the failure
