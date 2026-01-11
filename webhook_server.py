@@ -148,9 +148,10 @@ async def telegram_webhook(token: str, request: Request) -> Response:
         logger.error("telegram_app.bot.token is not a string (value=%r)", bot_token)
         raise HTTPException(status_code=500, detail="Server misconfiguration")
 
-    # Read and log raw body for debugging (helps confirm delivery)
+    # Read and log raw body for debugging (use request.body() which returns bytes)
     try:
-        body_text = await request.text()
+        body_bytes = await request.body()
+        body_text = body_bytes.decode("utf-8", errors="replace")
     except Exception as e:
         logger.exception("Failed to read request body: %s", e)
         raise HTTPException(status_code=400, detail="Failed to read request body")
