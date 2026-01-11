@@ -1,4 +1,4 @@
-# handlers/menu.py
+﻿# handlers/menu.py
 from typing import Optional, Tuple, List, Dict, Any
 
 import logging
