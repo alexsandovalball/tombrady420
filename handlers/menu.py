@@ -8,6 +8,7 @@ Changes applied:
 - Use the same callback formats as product_view (CAT:...): CAT:VIEW, CAT:PAGE, CAT:OPEN_CAT, CAT:OPEN_SUB, CAT:BACK.
 - Safer handling of missing data and defensive logging.
 - Chunk long messages and keep keyboard labels short.
+- Fixed pagination: db.get_catalog_items does not accept an offset parameter; we fetch a window and slice in Python.
 """
 
 from __future__ import annotations
@@ -73,11 +74,11 @@ async def _build_catalog_page(
     offset = (page - 1) * PAGE_SIZE
 
     # Fetch a reasonably sized window from DB and filter in Python.
-    # We request a larger limit to allow filtering; if category filter is present,
-    # we may need to scan more rows to fill the page. Use a safety multiplier.
-    fetch_limit = PAGE_SIZE * 8 if category else PAGE_SIZE
+    # We request a larger limit to allow filtering; include offset in the fetch window.
+    fetch_limit = offset + (PAGE_SIZE * 8 if category else PAGE_SIZE * 4)
     try:
-        raw_items = await db.get_catalog_items(limit=fetch_limit, offset=offset)
+        # db.get_catalog_items does not accept offset; fetch a window and slice below
+        raw_items = await db.get_catalog_items(limit=fetch_limit)
     except Exception:
         logger.exception("Failed to fetch catalog items from DB")
         raw_items = []
@@ -90,39 +91,47 @@ async def _build_catalog_page(
     sub_key = canonicalize_key(subcategory) if subcategory else None
 
     # Filter items by category/subcategory
-    filtered = []
+    filtered_all: List[Dict[str, Any]] = []
     for p in raw_items:
         p_cat = (p.get("category") or "").strip().upper() or None
         p_sub = (p.get("subcategory") or "").strip().upper() or None
         if cat_key:
-            if not p_cat or p_cat != cat_key.upper():
+            if not p_cat or p_cat != (cat_key.upper() if isinstance(cat_key, str) else cat_key):
                 continue
         if sub_key:
-            if not p_sub or p_sub != sub_key.upper():
+            if not p_sub or p_sub != (sub_key.upper() if isinstance(sub_key, str) else sub_key):
                 continue
-        filtered.append(p)
+        filtered_all.append(p)
 
-    if not filtered:
+    if not filtered_all:
         return None, None
 
-    # Build keyboard rows for the page (limit to PAGE_SIZE)
+    total_filtered = len(filtered_all)
+    # Slice the page from the filtered results
+    page_items = filtered_all[offset : offset + PAGE_SIZE]
+    if not page_items:
+        return None, None
+
+    # Build keyboard rows for the page
     keyboard: List[List[InlineKeyboardButton]] = []
-    for p in filtered[:PAGE_SIZE]:
+    for p in page_items:
         label = _short_caption(p.get("caption", "")) or f"Product {p['id']}"
-        # Use product_view's callback format
         keyboard.append([InlineKeyboardButton(label, callback_data=f"CAT:VIEW:{p['id']}")])
 
     # Navigation row
     nav_row: List[InlineKeyboardButton] = []
-    # We don't know total count cheaply here; provide Prev/Next based on whether we fetched enough items
+    scope = ""
+    if cat_key:
+        scope = f"{cat_key}"
+        if sub_key:
+            scope = f"{cat_key}::{sub_key}"
+    # Previous
     if page > 1:
-        scope = f"{cat_key}::{sub_key}" if sub_key else (cat_key or "")
         nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"CAT:PAGE:{scope}::{page-1}"))
     # Current page indicator
-    scope = f"{cat_key}::{sub_key}" if sub_key else (cat_key or "")
     nav_row.append(InlineKeyboardButton(f"Page {page}", callback_data=f"CAT:PAGE:{scope}::{page}"))
-    # If we fetched more than PAGE_SIZE, assume there is a next page
-    if len(filtered) > PAGE_SIZE or len(raw_items) > PAGE_SIZE:
+    # Next if more items exist beyond this page
+    if offset + PAGE_SIZE < total_filtered:
         nav_row.append(InlineKeyboardButton("➡️ Next", callback_data=f"CAT:PAGE:{scope}::{page+1}"))
     keyboard.append(nav_row)
 
@@ -293,7 +302,7 @@ async def handle_catalog_pagination(
 
     # If the callback came from a catalog message the bot owns, try to edit that message
     try:
-        if query and query.message and getattr(query.message.from_user, "is_bot", False) and query.message.text and query.message.text.startswith(("Catalog", "Categories", "CATEGORIES", "CATALOG")):
+        if query and query.message and getattr(query.message.from_user, "is_bot", False) and query.message.text and query.message.text.upper().startswith(("CATALOG", "CATEGORIES", "CAT:")):
             try:
                 await query.message.edit_text(text, reply_markup=reply_markup)
                 context.user_data["catalog_message"] = {"chat_id": query.message.chat.id, "message_id": query.message.message_id}
@@ -413,15 +422,18 @@ async def handle_category_sub_callback(update: Update, context: ContextTypes.DEF
         sub = canonicalize_key(parts[2]) if len(parts) >= 3 and parts[2] else None
     elif data.startswith("CAT:OPEN_SUB:"):
         # payload format: CAT:OPEN_SUB:<CAT>::<SUB>
-        _, _, rest = data.partition(":")
-        # rest starts with "OPEN_SUB:..."
-        _, _, payload = rest.partition(":")
-        if "::" not in payload:
+        # split once after prefix
+        try:
+            _, _, payload = data.partition("CAT:OPEN_SUB:")
+            if "::" not in payload:
+                await query.answer("Invalid request", show_alert=True)
+                return
+            cat_raw, sub_raw = payload.split("::", 1)
+            cat = canonicalize_key(cat_raw)
+            sub = canonicalize_key(sub_raw)
+        except Exception:
             await query.answer("Invalid request", show_alert=True)
             return
-        cat_raw, sub_raw = payload.split("::", 1)
-        cat = canonicalize_key(cat_raw)
-        sub = canonicalize_key(sub_raw)
     else:
         await query.answer("Invalid request", show_alert=True)
         return

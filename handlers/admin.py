@@ -124,39 +124,93 @@ async def ingest_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         logger.info("Ingested message %s/%s -> saved ids=%s", chat_id, message_id, saved_ids)
 
-        # Decide whether to send admin preview (first writer wins for a media_group)
+        # Determine canonical media_group_id for this logical group.
+        # Order of preference:
+        # 1) explicit media_group_id from the incoming message
+        # 2) any saved product row that has a media_group_id (propagated by add_product)
+        # 3) a media_group_id already present in DB for this message (get_media_group_for_message)
+        # 4) synthetic id (chat:message) for single-file messages
+        canonical_mg: Optional[str] = None
         if media_group_id:
+            canonical_mg = media_group_id
+
+        if not canonical_mg:
+            # Check saved product rows for a propagated media_group_id
+            for pid in saved_ids:
+                try:
+                    prod = await db.get_product(pid)
+                    if prod:
+                        mg = prod.get("media_group_id")
+                        if mg:
+                            canonical_mg = mg
+                            break
+                except Exception:
+                    logger.debug("Failed to inspect saved product %s for media_group", pid, exc_info=True)
+
+        if not canonical_mg and message_id is not None and chat_id is not None:
             try:
-                should_send = await db.try_mark_media_group_preview_sent(media_group_id, chat_id)
+                mg_from_db = await db.get_media_group_for_message(message_id, chat_id)
+                if mg_from_db:
+                    canonical_mg = mg_from_db
             except Exception:
-                logger.exception("try_mark_media_group_preview_sent failed for %s/%s", media_group_id, chat_id)
-                should_send = False
-            if should_send:
-                await send_admin_preview(msg, media_group_id, chat_id, context)
+                logger.debug("get_media_group_for_message failed for %s/%s", message_id, chat_id, exc_info=True)
+
+        # If still no canonical group, use synthetic id for single-message items
+        if not canonical_mg:
+            canonical_mg = f"{chat_id}:{message_id}"
+
+        # Prefer a caption from any product in the group (if available)
+        preview_caption = msg.caption or ""
+        try:
+            if canonical_mg and canonical_mg != f"{chat_id}:{message_id}":
+                # fetch group products and prefer any non-empty caption
+                group_products = await db.get_products_by_media_group(canonical_mg, chat_id)
+                for p in group_products:
+                    cap = (p.get("caption") or "").strip()
+                    if cap:
+                        preview_caption = cap
+                        break
             else:
-                logger.debug("Preview already sent for media_group %s chat %s", media_group_id, chat_id)
+                # For synthetic group, check saved products for caption
+                for pid in saved_ids:
+                    prod = await db.get_product(pid)
+                    if prod:
+                        cap = (prod.get("caption") or "").strip()
+                        if cap:
+                            preview_caption = cap
+                            break
+        except Exception:
+            logger.debug("Failed to determine preview caption for %s", canonical_mg, exc_info=True)
+
+        # Decide whether to send admin preview (first writer wins for a media_group)
+        try:
+            should_send = await db.try_mark_media_group_preview_sent(canonical_mg, chat_id)
+        except Exception:
+            logger.exception("try_mark_media_group_preview_sent failed for %s/%s", canonical_mg, chat_id)
+            should_send = False
+
+        if should_send:
+            await send_admin_preview(msg, canonical_mg, chat_id, context, caption_override=preview_caption)
         else:
-            # Single-file message: synthetic group id to avoid duplicate previews
-            synthetic_mg = f"{chat_id}:{message_id}"
-            try:
-                should_send = await db.try_mark_media_group_preview_sent(synthetic_mg, chat_id)
-            except Exception:
-                logger.exception("try_mark_media_group_preview_sent failed for synthetic %s", synthetic_mg)
-                should_send = False
-            if should_send:
-                await send_admin_preview(msg, synthetic_mg, chat_id, context)
+            logger.debug("Preview already sent for media_group %s chat %s", canonical_mg, chat_id)
 
     except Exception:
         logger.exception("ingest_message failed")
 
 
-async def send_admin_preview(msg: Message, media_group_id: str, chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def send_admin_preview(
+    msg: Message,
+    media_group_id: str,
+    chat_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
+    caption_override: Optional[str] = None,
+) -> None:
     """
     Send a single preview to all admins with inline buttons to set category/subcategory.
     Callback payloads are stateless and include media_group_id and chat_id.
     """
     try:
-        caption = msg.caption or "(No caption)"
+        caption = caption_override if caption_override is not None else (msg.caption or "(No caption)")
         keyboard = []
 
         # Build top-level category buttons
@@ -295,14 +349,11 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 return
 
         elif action == "SETSUB":
-            # Expect parts: ["ADM","SETSUB","<mg>","<chat>","<cat>:<sub>"] OR we used maxsplit so last part contains "<cat>:<sub>"
-            # We used split(...,4) and then encoded cat and sub as separate colon-separated tokens in the last part.
-            # To be robust, re-split the raw data by ':' and extract the last two tokens as cat and sub.
+            # Expect parts: ["ADM","SETSUB","<mg>","<chat>:<cat>:<sub>"] or similar; robust parsing below
             raw_parts = data.split(":")
             if len(raw_parts) < 6:
                 await query.answer("Malformed SETSUB data", show_alert=True)
                 return
-            # raw_parts: ["ADM","SETSUB","<mg>","<chat>","<cat>","<sub>", ...] but we limited splits; handle common case
             mg = raw_parts[2]
             chat = raw_parts[3]
             cat = raw_parts[4]

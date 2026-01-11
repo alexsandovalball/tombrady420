@@ -50,6 +50,9 @@ from utils.helpers import setup_logging
 logger = logging.getLogger(__name__)
 setup_logging(LOG_LEVEL)
 
+# Background cleanup task handle
+_cleanup_task: Optional[asyncio.Task] = None
+
 
 def ensure_async(fn: Callable) -> Callable[..., Awaitable]:
     """
@@ -147,6 +150,7 @@ async def startup_tasks(app: Application) -> None:
     Tasks to run on startup: init DB and any other warmups.
     Call this before starting the Application (e.g., before run_polling or run_webhook).
     """
+    global _cleanup_task
     logger.info("Running startup tasks")
     # Initialize DB (idempotent)
     await init_db()
@@ -156,10 +160,27 @@ async def startup_tasks(app: Application) -> None:
     # Import and initialize handlers now that DB is ready (idempotent)
     try:
         import handlers  # local import to avoid circulars at module import time
-        await handlers.initialize_handlers(run_db_init=False)
+        # run_db_init is False because init_db() already ran above; enable cleanup here
+        await handlers.initialize_handlers(run_db_init=False, run_cleanup=True, cleanup_older_than_days=30)
         logger.info("Handlers initialized during startup tasks")
     except Exception:
         logger.exception("Failed to initialize handlers during startup tasks")
+
+    # Start a periodic cleanup task to keep processed_media_groups compact (non-fatal)
+    try:
+        async def _periodic_cleanup():
+            while True:
+                try:
+                    await db.cleanup_processed_media_groups(older_than_days=30)
+                    logger.info("Periodic processed_media_groups cleanup completed")
+                except Exception:
+                    logger.exception("Periodic cleanup failed")
+                await asyncio.sleep(24 * 3600)  # 24 hours
+
+        _cleanup_task = asyncio.create_task(_periodic_cleanup())
+        logger.info("Started periodic processed_media_groups cleanup task")
+    except Exception:
+        logger.exception("Failed to start periodic cleanup task (non-fatal)")
 
     # If DEBUG_LOG_UPDATES is enabled, log that debug mode is active
     if DEBUG_LOG_UPDATES:
@@ -172,7 +193,21 @@ async def shutdown_tasks(app: Application) -> None:
     """
     Tasks to run on shutdown.
     """
+    global _cleanup_task
     logger.info("Running shutdown tasks")
+    # Cancel periodic cleanup task if running
+    try:
+        if _cleanup_task:
+            _cleanup_task.cancel()
+            try:
+                await _cleanup_task
+            except Exception:
+                pass
+            _cleanup_task = None
+            logger.info("Periodic cleanup task cancelled")
+    except Exception:
+        logger.exception("Failed to cancel periodic cleanup task")
+
     # Place any cleanup logic here (close connections, flush caches)
     try:
         # If the DB exposes a close method, attempt to close it gracefully

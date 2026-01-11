@@ -26,7 +26,7 @@ import importlib
 import logging
 from typing import Iterable, List, Optional
 
-from database import init_db
+from database import init_db, db
 
 logger = logging.getLogger(__name__)
 
@@ -47,12 +47,18 @@ _HANDLER_MODULES: List[str] = [
 _initialized: bool = False
 
 
-async def initialize_handlers(import_modules: Optional[Iterable[str]] = None, run_db_init: bool = True) -> None:
+async def initialize_handlers(
+    import_modules: Optional[Iterable[str]] = None,
+    run_db_init: bool = True,
+    run_cleanup: bool = False,
+    cleanup_older_than_days: int = 30,
+) -> None:
     """
     Initialize the handlers package.
 
     This function will:
       - Optionally run database initialization (init_db).
+      - Optionally run a cleanup of processed media-group dedupe entries.
       - Import handler submodules listed in _HANDLER_MODULES (or the provided iterable).
 
     Call this once during your application's async startup (for example, from
@@ -62,6 +68,9 @@ async def initialize_handlers(import_modules: Optional[Iterable[str]] = None, ru
       import_modules: Optional iterable of module basenames to import instead of the default list.
       run_db_init: If True (default), call database.init_db() before importing handlers.
                    Set to False if DB initialization is handled elsewhere.
+      run_cleanup: If True, call db.cleanup_processed_media_groups(cleanup_older_than_days)
+                   after DB init to keep the processed_media_groups table compact.
+      cleanup_older_than_days: Age threshold in days for cleanup_processed_media_groups.
     """
     global _initialized
     if _initialized:
@@ -78,6 +87,16 @@ async def initialize_handlers(import_modules: Optional[Iterable[str]] = None, ru
             logger.info("Database initialization complete")
         except Exception:
             logger.exception("Database init_db() failed during handlers initialization; continuing to import handlers")
+
+    # Optional cleanup of processed media-group dedupe table to avoid unbounded growth
+    if run_cleanup:
+        try:
+            logger.info("Running processed_media_groups cleanup (older_than_days=%s)", cleanup_older_than_days)
+            # Ensure DB connection is available; init_db() above should have connected
+            await db.cleanup_processed_media_groups(older_than_days=cleanup_older_than_days)
+            logger.info("Processed media-groups cleanup complete")
+        except Exception:
+            logger.exception("Processed media-groups cleanup failed (non-fatal)")
 
     # Import handler modules so their registration code runs.
     # Use importlib.import_module to avoid relative import pitfalls at import time.

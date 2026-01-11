@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 # Per-user display locks to avoid concurrent duplicate sends / edits
 _user_locks: Dict[int, asyncio.Lock] = {}
 
+PAGE_SIZE = 8
+
 
 def _display_name(key: Optional[str]) -> str:
     """Return a human-friendly display name for a taxonomy key."""
@@ -180,7 +182,7 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         logger.exception("cb_catalog_router failed")
 
 
-async def show_products_for_category(query, category: str, subcategory: Optional[str], page: int = 0, per_page: int = 8):
+async def show_products_for_category(query, category: str, subcategory: Optional[str], page: int = 0, per_page: int = PAGE_SIZE):
     """
     Show a paginated list of products for a category (and optional subcategory).
     `query` is expected to be a CallbackQuery object so we can edit the message in-place.
@@ -190,7 +192,10 @@ async def show_products_for_category(query, category: str, subcategory: Optional
         cat_key = canonicalize_key(category) if category else ""
         sub_key = canonicalize_key(subcategory) if subcategory else None
 
-        items = await db.get_catalog_items()
+        # Fetch a reasonably sized window and filter in Python
+        # We fetch more than needed to allow pagination after filtering
+        fetch_limit = (page + 1) * per_page * 3
+        items = await db.get_catalog_items(limit=fetch_limit)
         if not items:
             await query.edit_message_text("No items available in the catalog.")
             return
@@ -200,7 +205,7 @@ async def show_products_for_category(query, category: str, subcategory: Optional
         for it in items:
             it_cat = (it.get("category") or "").strip().upper()
             it_sub = (it.get("subcategory") or "").strip().upper()
-            if it_cat != (cat_key or "").upper():
+            if (cat_key or "").upper() and it_cat != (cat_key or "").upper():
                 continue
             if sub_key and it_sub != sub_key.upper():
                 continue
@@ -223,7 +228,12 @@ async def show_products_for_category(query, category: str, subcategory: Optional
             keyboard.append([InlineKeyboardButton(text=btn_label, callback_data=f"CAT:VIEW:{it['id']}")])
             text_lines.append(f"• {title}")
 
-        scope = f"{category}::{subcategory}" if subcategory else category or ""
+        scope = ""
+        if cat_key:
+            scope = cat_key
+            if sub_key:
+                scope = f"{cat_key}::{sub_key}"
+
         pagination = build_pagination_keyboard(scope=scope, page=page, per_page=per_page, total=total)
         keyboard.extend(pagination)
 
@@ -254,8 +264,11 @@ async def show_product_detail(query, product_id: int):
         media_group_id = p.get("media_group_id")
         message_id = p.get("message_id")
 
+        # If media_group_id is falsy, use message_id as fallback for album actions
+        album_payload = media_group_id if media_group_id else (str(message_id) if message_id is not None else "")
+
         keyboard = [
-            [InlineKeyboardButton(text="Open album", callback_data=f"CAT:OPEN_ALBUM:{media_group_id or message_id}")],
+            [InlineKeyboardButton(text="Open album", callback_data=f"CAT:OPEN_ALBUM:{album_payload}")],
             [InlineKeyboardButton(text="Back", callback_data="CAT:BACK")],
         ]
 

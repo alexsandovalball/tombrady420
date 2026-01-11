@@ -88,6 +88,14 @@ class Database:
             )
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS processed_media_groups (
+                    media_group_id TEXT PRIMARY KEY,
+                    seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS ignored_messages (
                     message_id INTEGER NOT NULL,
                     chat_id INTEGER NOT NULL,
@@ -265,6 +273,25 @@ class Database:
         except Exception:
             logger.exception("get_products_by_media_group failed for %s/%s", media_group_id, chat_id)
             return []
+
+    async def get_media_group_for_message(self, message_id: int, chat_id: int) -> Optional[str]:
+        """
+        Return a media_group_id associated with a given message_id/chat_id if any product row
+        for that message has a non-empty media_group_id. Returns None if none found.
+        """
+        try:
+            conn = self._ensure_conn()
+            async with conn.execute(
+                "SELECT media_group_id FROM products WHERE message_id = ? AND chat_id = ? AND media_group_id IS NOT NULL LIMIT 1",
+                (int(message_id), int(chat_id)),
+            ) as cur:
+                row = await cur.fetchone()
+            if row and row["media_group_id"]:
+                return row["media_group_id"]
+            return None
+        except Exception:
+            logger.exception("get_media_group_for_message failed for %s/%s", message_id, chat_id)
+            return None
 
     async def update_products_by_media_group(self, media_group_id: str, chat_id: int, category: Optional[str], subcategory: Optional[str]) -> bool:
         """

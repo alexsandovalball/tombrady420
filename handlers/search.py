@@ -113,7 +113,8 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     keyboard = []
     for p in products:
         label = _short_caption(p.get("caption", "")) or f"Product {p.get('id')}"
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"product|{p.get('id')}")])
+        # Use the product view callback format so product buttons integrate with the catalog flow
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"CAT:VIEW:{p.get('id')}")])
 
     # Encode query_text for callback safety
     encoded_q = quote_plus(text)
@@ -199,7 +200,7 @@ async def handle_search_pagination(update: Update, context: ContextTypes.DEFAULT
     keyboard = []
     for p in products:
         label = _short_caption(p.get("caption", "")) or f"Product {p.get('id')}"
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"product|{p.get('id')}")])
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"CAT:VIEW:{p.get('id')}")])
 
     nav_row = []
     if page > 1:
@@ -300,7 +301,7 @@ async def handle_back_to_search(update: Update, context: ContextTypes.DEFAULT_TY
         keyboard = []
         for p in products:
             label = _short_caption(p.get("caption", "")) or f"Product {p.get('id')}"
-            keyboard.append([InlineKeyboardButton(label, callback_data=f"product|{p.get('id')}")])
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"CAT:VIEW:{p.get('id')}")])
 
         nav_row = []
         if page > 1:
