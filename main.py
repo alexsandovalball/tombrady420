@@ -1,4 +1,4 @@
-"""
+﻿"""
 Main entry point for the Telegram media catalog bot.
 """
 import sys
@@ -65,17 +65,37 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         if not has_media(update):
             return
 
-        file_id, file_type = get_file_id_and_type(update)
+        # Safely call helper and unpack results without clobbering media_group_id if helper returns fewer items
+        try:
+            res = get_file_id_and_type(update)
+            if not res:
+                return
+            # res may be (file_id, file_type) or (file_id, file_type, media_group_id)
+            if isinstance(res, (list, tuple)):
+                file_id = res[0] if len(res) > 0 else None
+                file_type = res[1] if len(res) > 1 else None
+                # Only override media_group_id if helper returned one
+                if len(res) > 2 and res[2]:
+                    media_group_id = res[2]
+            else:
+                # Unexpected return type
+                logger.warning("get_file_id_and_type returned unexpected type: %r", type(res))
+                return
+        except Exception:
+            logger.exception("Failed to extract file id/type from update")
+            return
+
         if not file_id:
             return
 
         caption = message.caption if getattr(message, "caption", None) else (message.text or "")
         caption = caption.strip() if isinstance(caption, str) else ""
 
+        # If media_group_id present but caption empty, try to inherit caption from existing group rows
         if media_group_id and not caption:
             try:
                 existing = await db.get_products_by_media_group(media_group_id, chat_id)
-                for ex in existing:
+                for ex in existing or []:
                     ex_caption = (ex.get("caption") or "").strip()
                     if ex_caption:
                         caption = ex_caption
@@ -237,7 +257,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last_ts = user_last_message.get(user_id, 0)
     if current_ts - last_ts < 1.0:
         if update.message:
-            await update.message.reply_text("⏳ Please wait a moment before sending another message.")
+            await update.message.reply_text("â³ Please wait a moment before sending another message.")
         return
 
     user_last_message[user_id] = current_ts
@@ -255,7 +275,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                text="❌ An unexpected error occurred. Please try again later.",
+                text="âŒ An unexpected error occurred. Please try again later.",
             )
         except Exception:
             logger.exception("Failed to notify user about an unexpected error")
@@ -421,7 +441,8 @@ def build_application():
     application.add_handler(CallbackQueryHandler(_wrap_catalog_pagination(handle_catalog_pagination), pattern=r"^category_page\|"))
 
     # Product and delete specific handlers (so they are handled before the generic router)
-    application.add_handler(CallbackQueryHandler(handle_product_callback, pattern=r"^(product\||\d+$)"))
+    # Pattern updated to match either product|... or a plain numeric id
+    application.add_handler(CallbackQueryHandler(handle_product_callback, pattern=r"^(product\|.*|\d+)$"))
     application.add_handler(CallbackQueryHandler(handle_delete_callback, pattern=r"^delete\|"))
 
     # Generic callback query handler LAST
