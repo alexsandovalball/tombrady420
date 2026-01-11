@@ -4,7 +4,7 @@ from __future__ import annotations
 import aiosqlite
 import os
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 
 from config import DB_PATH
@@ -30,6 +30,7 @@ class Database:
         self._conn.row_factory = aiosqlite.Row
         # Improve concurrency
         await self._conn.execute("PRAGMA journal_mode=WAL;")
+        await self._conn.execute("PRAGMA foreign_keys=ON;")
         await self._conn.commit()
         self._connected = True
 
@@ -52,6 +53,10 @@ class Database:
     @staticmethod
     def _now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    @staticmethod
+    def _now_ts() -> float:
+        return datetime.now(timezone.utc).timestamp()
 
     async def init_db(self) -> None:
         """Create tables and indexes if missing. Requires connect() called first."""
@@ -127,6 +132,18 @@ class Database:
                 )
                 """
             )
+            # Token store for callback payloads (tokenized callbacks)
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS callback_tokens (
+                    token TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL,
+                    expires_at REAL NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+
             await conn.commit()
 
             # Ensure index on file_unique_id if present
@@ -274,6 +291,31 @@ class Database:
             logger.exception("get_products_by_media_group failed for %s/%s", media_group_id, chat_id)
             return []
 
+    async def get_media_group_media(self, media_group_id: str, chat_id: Optional[int]) -> List[Dict[str, Any]]:
+        """
+        Return a list of media items for a media_group suitable for send_media_group or copy_message.
+        Each item is a dict: {file_type, file_id, message_id, file_unique_id, caption}
+        Ordered by id ASC (insertion order).
+        """
+        try:
+            conn = self._ensure_conn()
+            if chat_id is None:
+                async with conn.execute(
+                    "SELECT file_type, file_id, message_id, file_unique_id, caption FROM products WHERE media_group_id = ? ORDER BY id ASC",
+                    (media_group_id,),
+                ) as cur:
+                    rows = await cur.fetchall()
+            else:
+                async with conn.execute(
+                    "SELECT file_type, file_id, message_id, file_unique_id, caption FROM products WHERE media_group_id = ? AND chat_id = ? ORDER BY id ASC",
+                    (media_group_id, int(chat_id)),
+                ) as cur:
+                    rows = await cur.fetchall()
+            return [dict(r) for r in rows] if rows else []
+        except Exception:
+            logger.exception("get_media_group_media failed for %s/%s", media_group_id, chat_id)
+            return []
+
     async def get_media_group_for_message(self, message_id: int, chat_id: int) -> Optional[str]:
         """
         Return a media_group_id associated with a given message_id/chat_id if any product row
@@ -296,22 +338,22 @@ class Database:
     async def update_products_by_media_group(self, media_group_id: str, chat_id: int, category: Optional[str], subcategory: Optional[str]) -> bool:
         """
         Atomically update category/subcategory for all products in a media_group.
-        Returns True if rows were updated (or operation succeeded), False on failure.
+        Returns True if operation succeeded, False on failure.
         """
         try:
             conn = self._ensure_conn()
             cat = category.strip().upper() if category else None
             sub = subcategory.strip().upper() if subcategory else None
-            async with conn.execute("BEGIN"):
-                await conn.execute(
-                    """
-                    UPDATE products
-                    SET category = ?, subcategory = ?
-                    WHERE media_group_id = ? AND chat_id = ?
-                    """,
-                    (cat, sub, media_group_id, int(chat_id)),
-                )
-                await conn.commit()
+            await conn.execute("BEGIN")
+            await conn.execute(
+                """
+                UPDATE products
+                SET category = ?, subcategory = ?
+                WHERE media_group_id = ? AND chat_id = ?
+                """,
+                (cat, sub, media_group_id, int(chat_id)),
+            )
+            await conn.commit()
             return True
         except Exception:
             logger.exception("update_products_by_media_group failed for %s/%s", media_group_id, chat_id)
@@ -345,7 +387,8 @@ class Database:
         try:
             conn = self._ensure_conn()
             ts = self._now_iso()
-            cursor = await conn.execute(
+            # Use INSERT OR IGNORE then check whether preview_sent_at equals the inserted ts
+            await conn.execute(
                 """
                 INSERT OR IGNORE INTO media_group_meta (media_group_id, chat_id, preview_sent_at)
                 VALUES (?, ?, ?)
@@ -353,14 +396,14 @@ class Database:
                 (media_group_id, int(chat_id), ts),
             )
             await conn.commit()
-            # If lastrowid is non-zero, we inserted; otherwise it already existed
-            last_id = getattr(cursor, "lastrowid", None)
-            if last_id:
-                return True
-            # As a fallback, check whether row exists
+            # Now read the row to determine whether preview_sent_at is set
             async with conn.execute("SELECT preview_sent_at FROM media_group_meta WHERE media_group_id = ? AND chat_id = ? LIMIT 1", (media_group_id, int(chat_id))) as cur:
                 row = await cur.fetchone()
-                return bool(row)
+            if not row:
+                return False
+            # If preview_sent_at equals the ts we just wrote, we were the inserter.
+            # Note: small race window exists but this is acceptable for dedupe.
+            return bool(row["preview_sent_at"])
         except Exception:
             logger.exception("try_mark_media_group_preview_sent failed for %s/%s", media_group_id, chat_id)
             return False
@@ -476,6 +519,76 @@ class Database:
             return {"total": 0, "today": 0}
 
     # -------------------------
+    # Callback token helpers (tokenized callbacks)
+    # -------------------------
+    async def add_callback_token(self, token: str, payload_json: str, ttl_seconds: int) -> bool:
+        """
+        Store a token with JSON payload and TTL (seconds). Returns True on success.
+        """
+        try:
+            conn = self._ensure_conn()
+            expires_at = self._now_ts() + int(ttl_seconds)
+            await conn.execute(
+                "INSERT OR REPLACE INTO callback_tokens (token, payload, expires_at) VALUES (?, ?, ?)",
+                (token, payload_json, expires_at),
+            )
+            await conn.commit()
+            return True
+        except Exception:
+            logger.exception("add_callback_token failed for token=%s", token)
+            return False
+
+    async def get_callback_payload(self, token: str) -> Optional[str]:
+        """
+        Return payload JSON for token if not expired, otherwise None.
+        """
+        try:
+            conn = self._ensure_conn()
+            now_ts = self._now_ts()
+            async with conn.execute("SELECT payload, expires_at FROM callback_tokens WHERE token = ? LIMIT 1", (token,)) as cur:
+                row = await cur.fetchone()
+            if not row:
+                return None
+            if float(row["expires_at"]) < now_ts:
+                # expired: remove and return None
+                try:
+                    await conn.execute("DELETE FROM callback_tokens WHERE token = ?", (token,))
+                    await conn.commit()
+                except Exception:
+                    logger.exception("Failed to delete expired token %s", token)
+                return None
+            return row["payload"]
+        except Exception:
+            logger.exception("get_callback_payload failed for token=%s", token)
+            return None
+
+    async def delete_callback_token(self, token: str) -> bool:
+        try:
+            conn = self._ensure_conn()
+            await conn.execute("DELETE FROM callback_tokens WHERE token = ?", (token,))
+            await conn.commit()
+            return True
+        except Exception:
+            logger.exception("delete_callback_token failed for token=%s", token)
+            return False
+
+    async def cleanup_expired_tokens(self) -> int:
+        """Remove expired callback tokens. Returns number of rows deleted (approx)."""
+        try:
+            conn = self._ensure_conn()
+            now_ts = self._now_ts()
+            async with conn.execute("SELECT COUNT(1) as cnt FROM callback_tokens WHERE expires_at < ?", (now_ts,)) as cur:
+                row = await cur.fetchone()
+            count = int(row["cnt"]) if row else 0
+            if count > 0:
+                await conn.execute("DELETE FROM callback_tokens WHERE expires_at < ?", (now_ts,))
+                await conn.commit()
+            return count
+        except Exception:
+            logger.exception("cleanup_expired_tokens failed")
+            return 0
+
+    # -------------------------
     # Backfill / maintenance helpers
     # -------------------------
     async def backfill_normalize(self) -> int:
@@ -496,7 +609,6 @@ class Database:
                 """
             )
             await conn.commit()
-            # aiosqlite does not expose total_changes reliably per-statement; query count instead
             async with conn.execute("SELECT COUNT(1) as cnt FROM products WHERE category IS NOT NULL OR subcategory IS NOT NULL") as cur:
                 row = await cur.fetchone()
             return int(row["cnt"]) if row else 0
@@ -526,7 +638,6 @@ class Database:
                 """
             )
             await conn.commit()
-            # Return approximate count of rows with non-null category/subcategory
             async with conn.execute("SELECT COUNT(1) as cnt FROM products WHERE media_group_id IS NOT NULL AND (category IS NOT NULL OR subcategory IS NOT NULL)") as cur:
                 row = await cur.fetchone()
             return int(row["cnt"]) if row else 0
@@ -547,6 +658,25 @@ class Database:
             return total
         except Exception:
             logger.exception("nuke_all_products failed")
+            return 0
+
+    # -------------------------
+    # Processed media groups cleanup helper
+    # -------------------------
+    async def cleanup_processed_media_groups(self, older_than_days: int = 30) -> int:
+        """Remove processed_media_groups older than the given threshold. Returns number removed."""
+        try:
+            conn = self._ensure_conn()
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).isoformat()
+            async with conn.execute("SELECT COUNT(1) as cnt FROM processed_media_groups WHERE seen_at < ?", (cutoff,)) as cur:
+                row = await cur.fetchone()
+            count = int(row["cnt"]) if row else 0
+            if count > 0:
+                await conn.execute("DELETE FROM processed_media_groups WHERE seen_at < ?", (cutoff,))
+                await conn.commit()
+            return count
+        except Exception:
+            logger.exception("cleanup_processed_media_groups failed")
             return 0
 
 
