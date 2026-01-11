@@ -1,4 +1,4 @@
-"""
+﻿"""
 Product view and callback handlers for the catalog bot.
 """
 
@@ -27,15 +27,14 @@ logger = logging.getLogger(__name__)
 # -------------------------
 # Ingest helper
 # -------------------------
-async def ingest_and_save_product(
-    message: Any,
+async def ingest_and_save_product(message: Any,
     context: ContextTypes.DEFAULT_TYPE,
     file_id: str,
     file_type: str,
     msg_id: int,
     chat_id: int,
     media_group_id: Optional[str] = None,
-) -> int:
+    media_group_id=media_group_id,) -> int:
     """
     Normalize tags and save a single product row for this file.
     For media_group posts, insert one row per file_id while still returning
@@ -249,14 +248,14 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         except Exception:
             logger.exception("Database error fetching product id=%s", product_id)
             try:
-                await context.bot.send_message(chat_id=dest_chat_id, text="❌ Error fetching item from database.")
+                await context.bot.send_message(chat_id=dest_chat_id, text="âŒ Error fetching item from database.")
             except Exception:
                 logger.exception("Failed to notify user about DB error")
             return
 
         if not product:
             try:
-                await context.bot.send_message(chat_id=dest_chat_id, text="❌ Product not found.")
+                await context.bot.send_message(chat_id=dest_chat_id, text="âŒ Product not found.")
             except Exception:
                 logger.exception("Failed to notify user that product was not found")
             return
@@ -281,17 +280,17 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         except Exception:
             logger.exception("Error while sending product media for product_id=%s", product_id)
             try:
-                await context.bot.send_message(chat_id=dest_chat_id, text="❌ Failed to send media for this item.")
+                await context.bot.send_message(chat_id=dest_chat_id, text="âŒ Failed to send media for this item.")
             except Exception:
                 logger.exception("Failed to notify user after send error")
 
         # Build action buttons; show delete only to admins
         origin_info = context.user_data.get("origin_catalog_message")
         origin_page = origin_info.get("page") if isinstance(origin_info, dict) else context.user_data.get("catalog_page", 1)
-        buttons = [InlineKeyboardButton("⬅️ Back to catalog", callback_data=f"menu|{origin_page}")]
+        buttons = [InlineKeyboardButton("â¬…ï¸ Back to catalog", callback_data=f"menu|{origin_page}")]
         try:
             if user and is_admin(user.id):
-                buttons.append(InlineKeyboardButton("🗑️ Delete", callback_data=f"delete|{product_id}"))
+                buttons.append(InlineKeyboardButton("ðŸ—‘ï¸ Delete", callback_data=f"delete|{product_id}"))
         except Exception:
             logger.exception("is_admin check failed; continuing without admin button")
 
@@ -431,7 +430,7 @@ async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_T
     except Exception:
         logger.exception("DB error while loading product for delete id=%s", product_id)
         try:
-            await query.message.reply_text("❌ Error accessing database.")
+            await query.message.reply_text("âŒ Error accessing database.")
         except Exception:
             logger.exception("Failed to notify user after DB error")
         return
@@ -456,7 +455,7 @@ async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_T
     except Exception:
         logger.exception("Error deleting product(s) for id=%s", product_id)
         try:
-            await query.message.reply_text("❌ Error deleting item(s).")
+            await query.message.reply_text("âŒ Error deleting item(s).")
         except Exception:
             logger.exception("Failed to notify user after delete error")
         return

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Main entry point for the Telegram media catalog bot.
 """
 import sys
@@ -65,7 +65,7 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         if not has_media(update):
             return
 
-        file_id, file_type = get_file_id_and_type(update)
+        file_id, file_type, media_group_id = get_file_id_and_type(update)
         if not file_id:
             return
 
@@ -237,7 +237,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last_ts = user_last_message.get(user_id, 0)
     if current_ts - last_ts < 1.0:
         if update.message:
-            await update.message.reply_text("⏳ Please wait a moment before sending another message.")
+            await update.message.reply_text("â³ Please wait a moment before sending another message.")
         return
 
     user_last_message[user_id] = current_ts
@@ -255,7 +255,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                text="❌ An unexpected error occurred. Please try again later.",
+                text="âŒ An unexpected error occurred. Please try again later.",
             )
         except Exception:
             logger.exception("Failed to notify user about an unexpected error")
