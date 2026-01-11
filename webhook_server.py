@@ -1,15 +1,15 @@
-﻿# webhook_server.py
-"""
+﻿"""
 ASGI entrypoint for hosting the Telegram bot application under FastAPI.
 Initializes the database and starts/stops the telegram Application during FastAPI lifecycle events.
 """
 
 import json
 import logging
+import asyncio
 from fastapi import FastAPI, Request, Response
 
 from main import application  # imports the built Application object built by main.build_application()
-from database import init_db  # async convenience wrapper that delegates to db.init_db()
+from database import init_db, DB_PATH  # async convenience wrapper that delegates to db.init_db()
 
 # Logging setup for this module
 logger = logging.getLogger("webhook")
@@ -36,16 +36,27 @@ async def startup_event():
     try:
         logger.info("Initializing database...")
         await init_db()
-# Startup DB count diagnostic (non-destructive)
-try:
-    import aiosqlite
-    async with aiosqlite.connect(DB_PATH) as _conn:
-        _conn.row_factory = aiosqlite.Row
-        async with _conn.execute("SELECT COUNT(*) AS cnt FROM products") as _cur:
-            _r = await _cur.fetchone()
-            logger.info("Startup DB product count: %s", int(_r["cnt"]) if _r and "cnt" in _r.keys() else "unknown")
-except Exception:
-    logger.exception("Failed to read product count at startup")
+
+        # Non-blocking startup DB count diagnostic (safe)
+        async def _log_startup_db_count():
+            try:
+                import aiosqlite
+                async with aiosqlite.connect(DB_PATH) as _conn:
+                    _conn.row_factory = aiosqlite.Row
+                    async with _conn.execute("SELECT COUNT(*) AS cnt FROM products") as _cur:
+                        _r = await _cur.fetchone()
+                        try:
+                            cnt = int(_r["cnt"]) if _r and "cnt" in _r.keys() else "unknown"
+                        except Exception:
+                            cnt = "unknown"
+                        logger.info("Startup DB product count: %s", cnt)
+            except Exception:
+                logger.exception("Failed to read product count at startup")
+
+        try:
+            asyncio.create_task(_log_startup_db_count())
+        except Exception:
+            logger.exception("Failed to schedule startup DB count task")
 
         logger.info("Database initialized")
 
