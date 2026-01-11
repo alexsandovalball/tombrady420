@@ -1,82 +1,89 @@
-# webhook_server.py
-import json
+﻿# webhook_server.py
+"""
+ASGI entrypoint for hosting the bot behind a webhook using FastAPI + uvicorn.
+This file exposes `app` (FastAPI) so you can run `uvicorn webhook_server:app`.
+It starts the telegram Application on startup and stops it on shutdown.
+"""
+
+from __future__ import annotations
+
+import os
 import logging
-from fastapi import FastAPI, Request, Response
-
+import asyncio
+from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi.responses import PlainTextResponse
 from telegram import Update
-from main import application  # imports the built Application object
-from database import init_db  # ensure DB schema is created on startup
+from telegram.ext import Application
 
-# Logging setup
-logger = logging.getLogger("webhook")
-logger.setLevel(logging.INFO)
-logger.propagate = False
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+from main import build_application, startup_tasks, shutdown_tasks
+from config import USE_WEBHOOK, WEBHOOK_URL, LOG_LEVEL
 
-# Reduce noisy library logs
-logging.getLogger("httpx").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=LOG_LEVEL)
 
 app = FastAPI()
+telegram_app: Application | None = None
+
 
 @app.on_event("startup")
-async def startup_event():
-    """
-    Initialize the database schema, then ensure the telegram Application is
-    initialized and started when FastAPI starts. This lets the Application
-    consume application.update_queue and run handlers.
-    """
-    try:
-        logger.info("Initializing database...")
-        await init_db()
-        logger.info("Database initialized")
+async def _startup():
+    global telegram_app
+    logger.info("ASGI startup: building Telegram Application")
+    telegram_app = build_application()
+    # initialize (creates DB etc)
+    await telegram_app.initialize()
+    await startup_tasks(telegram_app)
+    # start the application (this starts internal tasks but does not block)
+    await telegram_app.start()
+    # If using webhook, set webhook and rely on FastAPI endpoint to receive updates
+    if USE_WEBHOOK:
+        if not WEBHOOK_URL:
+            raise RuntimeError("USE_WEBHOOK is true but WEBHOOK_URL is not set")
+        logger.info("Setting webhook to %s", WEBHOOK_URL)
+        await telegram_app.bot.set_webhook(WEBHOOK_URL)
+    logger.info("Telegram Application started")
 
-        logger.info("Starting telegram Application...")
-        await application.initialize()
-        await application.start()
-        logger.info("Telegram Application started")
-    except Exception:
-        logger.exception("Failed to start telegram Application or initialize DB")
-        raise
 
 @app.on_event("shutdown")
-async def shutdown_event():
+async def _shutdown():
+    global telegram_app
+    if telegram_app:
+        logger.info("Stopping Telegram Application")
+        if USE_WEBHOOK:
+            try:
+                await telegram_app.bot.delete_webhook()
+            except Exception:
+                logger.exception("Failed to delete webhook")
+        await telegram_app.stop()
+        await shutdown_tasks(telegram_app)
+        await telegram_app.shutdown()
+        telegram_app = None
+    logger.info("ASGI shutdown complete")
+
+
+@app.post("/webhook/{token}")
+async def telegram_webhook(token: str, request: Request) -> Response:
     """
-    Stop and shutdown the telegram Application cleanly when FastAPI shuts down.
+    Endpoint to receive Telegram updates when using webhook mode.
+    The path includes the bot token for a minimal auth check.
     """
+    global telegram_app
+    if not telegram_app:
+        raise HTTPException(status_code=503, detail="Bot not initialized")
+    # Basic token check
+    if token != telegram_app.bot.token:
+        raise HTTPException(status_code=403, detail="Invalid token")
+    body = await request.body()
     try:
-        logger.info("Stopping telegram Application...")
-        await application.stop()
-        await application.shutdown()
-        logger.info("Telegram Application stopped")
-    except Exception:
-        logger.exception("Failed to stop telegram Application")
-        raise
+        update = Update.de_json(await request.json(), telegram_app.bot)
+    except Exception as e:
+        logger.exception("Failed to parse update: %s", e)
+        raise HTTPException(status_code=400, detail="Invalid update payload")
+    # Process update asynchronously
+    await telegram_app.update_queue.put(update)
+    return PlainTextResponse("OK")
 
-@app.get("/")
-async def root():
-    return {"ok": True}
 
-@app.post("/webhook")
-async def webhook(request: Request):
-    try:
-        # Read raw body and log it
-        body_bytes = await request.body()
-        body_text = body_bytes.decode("utf-8")
-        logger.info("WEBHOOK RECEIVED: %s", body_text)
-
-        # Parse JSON and convert to Update
-        data = json.loads(body_text)
-        update = Update.de_json(data, application.bot)
-
-        # Put update into the application's queue
-        await application.update_queue.put(update)
-        logger.info("Update queued: update_id=%s", data.get("update_id"))
-
-        return Response(status_code=200)
-    except Exception:
-        logger.exception("WEBHOOK HANDLER ERROR")
-        raise
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
