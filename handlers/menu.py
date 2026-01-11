@@ -1,24 +1,26 @@
 # handlers/menu.py
+from typing import Optional, Tuple, List, Dict, Any
+
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
+
 from database import db
 from config.taxonomy import CATEGORIES, DISPLAY_NAMES
-import logging
-from typing import Optional, Tuple, List, Dict, Any
 
 logger = logging.getLogger(__name__)
 PAGE_SIZE = 5
 
 
-def _short_caption(caption: str, length: int = 40) -> str:
+def _short_caption(caption: Optional[str], length: int = 40) -> str:
     if not caption:
         return "No caption"
     caption = caption.strip().replace("\n", " ")
     return caption if len(caption) <= length else caption[: length - 1].rstrip() + "…"
 
 
-def _display_label(key: str) -> str:
+def _display_label(key: Optional[str]) -> str:
     """
     Return a human-friendly UPPERCASE label for taxonomy key.
     Uses DISPLAY_NAMES mapping first, then falls back to replacing underscores
@@ -38,7 +40,7 @@ def _display_label(key: str) -> str:
     return key.replace("_", " ").upper()
 
 
-async def _delete_last_displayed_messages(context: ContextTypes.DEFAULT_TYPE):
+async def _delete_last_displayed_messages(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Delete messages recorded in context.user_data['last_displayed_messages'].
     Clears the list afterwards.
@@ -57,24 +59,27 @@ async def _delete_last_displayed_messages(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _build_catalog_page(
-    context: ContextTypes.DEFAULT_TYPE, page: int, category: Optional[str] = None, subcategory: Optional[str] = None
+    context: ContextTypes.DEFAULT_TYPE,
+    page: int,
+    category: Optional[str] = None,
+    subcategory: Optional[str] = None,
 ) -> Tuple[Optional[str], Optional[InlineKeyboardMarkup]]:
     """
     Build the catalog text and InlineKeyboardMarkup for the given page.
     If category is provided, filter products by category (and optional subcategory).
     Returns (text, reply_markup).
-
-    Category and subcategory labels in the header are UPPERCASE with spaces preserved.
     """
     offset = (page - 1) * PAGE_SIZE
 
-    # If a category is provided, use the category-specific query
-    if category:
-        # subcategory may be empty string to indicate "All"
-        sub = subcategory if subcategory else None
-        products = await db.get_products_by_category(category, subcategory=sub, limit=PAGE_SIZE, offset=offset)
-    else:
-        products = await db.get_catalog_items(limit=PAGE_SIZE, offset=offset)
+    try:
+        if category:
+            sub = subcategory if subcategory else None
+            products = await db.get_products_by_category(category, subcategory=sub, limit=PAGE_SIZE, offset=offset)
+        else:
+            products = await db.get_catalog_items(limit=PAGE_SIZE, offset=offset)
+    except Exception:
+        logger.exception("Failed to fetch products for catalog page (page=%s category=%s sub=%s)", page, category, subcategory)
+        return None, None
 
     if not products:
         return None, None
@@ -86,7 +91,6 @@ async def _build_catalog_page(
 
     nav_row: List[InlineKeyboardButton] = []
     if page > 1:
-        # Preserve category/subcategory in pagination callbacks if present
         if category:
             # encode category/subcategory into callback so pagination can preserve filter
             if subcategory:
@@ -95,8 +99,10 @@ async def _build_catalog_page(
                 nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"category_page|{category}||{page-1}"))
         else:
             nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"catalog_page|{page-1}"))
+
     # Current page button (noop)
     nav_row.append(InlineKeyboardButton(f"Page {page}", callback_data="noop"))
+
     if category:
         if subcategory:
             nav_row.append(InlineKeyboardButton("➡️ Next", callback_data=f"category_page|{category}|{subcategory}|{page+1}"))
@@ -108,7 +114,6 @@ async def _build_catalog_page(
     keyboard.append(nav_row)
 
     if category:
-        # Header shows category and optional subcategory using display labels
         cat_label = _display_label(category)
         sub_label = f" — {_display_label(subcategory)}" if subcategory else ""
         header = f"{cat_label}{sub_label}"
@@ -124,26 +129,20 @@ async def _build_categories_menu() -> Tuple[str, InlineKeyboardMarkup]:
     """
     Build the top-level categories menu from the hardwired taxonomy.
     Returns (text, reply_markup).
-
-    Categories are shown in UPPERCASE with underscores replaced by spaces.
-    DATED PROOFS and CLIENT TOUCHDOWNS are placed at the bottom (CLIENT TOUCHDOWNS last).
     """
     keyboard: List[List[InlineKeyboardButton]] = []
 
     # Prepare ordered category list: alphabetical except DATEDPROOFS and CLIENTTOUCHDOWNS last
     cats = sorted(CATEGORIES.keys())
 
-    # Exact keys used in taxonomy for the special bottom categories
     bottom_first = "DATEDPROOFS"
     bottom_last = "CLIENTTOUCHDOWNS"
 
-    # Remove them if present, we'll append in desired order
     if bottom_first in cats:
         cats.remove(bottom_first)
     if bottom_last in cats:
         cats.remove(bottom_last)
 
-    # Append the special categories in the desired bottom order if they exist in taxonomy
     if bottom_first in CATEGORIES:
         cats.append(bottom_first)
     if bottom_last in CATEGORIES:
@@ -158,7 +157,7 @@ async def _build_categories_menu() -> Tuple[str, InlineKeyboardMarkup]:
     return text, reply_markup
 
 
-async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Show the categories menu as the first screen. Delete any previously displayed product media first.
     """
@@ -169,24 +168,20 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("origin_catalog_message", None)
     context.user_data.pop("catalog_page", None)
     context.user_data.pop("catalog_message", None)
-    # Clear selected filters when opening top-level menu
     context.user_data.pop("selected_category", None)
     context.user_data.pop("selected_subcategory", None)
 
     text, reply_markup = await _build_categories_menu()
-    # Send categories menu
     try:
         if update.message:
             msg = await update.message.reply_text(text, reply_markup=reply_markup)
         else:
-            # fallback: send to effective chat
             dest = update.effective_chat.id if update.effective_chat else None
             if dest:
                 msg = await context.bot.send_message(chat_id=dest, text=text, reply_markup=reply_markup)
             else:
                 logger.error("menu_command: no destination to send categories menu")
                 return
-        # Save reference to the catalog message so product_view can record origin if needed
         try:
             context.user_data["catalog_message"] = {"chat_id": msg.chat.id, "message_id": msg.message_id}
         except Exception:
@@ -201,38 +196,29 @@ async def handle_catalog_pagination(
     page: Optional[int] = None,
     category: Optional[str] = None,
     subcategory: Optional[str] = None,
-):
+) -> None:
     """
     Show a specific page of the catalog as buttons.
-    If category is provided, show products filtered by that category/subcategory.
-    Delete any previously displayed product media first.
-    Prefer editing the original catalog message (origin_catalog_message) when available;
-    otherwise edit the callback message if it is a catalog message; fallback to sending a new message.
     """
     query = update.callback_query
 
-    # If page was not provided by the caller, attempt to parse it from callback data
+    # Parse page if not provided
     if page is None:
+        parsed_page = 1
         try:
             data = (query.data or "").strip() if query else ""
             parts = data.split("|") if data else []
             # Expect patterns like: category_page|CATEGORY|SUBCATEGORY|<page> or catalog_page|<page>
-            parsed_page = None
             if parts:
-                # Try last part first
-                last = parts[-1]
-                if last.isdigit():
-                    parsed_page = int(last)
-                else:
-                    # search backwards for a numeric token
-                    for token in reversed(parts):
-                        if token.isdigit():
-                            parsed_page = int(token)
-                            break
-            page = parsed_page or 1
+                # find last numeric token
+                for token in reversed(parts):
+                    if token.isdigit():
+                        parsed_page = int(token)
+                        break
         except Exception:
             logger.exception("Failed to parse page from callback data; defaulting to 1")
-            page = 1
+            parsed_page = 1
+        page = parsed_page
 
     # Acknowledge early if we have a query
     if query:
@@ -257,7 +243,7 @@ async def handle_catalog_pagination(
     if subcategory is None:
         subcategory = context.user_data.get("selected_subcategory")
 
-    # Persist selected filters so subsequent navigation and origin recording can restore them
+    # Persist selected filters
     if category:
         context.user_data["selected_category"] = category
     else:
@@ -269,12 +255,10 @@ async def handle_catalog_pagination(
 
     text, reply_markup = await _build_catalog_page(context, page, category=category, subcategory=subcategory)
     if not text:
-        # No products on this page
         try:
             if query and query.message:
                 await query.message.reply_text("No more products.")
             else:
-                # fallback: send to user
                 dest = update.effective_chat.id if update.effective_chat else None
                 if dest:
                     await context.bot.send_message(chat_id=dest, text="No more products.")
@@ -292,13 +276,11 @@ async def handle_catalog_pagination(
                 text=text,
                 reply_markup=reply_markup,
             )
-            # Save the catalog message reference and clear origin (we've restored it)
             context.user_data["catalog_message"] = {"chat_id": origin["chat_id"], "message_id": origin["message_id"]}
             context.user_data.pop("origin_catalog_message", None)
             return
         except BadRequest as e:
             if "Message is not modified" in str(e):
-                # Safe to ignore: content is already correct
                 logger.debug("Catalog message already up to date, no edit needed")
                 context.user_data.pop("origin_catalog_message", None)
                 return
@@ -345,11 +327,10 @@ async def handle_catalog_pagination(
 # -------------------------
 # Category and subcategory callbacks
 # -------------------------
-async def handle_category_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_category_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Callback data: category|<CAT>
     Show subcategories for the chosen category and an 'All' button.
-    Subcategory labels are UPPERCASE with spaces preserved.
     """
     query = update.callback_query
     if not query:
@@ -369,7 +350,6 @@ async def handle_category_callback(update: Update, context: ContextTypes.DEFAULT
         return
 
     cat = parts[1].strip().upper()
-    # Validate category exists in taxonomy
     if cat not in CATEGORIES:
         try:
             await query.answer("Unknown category", show_alert=True)
@@ -378,20 +358,14 @@ async def handle_category_callback(update: Update, context: ContextTypes.DEFAULT
         return
 
     subs = CATEGORIES.get(cat, []) or []
-
-    # normalize subs and ignore implicit ALL entries and empty values
     display_subs = [s for s in subs if s and s.strip() and s.strip().upper() != "ALL"]
 
-    # If there are no real subcategories, open the category page immediately
     if not display_subs:
-        # Persist selected category and clear subcategory
         context.user_data["selected_category"] = cat
         context.user_data.pop("selected_subcategory", None)
-        # Use handle_catalog_pagination to show first page of this category
         try:
             await handle_catalog_pagination(update, context, page=1, category=cat)
         except Exception:
-            # Fallback: try without explicit category (handler will read selected_category)
             try:
                 await handle_catalog_pagination(update, context, page=1)
             except Exception:
@@ -399,12 +373,10 @@ async def handle_category_callback(update: Update, context: ContextTypes.DEFAULT
         return
 
     buttons: List[List[InlineKeyboardButton]] = []
-    # "All" button shows all products in category
     buttons.append([InlineKeyboardButton("ALL", callback_data=f"category_sub|{cat}|")])
     for s in subs:
         buttons.append([InlineKeyboardButton(_display_label(s), callback_data=f"category_sub|{cat}|{s}")])
 
-    # Add a Back to categories button
     buttons.append([InlineKeyboardButton("⬅️ BACK TO CATEGORIES", callback_data="menu_categories")])
 
     try:
@@ -418,7 +390,7 @@ async def handle_category_callback(update: Update, context: ContextTypes.DEFAULT
         logger.exception("Unexpected error while showing subcategories")
 
 
-async def handle_category_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_category_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Callback data: category_sub|<CAT>|<SUB>
     If SUB is empty, show all products in CAT. Otherwise show products filtered by CAT/SUB.
@@ -433,7 +405,6 @@ async def handle_category_sub_callback(update: Update, context: ContextTypes.DEF
 
     data = (query.data or "").strip()
     parts = data.split("|")
-    # Expecting at least ['category_sub', CAT, SUB?]
     if len(parts) < 2:
         try:
             await query.answer("Invalid request", show_alert=True)
@@ -451,25 +422,19 @@ async def handle_category_sub_callback(update: Update, context: ContextTypes.DEF
             logger.exception("Failed to notify user about unknown category")
         return
 
-    # If sub provided, validate it
     if sub and sub not in CATEGORIES.get(cat, []):
-        # treat as All if invalid
         sub = None
 
-    # Persist selected filters so back/restore works
     context.user_data["selected_category"] = cat
     if sub:
-        # store compact form for consistency with DB (no spaces/underscores)
         context.user_data["selected_subcategory"] = sub.strip().upper().replace(" ", "").replace("_", "")
     else:
         context.user_data.pop("selected_subcategory", None)
 
-    # Show first page of filtered catalog
     await handle_catalog_pagination(update, context, page=1, category=cat, subcategory=context.user_data.get("selected_subcategory"))
 
 
-# Helper to show categories again (callback data "menu_categories")
-async def handle_menu_categories_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_menu_categories_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query:
         return
@@ -478,7 +443,6 @@ async def handle_menu_categories_callback(update: Update, context: ContextTypes.
     except Exception:
         logger.exception("Failed to answer menu_categories callback (non-fatal)")
 
-    # Clear selected filters when returning to top-level categories
     context.user_data.pop("selected_category", None)
     context.user_data.pop("selected_subcategory", None)
 

@@ -7,6 +7,9 @@ import os
 import json
 import logging
 import asyncio
+import time
+from typing import Optional, Dict, Any
+
 from fastapi import FastAPI, Request, Response
 
 from main import application  # imports the built Application object built by main.build_application()
@@ -39,6 +42,11 @@ if _INCOMING_DIAG_ENABLED:
         _diag_logger.addHandler(_h)
 else:
     _diag_logger = None
+
+# Simple in-memory recent-update dedupe (prevents immediate duplicate enqueue)
+_recent_updates_lock = asyncio.Lock()
+_recent_updates: Dict[int, float] = {}  # update_id -> timestamp
+_RECENT_UPDATE_TTL = 5.0  # seconds to consider duplicates
 
 
 @app.on_event("startup")
@@ -104,10 +112,93 @@ async def root():
     return {"ok": True}
 
 
+async def _enqueue_update_object(update_obj: Any, raw_data: Dict[str, Any]) -> Optional[str]:
+    """
+    Enqueue a telegram.Update object into the application's update_queue.
+    Returns None on success, or an error string on failure.
+    """
+    try:
+        if not hasattr(application, "update_queue") or application.update_queue is None:
+            logger.error("Application has no update_queue; cannot enqueue update")
+            return "Server misconfiguration"
+
+        # Deduplicate by update_id if present in raw_data
+        try:
+            update_id = int(raw_data.get("update_id")) if raw_data.get("update_id") is not None else None
+        except Exception:
+            update_id = None
+
+        if update_id is not None:
+            now = time.time()
+            async with _recent_updates_lock:
+                # purge old entries
+                to_delete = [uid for uid, ts in _recent_updates.items() if now - ts > _RECENT_UPDATE_TTL]
+                for uid in to_delete:
+                    _recent_updates.pop(uid, None)
+
+                if update_id in _recent_updates:
+                    logger.info("Duplicate update ignored (recent): update_id=%s", update_id)
+                    return None  # treat as success but do not enqueue
+                _recent_updates[update_id] = now
+
+        await application.update_queue.put(update_obj)
+        logger.info("Update queued: update_id=%s", raw_data.get("update_id"))
+        return None
+    except Exception:
+        logger.exception("Failed to enqueue update")
+        return "Internal enqueue error"
+
+
+async def _process_payload_dict(data: Dict[str, Any]) -> (int, str):
+    """
+    Convert a parsed JSON dict to a telegram.Update and enqueue it.
+    Returns (status_code, message).
+    """
+    # Convert to Update using the application's bot instance if possible
+    update = None
+    try:
+        bot = getattr(application, "bot", None)
+        if bot and hasattr(bot, "update_factory"):
+            update = bot.update_factory(data)
+    except Exception:
+        logger.exception("update_factory conversion failed; will try fallback")
+
+    if update is None:
+        # Fallback to telegram.Update.de_json for older versions
+        try:
+            from telegram import Update as _Update  # local import to avoid import-time side effects
+            update = _Update.de_json(data, getattr(application, "bot", None))
+        except Exception:
+            logger.exception("Failed to construct Update from payload")
+            return 500, "Failed to construct Update"
+
+    err = await _enqueue_update_object(update, data)
+    if err:
+        if err == "Server misconfiguration":
+            return 500, err
+        return 200, None  # treat enqueue dedupe as success
+    return 200, None
+
+
 # Base webhook handler: converts payload to Update and enqueues it
+async def _base_webhook_from_dict(data: Dict[str, Any]) -> Response:
+    """
+    Accept a parsed JSON dict (Telegram update), convert to Update, and enqueue into the Application.
+    Returns a FastAPI Response.
+    """
+    try:
+        status, msg = await _process_payload_dict(data)
+        if status == 200:
+            return Response(status_code=200)
+        return Response(status_code=status, content=msg or "")
+    except Exception:
+        logger.exception("WEBHOOK HANDLER ERROR")
+        return Response(status_code=500, content="Internal server error")
+
+
 async def _base_webhook(request: Request) -> Response:
     """
-    Accept Telegram webhook POSTs, convert JSON to Update, and enqueue into the Application.
+    Accept Telegram webhook POSTs, parse JSON, convert to Update, and enqueue into the Application.
     Returns 200 on success, 400 for bad payload, 500 for internal errors.
     """
     try:
@@ -115,7 +206,6 @@ async def _base_webhook(request: Request) -> Response:
         try:
             body_text = body_bytes.decode("utf-8")
         except Exception:
-            # Fallback: try direct json load from bytes
             body_text = None
 
         if body_text:
@@ -133,40 +223,18 @@ async def _base_webhook(request: Request) -> Response:
                 logger.warning("Invalid JSON payload received on /webhook (bytes parse failed)")
                 return Response(status_code=400, content="Invalid JSON")
 
-        # Convert to Update using the application's bot instance if possible
-        update = None
-        try:
-            bot = getattr(application, "bot", None)
-            if bot and hasattr(bot, "update_factory"):
-                update = bot.update_factory(data)
-        except Exception:
-            logger.exception("update_factory conversion failed; will try fallback")
-
-        if update is None:
-            # Fallback to telegram.Update.de_json for older versions
-            try:
-                from telegram import Update as _Update  # local import to avoid import-time side effects
-                update = _Update.de_json(data, getattr(application, "bot", None))
-            except Exception:
-                logger.exception("Failed to construct Update from payload")
-                return Response(status_code=500, content="Failed to construct Update")
-
-        # Ensure application has an update_queue to accept updates
-        if not hasattr(application, "update_queue") or application.update_queue is None:
-            logger.error("Application has no update_queue; cannot enqueue update")
-            return Response(status_code=500, content="Server misconfiguration")
-
-        await application.update_queue.put(update)
-        logger.info("Update queued: update_id=%s", data.get("update_id"))
-        return Response(status_code=200)
+        return await _base_webhook_from_dict(data)
     except Exception:
         logger.exception("WEBHOOK HANDLER ERROR")
-        # Return 500 rather than re-raising to avoid crashing the ASGI worker on single bad update
         return Response(status_code=500, content="Internal server error")
 
 
 # Optional diagnostic wrapper that logs top-level keys and finds media_group_id/caption
 async def _diagnostic_wrapper(request: Request) -> Response:
+    """
+    Diagnostic wrapper that parses the request body once, logs top-level keys and
+    any media_group_id/caption occurrences, then forwards the parsed dict to the base handler.
+    """
     try:
         body_bytes = await request.body()
         try:
@@ -215,7 +283,13 @@ async def _diagnostic_wrapper(request: Request) -> Response:
         # Diagnostic must never block the main handler
         if _diag_logger:
             _diag_logger.exception("Diagnostic wrapper failed to parse request")
-    # Call base handler to perform normal processing
+        _data = None
+
+    # If we successfully parsed JSON, forward it to the base handler that accepts dict
+    if isinstance(_data, dict):
+        return await _base_webhook_from_dict(_data)
+
+    # Fallback: let base handler read/parse the body itself
     return await _base_webhook(request)
 
 

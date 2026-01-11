@@ -1,23 +1,28 @@
 ﻿# handlers/search.py
 import logging
+from typing import Optional, List, Dict, Any
+
+from urllib.parse import quote_plus, unquote_plus
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 
 from database import db  # use the shared async DB instance
+
 logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 5
 
 
-def _short_caption(caption: str, length: int = 40) -> str:
+def _short_caption(caption: Optional[str], length: int = 40) -> str:
     if not caption:
         return "No caption"
     caption = caption.strip().replace("\n", " ")
     return caption if len(caption) <= length else caption[: length - 1].rstrip() + "…"
 
 
-async def _delete_last_displayed_messages(context: ContextTypes.DEFAULT_TYPE):
+async def _delete_last_displayed_messages(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Delete product display messages recorded in user_data."""
     bot = context.bot
     last = context.user_data.get("last_displayed_messages") or []
@@ -31,38 +36,49 @@ async def _delete_last_displayed_messages(context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("last_displayed_messages", None)
 
 
-def _dedupe_products(products):
+def _dedupe_products(products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Deduplicate products by media_group_id (album) or message_id (single),
+    Deduplicate products by file_unique_id, then media_group_id, then message_id,
     keeping the first occurrence as the representative entry.
     """
     unique = {}
     for p in products or []:
-        key = p.get("media_group_id") or p.get("message_id")
-        if key is None:
-            # Fallback: use product id if both are missing
-            key = p.get("id")
+        # Build a stable key preference order
+        key = None
+        fu = p.get("file_unique_id")
+        mg = p.get("media_group_id")
+        mid = p.get("message_id")
+        pid = p.get("id")
+        if fu:
+            key = f"fu:{fu}"
+        elif mg:
+            key = f"mg:{mg}"
+        elif mid:
+            key = f"msg:{mid}"
+        else:
+            key = f"id:{pid}"
         if key not in unique:
             unique[key] = p
     return list(unique.values())
 
 
-async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handle a search query typed by the user.
     Sends a search results message with product buttons and records it in user_data.
     """
+    # Safely extract text
+    text = ""
     try:
-        text = (update.message.text or "").strip() if update.message else ""
-        logger.debug("handle_search called: user=%s text=%s", getattr(update.effective_user, "id", None), text)
+        if update.message and update.message.text:
+            text = update.message.text.strip()
     except Exception:
-        logger.exception("Failed to log entry into handle_search")
-        text = (update.message.text or "").strip() if update.message else ""
+        logger.exception("Failed to read incoming search text")
 
-    query_text = text
-    if not query_text:
+    if not text:
         try:
-            await update.message.reply_text("❌ Please enter a search term.")
+            if update.message:
+                await update.message.reply_text("❌ Please enter a search term.")
         except Exception:
             logger.debug("Failed to send empty-query reply")
         return
@@ -73,12 +89,14 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         logger.exception("Failed to delete last displayed messages before search")
 
+    # Query DB
     try:
-        products = await db.search_products(query_text, limit=PAGE_SIZE, offset=0)
+        products = await db.search_products(text, limit=PAGE_SIZE, offset=0)
     except Exception:
         logger.exception("Database search_products failed")
         try:
-            await update.message.reply_text("⚠️ Search failed due to an internal error. Please try again later.")
+            if update.message:
+                await update.message.reply_text("⚠️ Search failed due to an internal error. Please try again later.")
         except Exception:
             logger.debug("Failed to notify user about search failure")
         return
@@ -86,7 +104,8 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     products = _dedupe_products(products)
     if not products:
         try:
-            await update.message.reply_text(f"No results found for '{query_text}'.")
+            if update.message:
+                await update.message.reply_text(f"No results found for '{text}'.")
         except Exception:
             logger.debug("Failed to send no-results reply")
         return
@@ -96,35 +115,50 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         label = _short_caption(p.get("caption", "")) or f"Product {p.get('id')}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"product|{p.get('id')}")])
 
+    # Encode query_text for callback safety
+    encoded_q = quote_plus(text)
     nav_row = [
         InlineKeyboardButton("Page 1", callback_data="noop"),
-        InlineKeyboardButton("➡️ Next", callback_data=f"search_page|{query_text}|2"),
+        InlineKeyboardButton("➡️ Next", callback_data=f"search_page|{encoded_q}|2"),
     ]
     keyboard.append(nav_row)
 
     try:
-        msg = await update.message.reply_text(
-            f"Search results for '{query_text}':",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
+        if update.message:
+            msg = await update.message.reply_text(
+                f"Search results for '{text}':",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+        else:
+            # fallback: send to effective chat
+            dest = update.effective_chat.id if update.effective_chat else None
+            if dest:
+                msg = await context.bot.send_message(chat_id=dest, text=f"Search results for '{text}':", reply_markup=InlineKeyboardMarkup(keyboard))
+            else:
+                logger.error("handle_search: no destination to send search results")
+                return
     except Exception:
         logger.exception("Failed to send search results message")
         try:
-            await update.message.reply_text("⚠️ Failed to send search results. Please try again.")
+            if update.message:
+                await update.message.reply_text("⚠️ Failed to send search results. Please try again.")
         except Exception:
             logger.debug("Fallback send after search results failure also failed")
         return
 
     # Record origin search message
-    context.user_data["search_message"] = {
-        "chat_id": msg.chat.id,
-        "message_id": msg.message_id,
-        "query": query_text,
-        "page": 1,
-    }
+    try:
+        context.user_data["search_message"] = {
+            "chat_id": msg.chat.id,
+            "message_id": msg.message_id,
+            "query": text,
+            "page": 1,
+        }
+    except Exception:
+        logger.exception("Failed to record search_message in user_data")
 
 
-async def handle_search_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE, query_text: str, page: int):
+async def handle_search_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE, query_text: str, page: int) -> None:
     """Show a specific page of search results."""
     q = update.callback_query
     if q:
@@ -169,9 +203,9 @@ async def handle_search_pagination(update: Update, context: ContextTypes.DEFAULT
 
     nav_row = []
     if page > 1:
-        nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"search_page|{query_text}|{page-1}"))
+        nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"search_page|{quote_plus(query_text)}|{page-1}"))
     nav_row.append(InlineKeyboardButton(f"Page {page}", callback_data="noop"))
-    nav_row.append(InlineKeyboardButton("➡️ Next", callback_data=f"search_page|{query_text}|{page+1}"))
+    nav_row.append(InlineKeyboardButton("➡️ Next", callback_data=f"search_page|{quote_plus(query_text)}|{page+1}"))
     keyboard.append(nav_row)
 
     text = f"Search results for '{query_text}':"
@@ -209,7 +243,7 @@ async def handle_search_pagination(update: Update, context: ContextTypes.DEFAULT
         logger.exception("Unexpected error while updating search pagination message")
 
 
-async def handle_back_to_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_back_to_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Return to the original search results message by editing it in place.
     Deletes product display messages to keep chat tidy.
@@ -270,9 +304,9 @@ async def handle_back_to_search(update: Update, context: ContextTypes.DEFAULT_TY
 
         nav_row = []
         if page > 1:
-            nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"search_page|{query_text}|{page-1}"))
+            nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"search_page|{quote_plus(query_text)}|{page-1}"))
         nav_row.append(InlineKeyboardButton(f"Page {page}", callback_data="noop"))
-        nav_row.append(InlineKeyboardButton("➡️ Next", callback_data=f"search_page|{query_text}|{page+1}"))
+        nav_row.append(InlineKeyboardButton("➡️ Next", callback_data=f"search_page|{quote_plus(query_text)}|{page+1}"))
         keyboard.append(nav_row)
 
         reply_markup = InlineKeyboardMarkup(keyboard)

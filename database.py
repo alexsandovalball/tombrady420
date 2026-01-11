@@ -64,6 +64,7 @@ class Database:
                     category TEXT,
                     subcategory TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    file_unique_id TEXT,
                     UNIQUE(message_id, chat_id, file_id)
                 )
                 """
@@ -121,18 +122,16 @@ class Database:
 
             await self._ensure_category_columns(db)
 
-            # Ensure a unique index on file_id exists to help prevent duplicates
-            try:
-                await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_products_file_id ON products(file_id)")
-                await db.commit()
-            except Exception:
-                logger.exception("Failed to ensure unique index on file_id (non-fatal)")
-
-            # Ensure file_unique_id index exists if column present
+            # Ensure file_unique_id index exists if column present; avoid unique index on file_id
             try:
                 async with db.execute("PRAGMA table_info(products);") as cur:
                     cols = await cur.fetchall()
                     col_names = {r[1] for r in cols}
+                # Drop index on file_id if it exists (non-fatal)
+                try:
+                    await db.execute("DROP INDEX IF EXISTS idx_products_file_id")
+                except Exception:
+                    pass
                 if "file_unique_id" in col_names:
                     await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_products_file_unique_id ON products(file_unique_id)")
                     await db.commit()
@@ -143,7 +142,7 @@ class Database:
 
     async def _ensure_category_columns(self, db: aiosqlite.Connection) -> None:
         """
-        Ensure 'category' and 'subcategory' columns exist in products table.
+        Ensure 'category', 'subcategory', and 'file_unique_id' columns exist in products table.
         This is idempotent and safe to call repeatedly.
         """
         try:
@@ -189,8 +188,7 @@ class Database:
         """
         Add a new product to the database.
         Returns the product id on success, -1 on failure.
-        If a matching product already exists (by unique constraint), returns its id.
-        Deduplication preference: file_unique_id (if provided), then file_id.
+        Deduplication preference: file_unique_id (if provided), then message_id+chat_id+file_id, then file_id+chat_id.
         """
         try:
             async with aiosqlite.connect(self.db_path) as db:
@@ -198,8 +196,8 @@ class Database:
                 cat = category.strip().upper() if category else None
                 sub = subcategory.strip().upper() if subcategory else None
 
-                # If message_id is None, store 0 for compatibility with older rows
-                msg_id_val = int(message_id) if message_id is not None else 0
+                # Keep message_id as None when missing (store NULL in DB)
+                msg_id_val = int(message_id) if message_id is not None else None
 
                 created_at = datetime.utcnow().isoformat()
                 cursor = await db.execute(
@@ -228,7 +226,7 @@ class Database:
                     return int(last_id)
 
                 # If INSERT was ignored due to unique constraint, try to find the existing row.
-                # Prefer match by file_unique_id if provided.
+                # 1) Prefer match by file_unique_id if provided.
                 if file_unique_id:
                     async with db.execute(
                         "SELECT id FROM products WHERE file_unique_id = ? AND chat_id = ? LIMIT 1",
@@ -238,8 +236,8 @@ class Database:
                         if row_fu:
                             return int(row_fu["id"])
 
-                # Next prefer exact match by message_id/chat_id/file_id if message_id provided.
-                if message_id is not None:
+                # 2) If message_id is provided, try exact match by message_id/chat_id/file_id.
+                if msg_id_val is not None:
                     async with db.execute(
                         "SELECT id FROM products WHERE message_id = ? AND chat_id = ? AND file_id = ? LIMIT 1",
                         (msg_id_val, int(chat_id), file_id),
@@ -248,7 +246,7 @@ class Database:
                         if row2:
                             return int(row2["id"])
 
-                # Fallback: find by file_id and chat_id
+                # 3) Fallback: find by file_id and chat_id
                 async with db.execute(
                     "SELECT id FROM products WHERE file_id = ? AND chat_id = ? LIMIT 1",
                     (file_id, int(chat_id)),
