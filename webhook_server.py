@@ -1,4 +1,4 @@
-# webhook_server.py
+﻿# webhook_server.py
 """
 ASGI entrypoint for hosting the Telegram bot application under FastAPI.
 Initializes the database and starts/stops the telegram Application during FastAPI lifecycle events.
@@ -36,6 +36,17 @@ async def startup_event():
     try:
         logger.info("Initializing database...")
         await init_db()
+# Startup DB count diagnostic (non-destructive)
+try:
+    import aiosqlite
+    async with aiosqlite.connect(DB_PATH) as _conn:
+        _conn.row_factory = aiosqlite.Row
+        async with _conn.execute("SELECT COUNT(*) AS cnt FROM products") as _cur:
+            _r = await _cur.fetchone()
+            logger.info("Startup DB product count: %s", int(_r["cnt"]) if _r and "cnt" in _r.keys() else "unknown")
+except Exception:
+    logger.exception("Failed to read product count at startup")
+
         logger.info("Database initialized")
 
         logger.info("Initializing telegram Application...")

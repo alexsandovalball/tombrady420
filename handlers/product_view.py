@@ -1,4 +1,3 @@
-# handlers/product_view.py
 """
 Product view and callback handlers for the catalog bot.
 """
@@ -38,12 +37,22 @@ async def ingest_and_save_product(
     media_group_id: Optional[str] = None,
 ) -> int:
     """
-    Normalize tags and save a single representative product for a media_group.
-    If a representative already exists for (media_group_id, chat_id) return its id.
-
+    Normalize tags and save a single product row for this file.
+    For media_group posts, insert one row per file_id while still returning
+    a representative id for the group when appropriate.
     Returns the product id on success, or -1 on failure.
     """
     try:
+        # Diagnostic log to confirm each file processed
+        logger.debug(
+            "ingest_and_save_product called: file_id=%s file_type=%s media_group_id=%s msg=%s chat=%s",
+            file_id,
+            file_type,
+            media_group_id,
+            msg_id,
+            chat_id,
+        )
+
         caption_raw = getattr(message, "caption", None) or getattr(message, "text", None) or ""
         clean_caption, cat_raw, sub_raw = extract_category_and_subcategory(caption_raw)
 
@@ -52,48 +61,39 @@ async def ingest_and_save_product(
         category = cat_valid.strip().upper() if cat_valid else None
         subcategory = sub_valid.strip().upper().replace(" ", "").replace("_", "") if sub_valid else None
 
-        # Log parsed result for debugging
         logger.info(
-            "Parsed caption=%r -> category=%r subcategory=%r media_group_id=%r chat=%s msg=%s",
+            "Parsed caption=%r -> category=%r subcategory=%r media_group_id=%r chat=%s msg=%s file_id=%s",
             caption_raw,
             category,
             subcategory,
             media_group_id,
             chat_id,
             msg_id,
+            file_id,
         )
 
-        # If this is part of a media_group, try to find an existing representative
+        # If this is part of a media_group, check existing rows but DO NOT return
+        # early for the group. We must insert a row for each file unless that
+        # exact file_id already exists.
         if media_group_id:
             try:
                 existing = await db.get_products_by_media_group(media_group_id, chat_id)
-                if existing:
-                    # Prefer a row that already has category/subcategory set
-                    for ex in existing:
-                        if ex.get("category") or ex.get("subcategory"):
-                            rep_id = ex.get("id")
-                            logger.info("Found existing representative for media_group %s -> id=%s", media_group_id, rep_id)
-                            # Ensure we still propagate category/subcategory to group rows
-                            if category:
-                                try:
-                                    await db.update_products_by_media_group(media_group_id, chat_id, category, subcategory)
-                                except Exception:
-                                    logger.exception("Failed to bulk-update media_group categories for %s", media_group_id)
-                            return int(rep_id)
-                    # No categorized row found; use the first row as representative
-                    rep_id = existing[0].get("id")
-                    if category:
-                        try:
-                            await db.update_products_by_media_group(media_group_id, chat_id, category, subcategory)
-                        except Exception:
-                            logger.exception("Failed to bulk-update media_group categories for %s", media_group_id)
-                    logger.info("Using existing row id=%s as representative for media_group %s", rep_id, media_group_id)
-                    return int(rep_id)
+                # If a row with the same file_id already exists, return its id
+                for ex in existing or []:
+                    if ex.get("file_id") == file_id:
+                        logger.debug(
+                            "File already ingested for media_group %s: file_id=%s -> id=%s",
+                            media_group_id,
+                            file_id,
+                            ex.get("id"),
+                        )
+                        return int(ex.get("id"))
+                # Otherwise, proceed to insert a new row for this file_id.
             except Exception:
                 logger.exception("Error while checking existing media_group rows for %s", media_group_id)
                 # fall through to insert representative if check fails
 
-        # Insert a new representative product row
+        # Insert a new product row for this file
         product_id = await db.add_product(
             file_id=file_id,
             file_type=file_type,
@@ -536,6 +536,9 @@ async def _send_media_group_and_record(context: ContextTypes.DEFAULT_TYPE, chat_
         ft = (p.get("file_type") or "").lower()
         fid = p.get("file_id")
         cap = p.get("caption") or ""
+        if not fid:
+            logger.debug("Skipping product id=%s with no file_id", p.get("id"))
+            continue
         if ft == "photo":
             # Only the first media in the group should carry the caption
             media.append(InputMediaPhoto(media=fid, caption=cap if not media else None))
@@ -546,7 +549,10 @@ async def _send_media_group_and_record(context: ContextTypes.DEFAULT_TYPE, chat_
 
     sent_refs: List[Tuple[int, int]] = []
 
-    if media:
+    logger.debug("Prepared media_group: %d media items, %d non-media items for chat=%s", len(media), len(non_media), chat_id)
+
+    # If we have more than one media item, use send_media_group
+    if len(media) > 1:
         try:
             msgs = await context.bot.send_media_group(chat_id=chat_id, media=media)
             for m in msgs:
@@ -564,6 +570,18 @@ async def _send_media_group_and_record(context: ContextTypes.DEFAULT_TYPE, chat_
                         sent_refs.append((sent.chat.id, sent.message_id))
                 except Exception:
                     logger.exception("Fallback individual send failed for media item")
+    elif len(media) == 1:
+        # Single media item: send as single message to preserve caption reliably
+        m = media[0]
+        try:
+            if isinstance(m, InputMediaPhoto):
+                sent = await context.bot.send_photo(chat_id=chat_id, photo=m.media, caption=m.caption or "")
+            else:
+                sent = await context.bot.send_video(chat_id=chat_id, video=m.media, caption=m.caption or "")
+            if sent:
+                sent_refs.append((sent.chat.id, sent.message_id))
+        except Exception:
+            logger.exception("Failed to send single media item for media_group fallback")
 
     # Send non-media items individually
     for ft, fid, cap in non_media:
