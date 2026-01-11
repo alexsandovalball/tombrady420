@@ -1,59 +1,34 @@
 """
-Centralized configuration parsing and validation.
-Raises RuntimeError on invalid configuration to fail fast.
+Configuration settings for the Telegram bot.
+Loads environment variables and provides constants for use throughout the project.
 """
+
 import os
+from pathlib import Path
+
+# Load environment variables from .env if present
 from dotenv import load_dotenv
 
-load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent.parent
+ENV_PATH = BASE_DIR / '.env'
+if ENV_PATH.exists():
+    load_dotenv(dotenv_path=ENV_PATH)
 
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+ADMIN_IDS = [int(x) for x in os.getenv('ADMIN_IDS', '').split(',') if x]
+DB_PATH = os.getenv('DB_PATH', str(BASE_DIR / 'catalog.db'))
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')
+WEBHOOK_PORT = int(os.getenv('WEBHOOK_PORT', '8443'))
+WEBHOOK_LISTEN = os.getenv('WEBHOOK_LISTEN', '0.0.0.0')
+DEBUG = os.getenv('DEBUG', '0') == '1'
+DEFAULT_LANGUAGE = os.getenv('DEFAULT_LANGUAGE', 'en')
 
-def _get_env(name, default=None):
-    val = os.getenv(name, default)
-    if val is None:
-        return None
-    return val
+# Categories and subcategories can be loaded from a config file or defined here
+CATEGORIES = {
+    "Flowers": ["Sativa", "Indica", "Hybrid"],
+    "Edibles": ["Gummies", "Chocolates", "Beverages"],
+    "Concentrates": ["Wax", "Shatter", "Oil"],
+}
 
-
-def _get_int(name, default=None):
-    val = _get_env(name, None)
-    if val is None or val == "":
-        return default
-    try:
-        return int(val)
-    except ValueError:
-        raise RuntimeError(f"{name} must be an integer: got {val!r}")
-
-
-def _get_int_list(name):
-    val = _get_env(name, "")
-    if not val:
-        return []
-    parts = [p.strip() for p in val.split(",") if p.strip()]
-    try:
-        return [int(p) for p in parts]
-    except ValueError:
-        raise RuntimeError(f"{name} must be a comma-separated list of integers")
-
-
-BOT_TOKEN = _get_env("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is required. Set it in the environment or .env file")
-
-CHANNEL_ID = _get_int("CHANNEL_ID", None)
-CHANNEL_USERNAME = _get_env("CHANNEL_USERNAME", None)
-
-# ADMIN_IDS: prefer environment variable ADMIN_IDS (comma-separated ints).
-# If not provided, fall back to a sensible default set (replace with your admin ids).
-_admin_list = _get_int_list("ADMIN_IDS")
-if not _admin_list:
-    # default admin id(s) — replace with your real admin ids or set ADMIN_IDS in env
-    _admin_list = [8589411468]
-ADMIN_IDS = set(_admin_list)
-
-DATABASE_URL = _get_env("DATABASE_URL", None)
-LOG_LEVEL = _get_env("LOG_LEVEL", "INFO")
-
-# How long (seconds) to keep an in-memory preview guard for media_group previews.
-# Use an integer environment variable PREVIEW_TTL_SECONDS to override.
-PREVIEW_TTL_SECONDS = _get_int("PREVIEW_TTL_SECONDS", 60)
+# Pagination settings
+PRODUCTS_PER_PAGE = int(os.getenv('PRODUCTS_PER_PAGE', '5'))
