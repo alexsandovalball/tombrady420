@@ -27,14 +27,7 @@ logger = logging.getLogger(__name__)
 # -------------------------
 # Ingest helper
 # -------------------------
-async def ingest_and_save_product(message: Any,
-    context: ContextTypes.DEFAULT_TYPE,
-    file_id: str,
-    file_type: str,
-    msg_id: int,
-    chat_id: int,
-    media_group_id: Optional[str] = None,
-    media_group_id=media_group_id,) -> int:
+async def ingest_and_save_product(message: Any, context: ContextTypes.DEFAULT_TYPE, file_id: str, file_type: str, msg_id: int = None, chat_id: int = None, media_group_id: str = None) -> int:
     """
     Normalize tags and save a single product row for this file.
     For media_group posts, insert one row per file_id while still returning
@@ -601,3 +594,4 @@ async def _send_media_group_and_record(context: ContextTypes.DEFAULT_TYPE, chat_
             logger.exception("Failed to send non-media item of type %s", ft)
 
     return sent_refs
+
