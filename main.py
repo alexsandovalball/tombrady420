@@ -15,7 +15,13 @@ from telegram.ext import (
     filters,
 )
 
-from config import BOT_TOKEN, LOG_LEVEL, DEBUG_LOG_UPDATES
+from config import BOT_TOKEN, LOG_LEVEL
+# DEBUG_LOG_UPDATES is optional in config; default to False if not present
+try:
+    from config import DEBUG_LOG_UPDATES  # type: ignore
+except Exception:
+    DEBUG_LOG_UPDATES = False
+
 from database import db, init_db
 from handlers import admin as admin_handlers
 from handlers import product_view as product_handlers
