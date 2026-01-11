@@ -314,16 +314,7 @@ class Database:
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 db.row_factory = aiosqlite.Row
-                base_query = """
-                SELECT * FROM (
-                    SELECT * FROM products WHERE media_group_id IS NULL
-                    UNION
-                    SELECT * FROM products WHERE id IN (
-                        SELECT MIN(id) FROM products WHERE media_group_id IS NOT NULL GROUP BY media_group_id
-                    )
-                ) AS catalog_items
-                ORDER BY created_at DESC
-                """
+                base_query\ =\ """\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ SELECT\ \*\ FROM\ \(\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ SELECT\ \*\ FROM\ products\ WHERE\ media_group_id\ IS\ NULL\ OR\ TRIM\(COALESCE\(media_group_id,''\)\)\ =\ ''\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ UNION\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ SELECT\ \*\ FROM\ products\ WHERE\ id\ IN\ \(\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ SELECT\ MIN\(id\)\ FROM\ products\ WHERE\ media_group_id\ IS\ NOT\ NULL\ AND\ TRIM\(media_group_id\)\ <>\ ''\ GROUP\ BY\ media_group_id\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \)\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \)\ AS\ catalog_items\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ ORDER\ BY\ created_at\ DESC\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ """
                 params: Tuple = ()
                 if limit is not None:
                     base_query += " LIMIT ? OFFSET ?"
