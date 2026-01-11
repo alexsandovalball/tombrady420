@@ -7,6 +7,23 @@ Starts the telegram Application on startup and stops it on shutdown.
 
 from __future__ import annotations
 
+# Ensure stdout logging is configured early and consistently for Render
+import logging as _logging
+import sys as _sys
+
+_root_logger = _logging.getLogger()
+if not _root_logger.handlers:
+    _handler = _logging.StreamHandler(stream=_sys.stdout)
+    _formatter = _logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _handler.setFormatter(_formatter)
+    _root_logger.addHandler(_handler)
+_root_logger.setLevel(_logging.INFO)
+for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    _lg = _logging.getLogger(_name)
+    _lg.propagate = True
+    if _lg.level == _logging.NOTSET:
+        _lg.setLevel(_logging.INFO)
+
 import json
 import logging
 import os
@@ -24,8 +41,7 @@ from config import USE_WEBHOOK, WEBHOOK_URL, LOG_LEVEL
 # Set ALLOW_INSECURE_WEBHOOK=true only temporarily for debugging.
 _ALLOW_INSECURE = os.getenv("ALLOW_INSECURE_WEBHOOK", "false").lower() in ("1", "true", "yes")
 
-# Configure logging once; hosting platforms capture stdout/stderr
-logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# Configure module logger (root handler already configured above)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
@@ -175,9 +191,8 @@ async def telegram_webhook(token: str, request: Request) -> Response:
 
     # Log a masked token and a short preview of the body for debugging
     try:
-        masked = _mask_token(bot_token)
         preview = (body_text[:2000] + "...") if len(body_text) > 2000 else body_text
-        logger.info("WEBHOOK RAW BODY token_path=%s bot=%s body_preview=%s", token, _mask_token(token), preview)
+        logger.info("WEBHOOK RAW BODY token_path=%s bot=%s body_preview=%s", _mask_token(token), _mask_token(bot_token), preview)
     except Exception:
         logger.debug("Failed to log webhook raw body preview")
 
@@ -232,6 +247,18 @@ async def telegram_webhook(token: str, request: Request) -> Response:
         return PlainTextResponse("OK", status_code=200)
 
     return PlainTextResponse("OK", status_code=200)
+
+
+@app.get("/log-test")
+async def log_test():
+    """
+    Lightweight endpoint to verify that stdout logging is captured by the host.
+    Call this endpoint and check your platform logs for the two messages below.
+    """
+    test_logger = logging.getLogger("log_test")
+    test_logger.info("log-test endpoint invoked")
+    test_logger.debug("log-test debug detail")
+    return PlainTextResponse("log test ok", status_code=200)
 
 
 @app.get("/health")

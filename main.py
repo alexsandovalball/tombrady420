@@ -1,6 +1,26 @@
 ﻿# main.py
 from __future__ import annotations
 
+# Ensure stdout logging is configured early and consistently for Render
+import logging as _logging
+import sys as _sys
+
+_root_logger = _logging.getLogger()
+if not _root_logger.handlers:
+    _handler = _logging.StreamHandler(stream=_sys.stdout)
+    _formatter = _logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _handler.setFormatter(_formatter)
+    _root_logger.addHandler(_handler)
+# Default to INFO unless overridden by config later
+_root_logger.setLevel(_logging.INFO)
+
+# Make sure uvicorn loggers propagate to root logger
+for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    _lg = _logging.getLogger(_name)
+    _lg.propagate = True
+    if _lg.level == _logging.NOTSET:
+        _lg.setLevel(_logging.INFO)
+
 import logging
 import asyncio
 from typing import Optional, Callable, Awaitable
