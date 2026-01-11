@@ -28,7 +28,34 @@ logger = logging.getLogger(__name__)
 # Ingest helper
 # -------------------------
 async def ingest_and_save_product(message: Any, context: ContextTypes.DEFAULT_TYPE, file_id: str, file_type: str, msg_id: int = None, chat_id: int = None, media_group_id: str = None) -> int:
-    """
+    
+    # --- DEDUPE: skip duplicate file_id and preserve caption if missing in DB ---
+    try:
+        import sqlite3
+        _db = DB_PATH if "DB_PATH" in globals() else "data/catalog.db"
+        _con = sqlite3.connect(_db)
+        _cur = _con.cursor()
+        _cur.execute("SELECT id, caption FROM products WHERE file_id = ?", (file_id,))
+        _row = _cur.fetchone()
+        if _row:
+            _existing_id, _existing_caption = _row[0], (_row[1] or "")
+            # If DB caption is empty but incoming caption is non-empty, update the row
+            incoming_caption = (caption or "").strip() if 'caption' in globals() else ""
+            if (not _existing_caption) and incoming_caption:
+                try:
+                    _cur.execute("UPDATE products SET caption = ? WHERE id = ?", (incoming_caption, _existing_id))
+                    _con.commit()
+                    logger.info("ingest_and_save_product: updated caption for existing id=%s file_id=%s media_group_id=%s", _existing_id, file_id, media_group_id)
+                except Exception:
+                    logger.exception("ingest_and_save_product: failed to update caption for id=%s", _existing_id)
+            else:
+                logger.info("ingest_and_save_product: skipping duplicate file_id=%s media_group_id=%s msg=%s chat=%s", file_id, media_group_id, msg_id, chat_id)
+            _con.close()
+            return int(_existing_id) if isinstance(_existing_id, int) else -1
+        _con.close()
+    except Exception:
+        logger.exception("ingest_and_save_product dedupe check failed for file_id=%s", file_id)
+    # --- end dedupe ---"""
     Normalize tags and save a single product row for this file.
     For media_group posts, insert one row per file_id while still returning
     a representative id for the group when appropriate.
@@ -594,4 +621,5 @@ async def _send_media_group_and_record(context: ContextTypes.DEFAULT_TYPE, chat_
             logger.exception("Failed to send non-media item of type %s", ft)
 
     return sent_refs
+
 

@@ -149,3 +149,61 @@ async def webhook(request: Request):
         logger.exception("WEBHOOK HANDLER ERROR")
         # Return 500 rather than re-raising to avoid crashing the ASGI worker on single bad update
         return Response(status_code=500, content="Internal server error")
+# --- incoming update diagnostic (auto-inserted) ---
+import logging as _logging_for_diag
+_diag_logger = _logging_for_diag.getLogger("webhook_incoming_diag")
+_diag_logger.setLevel(_logging_for_diag.INFO)
+if not _diag_logger.handlers:
+    _h = _logging_for_diag.StreamHandler()
+    _h.setFormatter(_logging_for_diag.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+    _diag_logger.addHandler(_h)
+
+# Inserted diagnostic inside webhook() to print top-level keys and media_group_id if present
+_orig_webhook = webhook
+async def webhook(request):
+    try:
+        body_bytes = await request.body()
+        try:
+            body_text = body_bytes.decode("utf-8")
+        except Exception:
+            body_text = None
+        if body_text:
+            try:
+                _data = json.loads(body_text)
+            except Exception:
+                _data = None
+        else:
+            try:
+                _data = json.loads(body_bytes)
+            except Exception:
+                _data = None
+
+        # Log top-level keys and any media_group_id or caption present
+        try:
+            if isinstance(_data, dict):
+                keys = list(_data.keys())
+                _diag_logger.info("INCOMING UPDATE keys=%s", keys)
+                # try to find media_group_id and caption in common places
+                def _find(d, path=""):
+                    if isinstance(d, dict):
+                        for k,v in d.items():
+                            if k == "media_group_id":
+                                _diag_logger.info("FOUND media_group_id=%s at %s", v, path + "/" + k)
+                            if k == "caption":
+                                _diag_logger.info("FOUND caption (len=%s) at %s", len(str(v)) if v else 0, path + "/" + k)
+                            _find(v, path + "/" + k)
+                    elif isinstance(d, list):
+                        for i, item in enumerate(d):
+                            _find(item, path + f"[{i}]")
+                _find(_data)
+        except Exception:
+            _diag_logger.exception("Diagnostic parse failed")
+
+    except Exception:
+        pass
+
+    # call original handler
+    return await _orig_webhook(request)
+# replace webhook with wrapper
+webhook = webhook
+# --- end diagnostic ---
