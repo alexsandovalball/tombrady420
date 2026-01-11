@@ -196,12 +196,17 @@ class Database:
         Add a new product to the database.
         Returns the product id on success, -1 on failure.
         Deduplication preference: file_unique_id (if provided), then message_id+chat_id+file_id, then file_id+chat_id.
+        This implementation normalizes media_group_id (empty -> None) and, when a media_group_id
+        is present, propagates it to other rows for the same message/file to avoid mixed rows.
         """
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 db.row_factory = aiosqlite.Row
                 cat = category.strip().upper() if category else None
                 sub = subcategory.strip().upper() if subcategory else None
+
+                # Normalize media_group_id: treat empty/whitespace as None
+                mg = media_group_id.strip() if media_group_id and media_group_id.strip() else None
 
                 # Keep message_id as None when missing (store NULL in DB)
                 msg_id_val = int(message_id) if message_id is not None else None
@@ -219,7 +224,7 @@ class Database:
                         caption or "",
                         msg_id_val,
                         int(chat_id),
-                        media_group_id,
+                        mg,
                         cat,
                         sub,
                         created_at,
@@ -230,11 +235,13 @@ class Database:
 
                 last_id = getattr(cursor, "lastrowid", None)
                 if last_id:
-                    return int(last_id)
+                    new_id = int(last_id)
+                else:
+                    new_id = None
 
                 # If INSERT was ignored due to unique constraint, try to find the existing row.
                 # 1) Prefer match by file_unique_id if provided.
-                if file_unique_id:
+                if new_id is None and file_unique_id:
                     async with db.execute(
                         "SELECT id FROM products WHERE file_unique_id = ? AND chat_id = ? LIMIT 1",
                         (file_unique_id, int(chat_id)),
@@ -244,7 +251,7 @@ class Database:
                             return int(row_fu["id"])
 
                 # 2) If message_id is provided, try exact match by message_id/chat_id/file_id.
-                if msg_id_val is not None:
+                if new_id is None and msg_id_val is not None:
                     async with db.execute(
                         "SELECT id FROM products WHERE message_id = ? AND chat_id = ? AND file_id = ? LIMIT 1",
                         (msg_id_val, int(chat_id), file_id),
@@ -254,14 +261,62 @@ class Database:
                             return int(row2["id"])
 
                 # 3) Fallback: find by file_id and chat_id
-                async with db.execute(
-                    "SELECT id FROM products WHERE file_id = ? AND chat_id = ? LIMIT 1",
-                    (file_id, int(chat_id)),
-                ) as cur3:
-                    row3 = await cur3.fetchone()
-                    if row3:
-                        return int(row3["id"])
+                if new_id is None:
+                    async with db.execute(
+                        "SELECT id FROM products WHERE file_id = ? AND chat_id = ? LIMIT 1",
+                        (file_id, int(chat_id)),
+                    ) as cur3:
+                        row3 = await cur3.fetchone()
+                        if row3:
+                            return int(row3["id"])
 
+                # If we inserted a new row, propagate media_group_id to other rows that missed it.
+                if new_id and mg:
+                    try:
+                        # Propagate by message_id/chat_id
+                        if msg_id_val is not None:
+                            await db.execute(
+                                """
+                                UPDATE products
+                                SET media_group_id = ?
+                                WHERE chat_id = ?
+                                  AND (media_group_id IS NULL OR TRIM(COALESCE(media_group_id, '')) = '')
+                                  AND message_id = ?
+                                """,
+                                (mg, int(chat_id), msg_id_val),
+                            )
+                        # Propagate by file_unique_id + chat_id
+                        if file_unique_id:
+                            await db.execute(
+                                """
+                                UPDATE products
+                                SET media_group_id = ?
+                                WHERE chat_id = ?
+                                  AND (media_group_id IS NULL OR TRIM(COALESCE(media_group_id, '')) = '')
+                                  AND file_unique_id = ?
+                                """,
+                                (mg, int(chat_id), file_unique_id),
+                            )
+                        # Propagate by file_id + chat_id as a last resort
+                        await db.execute(
+                            """
+                            UPDATE products
+                            SET media_group_id = ?
+                            WHERE chat_id = ?
+                              AND (media_group_id IS NULL OR TRIM(COALESCE(media_group_id, '')) = '')
+                              AND file_id = ?
+                            """,
+                            (mg, int(chat_id), file_id),
+                        )
+                        await db.commit()
+                    except Exception:
+                        logger.exception("Failed to propagate media_group_id for %s/%s", mg, chat_id)
+
+                # Return the id of the inserted or existing row
+                if new_id:
+                    return new_id
+
+                # If we reached here and didn't find an id, return -1
                 return -1
         except Exception:
             logger.exception("Unexpected error in add_product")
@@ -310,11 +365,21 @@ class Database:
         """
         Return catalog items for menu display.
         For media groups, return only one representative row per media_group_id.
+        Treat empty-string media_group_id as missing.
         """
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 db.row_factory = aiosqlite.Row
-                base_query\ =\ """\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ SELECT\ \*\ FROM\ \(\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ SELECT\ \*\ FROM\ products\ WHERE\ media_group_id\ IS\ NULL\ OR\ TRIM\(COALESCE\(media_group_id,''\)\)\ =\ ''\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ UNION\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ SELECT\ \*\ FROM\ products\ WHERE\ id\ IN\ \(\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ SELECT\ MIN\(id\)\ FROM\ products\ WHERE\ media_group_id\ IS\ NOT\ NULL\ AND\ TRIM\(media_group_id\)\ <>\ ''\ GROUP\ BY\ media_group_id\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \)\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \)\ AS\ catalog_items\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ ORDER\ BY\ created_at\ DESC\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ """
+                base_query = """
+                SELECT * FROM (
+                    SELECT * FROM products WHERE media_group_id IS NULL OR TRIM(COALESCE(media_group_id, '')) = ''
+                    UNION
+                    SELECT * FROM products WHERE id IN (
+                        SELECT MIN(id) FROM products WHERE media_group_id IS NOT NULL AND TRIM(media_group_id) <> '' GROUP BY media_group_id
+                    )
+                ) AS catalog_items
+                ORDER BY created_at DESC
+                """
                 params: Tuple = ()
                 if limit is not None:
                     base_query += " LIMIT ? OFFSET ?"
@@ -641,29 +706,40 @@ class Database:
 
     async def media_group_preview_sent(self, media_group_id: str, chat_id: int) -> Optional[str]:
         """
-        Return the ISO timestamp string when a preview was sent for this media_group/chat,
-        or None if no record exists.
+        Return the ISO timestamp string when a preview was last recorded for this media_group/chat,
+        or None if no preview has been recorded.
         """
         try:
             async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
                 async with db.execute(
                     "SELECT preview_sent_at FROM media_group_meta WHERE media_group_id = ? AND chat_id = ? LIMIT 1",
                     (media_group_id, int(chat_id)),
                 ) as cur:
                     row = await cur.fetchone()
-                    if row and row[0]:
-                        return str(row[0])
+                    if row and row["preview_sent_at"]:
+                        return row["preview_sent_at"]
                     return None
         except Exception:
-            logger.exception("media_group_preview_sent check failed for %s/%s", media_group_id, chat_id)
+            logger.exception("media_group_preview_sent failed for %s/%s", media_group_id, chat_id)
             return None
 
-# Module-level instance and convenience init
+    # -------------------------
+    # Utility / housekeeping
+    # -------------------------
+    async def vacuum(self) -> None:
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("VACUUM;")
+                await db.commit()
+            logger.info("Database VACUUM completed")
+        except Exception:
+            logger.exception("VACUUM failed")
+
+# Instantiate a module-level Database and provide an init helper
 db = Database(DB_PATH)
 
 
 async def init_db() -> None:
-    """
-    Convenience wrapper to initialize the module-level db instance.
-    """
+    """Convenience wrapper to initialize the module-level database instance."""
     await db.init_db()
