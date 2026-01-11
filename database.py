@@ -1,12 +1,6 @@
 ﻿"""
 Database models and operations for the media catalog bot.
 Uses SQLite with aiosqlite for async operations.
-
-This module provides:
-- Database class with async init_db() that creates schema and performs safe migrations
-- Product CRUD with category/subcategory support
-- Helper queries used by handlers (catalog listing, category listing, stats, users)
-- A module-level `db` instance and `init_db()` convenience function
 """
 
 from __future__ import annotations
