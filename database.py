@@ -4,7 +4,7 @@ from __future__ import annotations
 import aiosqlite
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 
 from config import DB_PATH
@@ -28,7 +28,7 @@ class Database:
         logger.info("Opening DB connection to %s", self.db_path)
         self._conn = await aiosqlite.connect(self.db_path)
         self._conn.row_factory = aiosqlite.Row
-        # Set WAL for concurrency
+        # Improve concurrency
         await self._conn.execute("PRAGMA journal_mode=WAL;")
         await self._conn.commit()
         self._connected = True
@@ -50,17 +50,8 @@ class Database:
         return self._conn
 
     @staticmethod
-    def _normalize_ts(ts: Optional[Any]) -> str:
-        if ts is None:
-            return datetime.utcnow().isoformat()
-        if isinstance(ts, str):
-            return ts
-        if isinstance(ts, (int, float)):
-            return datetime.utcfromtimestamp(float(ts)).isoformat()
-        try:
-            return ts.isoformat()
-        except Exception:
-            return datetime.utcnow().isoformat()
+    def _now_iso() -> str:
+        return datetime.now(timezone.utc).isoformat()
 
     async def init_db(self) -> None:
         """Create tables and indexes if missing. Requires connect() called first."""
@@ -130,7 +121,7 @@ class Database:
             )
             await conn.commit()
 
-            # ensure file_unique_id index if column exists
+            # Ensure index on file_unique_id if present
             try:
                 async with conn.execute("PRAGMA table_info(products);") as cur:
                     cols = await cur.fetchall()
@@ -148,7 +139,9 @@ class Database:
             logger.exception("init_db failed")
             raise
 
-    # Example of using the shared connection in methods:
+    # -------------------------
+    # Product CRUD and helpers
+    # -------------------------
     async def add_product(
         self,
         file_id: str,
@@ -161,13 +154,17 @@ class Database:
         subcategory: Optional[str] = None,
         file_unique_id: Optional[str] = None,
     ) -> int:
+        """
+        Insert a product row. Returns the product id on success, or an existing id if deduped,
+        or -1 on failure.
+        """
         try:
             conn = self._ensure_conn()
             mg = media_group_id.strip() if media_group_id and media_group_id.strip() else None
             msg_id_val = int(message_id) if message_id is not None else None
             cat = category.strip().upper() if category else None
             sub = subcategory.strip().upper() if subcategory else None
-            created_at = datetime.utcnow().isoformat()
+            created_at = self._now_iso()
 
             cursor = await conn.execute(
                 """
@@ -199,7 +196,7 @@ class Database:
                         return int(row["id"])
                 return -1
 
-            # propagate media_group_id
+            # propagate media_group_id for related rows if provided
             if new_id and mg:
                 try:
                     if msg_id_val is not None:
@@ -243,8 +240,263 @@ class Database:
             logger.exception("add_product failed")
             return -1
 
-    # Implement other methods similarly using self._ensure_conn() and the shared connection.
-    # For brevity, keep the rest of your methods but replace per-call connects with self._ensure_conn().
+    async def get_product(self, product_id: int) -> Optional[Dict[str, Any]]:
+        """Return a single product row as a dict or None."""
+        try:
+            conn = self._ensure_conn()
+            async with conn.execute("SELECT * FROM products WHERE id = ? LIMIT 1", (int(product_id),)) as cur:
+                row = await cur.fetchone()
+                return dict(row) if row else None
+        except Exception:
+            logger.exception("get_product failed for id=%s", product_id)
+            return None
+
+    async def get_products_by_media_group(self, media_group_id: str, chat_id: Optional[int]) -> List[Dict[str, Any]]:
+        """Return list of product rows for a media_group and chat_id. If chat_id is None, match only media_group_id."""
+        try:
+            conn = self._ensure_conn()
+            if chat_id is None:
+                async with conn.execute("SELECT * FROM products WHERE media_group_id = ? ORDER BY id ASC", (media_group_id,)) as cur:
+                    rows = await cur.fetchall()
+            else:
+                async with conn.execute("SELECT * FROM products WHERE media_group_id = ? AND chat_id = ? ORDER BY id ASC", (media_group_id, int(chat_id))) as cur:
+                    rows = await cur.fetchall()
+            return [dict(r) for r in rows] if rows else []
+        except Exception:
+            logger.exception("get_products_by_media_group failed for %s/%s", media_group_id, chat_id)
+            return []
+
+    async def update_products_by_media_group(self, media_group_id: str, chat_id: int, category: Optional[str], subcategory: Optional[str]) -> bool:
+        """
+        Atomically update category/subcategory for all products in a media_group.
+        Returns True if rows were updated (or operation succeeded), False on failure.
+        """
+        try:
+            conn = self._ensure_conn()
+            cat = category.strip().upper() if category else None
+            sub = subcategory.strip().upper() if subcategory else None
+            async with conn.execute("BEGIN"):
+                await conn.execute(
+                    """
+                    UPDATE products
+                    SET category = ?, subcategory = ?
+                    WHERE media_group_id = ? AND chat_id = ?
+                    """,
+                    (cat, sub, media_group_id, int(chat_id)),
+                )
+                await conn.commit()
+            return True
+        except Exception:
+            logger.exception("update_products_by_media_group failed for %s/%s", media_group_id, chat_id)
+            try:
+                await conn.rollback()
+            except Exception:
+                pass
+            return False
+
+    async def set_product_category(self, product_id: int, category: Optional[str], subcategory: Optional[str]) -> bool:
+        """Set category/subcategory for a single product row. Returns True on success."""
+        try:
+            conn = self._ensure_conn()
+            cat = category.strip().upper() if category else None
+            sub = subcategory.strip().upper() if subcategory else None
+            await conn.execute(
+                "UPDATE products SET category = ?, subcategory = ? WHERE id = ?",
+                (cat, sub, int(product_id)),
+            )
+            await conn.commit()
+            return True
+        except Exception:
+            logger.exception("set_product_category failed for id=%s", product_id)
+            return False
+
+    async def try_mark_media_group_preview_sent(self, media_group_id: str, chat_id: int) -> bool:
+        """
+        Insert a row into media_group_meta to mark that a preview was sent.
+        Returns True if this call performed the insert (first caller), False if already present.
+        """
+        try:
+            conn = self._ensure_conn()
+            ts = self._now_iso()
+            cursor = await conn.execute(
+                """
+                INSERT OR IGNORE INTO media_group_meta (media_group_id, chat_id, preview_sent_at)
+                VALUES (?, ?, ?)
+                """,
+                (media_group_id, int(chat_id), ts),
+            )
+            await conn.commit()
+            # If lastrowid is non-zero, we inserted; otherwise it already existed
+            last_id = getattr(cursor, "lastrowid", None)
+            if last_id:
+                return True
+            # As a fallback, check whether row exists
+            async with conn.execute("SELECT preview_sent_at FROM media_group_meta WHERE media_group_id = ? AND chat_id = ? LIMIT 1", (media_group_id, int(chat_id))) as cur:
+                row = await cur.fetchone()
+                return bool(row)
+        except Exception:
+            logger.exception("try_mark_media_group_preview_sent failed for %s/%s", media_group_id, chat_id)
+            return False
+
+    async def delete_products_by_media_group(self, media_group_id: str, chat_id: int) -> List[int]:
+        """Delete products for a media_group and return list of deleted ids."""
+        try:
+            conn = self._ensure_conn()
+            async with conn.execute("SELECT id FROM products WHERE media_group_id = ? AND chat_id = ?", (media_group_id, int(chat_id))) as cur:
+                rows = await cur.fetchall()
+            ids = [int(r["id"]) for r in rows] if rows else []
+            if not ids:
+                return []
+            # Delete rows
+            await conn.execute("DELETE FROM products WHERE media_group_id = ? AND chat_id = ?", (media_group_id, int(chat_id)))
+            await conn.commit()
+            return ids
+        except Exception:
+            logger.exception("delete_products_by_media_group failed for %s/%s", media_group_id, chat_id)
+            return []
+
+    async def delete_product(self, product_id: int) -> bool:
+        """Delete a single product by id. Returns True if deleted, False otherwise."""
+        try:
+            conn = self._ensure_conn()
+            async with conn.execute("SELECT id FROM products WHERE id = ? LIMIT 1", (int(product_id),)) as cur:
+                row = await cur.fetchone()
+            if not row:
+                return False
+            await conn.execute("DELETE FROM products WHERE id = ?", (int(product_id),))
+            await conn.commit()
+            return True
+        except Exception:
+            logger.exception("delete_product failed for id=%s", product_id)
+            return False
+
+    async def get_all_products(self, limit: int = 500) -> List[Dict[str, Any]]:
+        """Return recent products ordered by created_at desc (limitable)."""
+        try:
+            conn = self._ensure_conn()
+            async with conn.execute("SELECT * FROM products ORDER BY created_at DESC LIMIT ?", (int(limit),)) as cur:
+                rows = await cur.fetchall()
+            return [dict(r) for r in rows] if rows else []
+        except Exception:
+            logger.exception("get_all_products failed")
+            return []
+
+    async def get_catalog_items(self, limit: int = 1000) -> List[Dict[str, Any]]:
+        """
+        Return catalog items used by the UI. By default returns recent items.
+        Handlers can filter by category/subcategory as needed.
+        """
+        try:
+            conn = self._ensure_conn()
+            async with conn.execute("SELECT * FROM products ORDER BY created_at DESC LIMIT ?", (int(limit),)) as cur:
+                rows = await cur.fetchall()
+            return [dict(r) for r in rows] if rows else []
+        except Exception:
+            logger.exception("get_catalog_items failed")
+            return []
+
+    async def get_all_users(self, limit: int = 1000) -> List[Dict[str, Any]]:
+        try:
+            conn = self._ensure_conn()
+            async with conn.execute("SELECT * FROM users ORDER BY last_seen DESC LIMIT ?", (int(limit),)) as cur:
+                rows = await cur.fetchall()
+            return [dict(r) for r in rows] if rows else []
+        except Exception:
+            logger.exception("get_all_users failed")
+            return []
+
+    async def get_stats(self) -> Dict[str, int]:
+        """Return simple stats: total products and products added today (UTC)."""
+        try:
+            conn = self._ensure_conn()
+            async with conn.execute("SELECT COUNT(1) as total FROM products") as cur:
+                row = await cur.fetchone()
+            total = int(row["total"]) if row else 0
+
+            # Count items added since UTC midnight
+            today_utc = datetime.now(timezone.utc).date().isoformat()
+            async with conn.execute("SELECT COUNT(1) as today FROM products WHERE DATE(created_at) = DATE(?)", (today_utc,)) as cur:
+                row2 = await cur.fetchone()
+            today = int(row2["today"]) if row2 else 0
+            return {"total": total, "today": today}
+        except Exception:
+            logger.exception("get_stats failed")
+            return {"total": 0, "today": 0}
+
+    # -------------------------
+    # Backfill / maintenance helpers
+    # -------------------------
+    async def backfill_normalize(self) -> int:
+        """
+        Normalize category/subcategory storage (uppercase, remove spaces/underscores for subcategory).
+        Returns number of rows changed.
+        """
+        try:
+            conn = self._ensure_conn()
+            await conn.execute(
+                """
+                UPDATE products
+                SET category = UPPER(TRIM(category)),
+                    subcategory = CASE
+                        WHEN subcategory IS NULL OR TRIM(subcategory) = '' THEN NULL
+                        ELSE UPPER(REPLACE(REPLACE(TRIM(subcategory), ' ', ''), '_', ''))
+                    END
+                """
+            )
+            await conn.commit()
+            # aiosqlite does not expose total_changes reliably per-statement; query count instead
+            async with conn.execute("SELECT COUNT(1) as cnt FROM products WHERE category IS NOT NULL OR subcategory IS NOT NULL") as cur:
+                row = await cur.fetchone()
+            return int(row["cnt"]) if row else 0
+        except Exception:
+            logger.exception("backfill_normalize failed")
+            return 0
+
+    async def backfill_propagate_media_group(self) -> int:
+        """
+        Propagate category/subcategory to products in the same media_group where missing.
+        Returns number of rows updated (approximate).
+        """
+        try:
+            conn = self._ensure_conn()
+            await conn.execute(
+                """
+                UPDATE products
+                SET category = COALESCE(category, (
+                    SELECT category FROM products p2
+                    WHERE p2.media_group_id = products.media_group_id AND p2.category IS NOT NULL LIMIT 1
+                )),
+                    subcategory = COALESCE(subcategory, (
+                    SELECT subcategory FROM products p3
+                    WHERE p3.media_group_id = products.media_group_id AND p3.subcategory IS NOT NULL LIMIT 1
+                ))
+                WHERE media_group_id IS NOT NULL
+                """
+            )
+            await conn.commit()
+            # Return approximate count of rows with non-null category/subcategory
+            async with conn.execute("SELECT COUNT(1) as cnt FROM products WHERE media_group_id IS NOT NULL AND (category IS NOT NULL OR subcategory IS NOT NULL)") as cur:
+                row = await cur.fetchone()
+            return int(row["cnt"]) if row else 0
+        except Exception:
+            logger.exception("backfill_propagate_media_group failed")
+            return 0
+
+    async def nuke_all_products(self) -> int:
+        """Delete all products. Returns number of rows deleted."""
+        try:
+            conn = self._ensure_conn()
+            async with conn.execute("SELECT COUNT(1) as cnt FROM products") as cur:
+                row = await cur.fetchone()
+            total = int(row["cnt"]) if row else 0
+            await conn.execute("DELETE FROM products")
+            await conn.execute("DELETE FROM media_group_meta")
+            await conn.commit()
+            return total
+        except Exception:
+            logger.exception("nuke_all_products failed")
+            return 0
+
 
 # Module-level DB instance and init helper
 db = Database(DB_PATH)

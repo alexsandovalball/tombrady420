@@ -13,7 +13,7 @@ import os
 from typing import Optional
 
 from fastapi import FastAPI, Request, Response, HTTPException
-from fastapi.responses import PlainTextResponse, JSONResponse
+from fastapi.responses import PlainTextResponse
 from telegram import Update
 from telegram.ext import Application
 
@@ -24,12 +24,19 @@ from config import USE_WEBHOOK, WEBHOOK_URL, LOG_LEVEL
 # Set ALLOW_INSECURE_WEBHOOK=true only temporarily for debugging.
 _ALLOW_INSECURE = os.getenv("ALLOW_INSECURE_WEBHOOK", "false").lower() in ("1", "true", "yes")
 
-# Configure logging once; Render captures stdout/stderr
+# Configure logging once; hosting platforms capture stdout/stderr
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
 telegram_app: Optional[Application] = None
+
+
+def _mask_token(token: Optional[str]) -> str:
+    """Return a masked representation of a token for safe logging."""
+    if not token or len(token) < 8:
+        return "REDACTED"
+    return token[:4] + "…" + token[-4:]
 
 
 @app.on_event("startup")
@@ -148,30 +155,51 @@ async def telegram_webhook(token: str, request: Request) -> Response:
         logger.error("telegram_app.bot.token is not a string (value=%r)", bot_token)
         raise HTTPException(status_code=500, detail="Server misconfiguration")
 
-    # Read and log raw body for debugging (use request.body() which returns bytes)
+    # Read request body robustly: prefer JSON parsing but fall back to raw bytes
     try:
-        body_bytes = await request.body()
-        body_text = body_bytes.decode("utf-8", errors="replace")
+        # Try fast path: if content-type is JSON, use request.json()
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type.lower():
+            payload = await request.json()
+            body_text = json.dumps(payload)
+        else:
+            body_bytes = await request.body()
+            body_text = body_bytes.decode("utf-8", errors="replace")
+            try:
+                payload = json.loads(body_text)
+            except Exception:
+                payload = None
     except Exception as e:
         logger.exception("Failed to read request body: %s", e)
         raise HTTPException(status_code=400, detail="Failed to read request body")
 
-    logger.info("WEBHOOK RAW BODY token_path=%s body_preview=%s", token, (body_text[:2000] + "...") if len(body_text) > 2000 else body_text)
+    # Log a masked token and a short preview of the body for debugging
+    try:
+        masked = _mask_token(bot_token)
+        preview = (body_text[:2000] + "...") if len(body_text) > 2000 else body_text
+        logger.info("WEBHOOK RAW BODY token_path=%s bot=%s body_preview=%s", token, _mask_token(token), preview)
+    except Exception:
+        logger.debug("Failed to log webhook raw body preview")
 
     # Token enforcement
     if token != bot_token:
         if _ALLOW_INSECURE:
-            logger.warning("Webhook token mismatch (path=%s bot=%s) but ALLOW_INSECURE_WEBHOOK is enabled; continuing for debug", token, bot_token)
+            logger.warning(
+                "Webhook token mismatch (path=%s bot=%s) but ALLOW_INSECURE_WEBHOOK is enabled; continuing for debug",
+                _mask_token(token),
+                _mask_token(bot_token),
+            )
         else:
-            logger.warning("Invalid token on webhook path: %s", token)
+            logger.warning("Invalid token on webhook path: %s", _mask_token(token))
             raise HTTPException(status_code=403, detail="Invalid token")
 
-    # Parse update JSON once (use json.loads on the logged body)
-    try:
-        payload = json.loads(body_text)
-    except Exception as e:
-        logger.exception("Failed to parse JSON body: %s", e)
-        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+    # Parse update JSON once (use payload if available, otherwise try to parse body_text)
+    if payload is None:
+        try:
+            payload = json.loads(body_text)
+        except Exception as e:
+            logger.exception("Failed to parse JSON body: %s", e)
+            raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
     try:
         update = Update.de_json(payload, telegram_app.bot)
@@ -181,7 +209,6 @@ async def telegram_webhook(token: str, request: Request) -> Response:
 
     # Log a compact representation for debugging
     try:
-        # Prefer channel_post summary if present
         if getattr(update, "channel_post", None) is not None:
             summary = f"channel_post id={getattr(update.channel_post, 'message_id', None)} chat={getattr(update.channel_post, 'chat', None)}"
         else:
