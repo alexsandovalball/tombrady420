@@ -35,7 +35,7 @@ from telegram.ext import (
     filters,
 )
 
-from config import BOT_TOKEN, LOG_LEVEL
+from config import BOT_TOKEN, LOG_LEVEL, REDIS_URL
 # DEBUG_LOG_UPDATES is optional in config; default to False if not present
 try:
     from config import DEBUG_LOG_UPDATES  # type: ignore
@@ -52,6 +52,9 @@ setup_logging(LOG_LEVEL)
 
 # Background cleanup task handle
 _cleanup_task: Optional[asyncio.Task] = None
+
+# Optional redis client attached to app.bot_data["redis"]
+# We will initialize it during startup_tasks and close it during shutdown_tasks
 
 
 def ensure_async(fn: Callable) -> Callable[..., Awaitable]:
@@ -157,6 +160,23 @@ async def startup_tasks(app: Application) -> None:
     # Expose DB instance to handlers via bot_data for convenience
     app.bot_data["db"] = db
 
+    # Initialize Redis client if configured and attach to app.bot_data["redis"]
+    if REDIS_URL:
+        try:
+            import redis.asyncio as aioredis  # type: ignore
+            redis_client = aioredis.from_url(REDIS_URL)
+            # test connection
+            try:
+                await redis_client.ping()
+                app.bot_data["redis"] = redis_client
+                logger.info("Connected to Redis at startup for callback token store")
+            except Exception:
+                # If ping fails, still attach client but log the issue
+                app.bot_data["redis"] = redis_client
+                logger.exception("Connected to Redis but ping failed; continuing with client attached")
+        except Exception:
+            logger.exception("Failed to initialize Redis client; continuing without Redis (in-memory fallback will be used)")
+
     # Import and initialize handlers now that DB is ready (idempotent)
     try:
         import handlers  # local import to avoid circulars at module import time
@@ -207,6 +227,24 @@ async def shutdown_tasks(app: Application) -> None:
             logger.info("Periodic cleanup task cancelled")
     except Exception:
         logger.exception("Failed to cancel periodic cleanup task")
+
+    # Close Redis client if present
+    try:
+        redis_client = app.bot_data.get("redis")
+        if redis_client is not None:
+            try:
+                # redis.asyncio client exposes close() and connection_pool.disconnect()
+                await redis_client.close()
+                try:
+                    # best-effort disconnect of pool
+                    await getattr(redis_client, "connection_pool", None).disconnect()
+                except Exception:
+                    pass
+                logger.info("Redis client closed during shutdown")
+            except Exception:
+                logger.exception("Error while closing Redis client during shutdown")
+    except Exception:
+        logger.exception("Unexpected error while attempting to close Redis client")
 
     # Place any cleanup logic here (close connections, flush caches)
     try:

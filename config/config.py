@@ -18,3 +18,9 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() in ("1", "true", "yes")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", None)
 PREVIEW_TTL_SECONDS = int(os.getenv("PREVIEW_TTL_SECONDS", "60"))
+
+import os
+
+# existing config...
+PREVIEW_TTL_SECONDS = int(os.getenv("PREVIEW_TTL_SECONDS", "3600"))
+REDIS_URL = os.getenv("REDIS_URL", "")  # e.g. redis://:password@host:6379/0
