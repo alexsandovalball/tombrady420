@@ -1,158 +1,359 @@
-﻿"""
-Async database access and schema management using aiosqlite.
-Provides functions for CRUD operations, deduplication, and migrations.
+﻿# database.py
 """
+Async SQLite wrapper and DB operations for the media catalog.
+Provides schema creation, migrations, and helper methods used by handlers.
+"""
+
+from __future__ import annotations
 
 import aiosqlite
-import asyncio
-from typing import Any, Dict, List, Optional
-from config.config import DB_PATH
+import os
+import logging
+from datetime import datetime
+from typing import Optional, List, Dict, Any, Tuple
 
-DB_SCHEMA_VERSION = 1
+from config import DB_PATH
 
-SCHEMA = """
-PRAGMA foreign_keys = ON;
+logger = logging.getLogger(__name__)
 
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_id INTEGER UNIQUE NOT NULL,
-    is_admin INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+# Ensure DB directory exists
+_db_dir = os.path.dirname(DB_PATH) or "."
+os.makedirs(_db_dir, exist_ok=True)
 
-CREATE TABLE IF NOT EXISTS media_group_meta (
-    media_group_id TEXT PRIMARY KEY,
-    chat_id INTEGER NOT NULL,
-    status TEXT DEFAULT 'pending',
-    category TEXT,
-    subcategory TEXT,
-    previewed INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
 
-CREATE TABLE IF NOT EXISTS products (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    media_group_id TEXT NOT NULL,
-    file_unique_id TEXT NOT NULL,
-    file_id TEXT NOT NULL,
-    media_type TEXT NOT NULL,
-    caption TEXT,
-    category TEXT,
-    subcategory TEXT,
-    is_deleted INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(media_group_id) REFERENCES media_group_meta(media_group_id)
-);
+class Database:
+    def __init__(self, db_path: str = DB_PATH):
+        self.db_path = db_path
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_products_file_unique_id ON products(file_unique_id);
+    async def init_db(self) -> None:
+        """Create tables and indexes if missing."""
+        logger.info("Initializing DB at %s", self.db_path)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA journal_mode=WAL;")
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS products (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file_id TEXT NOT NULL,
+                    file_type TEXT NOT NULL,
+                    caption TEXT,
+                    message_id INTEGER,
+                    chat_id INTEGER NOT NULL,
+                    media_group_id TEXT,
+                    category TEXT,
+                    subcategory TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    file_unique_id TEXT,
+                    UNIQUE(message_id, chat_id, file_id)
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS media_group_meta (
+                    media_group_id TEXT NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    preview_sent_at TIMESTAMP,
+                    PRIMARY KEY (media_group_id, chat_id)
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ignored_messages (
+                    message_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (message_id, chat_id)
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    last_name TEXT,
+                    last_seen TIMESTAMP
+                )
+                """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pagination_state (
+                    user_id INTEGER NOT NULL,
+                    state_type TEXT NOT NULL,
+                    query TEXT,
+                    page INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, state_type, query)
+                )
+                """
+            )
+            await db.commit()
+            # ensure file_unique_id index if column exists
+            try:
+                async with db.execute("PRAGMA table_info(products);") as cur:
+                    cols = await cur.fetchall()
+                    col_names = {r[1] for r in cols}
+                if "file_unique_id" in col_names:
+                    await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_products_file_unique_id ON products(file_unique_id)")
+                    await db.commit()
+            except Exception:
+                logger.exception("Failed to ensure indexes (non-fatal)")
+            logger.info("DB initialized")
 
-CREATE TABLE IF NOT EXISTS ignored_messages (
-    message_id INTEGER NOT NULL,
-    chat_id INTEGER NOT NULL,
-    reason TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (message_id, chat_id)
-);
+    # -------------------------
+    # Product ingestion and dedupe
+    # -------------------------
+    async def add_product(
+        self,
+        file_id: str,
+        file_type: str,
+        caption: Optional[str],
+        message_id: Optional[int],
+        chat_id: int,
+        media_group_id: Optional[str] = None,
+        category: Optional[str] = None,
+        subcategory: Optional[str] = None,
+        file_unique_id: Optional[str] = None,
+    ) -> int:
+        """
+        Insert product row with deduplication. Returns product id or -1 on failure.
+        Normalizes media_group_id (empty -> NULL) and propagates it to other rows when possible.
+        """
+        try:
+            mg = media_group_id.strip() if media_group_id and media_group_id.strip() else None
+            msg_id_val = int(message_id) if message_id is not None else None
+            cat = category.strip().upper() if category else None
+            sub = subcategory.strip().upper() if subcategory else None
+            created_at = datetime.utcnow().isoformat()
 
-CREATE TABLE IF NOT EXISTS pagination_state (
-    user_id INTEGER PRIMARY KEY,
-    state_json TEXT,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                cursor = await db.execute(
+                    """
+                    INSERT OR IGNORE INTO products
+                        (file_id, file_type, caption, message_id, chat_id, media_group_id, category, subcategory, created_at, file_unique_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (file_id, file_type, caption or "", msg_id_val, int(chat_id), mg, cat, sub, created_at, file_unique_id),
+                )
+                await db.commit()
+                last_id = getattr(cursor, "lastrowid", None)
+                if last_id:
+                    new_id = int(last_id)
+                else:
+                    new_id = None
 
-CREATE TABLE IF NOT EXISTS schema_version (
-    version INTEGER PRIMARY KEY
-);
-"""
+                # If insert ignored, try to find existing row by file_unique_id, message_id+file_id, or file_id
+                if new_id is None:
+                    if file_unique_id:
+                        async with db.execute("SELECT id FROM products WHERE file_unique_id = ? AND chat_id = ? LIMIT 1", (file_unique_id, int(chat_id))) as cur:
+                            row = await cur.fetchone()
+                            if row:
+                                return int(row["id"])
+                    if msg_id_val is not None:
+                        async with db.execute("SELECT id FROM products WHERE message_id = ? AND chat_id = ? AND file_id = ? LIMIT 1", (msg_id_val, int(chat_id), file_id)) as cur:
+                            row = await cur.fetchone()
+                            if row:
+                                return int(row["id"])
+                    async with db.execute("SELECT id FROM products WHERE file_id = ? AND chat_id = ? LIMIT 1", (file_id, int(chat_id))) as cur:
+                        row = await cur.fetchone()
+                        if row:
+                            return int(row["id"])
+                    return -1
 
-async def init_db():
-    """
-    Initialize the database, create tables, and set schema version.
-    """
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.executescript(SCHEMA)
-        # Set schema version if not present
-        async with db.execute("SELECT version FROM schema_version") as cursor:
-            row = await cursor.fetchone()
-            if not row:
-                await db.execute("INSERT INTO schema_version (version) VALUES (?)", (DB_SCHEMA_VERSION,))
-        await db.commit()
+                # Propagate media_group_id to other rows that missed it
+                if new_id and mg:
+                    try:
+                        if msg_id_val is not None:
+                            await db.execute(
+                                """
+                                UPDATE products
+                                SET media_group_id = ?
+                                WHERE chat_id = ?
+                                  AND (media_group_id IS NULL OR TRIM(COALESCE(media_group_id, '')) = '')
+                                  AND message_id = ?
+                                """,
+                                (mg, int(chat_id), msg_id_val),
+                            )
+                        if file_unique_id:
+                            await db.execute(
+                                """
+                                UPDATE products
+                                SET media_group_id = ?
+                                WHERE chat_id = ?
+                                  AND (media_group_id IS NULL OR TRIM(COALESCE(media_group_id, '')) = '')
+                                  AND file_unique_id = ?
+                                """,
+                                (mg, int(chat_id), file_unique_id),
+                            )
+                        await db.execute(
+                            """
+                            UPDATE products
+                            SET media_group_id = ?
+                            WHERE chat_id = ?
+                              AND (media_group_id IS NULL OR TRIM(COALESCE(media_group_id, '')) = '')
+                              AND file_id = ?
+                            """,
+                            (mg, int(chat_id), file_id),
+                        )
+                        await db.commit()
+                    except Exception:
+                        logger.exception("Failed to propagate media_group_id for %s/%s", mg, chat_id)
 
-async def get_db():
-    """
-    Context manager for database connection.
-    """
-    db = await aiosqlite.connect(DB_PATH)
-    db.row_factory = aiosqlite.Row
-    return db
+                return new_id
+        except Exception:
+            logger.exception("add_product failed")
+            return -1
 
-# Example CRUD and deduplication functions
+    # -------------------------
+    # Catalog query (representative selection)
+    # -------------------------
+    async def get_catalog_items(self, limit: Optional[int] = None, offset: int = 0) -> List[Dict[str, Any]]:
+        """
+        Return catalog items for menu display.
+        For media groups, return one representative row per media_group_id preferring captioned rows.
+        Standalone items (no media_group_id) are returned as-is.
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                base_query = """
+                WITH rep AS (
+                  SELECT * FROM (
+                    SELECT *,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY media_group_id, chat_id
+                        ORDER BY CASE WHEN TRIM(COALESCE(caption,'')) <> '' THEN 0 ELSE 1 END, id
+                      ) AS rn
+                    FROM products
+                    WHERE media_group_id IS NOT NULL AND TRIM(COALESCE(media_group_id,'')) <> ''
+                  ) WHERE rn = 1
+                ),
+                standalone AS (
+                  SELECT * FROM products WHERE media_group_id IS NULL OR TRIM(COALESCE(media_group_id,'')) = ''
+                )
+                SELECT * FROM (
+                  SELECT * FROM standalone
+                  UNION ALL
+                  SELECT * FROM rep
+                ) AS catalog_items
+                ORDER BY created_at DESC
+                """
+                params: Tuple = ()
+                if limit is not None:
+                    base_query += " LIMIT ? OFFSET ?"
+                    params = (int(limit), int(offset))
+                async with db.execute(base_query, params) as cur:
+                    rows = await cur.fetchall()
+                    return [dict(r) for r in rows]
+        except Exception:
+            logger.exception("get_catalog_items failed")
+            return []
 
-async def add_user(telegram_id: int, is_admin: bool = False):
-    async with await get_db() as db:
-        await db.execute(
-            "INSERT OR IGNORE INTO users (telegram_id, is_admin) VALUES (?, ?)",
-            (telegram_id, int(is_admin))
-        )
-        await db.commit()
+    # -------------------------
+    # Media group preview guard
+    # -------------------------
+    async def try_mark_media_group_preview_sent(self, media_group_id: str, chat_id: int, ts: Optional[Any] = None) -> bool:
+        """
+        Atomically insert a row into media_group_meta to mark preview sent.
+        Returns True if this call inserted the row (i.e., caller should send preview),
+        False if a row already existed.
+        """
+        try:
+            if ts is None:
+                ts_iso = datetime.utcnow().isoformat()
+            else:
+                ts_iso = ts if isinstance(ts, str) else (datetime.utcfromtimestamp(float(ts)).isoformat() if isinstance(ts, (int, float)) else ts.isoformat())
+            async with aiosqlite.connect(self.db_path) as db:
+                # Try to insert; if conflict, do nothing and check whether we inserted
+                await db.execute(
+                    """
+                    INSERT OR IGNORE INTO media_group_meta (media_group_id, chat_id, preview_sent_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (media_group_id, int(chat_id), ts_iso),
+                )
+                await db.commit()
+                # Check whether row exists and preview_sent_at equals ts_iso (means we inserted)
+                async with db.execute("SELECT preview_sent_at FROM media_group_meta WHERE media_group_id = ? AND chat_id = ? LIMIT 1", (media_group_id, int(chat_id))) as cur:
+                    row = await cur.fetchone()
+                    if row and row["preview_sent_at"] == ts_iso:
+                        return True
+                    return False
+        except Exception:
+            logger.exception("try_mark_media_group_preview_sent failed for %s/%s", media_group_id, chat_id)
+            return False
 
-async def is_admin(telegram_id: int) -> bool:
-    async with await get_db() as db:
-        async with db.execute(
-            "SELECT is_admin FROM users WHERE telegram_id = ?", (telegram_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            return bool(row and row["is_admin"])
+    async def mark_media_group_preview_sent(self, media_group_id: str, chat_id: int, ts: Optional[Any] = None) -> None:
+        """Non-atomic mark (update or insert)."""
+        try:
+            if ts is None:
+                ts_iso = datetime.utcnow().isoformat()
+            else:
+                ts_iso = ts if isinstance(ts, str) else (datetime.utcfromtimestamp(float(ts)).isoformat() if isinstance(ts, (int, float)) else ts.isoformat())
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    """
+                    INSERT INTO media_group_meta (media_group_id, chat_id, preview_sent_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(media_group_id, chat_id) DO UPDATE SET preview_sent_at = excluded.preview_sent_at
+                    """,
+                    (media_group_id, int(chat_id), ts_iso),
+                )
+                await db.commit()
+        except Exception:
+            logger.exception("mark_media_group_preview_sent failed for %s/%s", media_group_id, chat_id)
 
-async def add_media_group_meta(media_group_id: str, chat_id: int):
-    async with await get_db() as db:
-        await db.execute(
-            "INSERT OR IGNORE INTO media_group_meta (media_group_id, chat_id) VALUES (?, ?)",
-            (media_group_id, chat_id)
-        )
-        await db.commit()
+    # -------------------------
+    # Utility methods
+    # -------------------------
+    async def get_products_by_media_group(self, media_group_id: str, chat_id: int) -> List[Dict[str, Any]]:
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("SELECT * FROM products WHERE media_group_id = ? AND chat_id = ? ORDER BY id ASC", (media_group_id, int(chat_id))) as cur:
+                    rows = await cur.fetchall()
+                    return [dict(r) for r in rows]
+        except Exception:
+            logger.exception("get_products_by_media_group failed for %s/%s", media_group_id, chat_id)
+            return []
 
-async def mark_media_group_previewed(media_group_id: str):
-    async with await get_db() as db:
-        await db.execute(
-            "UPDATE media_group_meta SET previewed = 1 WHERE media_group_id = ?",
-            (media_group_id,)
-        )
-        await db.commit()
+    async def update_products_by_media_group(self, media_group_id: str, chat_id: int, category: Optional[str], subcategory: Optional[str] = None) -> bool:
+        try:
+            cat = category.strip().upper() if category else None
+            sub = subcategory.strip().upper() if subcategory else None
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("UPDATE products SET category = ?, subcategory = ? WHERE media_group_id = ? AND chat_id = ?", (cat, sub, media_group_id, int(chat_id)))
+                await db.commit()
+            return True
+        except Exception:
+            logger.exception("update_products_by_media_group failed for %s/%s", media_group_id, chat_id)
+            return False
 
-async def add_product(
-    media_group_id: str,
-    file_unique_id: str,
-    file_id: str,
-    media_type: str,
-    caption: Optional[str],
-    category: str,
-    subcategory: str
-):
-    async with await get_db() as db:
-        await db.execute(
-            """
-            INSERT OR IGNORE INTO products
-            (media_group_id, file_unique_id, file_id, media_type, caption, category, subcategory)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (media_group_id, file_unique_id, file_id, media_type, caption, category, subcategory)
-        )
-        await db.commit()
+    async def delete_products_by_media_group(self, media_group_id: str, chat_id: int) -> List[int]:
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("SELECT id FROM products WHERE media_group_id = ? AND chat_id = ?", (media_group_id, int(chat_id))) as cur:
+                    rows = await cur.fetchall()
+                    ids = [int(r["id"]) for r in rows] if rows else []
+                if ids:
+                    placeholders = ",".join("?" for _ in ids)
+                    await db.execute(f"DELETE FROM products WHERE id IN ({placeholders})", tuple(ids))
+                    await db.commit()
+                return ids
+        except Exception:
+            logger.exception("delete_products_by_media_group failed for %s/%s", media_group_id, chat_id)
+            return []
 
-async def product_exists(file_unique_id: str) -> bool:
-    async with await get_db() as db:
-        async with db.execute(
-            "SELECT 1 FROM products WHERE file_unique_id = ? AND is_deleted = 0",
-            (file_unique_id,)
-        ) as cursor:
-            return await cursor.fetchone() is not None
 
-async def get_categories() -> List[str]:
-    async with await get_db() as db:
-        async with db.execute(
-            "SELECT DISTINCT category FROM products WHERE is_deleted = 0"
-        ) as cursor:
-            return [row["category"] for row in await cursor.fetchall() if row["category"]]
+# Module-level DB instance and init helper
+db = Database(DB_PATH)
 
-# ... Additional functions for CRUD, deduplication, pagination, and cleanup
+
+async def init_db() -> None:
+    await db.init_db()

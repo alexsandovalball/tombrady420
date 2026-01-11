@@ -1,141 +1,184 @@
+# handlers/admin.py
 """
-Admin handlers for album ingestion, preview, categorization, and deletion.
+Admin-related handlers: ingestion, preview sending, admin callbacks (category assignment).
+This module handles messages from the monitored channel and sends a single preview to admins.
 """
 
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, Message, InputMediaPhoto, InputMediaVideo
-from telegram.ext import ContextTypes, CallbackQueryHandler, MessageHandler, filters, Application
-from database import (
-    add_media_group_meta,
-    mark_media_group_previewed,
-    add_product,
-    product_exists,
-    is_admin,
-    get_db,
-)
-from utils.helpers import build_category_keyboard, build_subcategory_keyboard, select_representative_media
-from config.config import ADMIN_IDS, CATEGORIES
+from __future__ import annotations
 
-# In-memory cache for collecting media group messages
-media_group_cache = {}
+import logging
+from typing import Optional, List
 
-async def album_ingest(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Handler for new media group messages in the channel.
-    Collects all messages in the group, then triggers preview for admins.
-    """
-    message = update.message
-    if not message.media_group_id:
-        return
-    chat_id = message.chat_id
-    media_group_id = message.media_group_id
-    # Collect messages in cache
-    group = media_group_cache.setdefault(media_group_id, [])
-    group.append(message)
-    # Wait for all messages in the group (Telegram sends them in quick succession)
-    if len(group) == message.media_group_total_count:
-        # All messages received, process album
-        await process_album(group, context)
-        # Remove from cache
-        del media_group_cache[media_group_id]
+from telegram import Message, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes
 
-async def process_album(messages: list, context: ContextTypes.DEFAULT_TYPE):
+from config import ADMIN_IDS, PREVIEW_TTL_SECONDS
+from database import db
+
+logger = logging.getLogger(__name__)
+
+# Example categories and subcategories (customize as needed)
+CATEGORIES = {
+    "FLOWER": ["TOPSHELF CANDY", "PREMIUM EXOTICS", "EXOTICS", "PREMIUM LIGHT DEPS", "LIGHT DEPS", "LIGHT ASSIST", "LOWS"],
+    "EDIBLES": ["GUMMIES", "CHOCOLATES"],
+    "CONCENTRATES": ["LIVE RESIN", "SHATTER"],
+}
+
+
+async def ingest_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Process a complete album: deduplication, preview to admins, categorization.
+    Ingest messages from the monitored channel or admins.
+    Save each media file as a product row and, for media groups, attempt to send a single preview to admins.
     """
-    media_group_id = messages[0].media_group_id
-    chat_id = messages[0].chat_id
-    # Deduplication: skip if all media already exist
-    all_exist = True
-    media_list = []
-    for msg in messages:
-        media = None
+    try:
+        msg: Message = update.effective_message
+        if not msg:
+            return
+
+        chat_id = msg.chat_id
+        message_id = msg.message_id
+        media_group_id = getattr(msg, "media_group_id", None)
+        # Determine file(s) in message: photo, video, document, etc.
+        files = []
         if msg.photo:
-            file_id = msg.photo[-1].file_id
-            file_unique_id = msg.photo[-1].file_unique_id
-            media_type = "photo"
-        elif msg.video:
-            file_id = msg.video.file_id
-            file_unique_id = msg.video.file_unique_id
-            media_type = "video"
+            # photo is a list of sizes; take the largest
+            photo = msg.photo[-1]
+            files.append(("photo", photo.file_id, photo.file_unique_id))
+        if msg.video:
+            files.append(("video", msg.video.file_id, msg.video.file_unique_id))
+        if msg.document:
+            files.append(("document", msg.document.file_id, msg.document.file_unique_id))
+
+        if not files:
+            # nothing to ingest
+            return
+
+        # Save each file to DB
+        saved_ids = []
+        for file_type, file_id, file_unique_id in files:
+            pid = await db.add_product(
+                file_id=file_id,
+                file_type=file_type,
+                caption=msg.caption or "",
+                message_id=message_id,
+                chat_id=chat_id,
+                media_group_id=media_group_id,
+                file_unique_id=file_unique_id,
+            )
+            saved_ids.append(pid)
+
+        logger.info("Ingested message %s/%s -> saved ids %s", chat_id, message_id, saved_ids)
+
+        # If this message is part of a media_group, attempt to atomically mark preview sent
+        if media_group_id:
+            # try_mark returns True only for the first caller that inserted the row
+            should_send = await db.try_mark_media_group_preview_sent(media_group_id, chat_id)
+            if should_send:
+                # Build preview message for admins
+                await send_admin_preview(msg, media_group_id, chat_id, context)
+            else:
+                logger.debug("Preview already sent for media_group %s chat %s", media_group_id, chat_id)
         else:
-            continue
-        caption = msg.caption or ""
-        exists = await product_exists(file_unique_id)
-        if not exists:
-            all_exist = False
-        media_list.append({
-            "file_id": file_id,
-            "file_unique_id": file_unique_id,
-            "media_type": media_type,
-            "caption": caption,
-        })
-    if all_exist:
-        return  # Album already ingested
-    # Preview to admins
-    rep_media = select_representative_media(media_list)
-    for admin_id in ADMIN_IDS:
-        if rep_media["media_type"] == "photo":
-            await context.bot.send_photo(
-                chat_id=admin_id,
-                photo=rep_media["file_id"],
-                caption=f"New album received. Please categorize.\n\n{rep_media['caption']}",
-                reply_markup=build_category_keyboard(list(CATEGORIES.keys()))
-            )
-        elif rep_media["media_type"] == "video":
-            await context.bot.send_video(
-                chat_id=admin_id,
-                video=rep_media["file_id"],
-                caption=f"New album received. Please categorize.\n\n{rep_media['caption']}",
-                reply_markup=build_category_keyboard(list(CATEGORIES.keys()))
-            )
-    # Store album meta
-    await add_media_group_meta(media_group_id, chat_id)
-    # Store media_list in context for categorization step
-    context.chat_data[media_group_id] = media_list
+            # For single-file messages, we can treat message_id as unique group
+            # Use a synthetic media_group_id = f"{chat_id}:{message_id}"
+            synthetic_mg = f"{chat_id}:{message_id}"
+            should_send = await db.try_mark_media_group_preview_sent(synthetic_mg, chat_id)
+            if should_send:
+                await send_admin_preview(msg, synthetic_mg, chat_id, context)
+    except Exception:
+        logger.exception("ingest_message failed")
 
-async def admin_category_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Admin selects a category for the album.
-    """
-    query = update.callback_query
-    await query.answer()
-    category = query.data.split(":", 1)[1]
-    # Show subcategories
-    keyboard = build_subcategory_keyboard(category)
-    await query.edit_message_text(
-        f"Select a subcategory for {category}:", reply_markup=keyboard
-    )
-    # Store category in context
-    context.user_data["pending_category"] = category
 
-async def admin_subcategory_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def send_admin_preview(msg: Message, media_group_id: str, chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Admin selects a subcategory; commit album to catalog.
+    Send a single preview to all admins with inline buttons to set category/subcategory.
+    The preview includes the caption (if any) and buttons for categories.
     """
-    query = update.callback_query
-    await query.answer()
-    _, category, subcategory = query.data.split(":")
-    # Retrieve pending album from context
-    media_group_id = context.user_data.get("pending_media_group_id")
-    media_list = context.chat_data.get(media_group_id, [])
-    # Store products in DB
-    for media in media_list:
-        await add_product(
-            media_group_id=media_group_id,
-            file_unique_id=media["file_unique_id"],
-            file_id=media["file_id"],
-            media_type=media["media_type"],
-            caption=media["caption"],
-            category=category,
-            subcategory=subcategory,
-        )
-    await mark_media_group_previewed(media_group_id)
-    await query.edit_message_text("Album categorized and added to the catalog.")
+    try:
+        caption = msg.caption or "(No caption)"
+        keyboard = []
+        # top-level categories
+        for cat in CATEGORIES.keys():
+            keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"ADM:SETCAT:{media_group_id}:{chat_id}:{cat}")])
+        # Add a "Skip" button
+        keyboard.append([InlineKeyboardButton(text="Skip", callback_data=f"ADM:SKIP:{media_group_id}:{chat_id}")])
+        markup = InlineKeyboardMarkup(keyboard)
 
-def register_handlers(application: Application):
+        for admin_id in ADMIN_IDS:
+            try:
+                await context.bot.send_message(chat_id=admin_id, text=f"Preview for media_group {media_group_id}\n\n{caption}", reply_markup=markup)
+            except Exception:
+                logger.exception("Failed to send preview to admin %s", admin_id)
+    except Exception:
+        logger.exception("send_admin_preview failed")
+
+
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command: show simple stats."""
+    try:
+        user = update.effective_user
+        if user.id not in ADMIN_IDS:
+            await update.message.reply_text("Unauthorized")
+            return
+        # simple stats
+        items = await db.get_catalog_items(limit=1)
+        await update.message.reply_text(f"Catalog items (sample): {len(items)}")
+    except Exception:
+        logger.exception("cmd_stats failed")
+
+
+async def cmd_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command: run a quick DB normalization (dangerous; admin-only)."""
+    try:
+        user = update.effective_user
+        if user.id not in ADMIN_IDS:
+            await update.message.reply_text("Unauthorized")
+            return
+        # For safety, we do not run destructive cleanup here; instruct admin to run offline script
+        await update.message.reply_text("Cleanup is a manual operation. Please run the DB normalization script offline.")
+    except Exception:
+        logger.exception("cmd_cleanup failed")
+
+
+async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Register admin handlers with the application.
+    Router for admin callback queries. Patterns:
+    ADM:SETCAT:<mg>:<chat>:<CAT>
+    ADM:SKIP:<mg>:<chat>
+    ADM:SETSUB:<mg>:<chat>:<CAT>:<SUB>
+    ADM:DELETE:<mg>:<chat>
     """
-    application.add_handler(MessageHandler(filters.MEDIA_GROUP, album_ingest))
-    application.add_handler(CallbackQueryHandler(admin_category_selected, pattern=r"^cat:"))
-    application.add_handler(CallbackQueryHandler(admin_subcategory_selected, pattern=r"^sub:"))
+    try:
+        query = update.callback_query
+        await query.answer()
+        data = query.data
+        parts = data.split(":", 4)
+        action = parts[1] if len(parts) > 1 else None
+        if action == "SETCAT":
+            _, _, mg, chat, cat = data.split(":", 4)
+            # show subcategories
+            subs = CATEGORIES.get(cat, [])
+            keyboard = []
+            for sub in subs:
+                keyboard.append([InlineKeyboardButton(text=sub, callback_data=f"ADM:SETSUB:{mg}:{chat}:{cat}:{sub}")])
+            keyboard.append([InlineKeyboardButton(text="Cancel", callback_data=f"ADM:CANCEL:{mg}:{chat}")])
+            await query.edit_message_text(text=f"Choose subcategory for {cat}", reply_markup=InlineKeyboardMarkup(keyboard))
+        elif action == "SETSUB":
+            # ADM:SETSUB:<mg>:<chat>:<cat>:<sub>
+            _, _, mg, chat, rest = data.split(":", 4)
+            # rest contains "<cat>:<sub>" because we used maxsplit=4 earlier; split it
+            cat, sub = rest.split(":", 1)
+            # apply category to DB
+            await db.update_products_by_media_group(mg, int(chat), cat, sub)
+            await query.edit_message_text(text=f"Set category {cat} / {sub} for media_group {mg}")
+        elif action == "SKIP":
+            _, _, mg, chat = data.split(":", 3)
+            await query.edit_message_text(text=f"Skipped categorization for {mg}")
+        elif action == "DELETE":
+            _, _, mg, chat = data.split(":", 3)
+            deleted = await db.delete_products_by_media_group(mg, int(chat))
+            await query.edit_message_text(text=f"Deleted {len(deleted)} products for {mg}")
+        else:
+            await query.answer("Unknown admin action", show_alert=True)
+    except Exception:
+        logger.exception("cb_admin_router failed")

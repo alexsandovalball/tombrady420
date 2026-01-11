@@ -1,67 +1,41 @@
+# utils/helpers.py
 """
-Utility functions for media handling, deduplication, pagination, and inline keyboard generation.
+Helper utilities: logging setup, pagination keyboard builder, small helpers.
 """
 
-from typing import List, Dict, Any, Optional
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-from config.config import CATEGORIES, PRODUCTS_PER_PAGE
+from __future__ import annotations
 
-def build_category_keyboard(categories: List[str]) -> InlineKeyboardMarkup:
-    """
-    Build an inline keyboard for category selection.
-    """
-    buttons = [
-        [InlineKeyboardButton(text=cat, callback_data=f"cat:{cat}")]
-        for cat in categories
-    ]
-    return InlineKeyboardMarkup(buttons)
+import logging
+from typing import List, Tuple
+from telegram import InlineKeyboardButton
 
-def build_subcategory_keyboard(category: str) -> InlineKeyboardMarkup:
-    """
-    Build an inline keyboard for subcategory selection.
-    """
-    subcats = CATEGORIES.get(category, [])
-    buttons = [
-        [InlineKeyboardButton(text=sub, callback_data=f"sub:{category}:{sub}")]
-        for sub in subcats
-    ]
-    buttons.append([InlineKeyboardButton(text="Back", callback_data="back:categories")])
-    return InlineKeyboardMarkup(buttons)
+logger = logging.getLogger(__name__)
 
-def build_product_pagination_keyboard(
-    category: str, subcategory: str, page: int, total_pages: int
-) -> InlineKeyboardMarkup:
-    """
-    Build an inline keyboard for paginated product listings.
-    """
-    buttons = []
-    if page > 1:
-        buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page:{category}:{subcategory}:{page-1}"))
-    if page < total_pages:
-        buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page:{category}:{subcategory}:{page+1}"))
-    nav_row = buttons if buttons else [InlineKeyboardButton("Back", callback_data=f"sub:{category}")]
-    return InlineKeyboardMarkup([nav_row])
 
-def select_representative_media(media_list: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Select the media with the most informative caption as the representative.
-    """
-    captioned = [m for m in media_list if m.get("caption")]
-    if captioned:
-        # Prefer the longest caption
-        return max(captioned, key=lambda m: len(m["caption"]))
-    return media_list[0] if media_list else {}
+def setup_logging(level: str = "INFO") -> None:
+    lvl = getattr(logging, level.upper(), logging.INFO)
+    logging.basicConfig(level=lvl, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-def paginate(items: List[Any], page: int, per_page: int = PRODUCTS_PER_PAGE) -> List[Any]:
-    """
-    Return a slice of items for the given page.
-    """
-    start = (page - 1) * per_page
-    end = start + per_page
-    return items[start:end]
 
-def total_pages(items: List[Any], per_page: int = PRODUCTS_PER_PAGE) -> int:
+def chunked(seq, n):
+    """Yield successive n-sized chunks from seq."""
+    for i in range(0, len(seq), n):
+        yield seq[i : i + n]
+
+
+def build_pagination_keyboard(scope: str, page: int, per_page: int, total: int) -> List[List[InlineKeyboardButton]]:
     """
-    Calculate total number of pages.
+    Build a simple pagination keyboard.
+    scope: string identifying the scope (category or category::subcategory)
     """
-    return (len(items) + per_page - 1) // per_page
+    keyboard = []
+    total_pages = (total + per_page - 1) // per_page
+    row = []
+    if page > 0:
+        row.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"CAT:PAGE:{scope}:{page-1}"))
+    row.append(InlineKeyboardButton(text=f"Page {page+1}/{max(1,total_pages)}", callback_data=f"CAT:PAGE:{scope}:{page}"))
+    if page + 1 < total_pages:
+        row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"CAT:PAGE:{scope}:{page+1}"))
+    keyboard.append(row)
+    keyboard.append([InlineKeyboardButton(text="Back", callback_data="CAT:BACK")])
+    return keyboard
