@@ -1,4 +1,3 @@
- url=https://github.com/alexsandovalball/tombrady420/blob/main/utils/taxonomy_utils.py
 # utils/taxonomy_utils.py
 """
 Taxonomy normalization and validation helpers.
@@ -38,7 +37,7 @@ def canonicalize_key(value: Optional[str]) -> Optional[str]:
     v = str(value).strip().upper()
     # Replace spaces/hyphens with underscore
     v = _SPACE_HYPHEN_RE.sub("_", v)
-    # Replace other non-alnum with nothing (compact)
+    # Replace other non-alnum with underscore
     v = _NON_ALNUM_RE.sub("_", v)
     # collapse multiple underscores
     v = re.sub(r"_+", "_", v)
@@ -144,6 +143,30 @@ def validate_subcategory_for_category(category_key: Optional[str], subcategory_k
         return mapped
     logger.debug("validate_subcategory_for_category: subcategory '%s' invalid for category '%s'", subcategory_key, category_key)
     return None
+
+
+def validate_category_and_subcategory(cat: Optional[str], sub: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Compatibility helper matching older API used by some handlers.
+
+    Returns (category, subcategory) where values are canonicalized and guaranteed to be present
+    in CATEGORIES. If category is invalid, returns (None, None).
+    If category is valid but subcategory is invalid or missing, returns (category, None).
+    """
+    if not cat:
+        return None, None
+
+    cat_n = canonicalize_key(cat)
+    if cat_n not in CATEGORIES:
+        return None, None
+
+    if sub:
+        sub_n = canonicalize_key(sub)
+        if sub_n in CATEGORIES.get(cat_n, []):
+            return cat_n, sub_n
+        return cat_n, None
+
+    return cat_n, None
 
 
 def apply_admin_categorization(caption: Optional[str], admin_category_input: Optional[str], admin_subcategory_input: Optional[str] = None) -> CategoryResult:

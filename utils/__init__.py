@@ -1,4 +1,3 @@
- url=https://github.com/alexsandovalball/tombrady420/blob/main/utils/__init__.py
 # utils/__init__.py
 """
 Utils package exports for convenience.
@@ -18,6 +17,7 @@ from .taxonomy_utils import (
     list_subcategories,
     map_admin_tag_to_taxonomy,
     validate_subcategory_for_category,
+    validate_category_and_subcategory,
     apply_admin_categorization,
 )
 
@@ -34,5 +34,6 @@ __all__ = [
     "list_subcategories",
     "map_admin_tag_to_taxonomy",
     "validate_subcategory_for_category",
+    "validate_category_and_subcategory",
     "apply_admin_categorization",
 ]
