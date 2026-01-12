@@ -1,4 +1,4 @@
-﻿# main.py
+# main.py
 from __future__ import annotations
 
 # Ensure stdout logging is configured early and consistently for Render
@@ -43,9 +43,6 @@ except Exception:
     DEBUG_LOG_UPDATES = False
 
 from database import db, init_db
-from handlers import admin as admin_handlers
-from handlers import product_view as product_handlers
-from handlers import search as search_handlers
 from utils.helpers import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -78,6 +75,11 @@ def _register_handlers(app: Application) -> None:
     Register all bot handlers on the provided Application instance.
     Keep handlers compact and defensive; use ensure_async for sync callables.
     """
+    # Import handlers here to avoid circular imports and ensure DB is initialized
+    from handlers import admin as admin_handlers
+    from handlers import product_view as product_handlers
+    from handlers import search as search_handlers
+    
     # User commands
     app.add_handler(CommandHandler("start", ensure_async(product_handlers.cmd_start)))
     app.add_handler(CommandHandler("categories", ensure_async(product_handlers.cmd_categories)))
@@ -115,6 +117,20 @@ def _register_handlers(app: Application) -> None:
         app.add_handler(MessageHandler(filters.ALL, _debug_all), group=0)
 
 
+async def post_init(application: Application):
+    """
+    Post-initialization callback that runs after Application is initialized.
+    This is the proper place to initialize the database connection.
+    """
+    try:
+        await db.connect()
+        await db.init_db()
+        logger.info("Database initialized in post_init")
+    except Exception as e:
+        logger.exception("Failed to initialize database in post_init: %s", e)
+        raise
+
+
 def build_application(token: Optional[str] = None) -> Application:
     """
     Build and return a configured Application instance.
@@ -125,7 +141,7 @@ def build_application(token: Optional[str] = None) -> Application:
     if not token:
         raise RuntimeError("BOT_TOKEN is required in environment")
 
-    app = Application.builder().token(token).build()
+    app = Application.builder().token(token).post_init(post_init).build()
 
     # Register handlers
     _register_handlers(app)
@@ -156,8 +172,6 @@ async def startup_tasks(app: Application) -> None:
     """
     global _cleanup_task
     logger.info("Running startup tasks")
-    # Initialize DB (idempotent)
-    await init_db()
     # Expose DB instance to handlers via bot_data for convenience
     app.bot_data["db"] = db
 
@@ -268,3 +282,31 @@ async def run_startup_tasks(app: Application) -> None:
     except Exception:
         logger.exception("startup_tasks failed")
         raise
+
+
+# Build the application instance that webhook_server.py imports
+application = build_application()
+
+
+if __name__ == "__main__":
+    """Run the bot in polling mode when executed directly (for local testing)."""
+    import asyncio
+    
+    async def main():
+        try:
+            await application.initialize()
+            await startup_tasks(application)
+            logger.info("Starting bot in polling mode...")
+            await application.run_polling(allowed_updates=Update.ALL_TYPES)
+        except KeyboardInterrupt:
+            logger.info("Bot stopped by user")
+        except Exception:
+            logger.exception("Fatal error in polling mode")
+        finally:
+            try:
+                await shutdown_tasks(application)
+                await application.shutdown()
+            except Exception:
+                logger.exception("Error during shutdown")
+    
+    asyncio.run(main())
