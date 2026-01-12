@@ -45,6 +45,7 @@ except Exception:
 from database import db, init_db
 from handlers import admin as admin_handlers
 from handlers import product_view as product_handlers
+from handlers import search as search_handlers
 from utils.helpers import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -52,9 +53,6 @@ setup_logging(LOG_LEVEL)
 
 # Background cleanup task handle
 _cleanup_task: Optional[asyncio.Task] = None
-
-# Optional redis client attached to app.bot_data["redis"]
-# We will initialize it during startup_tasks and close it during shutdown_tasks
 
 
 def ensure_async(fn: Callable) -> Callable[..., Awaitable]:
@@ -83,6 +81,8 @@ def _register_handlers(app: Application) -> None:
     # User commands
     app.add_handler(CommandHandler("start", ensure_async(product_handlers.cmd_start)))
     app.add_handler(CommandHandler("categories", ensure_async(product_handlers.cmd_categories)))
+    # search command (fuzzy search)
+    app.add_handler(CommandHandler("search", ensure_async(search_handlers.handle_search)))
 
     # Admin-only commands
     app.add_handler(CommandHandler("admin_stats", ensure_async(admin_handlers.cmd_stats)))
@@ -93,8 +93,9 @@ def _register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("backfill_db", ensure_async(admin_handlers.backfill_db_command)))
     app.add_handler(CommandHandler("nuke", ensure_async(admin_handlers.nuke_command)))
 
-    # Callback queries for product browsing and admin actions
+    # Callback queries for product browsing, search pagination and admin actions
     app.add_handler(CallbackQueryHandler(ensure_async(product_handlers.cb_catalog_router), pattern=r"^CAT:"))
+    app.add_handler(CallbackQueryHandler(ensure_async(search_handlers.cb_search_router), pattern=r"^search_page\|"))
     app.add_handler(CallbackQueryHandler(ensure_async(admin_handlers.cb_admin_router), pattern=r"^ADM:"))
     # Nuke confirmation router (separate)
     app.add_handler(CallbackQueryHandler(ensure_async(admin_handlers.cb_nuke_router), pattern=r"^ADM:NUKE"))
@@ -233,13 +234,15 @@ async def shutdown_tasks(app: Application) -> None:
         redis_client = app.bot_data.get("redis")
         if redis_client is not None:
             try:
-                # redis.asyncio client exposes close() and connection_pool.disconnect()
+                # Close async redis client gracefully
                 await redis_client.close()
-                try:
-                    # best-effort disconnect of pool
-                    await getattr(redis_client, "connection_pool", None).disconnect()
-                except Exception:
-                    pass
+                # Best-effort pool disconnect if available (non-awaiting to avoid compatibility issues)
+                pool = getattr(redis_client, "connection_pool", None)
+                if pool is not None:
+                    try:
+                        pool.disconnect()
+                    except Exception:
+                        pass
                 logger.info("Redis client closed during shutdown")
             except Exception:
                 logger.exception("Error while closing Redis client during shutdown")
