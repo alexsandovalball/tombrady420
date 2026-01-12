@@ -8,6 +8,9 @@ from __future__ import annotations
 import os
 from dotenv import load_dotenv
 
+# Import taxonomy configuration
+from .taxonomy import CATEGORIES, DISPLAY_NAMES
+
 load_dotenv()
 
 
