@@ -5,7 +5,7 @@ import aiosqlite
 import os
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any
 
 from config import DB_PATH
 
@@ -28,7 +28,7 @@ class Database:
         logger.info("Opening DB connection to %s", self.db_path)
         self._conn = await aiosqlite.connect(self.db_path)
         self._conn.row_factory = aiosqlite.Row
-        # Improve concurrency
+        # Improve concurrency and enable foreign keys
         await self._conn.execute("PRAGMA journal_mode=WAL;")
         await self._conn.execute("PRAGMA foreign_keys=ON;")
         await self._conn.commit()
@@ -387,7 +387,6 @@ class Database:
         try:
             conn = self._ensure_conn()
             ts = self._now_iso()
-            # Use INSERT OR IGNORE then check whether preview_sent_at equals the inserted ts
             await conn.execute(
                 """
                 INSERT OR IGNORE INTO media_group_meta (media_group_id, chat_id, preview_sent_at)
@@ -396,14 +395,12 @@ class Database:
                 (media_group_id, int(chat_id), ts),
             )
             await conn.commit()
-            # Now read the row to determine whether preview_sent_at is set
             async with conn.execute("SELECT preview_sent_at FROM media_group_meta WHERE media_group_id = ? AND chat_id = ? LIMIT 1", (media_group_id, int(chat_id))) as cur:
                 row = await cur.fetchone()
             if not row:
                 return False
-            # If preview_sent_at equals the ts we just wrote, we were the inserter.
-            # Note: small race window exists but this is acceptable for dedupe.
-            return bool(row["preview_sent_at"])
+            # Return True only if the stored preview_sent_at equals the timestamp we just wrote.
+            return bool(row["preview_sent_at"] == ts)
         except Exception:
             logger.exception("try_mark_media_group_preview_sent failed for %s/%s", media_group_id, chat_id)
             return False
@@ -589,6 +586,39 @@ class Database:
             return 0
 
     # -------------------------
+    # Processed media groups helpers
+    # -------------------------
+    async def try_mark_processed_media_group(self, media_group_id: str) -> bool:
+        """
+        Atomically insert a processed_media_groups row and return True if this call
+        performed the insert (i.e., first caller). Returns False if row already existed.
+        """
+        try:
+            conn = self._ensure_conn()
+            ts = self._now_iso()
+            await conn.execute("INSERT OR IGNORE INTO processed_media_groups (media_group_id, seen_at) VALUES (?, ?)", (media_group_id, ts))
+            await conn.commit()
+            async with conn.execute("SELECT seen_at FROM processed_media_groups WHERE media_group_id = ? LIMIT 1", (media_group_id,)) as cur:
+                row = await cur.fetchone()
+            if not row:
+                return False
+            return bool(row["seen_at"] == ts)
+        except Exception:
+            logger.exception("try_mark_processed_media_group failed for %s", media_group_id)
+            return False
+
+    async def remove_processed_media_group(self, media_group_id: str) -> bool:
+        """Remove a processed_media_groups row (returns True on success)."""
+        try:
+            conn = self._ensure_conn()
+            await conn.execute("DELETE FROM processed_media_groups WHERE media_group_id = ?", (media_group_id,))
+            await conn.commit()
+            return True
+        except Exception:
+            logger.exception("remove_processed_media_group failed for %s", media_group_id)
+            return False
+
+    # -------------------------
     # Backfill / maintenance helpers
     # -------------------------
     async def backfill_normalize(self) -> int:
@@ -660,9 +690,6 @@ class Database:
             logger.exception("nuke_all_products failed")
             return 0
 
-    # -------------------------
-    # Processed media groups cleanup helper
-    # -------------------------
     async def cleanup_processed_media_groups(self, older_than_days: int = 30) -> int:
         """Remove processed_media_groups older than the given threshold. Returns number removed."""
         try:
