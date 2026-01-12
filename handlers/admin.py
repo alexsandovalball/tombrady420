@@ -2,14 +2,13 @@
 """
 Admin-related handlers: ingestion, preview sending, admin callbacks (category assignment).
 
-Changes made:
-- Replace long stateless callback_data with short tokens to avoid Telegram limits.
-- Add a small token store: prefer Redis (async) if REDIS_URL is configured, otherwise fall back
-  to an in-process TTL-backed store (suitable for single-process deployments).
-- cb_admin_router resolves tokens and performs actions; legacy ADM:... payloads are still
-  supported for backward compatibility.
-- Defensive BadRequest handling when editing messages: logs callback_data lengths and content.
-- Minor cleanup to reduce redundancy and improve readability.
+Features:
+- Ingest channel posts and save product rows (one row per media file).
+- Tokenized admin actions (short callbacks stored in Redis or in-memory TTL store).
+- Admin previews show a short caption (first N words) and a paginated category keyboard.
+- Admin pagination (ADM:CATPAGE) updates the admin preview message in-place.
+- Tokenized callbacks (ADM:TK:<token>) perform SETCAT/SETSUB/SKIP/DELETE/CANCEL actions.
+- Legacy ADM:... flows are still supported for compatibility.
 """
 
 from __future__ import annotations
@@ -21,14 +20,14 @@ import secrets
 import time
 from typing import Optional, List, Tuple, Dict, Any
 
-from telegram import Message, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Message, Update, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from config import ADMIN_IDS, PREVIEW_TTL_SECONDS, REDIS_URL
 from config.taxonomy import CATEGORIES as TAXONOMY, DISPLAY_NAMES
 from database import db
-from utils.taxonomy_utils import validate_category_and_subcategory, canonicalize_key
+from utils.taxonomy_utils import validate_category_and_subcategory, canonicalize_key, get_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +36,9 @@ logger = logging.getLogger(__name__)
 # -------------------------
 _redis_client = None
 _use_redis = False
-
 try:
     if REDIS_URL:
-        # Prefer redis.asyncio if available
         import redis.asyncio as aioredis  # type: ignore
-
         _redis_client = aioredis.from_url(REDIS_URL)
         _use_redis = True
         logger.debug("Using Redis callback token store")
@@ -51,7 +47,7 @@ except Exception:
     _use_redis = False
     logger.debug("Redis not configured or unavailable; using in-memory callback token store")
 
-# In-memory fallback store: token -> (payload_json, expiry_ts)
+# In-memory fallback: token -> (payload_json, expiry_ts)
 _in_memory_store: Dict[str, Tuple[str, float]] = {}
 _in_memory_lock = asyncio.Lock()
 
@@ -64,7 +60,6 @@ async def _store_token(token: str, payload: dict, ttl: int) -> None:
             return
         except Exception:
             logger.exception("Redis setex failed; falling back to in-memory store")
-    # fallback
     expiry = time.time() + ttl
     async with _in_memory_lock:
         _in_memory_store[token] = (data, expiry)
@@ -81,14 +76,12 @@ async def _get_token_payload(token: str) -> Optional[dict]:
             return json.loads(raw)
         except Exception:
             logger.exception("Redis get failed; falling back to in-memory lookup")
-    # fallback
     async with _in_memory_lock:
         entry = _in_memory_store.get(token)
         if not entry:
             return None
         data, expiry = entry
         if time.time() > expiry:
-            # expired
             _in_memory_store.pop(token, None)
             return None
         try:
@@ -98,9 +91,9 @@ async def _get_token_payload(token: str) -> Optional[dict]:
             return None
 
 
-# Periodic cleanup for in-memory store (best-effort)
+# Best-effort cleanup for in-memory store
 async def _start_in_memory_cleanup_task() -> None:
-    async def _cleanup_loop():
+    async def _loop():
         while True:
             await asyncio.sleep(60)
             now = time.time()
@@ -109,26 +102,23 @@ async def _start_in_memory_cleanup_task() -> None:
                 for k in expired:
                     _in_memory_store.pop(k, None)
 
-    # schedule background task without awaiting
     try:
-        asyncio.create_task(_cleanup_loop())
+        asyncio.create_task(_loop())
     except Exception:
-        # If event loop not running or create_task not allowed, ignore
         pass
 
 
-# Kick off cleanup task for fallback store
 if not _use_redis:
     try:
-        # best-effort; if called during import in a context without running loop, it's fine
         asyncio.get_event_loop().call_soon_threadsafe(lambda: asyncio.create_task(_start_in_memory_cleanup_task()))
     except Exception:
-        # ignore if event loop not available at import time
         pass
 
 
+# -------------------------
+# Small helpers
+# -------------------------
 def _display_label(key: str) -> str:
-    """Return a human-friendly label for a taxonomy key."""
     if not key:
         return ""
     try:
@@ -138,7 +128,6 @@ def _display_label(key: str) -> str:
 
 
 async def _safe_reply_text(update: Update, text: str) -> None:
-    """Reply to a message if present, otherwise send to chat."""
     try:
         if update.message:
             await update.message.reply_text(text)
@@ -148,18 +137,14 @@ async def _safe_reply_text(update: Update, text: str) -> None:
         logger.exception("Failed to send reply text")
 
 
-async def _safe_edit_message(query, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None) -> None:
-    """
-    Edit message text safely, catching common Telegram errors.
-    On BadRequest, log callback_data lengths and content for debugging.
-    """
+async def _safe_edit_message(query: CallbackQuery, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None) -> None:
     try:
         if reply_markup is not None:
             await query.edit_message_text(text, reply_markup=reply_markup)
         else:
             await query.edit_message_text(text)
     except BadRequest as e:
-        # Log detailed info about the markup to help diagnose Button_data_invalid
+        # Log callback_data lengths to diagnose invalid callback payload issues
         try:
             if reply_markup and getattr(reply_markup, "inline_keyboard", None):
                 for row in reply_markup.inline_keyboard:
@@ -169,17 +154,15 @@ async def _safe_edit_message(query, text: str, reply_markup: Optional[InlineKeyb
                             length = len(cb.encode("utf-8"))
                         except Exception:
                             length = len(cb)
-                        logger.error("BadRequest while editing message: callback_data length=%s data=%r", length, cb)
+                        logger.error("BadRequest editing message: callback_data length=%s data=%r", length, cb)
         except Exception:
             logger.exception("Failed to inspect reply_markup after BadRequest")
         logger.exception("BadRequest editing message: %s", e)
-        # Try to answer the callback to avoid spinner
         try:
             await query.answer()
         except Exception:
             logger.debug("Failed to answer callback after BadRequest")
     except Exception:
-        # Many reasons editing can fail (MessageNotModified, message deleted, etc.)
         logger.debug("Failed to edit message (non-fatal)", exc_info=True)
         try:
             await query.answer()
@@ -192,8 +175,8 @@ async def _safe_edit_message(query, text: str, reply_markup: Optional[InlineKeyb
 # -------------------------
 async def ingest_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Ingest messages from the monitored channel or admins.
-    Save each media file as a product row and, for media groups, attempt to send a single preview to admins.
+    Ingest messages (channel posts or direct uploads).
+    Save one product row per media file. Send a single short admin preview per media_group.
     """
     try:
         msg: Optional[Message] = update.effective_message
@@ -204,15 +187,14 @@ async def ingest_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         message_id = getattr(msg, "message_id", None)
         media_group_id = getattr(msg, "media_group_id", None)
 
-        # Collect files present in the message
-        files: List[tuple] = []
+        files: List[Tuple[str, str, Optional[str]]] = []
         if getattr(msg, "photo", None):
             photo = msg.photo[-1]
-            files.append(("photo", photo.file_id, photo.file_unique_id))
+            files.append(("photo", photo.file_id, getattr(photo, "file_unique_id", None)))
         if getattr(msg, "video", None):
-            files.append(("video", msg.video.file_id, msg.video.file_unique_id))
+            files.append(("video", msg.video.file_id, getattr(msg.video, "file_unique_id", None)))
         if getattr(msg, "document", None):
-            files.append(("document", msg.document.file_id, msg.document.file_unique_id))
+            files.append(("document", msg.document.file_id, getattr(msg.document, "file_unique_id", None)))
         if getattr(msg, "animation", None):
             files.append(("animation", msg.animation.file_id, getattr(msg.animation, "file_unique_id", None)))
         if getattr(msg, "audio", None):
@@ -221,12 +203,10 @@ async def ingest_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             files.append(("voice", msg.voice.file_id, getattr(msg.voice, "file_unique_id", None)))
 
         if not files:
-            # Nothing to ingest
             return
 
-        # Persist each file as a product row
         saved_ids: List[int] = []
-        for file_type, file_id, file_unique_id in files:
+        for file_type, file_id, file_unique in files:
             try:
                 pid = await db.add_product(
                     file_id=file_id,
@@ -235,7 +215,7 @@ async def ingest_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     message_id=message_id,
                     chat_id=chat_id,
                     media_group_id=media_group_id,
-                    file_unique_id=file_unique_id,
+                    file_unique_id=file_unique,
                 )
                 saved_ids.append(pid)
             except Exception:
@@ -243,64 +223,41 @@ async def ingest_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         logger.info("Ingested message %s/%s -> saved ids=%s", chat_id, message_id, saved_ids)
 
-        # Determine canonical media_group_id for this logical group.
-        canonical_mg: Optional[str] = None
-        if media_group_id:
-            canonical_mg = media_group_id
-
+        # Resolve canonical media_group id
+        canonical_mg: Optional[str] = media_group_id or None
         if not canonical_mg:
-            # Check saved product rows for a propagated media_group_id
             for pid in saved_ids:
-                try:
-                    prod = await db.get_product(pid)
-                    if prod:
-                        mg = prod.get("media_group_id")
-                        if mg:
-                            canonical_mg = mg
-                            break
-                except Exception:
-                    logger.debug("Failed to inspect saved product %s for media_group", pid, exc_info=True)
-
+                prod = await db.get_product(pid)
+                if prod:
+                    mg = prod.get("media_group_id")
+                    if mg:
+                        canonical_mg = mg
+                        break
         if not canonical_mg and message_id is not None and chat_id is not None:
-            try:
-                mg_from_db = await db.get_media_group_for_message(message_id, chat_id)
-                if mg_from_db:
-                    canonical_mg = mg_from_db
-            except Exception:
-                logger.debug("get_media_group_for_message failed for %s/%s", message_id, chat_id, exc_info=True)
-
-        # If still no canonical group, use synthetic id for single-message items
+            mg_from_db = await db.get_media_group_for_message(message_id, chat_id)
+            if mg_from_db:
+                canonical_mg = mg_from_db
         if not canonical_mg:
             canonical_mg = f"{chat_id}:{message_id}"
 
-        logger.debug("Canonical media_group for %s/%s -> %s", chat_id, message_id, canonical_mg)
-
-        # Prefer a caption from any product in the group (if available)
+        # Pick a preview caption (prefer non-empty product caption)
         preview_caption = (msg.caption or "").strip()
         try:
             group_products = await db.get_products_by_media_group(canonical_mg, chat_id)
-            non_empty_caption_found = False
             for p in group_products:
                 cap = (p.get("caption") or "").strip()
                 if cap:
                     preview_caption = cap
-                    non_empty_caption_found = True
                     break
-
-            if non_empty_caption_found:
-                # Delete any rows in this group that have empty captions (they are duplicates)
-                try:
-                    deleted_ids = await db.delete_products_with_empty_caption(canonical_mg, chat_id)
-                    if deleted_ids:
-                        logger.info("Removed empty-caption duplicates for %s/%s -> deleted ids=%s", canonical_mg, chat_id, deleted_ids)
-                except Exception:
-                    logger.exception("Failed to delete empty-caption duplicates for %s/%s", canonical_mg, chat_id)
-            else:
-                preview_caption = preview_caption or "(No caption)"
+            # remove empty-caption duplicates (best-effort)
+            try:
+                await db.delete_products_with_empty_caption(canonical_mg, chat_id)
+            except Exception:
+                logger.debug("delete_products_with_empty_caption failed (non-fatal)")
         except Exception:
-            logger.debug("Failed to determine preview caption for %s", canonical_mg, exc_info=True)
+            logger.debug("Failed to examine group_products for preview caption", exc_info=True)
 
-        # Decide whether to send admin preview (first writer wins for a media_group)
+        # Only the first successful caller should send preview
         try:
             should_send = await db.try_mark_media_group_preview_sent(canonical_mg, chat_id)
         except Exception:
@@ -308,16 +265,15 @@ async def ingest_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             should_send = False
 
         if should_send:
-            await send_admin_preview(msg, canonical_mg, chat_id, context, caption_override=preview_caption)
+            await send_admin_preview_short(msg, canonical_mg, chat_id, context, caption_override=preview_caption)
         else:
             logger.debug("Preview already sent for media_group %s chat %s", canonical_mg, chat_id)
-
     except Exception:
         logger.exception("ingest_message failed")
 
 
 # -------------------------
-# Keyboard helpers (tokenized)
+# Token helpers
 # -------------------------
 async def _make_token_for_action(action: str, payload: dict, ttl: Optional[int] = None) -> str:
     ttl = ttl or PREVIEW_TTL_SECONDS or 3600
@@ -326,92 +282,166 @@ async def _make_token_for_action(action: str, payload: dict, ttl: Optional[int] 
     return token
 
 
-async def _build_category_keyboard(media_group_id: str, chat_id: int) -> InlineKeyboardMarkup:
-    keyboard: List[List[InlineKeyboardButton]] = []
-    for cat in TAXONOMY.keys():
-        display = _display_label(cat)
-        cat_canon = canonicalize_key(cat)
-        token = await _make_token_for_action("SETCAT", {"mg": media_group_id, "chat": chat_id, "cat": cat_canon})
-        keyboard.append([InlineKeyboardButton(text=display, callback_data=f"ADM:TK:{token}")])
+# -------------------------
+# Admin short preview + paged category keyboard
+# -------------------------
+ADMIN_CAT_PAGE_SIZE = 8
+ADMIN_CAPTION_WORDS = 8
 
-    # Skip and Delete actions
-    skip_token = await _make_token_for_action("SKIP", {"mg": media_group_id, "chat": chat_id})
-    del_token = await _make_token_for_action("DELETE", {"mg": media_group_id, "chat": chat_id})
-    keyboard.append([InlineKeyboardButton(text="Skip", callback_data=f"ADM:TK:{skip_token}")])
-    keyboard.append([InlineKeyboardButton(text="Delete", callback_data=f"ADM:TK:{del_token}")])
+
+def _admin_truncate_caption(caption: Optional[str], words: int = ADMIN_CAPTION_WORDS) -> str:
+    if not caption:
+        return "(No caption)"
+    parts = caption.strip().split()
+    if len(parts) <= words:
+        return " ".join(parts)
+    return " ".join(parts[:words]).rstrip() + " …"
+
+
+def _all_category_keys_ordered() -> List[str]:
+    try:
+        keys = sorted(TAXONOMY.keys())
+        for special in ("DATEDPROOFS", "CLIENTTOUCHDOWNS"):
+            if special in keys:
+                keys.remove(special)
+                keys.append(special)
+        return keys
+    except Exception:
+        return []
+
+
+async def _build_admin_category_keyboard(media_group_id: str, page: int = 1, page_size: int = ADMIN_CAT_PAGE_SIZE, chat_id: Optional[int] = None) -> InlineKeyboardMarkup:
+    keys = _all_category_keys_ordered()
+    total = len(keys)
+    if page < 1:
+        page = 1
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_items = keys[start:end]
+
+    keyboard: List[List[InlineKeyboardButton]] = []
+    for k in page_items:
+        try:
+            label = get_display_name(k)
+        except Exception:
+            label = k.replace("_", " ").title()
+        token_payload = {"mg": media_group_id, "cat": canonicalize_key(k)}
+        if chat_id is not None:
+            token_payload["chat"] = int(chat_id)
+        token = await _make_token_for_action("SETCAT", token_payload)
+        keyboard.append([InlineKeyboardButton(text=label, callback_data=f"ADM:TK:{token}")])
+
+    nav_row: List[InlineKeyboardButton] = []
+    if start > 0:
+        nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"ADM:CATPAGE:{media_group_id}::{page-1}"))
+    nav_row.append(InlineKeyboardButton(f"Page {page}", callback_data="noop"))
+    if end < total:
+        nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"ADM:CATPAGE:{media_group_id}::{page+1}"))
+    keyboard.append(nav_row)
+
+    skip_token = await _make_token_for_action("SKIP", {"mg": media_group_id, "chat": chat_id} if chat_id is not None else {"mg": media_group_id})
+    del_token = await _make_token_for_action("DELETE", {"mg": media_group_id, "chat": chat_id} if chat_id is not None else {"mg": media_group_id})
+    keyboard.append([InlineKeyboardButton("Skip", callback_data=f"ADM:TK:{skip_token}"),
+                     InlineKeyboardButton("Delete", callback_data=f"ADM:TK:{del_token}")])
 
     return InlineKeyboardMarkup(keyboard)
 
 
-async def _build_subcategory_keyboard(media_group_id: str, chat_id: int, cat_canon: str) -> InlineKeyboardMarkup:
-    subs = TAXONOMY.get(cat_canon, []) or []
-    keyboard: List[List[InlineKeyboardButton]] = []
-    for sub in subs:
-        sub_canon = canonicalize_key(sub)
-        display_sub = _display_label(sub_canon)
-        token = await _make_token_for_action("SETSUB", {"mg": media_group_id, "chat": chat_id, "cat": cat_canon, "sub": sub_canon})
-        keyboard.append([InlineKeyboardButton(text=display_sub, callback_data=f"ADM:TK:{token}")])
-    cancel_token = await _make_token_for_action("CANCEL", {"mg": media_group_id, "chat": chat_id})
-    keyboard.append([InlineKeyboardButton(text="Cancel", callback_data=f"ADM:TK:{cancel_token}")])
-    return InlineKeyboardMarkup(keyboard)
+async def admin_catpage_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    if not q or not q.data:
+        return
+    try:
+        await q.answer()
+    except Exception:
+        pass
+
+    try:
+        prefix = "ADM:CATPAGE:"
+        rest = q.data[len(prefix) :]
+        if "::" in rest:
+            mgid, page_str = rest.split("::", 1)
+            page = int(page_str or 1)
+        else:
+            mgid = rest
+            page = 1
+    except Exception:
+        logger.exception("admin_catpage_router: malformed payload %r", q.data)
+        try:
+            await q.answer("Invalid pagination request", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    try:
+        header = q.message.text if q.message and q.message.text else f"Preview {mgid}"
+        # Try to discover chat_id for this media_group so SETCAT tokens include it
+        chat_id = None
+        try:
+            rows = await db.get_products_by_media_group(mgid, None)
+            if rows:
+                chat_id = rows[0].get("chat_id")
+        except Exception:
+            logger.debug("Could not determine chat_id for media_group %s", mgid)
+        markup = await _build_admin_category_keyboard(mgid, page=page, chat_id=chat_id)
+        try:
+            await q.message.edit_text(header, reply_markup=markup)
+        except Exception:
+            logger.exception("admin_catpage_router: failed to edit message; attempting to send new one")
+            try:
+                await context.bot.send_message(chat_id=q.from_user.id, text=header, reply_markup=markup)
+            except Exception:
+                logger.exception("admin_catpage_router: failed to send fallback message")
+    except Exception:
+        logger.exception("admin_catpage_router failed")
 
 
-async def send_admin_preview(
+async def send_admin_preview_short(
     msg: Message,
     media_group_id: str,
-    chat_id: int,
+    chat_id: Optional[int],
     context: ContextTypes.DEFAULT_TYPE,
     caption_override: Optional[str] = None,
 ) -> None:
     """
-    Send a single preview to all admins with inline buttons to set category/subcategory.
-    Uses tokenized callback_data to keep payloads small.
+    Send a compact preview to all admins showing a short caption and a paginated category keyboard.
     """
     try:
-        caption = caption_override if caption_override is not None else (msg.caption or "(No caption)")
-        markup = await _build_category_keyboard(media_group_id, chat_id)
-
+        full_caption = caption_override if caption_override is not None else (msg.caption or "(No caption)")
+        short_text = _admin_truncate_caption(full_caption, words=ADMIN_CAPTION_WORDS)
+        header = f"Preview for media_group {media_group_id}\n\n{short_text}"
         for admin_id in ADMIN_IDS:
             try:
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=f"Preview for media_group {media_group_id}\n\n{caption}",
-                    reply_markup=markup,
-                )
+                kb = await _build_admin_category_keyboard(media_group_id, page=1, chat_id=chat_id)
+                await context.bot.send_message(chat_id=admin_id, text=header, reply_markup=kb)
             except Exception:
                 logger.exception("Failed to send preview to admin %s", admin_id)
     except Exception:
-        logger.exception("send_admin_preview failed")
+        logger.exception("send_admin_preview_short failed")
 
 
 # -------------------------
 # Admin commands
 # -------------------------
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin command: show simple stats."""
     try:
         user = update.effective_user
         if not user or user.id not in ADMIN_IDS:
             await _safe_reply_text(update, "Unauthorized")
             return
-
         stats = await db.get_stats()
-        total = stats.get("total", 0)
-        today = stats.get("today", 0)
-        await _safe_reply_text(update, f"📊 Total products: {total}\n📅 Added today: {today}")
+        await _safe_reply_text(update, f"📊 Total products: {stats.get('total',0)}\n📅 Added today: {stats.get('today',0)}")
     except Exception:
         logger.exception("cmd_stats failed")
         await _safe_reply_text(update, "❌ Failed to fetch stats.")
 
 
 async def cmd_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin command: run a quick DB normalization (non-destructive guidance)."""
     try:
         user = update.effective_user
         if not user or user.id not in ADMIN_IDS:
             await _safe_reply_text(update, "Unauthorized")
             return
-
         await _safe_reply_text(update, "Cleanup is a manual operation. Please run the DB normalization script offline.")
     except Exception:
         logger.exception("cmd_cleanup failed")
@@ -419,17 +449,9 @@ async def cmd_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 # -------------------------
-# Admin callback router (tokenized + legacy support)
+# Admin callback router
 # -------------------------
 async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Router for admin callback queries.
-
-    Primary flow: ADM:TK:<token> where token resolves to a payload:
-      {"action":"SETCAT"/"SETSUB"/"SKIP"/"DELETE"/"CANCEL", "mg":..., "chat":..., ...}
-
-    Legacy flow: ADM:SETCAT:<mg>:<chat>:<CAT> etc. is still supported.
-    """
     try:
         query = update.callback_query
         if not query:
@@ -445,6 +467,11 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.answer("Invalid admin action", show_alert=True)
             return
 
+        # Pagination route first
+        if data.startswith("ADM:CATPAGE:"):
+            await admin_catpage_router(update, context)
+            return
+
         # Tokenized flow: ADM:TK:<token>
         if data.startswith("ADM:TK:"):
             token = data.split(":", 2)[2]
@@ -456,7 +483,6 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             action = payload.get("action", "").upper()
             mg = payload.get("mg")
             chat = payload.get("chat")
-            # route tokenized actions
             if action == "SETCAT":
                 cat = payload.get("cat")
                 if not cat:
@@ -469,13 +495,13 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 subs = TAXONOMY.get(cat_canon, []) or []
                 if subs:
                     # present subcategory choices using tokens
+                    # build subcategory keyboard
                     markup = await _build_subcategory_keyboard(mg, chat, cat_canon)
                     await _safe_edit_message(query, text=f"Choose subcategory for {_display_label(cat_canon)}", reply_markup=markup)
                     return
                 else:
-                    # apply category immediately
                     try:
-                        success = await db.update_products_by_media_group(mg, int(chat), cat_canon, None)
+                        success = await db.update_products_by_media_group(mg, int(chat) if chat is not None else None, cat_canon, None)
                         if success:
                             await _safe_edit_message(query, text=f"✅ Set category {_display_label(cat_canon)} for media_group {mg}")
                         else:
@@ -485,7 +511,7 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         await _safe_edit_message(query, text="❌ Failed to set category; see server logs.")
                     return
 
-            elif action == "SETSUB":
+            if action == "SETSUB":
                 cat = payload.get("cat")
                 sub = payload.get("sub")
                 if not cat or not sub:
@@ -498,7 +524,7 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await query.answer("Invalid category", show_alert=True)
                     return
                 try:
-                    success = await db.update_products_by_media_group(mg, int(chat), cat_valid, sub_valid)
+                    success = await db.update_products_by_media_group(mg, int(chat) if chat is not None else None, cat_valid, sub_valid)
                     if success:
                         await _safe_edit_message(query, text=f"✅ Set category {_display_label(cat_valid)} / {_display_label(sub_valid)} for media_group {mg}")
                     else:
@@ -508,16 +534,16 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await _safe_edit_message(query, text="❌ Failed to set category/subcategory; see server logs.")
                 return
 
-            elif action == "SKIP":
+            if action == "SKIP":
                 try:
                     await _safe_edit_message(query, text=f"Skipped categorization for {mg}")
                 except Exception:
                     logger.exception("Failed to mark skip for %s", mg)
                 return
 
-            elif action == "DELETE":
+            if action == "DELETE":
                 try:
-                    deleted = await db.delete_products_by_media_group(mg, int(chat))
+                    deleted = await db.delete_products_by_media_group(mg, int(chat) if chat is not None else None)
                     count = len(deleted) if isinstance(deleted, (list, tuple)) else (deleted or 0)
                     await _safe_edit_message(query, text=f"Deleted {count} products for {mg}")
                 except Exception:
@@ -525,53 +551,34 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await _safe_edit_message(query, text="❌ Failed to delete products; see server logs.")
                 return
 
-            elif action == "CANCEL":
+            if action == "CANCEL":
                 try:
                     await _safe_edit_message(query, text=f"Cancelled categorization for {mg}")
                 except Exception:
                     logger.exception("Failed to cancel categorization for %s", mg)
                 return
 
-            else:
-                await query.answer("Unknown admin action", show_alert=True)
-                return
+            await query.answer("Unknown admin action", show_alert=True)
+            return
 
-        # Legacy flow: keep existing parsing for backward compatibility
-        # Remove "ADM:" prefix and split action from payload
+        # Legacy flow: handle older ADM:SETCAT / ADM:... payloads if present
         rest = data[4:]
         action, _, payload = rest.partition(":")
         action = (action or "").upper()
 
-        def _split_payload_from_right(payload_str: str, expected_tail_tokens: int) -> Tuple[Optional[str], Optional[List[str]]]:
-            """
-            Return (head, tail_list) where head is the left-most part (may contain colons)
-            and tail_list contains expected_tail_tokens strings from the right.
-            If not enough tokens, returns (None, None).
-            """
-            if expected_tail_tokens <= 0:
-                return payload_str, []
-            parts = payload_str.rsplit(":", expected_tail_tokens)
-            if len(parts) < expected_tail_tokens + 1:
-                return None, None
-            head = parts[0]
-            tail = parts[1:]
-            return head, tail
-
-        # Existing legacy handlers (unchanged logic)
         if action == "SETCAT":
-            head, tail = _split_payload_from_right(payload, 2)
-            if head is None:
+            # legacy format: ADM:SETCAT:<mg>:<chat>:<cat>
+            parts = payload.split(":")
+            if len(parts) < 3:
                 await query.answer("Malformed SETCAT data", show_alert=True)
                 return
-            mg = head
-            chat = tail[0]
-            cat = tail[1]
-
+            mg = parts[0]
+            chat = parts[1]
+            cat = parts[2]
             cat_canon = canonicalize_key(cat)
             if cat_canon not in TAXONOMY:
                 await query.answer("Invalid category selected", show_alert=True)
                 return
-
             subs = TAXONOMY.get(cat_canon, []) or []
             if subs:
                 keyboard = []
@@ -598,99 +605,24 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await _safe_edit_message(query, text="❌ Failed to set category; see server logs.")
                 return
 
-        elif action == "SETSUB":
-            head, tail = _split_payload_from_right(payload, 3)
-            if head is None:
-                await query.answer("Malformed SETSUB data", show_alert=True)
-                return
-            mg = head
-            chat = tail[0]
-            cat = tail[1]
-            sub = tail[2]
-
-            cat_canon = canonicalize_key(cat)
-            sub_canon = canonicalize_key(sub)
-
-            cat_valid, sub_valid = validate_category_and_subcategory(cat_canon, sub_canon)
-            if not cat_valid:
-                await query.answer("Invalid category", show_alert=True)
-                return
-
-            try:
-                success = await db.update_products_by_media_group(mg, int(chat), cat_valid, sub_valid)
-                if success:
-                    await _safe_edit_message(query, text=f"✅ Set category {_display_label(cat_valid)} / {_display_label(sub_valid)} for media_group {mg}")
-                else:
-                    await _safe_edit_message(query, text="❌ Failed to set category/subcategory (DB returned failure).")
-            except Exception:
-                logger.exception("Failed to set subcategory for media_group %s", mg)
-                await _safe_edit_message(query, text="❌ Failed to set category/subcategory; see server logs.")
-            return
-
-        elif action == "SKIP":
-            head, tail = _split_payload_from_right(payload, 1)
-            if head is None:
-                await query.answer("Malformed SKIP data", show_alert=True)
-                return
-            mg = head
-            try:
-                await _safe_edit_message(query, text=f"Skipped categorization for {mg}")
-            except Exception:
-                logger.exception("Failed to mark skip for %s", mg)
-            return
-
-        elif action == "DELETE":
-            head, tail = _split_payload_from_right(payload, 1)
-            if head is None:
-                await query.answer("Malformed DELETE data", show_alert=True)
-                return
-            mg = head
-            chat = tail[0]
-            try:
-                deleted = await db.delete_products_by_media_group(mg, int(chat))
-                count = len(deleted) if isinstance(deleted, (list, tuple)) else (deleted or 0)
-                await _safe_edit_message(query, text=f"Deleted {count} products for {mg}")
-            except Exception:
-                logger.exception("Failed to delete products for media_group %s", mg)
-                await _safe_edit_message(query, text="❌ Failed to delete products; see server logs.")
-            return
-
-        elif action == "CANCEL":
-            head, tail = _split_payload_from_right(payload, 1)
-            if head is None:
-                await query.answer("Malformed CANCEL data", show_alert=True)
-                return
-            mg = head
-            try:
-                await _safe_edit_message(query, text=f"Cancelled categorization for {mg}")
-            except Exception:
-                logger.exception("Failed to cancel categorization for %s", mg)
-            return
-
-        else:
-            await query.answer("Unknown admin action", show_alert=True)
-            return
-
+        await query.answer("Unsupported legacy admin action (use tokenized UI).", show_alert=True)
     except Exception:
         logger.exception("cb_admin_router failed")
 
 
 # -------------------------
-# Convenience admin commands
+# Convenience admin commands / utilities
 # -------------------------
 async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """List recent products for admins."""
     try:
         user = update.effective_user
         if not user or user.id not in ADMIN_IDS:
             await _safe_reply_text(update, "❌ You are not authorized to use this command.")
             return
-
         rows = await db.get_all_products()
         if not rows:
             await _safe_reply_text(update, "ℹ️ No products found.")
             return
-
         lines: List[str] = []
         for r in rows[:50]:
             pid = r.get("id")
@@ -700,9 +632,7 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
             msg = r.get("message_id")
             cap = (r.get("caption") or "").replace("\n", " ")[:80]
             lines.append(f"{pid} | {cat} / {sub} | chat={chat} msg={msg} | {cap}")
-
         text = "Recent products:\n" + "\n".join(lines)
-        # Chunk to avoid Telegram message size limits
         for chunk in [text[i:i + 3900] for i in range(0, len(text), 3900)]:
             await _safe_reply_text(update, chunk)
     except Exception:
@@ -711,35 +641,26 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def set_category_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Admin command to set or override category/subcategory for a product.
-    Usage: /setcategory <product_id> <category> [subcategory]
-    """
     try:
         user = update.effective_user
         if not user or user.id not in ADMIN_IDS:
             await _safe_reply_text(update, "❌ You are not authorized to use this command.")
             return
-
         args = context.args
         if len(args) < 2:
             await _safe_reply_text(update, "Usage: /setcategory <product_id> <category> [subcategory]")
             return
-
         try:
             product_id = int(args[0])
         except ValueError:
             await _safe_reply_text(update, "Product ID must be an integer.")
             return
-
         category_input = args[1]
         subcategory_input = " ".join(args[2:]) if len(args) > 2 else None
-
         cat_valid, sub_valid = validate_category_and_subcategory(category_input, subcategory_input)
         if not cat_valid:
             await _safe_reply_text(update, "❌ Invalid category. Use /listcategories to see allowed values.")
             return
-
         success = await db.set_product_category(product_id, cat_valid, sub_valid)
         if success:
             await _safe_reply_text(update, f"✅ Product {product_id} categorized as '{cat_valid}/{sub_valid or '—'}'.")
@@ -751,119 +672,73 @@ async def set_category_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def list_categories_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show the hardwired taxonomy to admins."""
     try:
         user = update.effective_user
         if not user or user.id not in ADMIN_IDS:
             await _safe_reply_text(update, "❌ You are not authorized to use this command.")
             return
-
         lines: List[str] = []
         for cat, subs in TAXONOMY.items():
             if subs:
                 lines.append(f"{_display_label(cat)} -> {', '.join([_display_label(s) for s in subs])}")
             else:
                 lines.append(f"{_display_label(cat)} -> (no subcategories)")
-        await _safe_reply_text(update, "Allowed categories and subcategories:\n" + "\n".join(lines))
+        text = "Categories:\n" + "\n".join(lines)
+        for chunk in [text[i:i + 3900] for i in range(0, len(text), 3900)]:
+            await _safe_reply_text(update, chunk)
     except Exception:
         logger.exception("list_categories_command failed")
         await _safe_reply_text(update, "❌ Failed to list categories.")
 
 
-# -------------------------
-# Backfill / nuke utilities
-# -------------------------
 async def backfill_db_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Admin-only command to normalize category/subcategory values and propagate tags
-    to media_group representative rows. Usage: /backfill_db
-    """
     try:
         user = update.effective_user
         if not user or user.id not in ADMIN_IDS:
-            await _safe_reply_text(update, "❌ You are not authorized to run this command.")
+            await _safe_reply_text(update, "❌ Unauthorized")
             return
-
-        await _safe_reply_text(update, "⚙️ Running DB backfill. This may take a moment...")
-
-        # Prefer DB-layer helpers if available
-        changed_normalize = 0
-        changed_propagate = 0
-        if hasattr(db, "backfill_normalize") and hasattr(db, "backfill_propagate_media_group"):
-            try:
-                changed_normalize = await db.backfill_normalize()
-                changed_propagate = await db.backfill_propagate_media_group()
-            except Exception:
-                logger.exception("DB backfill helpers failed; falling back to no-op")
-        else:
-            await _safe_reply_text(update, "DB backfill helpers not available on this deployment. Run offline script.")
-            return
-
-        msg = (
-            f"✅ Backfill complete.\n"
-            f"Rows changed by normalization: {changed_normalize}\n"
-            f"Rows changed by media_group propagation: {changed_propagate}"
-        )
-        await _safe_reply_text(update, msg)
+        await _safe_reply_text(update, "Starting DB backfill (normalize + propagate). This may take a while.")
+        normalized = await db.backfill_normalize()
+        propagated = await db.backfill_propagate_media_group()
+        await _safe_reply_text(update, f"Backfill complete. Normalized rows: {normalized}, propagated rows: {propagated}")
     except Exception:
         logger.exception("backfill_db_command failed")
-        await _safe_reply_text(update, "❌ Backfill failed due to an internal error.")
+        await _safe_reply_text(update, "❌ Backfill failed; see server logs.")
 
 
 async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Two-step confirmation for nuking all products. This handler only starts the flow;
-    the actual destructive operation should be implemented in the DB layer and require
-    an explicit confirmation token to execute.
-    """
     try:
         user = update.effective_user
         if not user or user.id not in ADMIN_IDS:
-            await _safe_reply_text(update, "❌ You are not authorized to use this command.")
+            await _safe_reply_text(update, "❌ Unauthorized")
             return
-
-        # Build a simple confirmation keyboard with stateless payloads
-        keyboard = [
-            [InlineKeyboardButton("✅ Yes, delete all", callback_data="ADM:NUKE_CONFIRM:1")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="ADM:NUKE_CANCEL:1")],
-        ]
-        if update.message:
-            await update.message.reply_text("⚠️ Are you sure you want to delete ALL products? This is irreversible.", reply_markup=InlineKeyboardMarkup(keyboard))
-        else:
-            await _safe_reply_text(update, "⚠️ Are you sure you want to delete ALL products? This is irreversible.")
+        # Send confirmation buttons (tokenized)
+        token = await _make_token_for_action("NUKE_CONFIRM", {"who": user.id})
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Confirm Nuke", callback_data=f"ADM:TK:{token}"), InlineKeyboardButton("Cancel", callback_data=f"ADM:TK:{await _make_token_for_action('CANCEL', {'who': user.id})}")]])
+        await _safe_reply_text(update, "Are you sure you want to nuke the DB? This will delete many rows. Confirm below.")
+        await context.bot.send_message(chat_id=user.id, text="Confirm nuke:", reply_markup=kb)
     except Exception:
         logger.exception("nuke_command failed")
-        await _safe_reply_text(update, "❌ Failed to initiate nuke.")
+        await _safe_reply_text(update, "❌ Failed to initiate nuke confirmation.")
 
 
-async def cb_nuke_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the nuke confirmation callbacks (separate router to keep responsibilities clear)."""
-    try:
-        query = update.callback_query
-        if not query:
-            return
+async def _build_subcategory_keyboard(media_group_id: str, chat: Optional[int], cat_canon: str) -> InlineKeyboardMarkup:
+    """
+    Build a tokenized keyboard for subcategory selection for a given category.
+    """
+    subs = TAXONOMY.get(cat_canon, []) or []
+    keyboard: List[List[InlineKeyboardButton]] = []
+    for s in subs:
+        s_canon = canonicalize_key(s)
+        payload = {"action": "SETSUB", "mg": media_group_id, "cat": cat_canon, "sub": s_canon}
+        if chat is not None:
+            payload["chat"] = int(chat)
+        token = await _make_token_for_action("SETSUB", payload)
+        keyboard.append([InlineKeyboardButton(text=_display_label(s_canon), callback_data=f"ADM:TK:{token}")])
+    # Cancel button
+    cancel_token = await _make_token_for_action("CANCEL", {"mg": media_group_id, "chat": chat})
+    keyboard.append([InlineKeyboardButton(text="Cancel", callback_data=f"ADM:TK:{cancel_token}")])
+    return InlineKeyboardMarkup(keyboard)
 
-        user = query.from_user
-        if not user or user.id not in ADMIN_IDS:
-            await query.answer("Unauthorized", show_alert=True)
-            return
 
-        data = (query.data or "").strip()
-        if data.startswith("ADM:NUKE_CONFIRM"):
-            # Perform nuke via DB-layer helper if available
-            if hasattr(db, "nuke_all_products"):
-                try:
-                    count = await db.nuke_all_products()
-                    await _safe_edit_message(query, text=f"✅ Nuke complete. Deleted {count} products.")
-                    logger.warning("NUKE executed by admin=%s; deleted=%s", user.id, count)
-                except Exception:
-                    logger.exception("NUKE failed during execution")
-                    await _safe_edit_message(query, text="❌ Nuke failed due to an internal error.")
-            else:
-                await _safe_edit_message(query, text="Nuke helper not available on this deployment. Run offline script.")
-        elif data.startswith("ADM:NUKE_CANCEL"):
-            await _safe_edit_message(query, text="❌ Nuke cancelled.")
-        else:
-            await query.answer("Unknown nuke action", show_alert=True)
-    except Exception:
-        logger.exception("cb_nuke_router failed")
+# End of file
