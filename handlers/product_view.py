@@ -1,5 +1,4 @@
-﻿ url=https://github.com/alexsandovalball/tombrady420/blob/main/handlers/product_view.py
-﻿# handlers/product_view.py
+﻿﻿# handlers/product_view.py
 """
 User-facing handlers: categories, browsing, product view, pagination.
 
