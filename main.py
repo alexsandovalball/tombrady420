@@ -1,4 +1,4 @@
-﻿# main.py
+﻿﻿# main.py
 from __future__ import annotations
 
 # Ensure stdout logging is configured early and consistently for Render
@@ -53,6 +53,9 @@ setup_logging(LOG_LEVEL)
 
 # Background cleanup task handle
 _cleanup_task: Optional[asyncio.Task] = None
+
+# Optional redis client attached to app.bot_data["redis"]
+# We will initialize it during startup_tasks and close it during shutdown_tasks
 
 
 def ensure_async(fn: Callable) -> Callable[..., Awaitable]:
@@ -234,15 +237,13 @@ async def shutdown_tasks(app: Application) -> None:
         redis_client = app.bot_data.get("redis")
         if redis_client is not None:
             try:
-                # Close async redis client gracefully
+                # redis.asyncio client exposes close() and connection_pool.disconnect()
                 await redis_client.close()
-                # Best-effort pool disconnect if available (non-awaiting to avoid compatibility issues)
-                pool = getattr(redis_client, "connection_pool", None)
-                if pool is not None:
-                    try:
-                        pool.disconnect()
-                    except Exception:
-                        pass
+                try:
+                    # best-effort disconnect of pool
+                    await getattr(redis_client, "connection_pool", None).disconnect()
+                except Exception:
+                    pass
                 logger.info("Redis client closed during shutdown")
             except Exception:
                 logger.exception("Error while closing Redis client during shutdown")

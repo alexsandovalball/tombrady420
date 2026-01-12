@@ -2,13 +2,13 @@
 """
 Admin-related handlers: ingestion, preview sending, admin callbacks (category assignment).
 
-Features:
-- Ingest channel posts and save product rows (one row per media file).
-- Tokenized admin actions (short callbacks stored in Redis or in-memory TTL store).
-- Admin previews show a short caption (first N words) and a paginated category keyboard.
-- Admin pagination (ADM:CATPAGE) updates the admin preview message in-place.
-- Tokenized callbacks (ADM:TK:<token>) perform SETCAT/SETSUB/SKIP/DELETE/CANCEL actions.
-- Legacy ADM:... flows are still supported for compatibility.
+This module provides:
+ - ingest_message: save incoming media posts (one row per file).
+ - token store (Redis preferred, in-memory fallback) with helpers _store_token / _get_token_payload.
+ - compact admin preview UI: truncated caption + paginated category keyboard (tokenized callbacks).
+ - admin callback router (ADM:TK:<token>) for SETCAT/SETSUB/SKIP/DELETE/CANCEL.
+ - legacy compatibility for a few ADM:... payloads.
+ - cb_nuke_router to handle ADM:NUKE_* callbacks (registered by main.py).
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ async def _get_token_payload(token: str) -> Optional[dict]:
             return None
 
 
-# Best-effort cleanup for in-memory store
+# Best-effort cleanup task for in-memory store
 async def _start_in_memory_cleanup_task() -> None:
     async def _loop():
         while True:
@@ -144,7 +144,7 @@ async def _safe_edit_message(query: CallbackQuery, text: str, reply_markup: Opti
         else:
             await query.edit_message_text(text)
     except BadRequest as e:
-        # Log callback_data lengths to diagnose invalid callback payload issues
+        # Log callback_data lengths to diagnose invalid callback payloads
         try:
             if reply_markup and getattr(reply_markup, "inline_keyboard", None):
                 for row in reply_markup.inline_keyboard:
@@ -175,8 +175,7 @@ async def _safe_edit_message(query: CallbackQuery, text: str, reply_markup: Opti
 # -------------------------
 async def ingest_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Ingest messages (channel posts or direct uploads).
-    Save one product row per media file. Send a single short admin preview per media_group.
+    Ingest channel posts (or direct uploads). Persist one product row per file and send a compact admin preview.
     """
     try:
         msg: Optional[Message] = update.effective_message
@@ -223,16 +222,14 @@ async def ingest_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         logger.info("Ingested message %s/%s -> saved ids=%s", chat_id, message_id, saved_ids)
 
-        # Resolve canonical media_group id
+        # Resolve canonical media_group id (prefer actual media_group_id)
         canonical_mg: Optional[str] = media_group_id or None
         if not canonical_mg:
             for pid in saved_ids:
                 prod = await db.get_product(pid)
-                if prod:
-                    mg = prod.get("media_group_id")
-                    if mg:
-                        canonical_mg = mg
-                        break
+                if prod and prod.get("media_group_id"):
+                    canonical_mg = prod.get("media_group_id")
+                    break
         if not canonical_mg and message_id is not None and chat_id is not None:
             mg_from_db = await db.get_media_group_for_message(message_id, chat_id)
             if mg_from_db:
@@ -240,7 +237,9 @@ async def ingest_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if not canonical_mg:
             canonical_mg = f"{chat_id}:{message_id}"
 
-        # Pick a preview caption (prefer non-empty product caption)
+        logger.debug("Canonical mg for %s/%s -> %s", chat_id, message_id, canonical_mg)
+
+        # Choose preview caption
         preview_caption = (msg.caption or "").strip()
         try:
             group_products = await db.get_products_by_media_group(canonical_mg, chat_id)
@@ -249,15 +248,13 @@ async def ingest_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 if cap:
                     preview_caption = cap
                     break
-            # remove empty-caption duplicates (best-effort)
             try:
                 await db.delete_products_with_empty_caption(canonical_mg, chat_id)
             except Exception:
                 logger.debug("delete_products_with_empty_caption failed (non-fatal)")
         except Exception:
-            logger.debug("Failed to examine group_products for preview caption", exc_info=True)
+            logger.debug("Failed to compute preview caption (non-fatal)", exc_info=True)
 
-        # Only the first successful caller should send preview
         try:
             should_send = await db.try_mark_media_group_preview_sent(canonical_mg, chat_id)
         except Exception:
@@ -283,7 +280,7 @@ async def _make_token_for_action(action: str, payload: dict, ttl: Optional[int] 
 
 
 # -------------------------
-# Admin short preview + paged category keyboard
+# Admin UI: short preview + paged category keyboard
 # -------------------------
 ADMIN_CAT_PAGE_SIZE = 8
 ADMIN_CAPTION_WORDS = 8
@@ -308,6 +305,22 @@ def _all_category_keys_ordered() -> List[str]:
         return keys
     except Exception:
         return []
+
+
+async def _build_subcategory_keyboard(media_group_id: str, chat_id: Optional[int], cat_canon: str) -> InlineKeyboardMarkup:
+    subs = TAXONOMY.get(cat_canon, []) or []
+    keyboard: List[List[InlineKeyboardButton]] = []
+    for sub in subs:
+        sub_canon = canonicalize_key(sub)
+        display_sub = _display_label(sub_canon)
+        token_payload = {"mg": media_group_id, "cat": cat_canon, "sub": sub_canon}
+        if chat_id is not None:
+            token_payload["chat"] = int(chat_id)
+        token = await _make_token_for_action("SETSUB", token_payload)
+        keyboard.append([InlineKeyboardButton(text=display_sub, callback_data=f"ADM:TK:{token}")])
+    cancel_token = await _make_token_for_action("CANCEL", {"mg": media_group_id, "chat": chat_id} if chat_id is not None else {"mg": media_group_id})
+    keyboard.append([InlineKeyboardButton(text="Cancel", callback_data=f"ADM:TK:{cancel_token}")])
+    return InlineKeyboardMarkup(keyboard)
 
 
 async def _build_admin_category_keyboard(media_group_id: str, page: int = 1, page_size: int = ADMIN_CAT_PAGE_SIZE, chat_id: Optional[int] = None) -> InlineKeyboardMarkup:
@@ -375,8 +388,7 @@ async def admin_catpage_router(update: Update, context: ContextTypes.DEFAULT_TYP
 
     try:
         header = q.message.text if q.message and q.message.text else f"Preview {mgid}"
-        # Try to discover chat_id for this media_group so SETCAT tokens include it
-        chat_id = None
+        chat_id: Optional[int] = None
         try:
             rows = await db.get_products_by_media_group(mgid, None)
             if rows:
@@ -403,9 +415,6 @@ async def send_admin_preview_short(
     context: ContextTypes.DEFAULT_TYPE,
     caption_override: Optional[str] = None,
 ) -> None:
-    """
-    Send a compact preview to all admins showing a short caption and a paginated category keyboard.
-    """
     try:
         full_caption = caption_override if caption_override is not None else (msg.caption or "(No caption)")
         short_text = _admin_truncate_caption(full_caption, words=ADMIN_CAPTION_WORDS)
@@ -421,7 +430,7 @@ async def send_admin_preview_short(
 
 
 # -------------------------
-# Admin commands
+# Admin command handlers
 # -------------------------
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
@@ -449,7 +458,7 @@ async def cmd_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 # -------------------------
-# Admin callback router
+# Admin callback router (tokenized + legacy fallback)
 # -------------------------
 async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
@@ -467,12 +476,12 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.answer("Invalid admin action", show_alert=True)
             return
 
-        # Pagination route first
+        # Pagination (legacy) handled first
         if data.startswith("ADM:CATPAGE:"):
             await admin_catpage_router(update, context)
             return
 
-        # Tokenized flow: ADM:TK:<token>
+        # Tokenized flow
         if data.startswith("ADM:TK:"):
             token = data.split(":", 2)[2]
             payload = await _get_token_payload(token)
@@ -494,8 +503,6 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     return
                 subs = TAXONOMY.get(cat_canon, []) or []
                 if subs:
-                    # present subcategory choices using tokens
-                    # build subcategory keyboard
                     markup = await _build_subcategory_keyboard(mg, chat, cat_canon)
                     await _safe_edit_message(query, text=f"Choose subcategory for {_display_label(cat_canon)}", reply_markup=markup)
                     return
@@ -561,20 +568,29 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.answer("Unknown admin action", show_alert=True)
             return
 
-        # Legacy flow: handle older ADM:SETCAT / ADM:... payloads if present
+        # Legacy fallback (keep minimal legacy support)
         rest = data[4:]
         action, _, payload = rest.partition(":")
         action = (action or "").upper()
 
+        def _split_payload_from_right(payload_str: str, expected_tail_tokens: int):
+            if expected_tail_tokens <= 0:
+                return payload_str, []
+            parts = payload_str.rsplit(":", expected_tail_tokens)
+            if len(parts) < expected_tail_tokens + 1:
+                return None, None
+            head = parts[0]
+            tail = parts[1:]
+            return head, tail
+
         if action == "SETCAT":
-            # legacy format: ADM:SETCAT:<mg>:<chat>:<cat>
-            parts = payload.split(":")
-            if len(parts) < 3:
+            head, tail = _split_payload_from_right(payload, 2)
+            if head is None:
                 await query.answer("Malformed SETCAT data", show_alert=True)
                 return
-            mg = parts[0]
-            chat = parts[1]
-            cat = parts[2]
+            mg = head
+            chat = tail[0]
+            cat = tail[1]
             cat_canon = canonicalize_key(cat)
             if cat_canon not in TAXONOMY:
                 await query.answer("Invalid category selected", show_alert=True)
@@ -611,7 +627,44 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 # -------------------------
-# Convenience admin commands / utilities
+# Nuke confirmation router (separate)
+# -------------------------
+async def cb_nuke_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle ADM:NUKE_CONFIRM and ADM:NUKE_CANCEL callbacks.
+    Registered in main.py as a separate router for clarity.
+    """
+    try:
+        query = update.callback_query
+        if not query:
+            return
+        user = query.from_user
+        if not user or user.id not in ADMIN_IDS:
+            await query.answer("Unauthorized", show_alert=True)
+            return
+
+        data = (query.data or "").strip()
+        if data.startswith("ADM:NUKE_CONFIRM"):
+            if hasattr(db, "nuke_all_products"):
+                try:
+                    count = await db.nuke_all_products()
+                    await _safe_edit_message(query, text=f"✅ Nuke complete. Deleted {count} products.")
+                    logger.warning("NUKE executed by admin=%s; deleted=%s", user.id, count)
+                except Exception:
+                    logger.exception("NUKE failed during execution")
+                    await _safe_edit_message(query, text="❌ Nuke failed due to an internal error.")
+            else:
+                await _safe_edit_message(query, text="Nuke helper not available on this deployment. Run offline script.")
+        elif data.startswith("ADM:NUKE_CANCEL"):
+            await _safe_edit_message(query, text="❌ Nuke cancelled.")
+        else:
+            await query.answer("Unknown nuke action", show_alert=True)
+    except Exception:
+        logger.exception("cb_nuke_router failed")
+
+
+# -------------------------
+# Convenience admin commands
 # -------------------------
 async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
@@ -714,31 +767,11 @@ async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
         # Send confirmation buttons (tokenized)
         token = await _make_token_for_action("NUKE_CONFIRM", {"who": user.id})
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Confirm Nuke", callback_data=f"ADM:TK:{token}"), InlineKeyboardButton("Cancel", callback_data=f"ADM:TK:{await _make_token_for_action('CANCEL', {'who': user.id})}")]])
+        cancel_token = await _make_token_for_action("CANCEL", {"who": user.id})
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Confirm Nuke", callback_data=f"ADM:TK:{token}"),
+                                   InlineKeyboardButton("Cancel", callback_data=f"ADM:TK:{cancel_token}")]])
         await _safe_reply_text(update, "Are you sure you want to nuke the DB? This will delete many rows. Confirm below.")
         await context.bot.send_message(chat_id=user.id, text="Confirm nuke:", reply_markup=kb)
     except Exception:
         logger.exception("nuke_command failed")
         await _safe_reply_text(update, "❌ Failed to initiate nuke confirmation.")
-
-
-async def _build_subcategory_keyboard(media_group_id: str, chat: Optional[int], cat_canon: str) -> InlineKeyboardMarkup:
-    """
-    Build a tokenized keyboard for subcategory selection for a given category.
-    """
-    subs = TAXONOMY.get(cat_canon, []) or []
-    keyboard: List[List[InlineKeyboardButton]] = []
-    for s in subs:
-        s_canon = canonicalize_key(s)
-        payload = {"action": "SETSUB", "mg": media_group_id, "cat": cat_canon, "sub": s_canon}
-        if chat is not None:
-            payload["chat"] = int(chat)
-        token = await _make_token_for_action("SETSUB", payload)
-        keyboard.append([InlineKeyboardButton(text=_display_label(s_canon), callback_data=f"ADM:TK:{token}")])
-    # Cancel button
-    cancel_token = await _make_token_for_action("CANCEL", {"mg": media_group_id, "chat": chat})
-    keyboard.append([InlineKeyboardButton(text="Cancel", callback_data=f"ADM:TK:{cancel_token}")])
-    return InlineKeyboardMarkup(keyboard)
-
-
-# End of file
