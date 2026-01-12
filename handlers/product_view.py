@@ -2,15 +2,20 @@
 """
 User-facing handlers: categories, browsing, product view, pagination.
 
-This revision hardens media display:
- - Do not auto-open product when showing a subcategory (user must click "View").
- - Prefer copying original messages for albums only when all originals are copyable.
- - If any copy fails, delete any partial copies (best-effort) and fall back to send_media_group/send_photo.
- - Only call send_media_group when there are 2+ InputMedia items; otherwise use send_photo/send_video/send_document.
- - Respect optional caption_parse_mode ("MARKDOWN_V2" or "HTML") stored on product rows.
- - Record displayed message ids so they can be later removed.
+Final hardened version to address:
+ - Never auto-open a product when entering a subcategory (user must click "View").
+ - Robustly assemble a product's full media set even if ingestion missed propagating
+   media_group_id to some rows by querying all rows for the group (no chat filter).
+ - Deduplicate media items by file_unique_id / file_id preserving insertion order.
+ - Only attempt to copy original messages when every unique original reference (chat_id+message_id)
+   is present for the album. If any copy fails, delete any partial copies (best-effort) and
+   fall back to sending media assembled from file_ids (no duplicate copies).
+ - When falling back to send_media_group, only call send_media_group when there are 2+ items;
+   otherwise send a single photo/video/document. This avoids clients showing albums as a single item.
+ - Per-user asyncio.Lock to avoid race conditions that cause duplicate sends.
+ - Respect caption_parse_mode (MARKDOWN_V2 / HTML) if stored on product rows.
+ - Extra debug logging to make diagnosing remaining edge cases straightforward.
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -74,6 +79,10 @@ async def cmd_categories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Router for catalog-related callback queries.
+    Accepts callback_data starting with 'CAT:' and dispatches to handlers.
+    """
     query: Optional[CallbackQuery] = update.callback_query
     if not query:
         return
@@ -91,6 +100,7 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             pass
         return
 
+    # Remove prefix and split into action and payload
     _, _, rest = data.partition(":")
     action, _, payload = rest.partition(":")
     action = action or ""
@@ -118,6 +128,7 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await show_products_for_category(query, context, cat, sub, page=1)
 
         elif action == "PAGE":
+            # payload: "<SCOPE>::<PAGE>"
             if "::" not in payload:
                 await query.answer("Malformed page payload", show_alert=True)
                 return
@@ -135,6 +146,7 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 await show_products_for_category(query, context, canonicalize_key(scope), None, page=page)
 
         elif action == "VIEW":
+            # payload is product id
             try:
                 pid = int(payload)
             except Exception:
@@ -156,6 +168,7 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await query.answer("Album not found", show_alert=True)
 
         elif action == "BACK":
+            # show top-level categories again
             keyboard = [
                 [InlineKeyboardButton(text=_display_name(cat), callback_data=f"CAT:OPEN_CAT:{cat}")]
                 for cat in CATEGORIES.keys()
@@ -180,13 +193,17 @@ async def show_products_for_category(
     page: int = 1,
     per_page: int = PAGE_SIZE,
 ) -> None:
+    """
+    Show a paginated list of products for a category (and optional subcategory).
+    Builds an inline keyboard of product "View" buttons (user clicks to see media).
+    """
     try:
         if page < 1:
             page = 1
         cat_key = canonicalize_key(category) if category else ""
         sub_key = canonicalize_key(subcategory) if subcategory else None
 
-        fetch_limit = max(page * per_page * 3, per_page)
+        fetch_limit = page * per_page * 3
         items = await db.get_catalog_items(limit=fetch_limit)
         if not items:
             await query.edit_message_text("No items available in the catalog.")
@@ -224,7 +241,6 @@ async def show_products_for_category(
             if sub_key:
                 scope = f"{cat_key}::{sub_key}"
 
-        # build_pagination_keyboard expects zero-based page index
         pagination = build_pagination_keyboard(scope=scope, page=page - 1, per_page=per_page, total=total)
         keyboard.extend(pagination)
 
@@ -234,6 +250,7 @@ async def show_products_for_category(
 
         await query.edit_message_text(f"{header}\n\n" + "\n".join(text_lines), reply_markup=InlineKeyboardMarkup(keyboard))
 
+        # Persist navigation context so product detail can show proper "Back" behavior
         try:
             if query.message and query.message.chat:
                 context.user_data["origin_catalog_message"] = {
@@ -252,11 +269,14 @@ async def show_products_for_category(
 async def _copy_all_originals(dest_chat: int, media_items: List[Dict[str, Any]], context: ContextTypes.DEFAULT_TYPE) -> Optional[List[Tuple[int, int]]]:
     """
     Attempt to copy all original messages for this album into dest_chat.
-    Requirement: every media_item must include message_id and chat_id.
-    If any original reference is missing -> return None.
-    If any copy fails -> delete any partial copies (best-effort) and return None.
-    On success return list of (chat_id, message_id) of copied messages.
+    Requirements:
+      - For each distinct original message (orig_chat, message_id) we must have both values.
+    Behavior:
+      - If any required original reference is missing, return None (skip copy).
+      - If a copy op fails part-way, delete any partial copies (best-effort) and return None.
+      - On complete success return list of (chat_id, message_id).
     """
+    # Build ordered unique (from_chat_id, message_id)
     to_copy: List[Tuple[int, int]] = []
     seen = set()
     for mi in media_items:
@@ -275,17 +295,18 @@ async def _copy_all_originals(dest_chat: int, media_items: List[Dict[str, Any]],
     for from_chat_id, message_id in to_copy:
         try:
             msg = await context.bot.copy_message(chat_id=dest_chat, from_chat_id=from_chat_id, message_id=message_id)
-            # normalize returned object
+            # Normalize returned object
             if hasattr(msg, "message_id"):
                 copied.append((msg.chat.id, msg.message_id))
             else:
+                # Some versions return MessageId-like object; try to coerce
                 try:
                     mid = int(str(msg))
                     copied.append((dest_chat, mid))
                 except Exception:
                     copied.append((dest_chat, -1))
         except Exception:
-            logger.debug("copy_message failed for %s/%s; deleting any partial copies and falling back", from_chat_id, message_id, exc_info=True)
+            logger.debug("copy_message failed for %s/%s; deleting partial copies and falling back", from_chat_id, message_id, exc_info=True)
             for (c_id, m_id) in copied:
                 try:
                     if m_id and m_id > 0:
@@ -297,7 +318,30 @@ async def _copy_all_originals(dest_chat: int, media_items: List[Dict[str, Any]],
     return copied
 
 
+def _dedupe_media_items(media_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Deduplicate media items preserving order. Prefer file_unique_id, fallback to file_id.
+    """
+    seen = set()
+    out: List[Dict[str, Any]] = []
+    for mi in media_items:
+        key = mi.get("file_unique_id") or mi.get("file_id")
+        if not key:
+            # include items lacking identifiers (will likely fail later)
+            out.append(mi)
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(mi)
+    return out
+
+
 async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAULT_TYPE, product_id: int) -> None:
+    """
+    Show product media and caption. For media_group, try to copy original messages atomically;
+    otherwise assemble and send media from stored file_ids (no partial duplicates).
+    """
     try:
         p = await db.get_product(product_id)
         if not p:
@@ -323,6 +367,7 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
 
         user_lock = _ensure_user_lock(dest_chat)
         async with user_lock:
+            # Clean up prior product display
             try:
                 await delete_last_displayed_messages(context)
             except Exception:
@@ -345,17 +390,40 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
 
             sent_records: List[Tuple[int, int]] = []
 
+            # Gather album items robustly: prefer querying all rows for the media_group (no chat filter)
+            media_items: List[Dict[str, Any]] = []
             if media_group_id:
-                media_items = await db.get_media_group_media(media_group_id, p.get("chat_id"))
-                logger.debug("show_product_detail: media_group_id=%s media_items=%d", media_group_id, len(media_items))
+                try:
+                    media_items = await db.get_products_by_media_group(media_group_id, None)
+                except Exception:
+                    logger.exception("Failed to fetch products by media_group %s (falling back to single)", media_group_id)
+                    media_items = []
 
+            # If no group items found but product has message_id/chat_id, include at least the product itself
+            if not media_items:
+                # fallback to single item constructed from the product row
+                media_items = [p]
+
+            # Deduplicate items (preserve order)
+            media_items = _dedupe_media_items(media_items)
+            logger.debug("show_product_detail: assembled %d media_items for product_id=%s (mg=%s)", len(media_items), product_id, media_group_id)
+
+            if len(media_items) > 1:
+                # Try copying originals only when all distinct originals have chat_id+message_id
                 copied = await _copy_all_originals(dest_chat, media_items, context)
                 if copied is not None:
-                    logger.debug("show_product_detail: copied %d originals for media_group %s", len(copied), media_group_id)
-                    sent_records.extend(copied)
+                    logger.debug("show_product_detail: copied %d originals for product_id=%s", len(copied), product_id)
+                    # filter out duplicates in copied list
+                    unique_copied = []
+                    seen_msgs = set()
+                    for c in copied:
+                        if c not in seen_msgs:
+                            seen_msgs.add(c)
+                            unique_copied.append(c)
+                    sent_records.extend(unique_copied)
                 else:
-                    # Build InputMedia list from file_ids (preserve order)
-                    input_media: List[Any] = []
+                    # Build InputMedia list from file_ids (caption only on first)
+                    input_media = []
                     first = True
                     for mi in media_items:
                         fid = mi.get("file_id")
@@ -372,11 +440,10 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
                         else:
                             input_media.append(InputMediaPhoto(media=fid, caption=item_caption))
 
-                    logger.debug("show_product_detail: assembled %d InputMedia items for media_group %s", len(input_media), media_group_id)
-
+                    logger.debug("show_product_detail: prepared %d InputMedia items (fallback send) for product_id=%s", len(input_media), product_id)
                     try:
                         if len(input_media) == 0:
-                            logger.warning("No media to display for product %s", product_id)
+                            logger.warning("No media available to send for product %s", product_id)
                             await query.edit_message_text("No media available for this product.")
                         elif len(input_media) == 1:
                             im = input_media[0]
@@ -389,13 +456,13 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
                                     m = await context.bot.send_photo(chat_id=dest_chat, photo=im.media, caption=im.caption, parse_mode=parse_mode)
                                 sent_records.append((m.chat.id, m.message_id))
                             except Exception:
-                                logger.exception("Failed to send single media for product %s", product_id)
+                                logger.exception("Failed to send single fallback media for product %s", product_id)
                         else:
                             msgs = await context.bot.send_media_group(chat_id=dest_chat, media=input_media)
                             for m in msgs:
                                 sent_records.append((m.chat.id, m.message_id))
                     except Exception:
-                        logger.exception("send_media_group failed; falling back to per-item sends")
+                        logger.exception("send_media_group fallback failed; trying per-item sends")
                         first = True
                         for im in input_media:
                             try:
@@ -408,7 +475,7 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
                             except Exception:
                                 logger.exception("Failed to send media item %s", getattr(im, "media", "<unknown>"))
             else:
-                # Single-file product path
+                # Single-file product
                 try:
                     if file_type.startswith("video"):
                         m = await context.bot.send_video(chat_id=dest_chat, video=file_id, caption=caption_for_api, parse_mode=parse_mode)
@@ -424,7 +491,7 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
                     except Exception:
                         logger.exception("Failed to edit message as fallback")
 
-            # control/navigation message
+            # Send navigation control message
             try:
                 cat = context.user_data.get("selected_category")
                 sub = context.user_data.get("selected_subcategory")
@@ -449,14 +516,20 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
                 )
                 sent_records.append((ctrl.chat.id, ctrl.message_id))
             except Exception:
-                logger.exception("Failed to send control message after media")
+                logger.exception("Failed to send control message after product media")
 
-            # store last_displayed_messages
+            # Record displayed messages for cleanup
             try:
                 if sent_records:
-                    context.user_data["last_displayed_messages"] = [(c, m) for (c, m) in sent_records]
+                    # remove duplicates before storing
+                    uniq = []
+                    seen = set()
+                    for c, m in sent_records:
+                        if (c, m) not in seen:
+                            seen.add((c, m))
+                            uniq.append((c, m))
+                    context.user_data["last_displayed_messages"] = uniq
             except Exception:
-                logger.exception("Failed to record last_displayed_messages")
-
+                logger.exception("Failed to record last_displayed_messages in user_data")
     except Exception:
         logger.exception("show_product_detail failed")
