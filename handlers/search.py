@@ -1,51 +1,39 @@
-﻿ url=https://github.com/alexsandovalball/tombrady420/blob/main/handlers/search.py
-﻿# handlers/search.py
+﻿﻿# handlers/search.py
+"""
+Search handlers using fuzzy matching.
+
+- /search <terms> to search catalog captions (fuzzy)
+- Callback pagination uses callback_data: search_page|{encoded_query}|{page}
+"""
 import logging
 from typing import Optional, List, Dict, Any
-
 from urllib.parse import quote_plus, unquote_plus
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 
-from database import db  # use the shared async DB instance
-from utils.helpers import short_caption, delete_last_displayed_messages
+from database import db
+from utils.helpers import short_caption, delete_last_displayed_messages, build_pagination_keyboard
+from utils.fuzzy_search import fuzzy_search_products
 
 logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 5
 
 
-def _dedupe_products(products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Deduplicate products by file_unique_id, then media_group_id, then message_id,
-    keeping the first occurrence as the representative entry.
-    """
-    unique = {}
-    for p in products or []:
-        key = None
-        fu = p.get("file_unique_id")
-        mg = p.get("media_group_id")
-        mid = p.get("message_id")
-        pid = p.get("id")
-        if fu:
-            key = f"fu:{fu}"
-        elif mg:
-            key = f"mg:{mg}"
-        elif mid:
-            key = f"msg:{mid}"
-        else:
-            key = f"id:{pid}"
-        if key not in unique:
-            unique[key] = p
-    return list(unique.values())
-
-
 async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /search <query> command handler or text search handler.
+    Performs a fuzzy search over recent catalog items and displays paginated buttons.
+    """
+    # Extract search query: prefer command args else full message
     text = ""
     try:
-        if update.message and update.message.text:
+        if context.args:
+            text = " ".join(context.args).strip()
+        elif update.message and update.message.text:
+            # If invoked as plain message, assume whole text is query
             text = update.message.text.strip()
     except Exception:
         logger.exception("Failed to read incoming search text")
@@ -53,20 +41,22 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not text:
         try:
             if update.message:
-                await update.message.reply_text("❌ Please enter a search term.")
+                await update.message.reply_text("❌ Usage: /search <terms> — enter some search words.")
         except Exception:
             logger.debug("Failed to send empty-query reply")
         return
 
+    # Delete previous displayed media
     try:
         await delete_last_displayed_messages(context)
     except Exception:
         logger.exception("Failed to delete last displayed messages before search")
 
+    # Fetch a reasonably sized catalog to search in-memory (tune limit as needed)
     try:
-        products = await db.search_products(text, limit=PAGE_SIZE, offset=0)
+        products = await db.get_catalog_items(limit=2000)
     except Exception:
-        logger.exception("Database search_products failed")
+        logger.exception("Database get_catalog_items failed for search")
         try:
             if update.message:
                 await update.message.reply_text("⚠️ Search failed due to an internal error. Please try again later.")
@@ -74,8 +64,9 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             logger.debug("Failed to notify user about search failure")
         return
 
-    products = _dedupe_products(products)
-    if not products:
+    # Run fuzzy search (falls back to simple heuristics if rapidfuzz missing)
+    matches = fuzzy_search_products(products, text, score_cutoff=60, limit=100)
+    if not matches:
         try:
             if update.message:
                 await update.message.reply_text(f"No results found for '{text}'.")
@@ -83,46 +74,105 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             logger.debug("Failed to send no-results reply")
         return
 
+    # Show first page
+    await _render_search_page(update, context, matches, text, page=1)
+
+
+async def _render_search_page(update: Update, context: ContextTypes.DEFAULT_TYPE, matches: List[Dict[str, Any]], query_text: str, page: int = 1) -> None:
+    # Paginate matches
+    total = len(matches)
+    pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(1, min(page, pages))
+    offset = (page - 1) * PAGE_SIZE
+    page_items = matches[offset : offset + PAGE_SIZE]
+
     keyboard = []
-    for p in products:
+    for p in page_items:
         label = short_caption(p.get("caption", "")) or f"Product {p.get('id')}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"CAT:VIEW:{p.get('id')}")])
 
-    encoded_q = quote_plus(text)
-    nav_row = [
-        InlineKeyboardButton("Page 1", callback_data="noop"),
-        InlineKeyboardButton("➡️ Next", callback_data=f"search_page|{encoded_q}|2"),
-    ]
+    # Navigation row
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"search_page|{quote_plus(query_text)}|{page-1}"))
+    nav_row.append(InlineKeyboardButton(f"Page {page}/{pages}", callback_data="noop"))
+    if page < pages:
+        nav_row.append(InlineKeyboardButton("➡️ Next", callback_data=f"search_page|{quote_plus(query_text)}|{page+1}"))
     keyboard.append(nav_row)
 
+    text = f"Search results for '{query_text}':"
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    q = update.callback_query
     try:
-        if update.message:
-            msg = await update.message.reply_text(
-                f"Search results for '{text}':",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-            )
+        if q and q.message:
+            await q.message.edit_text(text, reply_markup=reply_markup)
+            context.user_data["search_message"] = {"chat_id": q.message.chat.id, "message_id": q.message.message_id, "query": query_text, "page": page}
+        elif update.message:
+            msg = await update.message.reply_text(text, reply_markup=reply_markup)
+            context.user_data["search_message"] = {"chat_id": msg.chat.id, "message_id": msg.message_id, "query": query_text, "page": page}
         else:
+            # fallback
             dest = update.effective_chat.id if update.effective_chat else None
             if dest:
-                msg = await context.bot.send_message(chat_id=dest, text=f"Search results for '{text}':", reply_markup=InlineKeyboardMarkup(keyboard))
-            else:
-                logger.error("handle_search: no destination to send search results")
-                return
+                sent = await context.bot.send_message(chat_id=dest, text=text, reply_markup=reply_markup)
+                context.user_data["search_message"] = {"chat_id": sent.chat.id, "message_id": sent.message_id, "query": query_text, "page": page}
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            logger.debug("Search message already up to date")
+        else:
+            logger.exception("Failed to render search page")
     except Exception:
-        logger.exception("Failed to send search results message")
+        logger.exception("Unexpected error rendering search page")
+
+
+async def cb_search_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Parse search pagination callback_data like:
+        search_page|{encoded_query}|{page}
+    """
+    q = update.callback_query
+    if not q or not q.data:
+        return
+    try:
+        await q.answer()
+    except Exception:
+        pass
+
+    data = q.data
+    if not data.startswith("search_page|"):
         try:
-            if update.message:
-                await update.message.reply_text("⚠️ Failed to send search results. Please try again.")
+            await q.answer("Invalid search action", show_alert=True)
         except Exception:
-            logger.debug("Fallback send after search results failure also failed")
+            pass
         return
 
     try:
-        context.user_data["search_message"] = {
-            "chat_id": msg.chat.id,
-            "message_id": msg.message_id,
-            "query": text,
-            "page": 1,
-        }
+        _, rest = data.split("|", 1)
+        encoded_q, page_str = rest.rsplit("|", 1)
+        query_text = unquote_plus(encoded_q)
+        page = int(page_str)
     except Exception:
-        logger.exception("Failed to record search_message in user_data")
+        await q.answer("Malformed search pagination", show_alert=True)
+        return
+
+    # Re-run matching on fresh data (or optionally cache earlier results in user_data)
+    try:
+        products = await db.get_catalog_items(limit=2000)
+    except Exception:
+        logger.exception("DB fetch failed during search pagination")
+        try:
+            await q.message.reply_text("Search failed; please try again later.")
+        except Exception:
+            pass
+        return
+
+    matches = fuzzy_search_products(products, query_text, score_cutoff=60, limit=100)
+    if not matches:
+        try:
+            await q.message.edit_text(f"No results found for '{query_text}'.")
+        except Exception:
+            logger.debug("Failed to edit search message to show empty results")
+        return
+
+    await _render_search_page(update, context, matches, query_text, page=page)
