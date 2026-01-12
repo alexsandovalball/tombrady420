@@ -2,12 +2,18 @@
 """
 User-facing handlers: categories, browsing, product view, pagination.
 
-Key fixes:
-- OPEN_SUB now presents the product list (page=1) and never auto-displays a product.
-- Copy original album messages only when ALL originals are copyable; otherwise fall back
-  to sending the assembled media_group via file_ids.
-- Send media_group only when we have 2+ InputMedia; otherwise send a single photo/video.
-- Extra debug logging to make missing file_id/message_id easy to diagnose.
+This module provides:
+- /categories menu
+- category -> subcategory -> paginated product lists
+- product detail view that prefers copying original messages for albums,
+  falls back to send_media_group or per-item sends, and records displayed
+  messages for later cleanup.
+
+Design choices:
+- Pagination is 1-based for user-facing callbacks; build_pagination_keyboard
+  is called with zero-based page index (page - 1).
+- Defensive logging and fallbacks to avoid partial albums, duplicate copies,
+  and "Message is not modified" errors.
 """
 
 from __future__ import annotations
@@ -74,8 +80,8 @@ async def cmd_categories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Router for catalog-related callback queries.
-    Accepts callback_data starting with 'CAT:' and dispatches to handlers.
+    Router for catalog-related callback queries. Accepts callback_data starting with 'CAT:'.
+    Supported actions: OPEN_CAT, OPEN_SUB, PAGE, VIEW, OPEN_ALBUM, BACK.
     """
     query: Optional[CallbackQuery] = update.callback_query
     if not query:
@@ -112,14 +118,14 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await query.edit_message_text(f"Subcategories for {_display_name(cat)}:", reply_markup=InlineKeyboardMarkup(keyboard))
 
         elif action == "OPEN_SUB":
-            # NOTE: show the list of products — do NOT auto-open a product.
-            # Use page=1 (human-friendly) rather than 0.
+            # payload format: "<CATEGORY>::<SUBCATEGORY>"
             if "::" not in payload:
                 await query.answer("Malformed subcategory payload", show_alert=True)
                 return
             cat_raw, sub_raw = payload.split("::", 1)
             cat = canonicalize_key(cat_raw)
             sub = canonicalize_key(sub_raw)
+            # Show product list for page 1 (user-facing)
             await show_products_for_category(query, context, cat, sub, page=1)
 
         elif action == "PAGE":
@@ -163,7 +169,6 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await query.answer("Album not found", show_alert=True)
 
         elif action == "BACK":
-            # show top-level categories again
             keyboard = [
                 [InlineKeyboardButton(text=_display_name(cat), callback_data=f"CAT:OPEN_CAT:{cat}")]
                 for cat in CATEGORIES.keys()
@@ -190,7 +195,7 @@ async def show_products_for_category(
 ) -> None:
     """
     Show a paginated list of products for a category (and optional subcategory).
-    Build an inline keyboard of product "View" buttons. Clicking a view button sends media.
+    Pagination is 1-based for user-facing callbacks; build_pagination_keyboard expects zero-based page index.
     """
     try:
         if page < 1:
@@ -198,7 +203,8 @@ async def show_products_for_category(
         cat_key = canonicalize_key(category) if category else ""
         sub_key = canonicalize_key(subcategory) if subcategory else None
 
-        fetch_limit = page * per_page * 3
+        # Fetch a window larger than a single page to allow filtering
+        fetch_limit = max(page * per_page * 3, per_page)
         items = await db.get_catalog_items(limit=fetch_limit)
         if not items:
             await query.edit_message_text("No items available in the catalog.")
@@ -236,7 +242,7 @@ async def show_products_for_category(
             if sub_key:
                 scope = f"{cat_key}::{sub_key}"
 
-        # build_pagination_keyboard expects zero-based page index; pass page-1
+        # build_pagination_keyboard expects zero-based page index
         pagination = build_pagination_keyboard(scope=scope, page=page - 1, per_page=per_page, total=total)
         keyboard.extend(pagination)
 
@@ -246,7 +252,7 @@ async def show_products_for_category(
 
         await query.edit_message_text(f"{header}\n\n" + "\n".join(text_lines), reply_markup=InlineKeyboardMarkup(keyboard))
 
-        # Persist navigation context so product detail can show proper "Back" behavior
+        # Persist navigation context for Back behavior
         try:
             if query.message and query.message.chat:
                 context.user_data["origin_catalog_message"] = {
@@ -269,8 +275,9 @@ async def _copy_media_group_to_user(
 ) -> Optional[List[Tuple[int, int]]]:
     """
     Attempt to copy all original messages for a media_group into dest_chat.
-    If any original reference is missing or any copy fails, return None so the caller can
-    fallback to send_media_group from file_ids (avoids partial-copy where only one item is shown).
+    If any original reference is missing or any copy fails, remove any partial copies
+    already made (best-effort) and return None so the caller falls back to sending
+    via file_ids. On success returns list of (chat_id, message_id).
     """
     sent: List[Tuple[int, int]] = []
     seen = set()
@@ -292,7 +299,13 @@ async def _copy_media_group_to_user(
             msg = await context.bot.copy_message(chat_id=dest_chat, from_chat_id=from_chat_id, message_id=message_id)
             sent.append((msg.chat.id, msg.message_id))
         except Exception:
-            logger.debug("copy_message failed for %s/%s; aborting copy attempt", from_chat_id, message_id)
+            logger.debug("copy_message failed for %s/%s; aborting copy attempt and deleting partial copies", from_chat_id, message_id)
+            # Best-effort cleanup of previously copied messages to avoid duplicates
+            for (c_id, m_id) in sent:
+                try:
+                    await context.bot.delete_message(chat_id=c_id, message_id=m_id)
+                except Exception:
+                    logger.debug("Failed to delete partial copied message %s/%s (non-fatal)", c_id, m_id)
             return None
 
     return sent
@@ -302,7 +315,7 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
     """
     Show product media and caption. For media_group, prefer copying original messages into user's chat;
     otherwise assemble and send media from stored file_ids. After media, send a small control message
-    with navigation buttons (Back / Back to categories).
+    with navigation buttons (Back / Categories) and record displayed messages for cleanup.
     """
     try:
         p = await db.get_product(product_id)
@@ -365,7 +378,7 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
                     sent_records.extend(copied)
                 else:
                     # Build InputMedia list from available file_ids
-                    input_media: List[InputMediaPhoto | InputMediaVideo | InputMediaDocument] = []
+                    input_media: List[Any] = []
                     first = True
                     for mi in media_items:
                         fid = mi.get("file_id")
