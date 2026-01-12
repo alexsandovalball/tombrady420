@@ -1,19 +1,9 @@
+﻿ url=https://github.com/alexsandovalball/tombrady420/blob/main/handlers/product_view.py
 ﻿# handlers/product_view.py
 """
 User-facing handlers: categories, browsing, product view, pagination.
 
-Callback data format (stable, compact):
-  CAT:OPEN_CAT:<CATEGORY>
-  CAT:OPEN_SUB:<CATEGORY>::<SUBCATEGORY>
-  CAT:PAGE:<SCOPE>::<PAGE>
-  CAT:VIEW:<PRODUCT_ID>
-  CAT:OPEN_ALBUM:<MEDIA_GROUP_OR_MESSAGE_ID>
-  CAT:BACK
-
-Notes:
-- Category and subcategory keys are compared case-insensitively using canonical keys.
-- Display names are taken from utils.taxonomy_utils.get_display_name (which uses DISPLAY_NAMES).
-- This module is defensive: it logs errors and avoids raising in handlers.
+Refactored to use utils.helpers.short_caption for consistent label truncation.
 """
 
 from __future__ import annotations
@@ -27,24 +17,20 @@ from telegram.ext import ContextTypes
 
 from config.taxonomy import CATEGORIES
 from database import db
-from utils.helpers import build_pagination_keyboard
+from utils.helpers import build_pagination_keyboard, short_caption
 from utils.taxonomy_utils import canonicalize_key, get_display_name, list_subcategories
 
 logger = logging.getLogger(__name__)
 
-# Per-user display locks to avoid concurrent duplicate sends / edits
 _user_locks: Dict[int, asyncio.Lock] = {}
-
 PAGE_SIZE = 8
 
 
 def _display_name(key: Optional[str]) -> str:
-    """Return a human-friendly display name for a taxonomy key."""
     return get_display_name(key)
 
 
 def _ensure_user_lock(user_id: int) -> asyncio.Lock:
-    """Return a per-user asyncio.Lock, creating it if necessary."""
     lock = _user_locks.get(user_id)
     if lock is None:
         lock = asyncio.Lock()
@@ -61,7 +47,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_categories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send top-level category list as inline keyboard."""
     try:
         keyboard = [
             [InlineKeyboardButton(text=_display_name(cat), callback_data=f"CAT:OPEN_CAT:{cat}")]
@@ -74,10 +59,6 @@ async def cmd_categories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Router for catalog-related callback queries.
-    Accepts callback_data starting with 'CAT:' and dispatches to handlers.
-    """
     query = update.callback_query
     if not query:
         return
@@ -95,7 +76,6 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             pass
         return
 
-    # Remove prefix and split into action and payload
     _, _, rest = data.partition(":")
     action, _, payload = rest.partition(":")
     action = action or ""
@@ -103,7 +83,6 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     try:
         if action == "OPEN_CAT":
-            # payload is the category key (canonical or raw)
             cat = canonicalize_key(payload)
             subs = list_subcategories(cat)
             keyboard = [
@@ -114,7 +93,6 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await query.edit_message_text(f"Subcategories for {_display_name(cat)}:", reply_markup=InlineKeyboardMarkup(keyboard))
 
         elif action == "OPEN_SUB":
-            # payload format: "<CATEGORY>::<SUBCATEGORY>"
             if "::" not in payload:
                 await query.answer("Malformed subcategory payload", show_alert=True)
                 return
@@ -124,7 +102,6 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await show_products_for_category(query, cat, sub, page=0)
 
         elif action == "PAGE":
-            # payload format: "<SCOPE>::<PAGE>"
             if "::" not in payload:
                 await query.answer("Malformed page payload", show_alert=True)
                 return
@@ -142,7 +119,6 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 await show_products_for_category(query, canonicalize_key(scope), None, page=page)
 
         elif action == "VIEW":
-            # payload is product id
             try:
                 pid = int(payload)
             except Exception:
@@ -151,7 +127,6 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await show_product_detail(query, pid)
 
         elif action == "OPEN_ALBUM":
-            # payload is media_group_id or message_id; delegate to product detail flow that can handle albums
             mg = payload
             try:
                 items = await db.get_products_by_media_group(mg, None)
@@ -165,7 +140,6 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await query.answer("Album not found", show_alert=True)
 
         elif action == "BACK":
-            # show top-level categories again
             keyboard = [
                 [InlineKeyboardButton(text=_display_name(cat), callback_data=f"CAT:OPEN_CAT:{cat}")]
                 for cat in CATEGORIES.keys()
@@ -183,24 +157,16 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def show_products_for_category(query, category: str, subcategory: Optional[str], page: int = 0, per_page: int = PAGE_SIZE):
-    """
-    Show a paginated list of products for a category (and optional subcategory).
-    `query` is expected to be a CallbackQuery object so we can edit the message in-place.
-    """
     try:
-        # Normalize keys for comparison
         cat_key = canonicalize_key(category) if category else ""
         sub_key = canonicalize_key(subcategory) if subcategory else None
 
-        # Fetch a reasonably sized window and filter in Python
-        # We fetch more than needed to allow pagination after filtering
         fetch_limit = (page + 1) * per_page * 3
         items = await db.get_catalog_items(limit=fetch_limit)
         if not items:
             await query.edit_message_text("No items available in the catalog.")
             return
 
-        # Filter by category/subcategory (case-insensitive canonical)
         filtered: List[Dict[str, Any]] = []
         for it in items:
             it_cat = (it.get("category") or "").strip().upper()
@@ -219,12 +185,11 @@ async def show_products_for_category(query, category: str, subcategory: Optional
             await query.edit_message_text("No items found in this category.")
             return
 
-        # Build message text and keyboard
         text_lines: List[str] = []
         keyboard: List[List[InlineKeyboardButton]] = []
         for it in page_items:
             title = (it.get("caption") or "").strip() or f"Item {it.get('id')}"
-            btn_label = title if len(title) <= 40 else title[:37] + "..."
+            btn_label = short_caption(title, length=40)
             keyboard.append([InlineKeyboardButton(text=btn_label, callback_data=f"CAT:VIEW:{it['id']}")])
             text_lines.append(f"• {title}")
 
@@ -248,9 +213,6 @@ async def show_products_for_category(query, category: str, subcategory: Optional
 
 
 async def show_product_detail(query, product_id: int):
-    """
-    Show product media and caption. For media_group, show representative row and allow viewing all files.
-    """
     try:
         p = await db.get_product(product_id)
         if not p:
@@ -263,8 +225,6 @@ async def show_product_detail(query, product_id: int):
         caption = p.get("caption") or "(No caption)"
         media_group_id = p.get("media_group_id")
         message_id = p.get("message_id")
-
-        # If media_group_id is falsy, use message_id as fallback for album actions
         album_payload = media_group_id if media_group_id else (str(message_id) if message_id is not None else "")
 
         keyboard = [
