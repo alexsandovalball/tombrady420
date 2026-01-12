@@ -118,15 +118,6 @@ if not _use_redis:
 # -------------------------
 # Small helpers
 # -------------------------
-def _display_label(key: str) -> str:
-    if not key:
-        return ""
-    try:
-        return DISPLAY_NAMES.get(key.upper(), key.replace("_", " ").title())
-    except Exception:
-        return key.replace("_", " ").title()
-
-
 async def _safe_reply_text(update: Update, text: str) -> None:
     try:
         if update.message:
@@ -312,7 +303,7 @@ async def _build_subcategory_keyboard(media_group_id: str, chat_id: Optional[int
     keyboard: List[List[InlineKeyboardButton]] = []
     for sub in subs:
         sub_canon = canonicalize_key(sub)
-        display_sub = _display_label(sub_canon)
+        display_sub = get_display_name(sub_canon)
         token_payload = {"mg": media_group_id, "cat": cat_canon, "sub": sub_canon}
         if chat_id is not None:
             token_payload["chat"] = int(chat_id)
@@ -504,13 +495,13 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 subs = TAXONOMY.get(cat_canon, []) or []
                 if subs:
                     markup = await _build_subcategory_keyboard(mg, chat, cat_canon)
-                    await _safe_edit_message(query, text=f"Choose subcategory for {_display_label(cat_canon)}", reply_markup=markup)
+                    await _safe_edit_message(query, text=f"Choose subcategory for {get_display_name(cat_canon)}", reply_markup=markup)
                     return
                 else:
                     try:
                         success = await db.update_products_by_media_group(mg, int(chat) if chat is not None else None, cat_canon, None)
                         if success:
-                            await _safe_edit_message(query, text=f"✅ Set category {_display_label(cat_canon)} for media_group {mg}")
+                            await _safe_edit_message(query, text=f"✅ Set category {get_display_name(cat_canon)} for media_group {mg}")
                         else:
                             await _safe_edit_message(query, text="❌ Failed to set category (DB returned failure).")
                     except Exception:
@@ -533,7 +524,7 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 try:
                     success = await db.update_products_by_media_group(mg, int(chat) if chat is not None else None, cat_valid, sub_valid)
                     if success:
-                        await _safe_edit_message(query, text=f"✅ Set category {_display_label(cat_valid)} / {_display_label(sub_valid)} for media_group {mg}")
+                        await _safe_edit_message(query, text=f"✅ Set category {get_display_name(cat_valid)} / {get_display_name(sub_valid)} for media_group {mg}")
                     else:
                         await _safe_edit_message(query, text="❌ Failed to set category/subcategory (DB returned failure).")
                 except Exception:
@@ -600,12 +591,12 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 keyboard = []
                 for sub in subs:
                     sub_canon = canonicalize_key(sub)
-                    display_sub = _display_label(sub_canon)
+                    display_sub = get_display_name(sub_canon)
                     cb = f"ADM:SETSUB:{mg}:{chat}:{cat_canon}:{sub_canon}"
                     keyboard.append([InlineKeyboardButton(text=display_sub, callback_data=cb)])
                 keyboard.append([InlineKeyboardButton(text="Cancel", callback_data=f"ADM:CANCEL:{mg}:{chat}")])
                 try:
-                    await _safe_edit_message(query, text=f"Choose subcategory for {_display_label(cat_canon)}", reply_markup=InlineKeyboardMarkup(keyboard))
+                    await _safe_edit_message(query, text=f"Choose subcategory for {get_display_name(cat_canon)}", reply_markup=InlineKeyboardMarkup(keyboard))
                 except Exception:
                     logger.exception("Failed to present subcategory choices for %s", mg)
                 return
@@ -613,7 +604,7 @@ async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 try:
                     success = await db.update_products_by_media_group(mg, int(chat), cat_canon, None)
                     if success:
-                        await _safe_edit_message(query, text=f"✅ Set category {_display_label(cat_canon)} for media_group {mg}")
+                        await _safe_edit_message(query, text=f"✅ Set category {get_display_name(cat_canon)} for media_group {mg}")
                     else:
                         await _safe_edit_message(query, text="❌ Failed to set category (DB returned failure).")
                 except Exception:
@@ -733,9 +724,9 @@ async def list_categories_command(update: Update, context: ContextTypes.DEFAULT_
         lines: List[str] = []
         for cat, subs in TAXONOMY.items():
             if subs:
-                lines.append(f"{_display_label(cat)} -> {', '.join([_display_label(s) for s in subs])}")
+                lines.append(f"{get_display_name(cat)} -> {', '.join([get_display_name(s) for s in subs])}")
             else:
-                lines.append(f"{_display_label(cat)} -> (no subcategories)")
+                lines.append(f"{get_display_name(cat)} -> (no subcategories)")
         text = "Categories:\n" + "\n".join(lines)
         for chunk in [text[i:i + 3900] for i in range(0, len(text), 3900)]:
             await _safe_reply_text(update, chunk)

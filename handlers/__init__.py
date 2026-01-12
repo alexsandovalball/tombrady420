@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 # Keep this list in sync with the actual modules present in the handlers package.
 _HANDLER_MODULES: List[str] = [
     "admin",
-    "menu",
     "product_view",
     # Optional modules; include them here if they exist in your package
     "search",
