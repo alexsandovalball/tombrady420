@@ -46,10 +46,6 @@ _user_locks: Dict[int, asyncio.Lock] = {}
 PAGE_SIZE = 8
 
 
-def _display_name(key: Optional[str]) -> str:
-    return get_display_name(key)
-
-
 def _ensure_user_lock(user_id: int) -> asyncio.Lock:
     lock = _user_locks.get(user_id)
     if lock is None:
@@ -69,7 +65,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_categories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         keyboard = [
-            [InlineKeyboardButton(text=_display_name(cat), callback_data=f"CAT:OPEN_CAT:{cat}")]
+            [InlineKeyboardButton(text=get_display_name(cat), callback_data=f"CAT:OPEN_CAT:{cat}")]
             for cat in CATEGORIES.keys()
         ]
         if update.message:
@@ -111,11 +107,11 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             cat = canonicalize_key(payload)
             subs = list_subcategories(cat)
             keyboard = [
-                [InlineKeyboardButton(text=_display_name(sub), callback_data=f"CAT:OPEN_SUB:{cat}::{sub}")]
+                [InlineKeyboardButton(text=get_display_name(sub), callback_data=f"CAT:OPEN_SUB:{cat}::{sub}")]
                 for sub in subs
             ]
             keyboard.append([InlineKeyboardButton(text="Back", callback_data="CAT:BACK")])
-            await query.edit_message_text(f"Subcategories for {_display_name(cat)}:", reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_text(f"Subcategories for {get_display_name(cat)}:", reply_markup=InlineKeyboardMarkup(keyboard))
 
         elif action == "OPEN_SUB":
             # IMPORTANT: show the product list only. Do NOT auto-open a product.
@@ -170,7 +166,7 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         elif action == "BACK":
             # show top-level categories again
             keyboard = [
-                [InlineKeyboardButton(text=_display_name(cat), callback_data=f"CAT:OPEN_CAT:{cat}")]
+                [InlineKeyboardButton(text=get_display_name(cat), callback_data=f"CAT:OPEN_CAT:{cat}")]
                 for cat in CATEGORIES.keys()
             ]
             await query.edit_message_text("Select a category:", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -244,9 +240,9 @@ async def show_products_for_category(
         pagination = build_pagination_keyboard(scope=scope, page=page - 1, per_page=per_page, total=total)
         keyboard.extend(pagination)
 
-        header = f"{_display_name(category)}"
+        header = f"{get_display_name(category)}"
         if subcategory:
-            header = f"{header} — {_display_name(subcategory)}"
+            header = f"{header} — {get_display_name(subcategory)}"
 
         await query.edit_message_text(f"{header}\n\n" + "\n".join(text_lines), reply_markup=InlineKeyboardMarkup(keyboard))
 
