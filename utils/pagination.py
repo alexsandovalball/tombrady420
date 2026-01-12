@@ -1,4 +1,3 @@
- url=https://github.com/alexsandovalball/tombrady420/blob/main/utils/pagination.py
 # utils/pagination.py
 """
 Deprecated thin wrapper for pagination helpers.

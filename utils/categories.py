@@ -1,4 +1,3 @@
- url=https://github.com/alexsandovalball/tombrady420/blob/main/utils/categories.py
 # utils/categories.py
 """
 Deprecated wrapper: categories utilities are consolidated into utils.taxonomy_utils.
