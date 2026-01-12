@@ -1,4 +1,4 @@
-﻿﻿# handlers/product_view.py
+﻿# handlers/product_view.py
 """
 User-facing handlers: categories, browsing, product view, pagination.
 
@@ -11,7 +11,7 @@ import asyncio
 import logging
 from typing import Optional, Dict, Any, List
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from telegram.ext import ContextTypes
 
 from config.taxonomy import CATEGORIES
@@ -58,7 +58,7 @@ async def cmd_categories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
+    query: Optional[CallbackQuery] = update.callback_query
     if not query:
         return
 
@@ -75,6 +75,7 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             pass
         return
 
+    # Remove the leading "CAT:" and parse the rest
     _, _, rest = data.partition(":")
     action, _, payload = rest.partition(":")
     action = action or ""
@@ -155,12 +156,19 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         logger.exception("cb_catalog_router failed")
 
 
-async def show_products_for_category(query, category: str, subcategory: Optional[str], page: int = 0, per_page: int = PAGE_SIZE):
+async def show_products_for_category(
+    query: CallbackQuery,
+    category: str,
+    subcategory: Optional[str],
+    page: int = 0,
+    per_page: int = PAGE_SIZE,
+) -> None:
     try:
         cat_key = canonicalize_key(category) if category else ""
         sub_key = canonicalize_key(subcategory) if subcategory else None
 
-        fetch_limit = (page + 1) * per_page * 3
+        # Fetch a reasonable window and filter in memory (DB filtering can be added later)
+        fetch_limit = max(per_page * (page + 1) * 3, per_page)
         items = await db.get_catalog_items(limit=fetch_limit)
         if not items:
             await query.edit_message_text("No items available in the catalog.")
@@ -178,7 +186,7 @@ async def show_products_for_category(query, category: str, subcategory: Optional
 
         total = len(filtered)
         start = max(0, page) * per_page
-        page_items = filtered[start:start + per_page]
+        page_items = filtered[start : start + per_page]
 
         if not page_items:
             await query.edit_message_text("No items found in this category.")
@@ -211,7 +219,7 @@ async def show_products_for_category(query, category: str, subcategory: Optional
         logger.exception("show_products_for_category failed")
 
 
-async def show_product_detail(query, product_id: int):
+async def show_product_detail(query: CallbackQuery, product_id: int) -> None:
     try:
         p = await db.get_product(product_id)
         if not p:
