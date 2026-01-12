@@ -1,7 +1,10 @@
- url=https://github.com/alexsandovalball/tombrady420/blob/main/handlers/menu.py
 # handlers/menu.py
 """
-Catalog menu and pagination handlers (refactored to use centralized helpers).
+Catalog menu and pagination handlers.
+
+This module builds category/subcategory menus and paginated product lists.
+It intentionally does not auto-open product details — product media is shown
+only when the user clicks a product's "View" button.
 """
 
 from __future__ import annotations
@@ -26,13 +29,25 @@ def _display_label(key: Optional[str]) -> str:
     return get_display_name(key)
 
 
+async def _delete_last_displayed_messages(context: ContextTypes.DEFAULT_TYPE) -> None:
+    await delete_last_displayed_messages(context)
+
+
 async def _build_catalog_page(
-    context: ContextTypes.DEFAULT_TYPE, page: int, category: Optional[str] = None, subcategory: Optional[str] = None
+    context: ContextTypes.DEFAULT_TYPE,
+    page: int,
+    category: Optional[str] = None,
+    subcategory: Optional[str] = None,
 ) -> Tuple[Optional[str], Optional[InlineKeyboardMarkup]]:
+    """
+    Build the text and InlineKeyboardMarkup for a catalog page.
+    Returns (text, reply_markup) or (None, None) when nothing to show.
+    """
     if page < 1:
         page = 1
     offset = (page - 1) * PAGE_SIZE
 
+    # Fetch a window larger than a single page to allow filtering and pagination
     fetch_limit = offset + (PAGE_SIZE * 8 if category else PAGE_SIZE * 4)
     try:
         raw_items = await db.get_catalog_items(limit=fetch_limit)
@@ -77,6 +92,7 @@ async def _build_catalog_page(
         scope = f"{cat_key}"
         if sub_key:
             scope = f"{cat_key}::{sub_key}"
+
     if page > 1:
         nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"CAT:PAGE:{scope}::{page-1}"))
     nav_row.append(InlineKeyboardButton(f"Page {page}", callback_data=f"CAT:PAGE:{scope}::{page}"))
@@ -100,10 +116,13 @@ async def _build_catalog_page(
 
 async def _build_categories_menu() -> Tuple[str, InlineKeyboardMarkup]:
     keyboard: List[List[InlineKeyboardButton]] = []
+
     cats = sorted(CATEGORIES.keys())
+
     bottom_first = "DATEDPROOFS"
     bottom_last = "CLIENTTOUCHDOWNS"
 
+    # Move special categories to the bottom if present
     if bottom_first in cats:
         cats.remove(bottom_first)
     if bottom_last in cats:
@@ -124,7 +143,11 @@ async def _build_categories_menu() -> Tuple[str, InlineKeyboardMarkup]:
 
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await delete_last_displayed_messages(context)
+    """
+    Command to show the top-level categories menu.
+    Clears previous catalog navigation state and last displayed messages.
+    """
+    await _delete_last_displayed_messages(context)
 
     for k in ("origin_catalog_message", "catalog_page", "catalog_message", "selected_category", "selected_subcategory"):
         context.user_data.pop(k, None)
@@ -154,7 +177,10 @@ async def handle_catalog_pagination(
     page: int,
     category: Optional[str] = None,
     subcategory: Optional[str] = None,
-):
+) -> None:
+    """
+    Handle pagination callbacks and send or edit the catalog page message.
+    """
     query = update.callback_query
     if query:
         try:
@@ -162,7 +188,7 @@ async def handle_catalog_pagination(
         except Exception:
             logger.debug("Failed to answer catalog pagination callback (non-fatal)")
 
-    await delete_last_displayed_messages(context)
+    await _delete_last_displayed_messages(context)
 
     if page < 1:
         page = 1
@@ -182,7 +208,12 @@ async def handle_catalog_pagination(
     else:
         context.user_data.pop("selected_subcategory", None)
 
-    text, reply_markup = await _build_catalog_page(context, page, category=category, subcategory=context.user_data.get("selected_subcategory"))
+    text, reply_markup = await _build_catalog_page(
+        context,
+        page,
+        category=category,
+        subcategory=context.user_data.get("selected_subcategory"),
+    )
     if not text:
         try:
             if query and query.message:
@@ -217,6 +248,7 @@ async def handle_catalog_pagination(
         except Exception:
             logger.exception("Unexpected error editing origin_catalog_message")
 
+    # Try editing the callback message if it looks like a bot/catalog message
     try:
         if query and query.message and getattr(query.message.from_user, "is_bot", False) and query.message.text and query.message.text.upper().startswith(("CATALOG", "CATEGORIES", "CAT:")):
             try:
@@ -234,6 +266,7 @@ async def handle_catalog_pagination(
     except Exception:
         logger.exception("Error while attempting to edit callback message (non-fatal)")
 
+    # Fallback: send a new message to the user
     try:
         dest_chat = None
         if query and query.from_user:
@@ -246,7 +279,3 @@ async def handle_catalog_pagination(
             context.user_data["catalog_message"] = {"chat_id": msg.chat.id, "message_id": msg.message_id}
     except Exception:
         logger.exception("Failed to send fallback catalog message")
-
-
-# Category callbacks (rest unchanged; handlers continue to use taxonomy_utils functions)
-# ... (handlers below unchanged) ...
