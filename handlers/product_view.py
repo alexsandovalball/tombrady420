@@ -122,7 +122,7 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 # Send keyboard in a separate message since media groups can't have keyboards
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text="👆 Album controls:",
+                    text="👆 DM TO ORDER:@FLYAWAYPEP",
                     reply_markup=keyboard
                 )
                 
