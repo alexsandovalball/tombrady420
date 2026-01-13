@@ -37,8 +37,8 @@ def set_webhook():
     # Telegram API endpoint
     api_url = f"https://api.telegram.org/bot{bot_token}/setWebhook"
     
-    # Prepare request parameters
-    params = {
+    # Prepare request data (using JSON body instead of query params for better special character handling)
+    json_data = {
         "url": webhook_url
     }
     
@@ -47,7 +47,7 @@ def set_webhook():
     
     try:
         # Make the request to Telegram API
-        response = httpx.post(api_url, params=params, timeout=30.0)
+        response = httpx.post(api_url, json=json_data, timeout=30.0)
         
         # Print the response
         print(f"\nStatus Code: {response.status_code}")
