@@ -36,6 +36,8 @@ BOT_TOKEN = _get_env("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is required. Set it in the environment or .env file")
 
+WEBHOOK_SECRET = _get_env("WEBHOOK_SECRET", None)
+
 CHANNEL_ID = _get_int("CHANNEL_ID", None)
 CHANNEL_USERNAME = _get_env("CHANNEL_USERNAME", None)
 ADMIN_IDS = _get_int_list("ADMIN_IDS")
