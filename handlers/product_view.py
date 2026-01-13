@@ -362,7 +362,7 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
                     ftype = (mi.get("file_type") or "").lower()
                     item_caption = caption_for_api if first else None
                     first = False
-                    
+
                     if ftype.startswith("video"):
                         input_media.append(InputMediaVideo(media=fid, caption=item_caption, parse_mode=parse_mode))
                     elif ftype.startswith("audio") or ftype.startswith("voice"):
@@ -446,8 +446,8 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
             try:
                 if sent_records:
                     # Remove duplicates
-                    seen = set()
                     uniq = []
+                    seen = set()
                     for c, m in sent_records:
                         if (c, m) not in seen:
                             seen.add((c, m))
