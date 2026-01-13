@@ -22,7 +22,8 @@ def set_webhook():
     webhook_secret = os.getenv("WEBHOOK_SECRET", "")
     
     # Build the webhook URL
-    base_url = "https://tombrady420mediabot.onrender.com/webhook"
+    # Allow override via WEBHOOK_BASE_URL, default to the render.com deployment
+    base_url = os.getenv("WEBHOOK_BASE_URL", "https://tombrady420mediabot.onrender.com/webhook")
     if webhook_secret:
         webhook_url = f"{base_url}/{webhook_secret}"
     else:
