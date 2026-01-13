@@ -1,21 +1,26 @@
-# handlers/product_view.py
+﻿# handlers/product_view.py
 """
-Product view and callback handlers for the catalog bot.
+User-facing handlers: categories, browsing, product view, pagination.
 
-This version:
-- Records the origin catalog message (chat_id, message_id, page) when a product is opened.
-- Provides a handler to return to the original catalog message by editing it in-place
-  when possible (handle_back_to_catalog). If editing fails, falls back to sending a new
-  catalog page via the existing menu handler.
-- Deletes product display messages created by the bot when returning to the catalog to
-  keep the chat tidy.
-- Keeps the previous robustness: answers callback queries early, validates recorded
-  displayed messages before suppressing redisplay, and sends media via context.bot.send_*.
+Final hardened version to address:
+ - Never auto-open a product when entering a subcategory (user must click "View").
+ - Robustly assemble a product's full media set even if ingestion missed propagating
+   media_group_id to some rows by querying all rows for the group (no chat filter).
+ - Deduplicate media items by file_unique_id / file_id preserving insertion order.
+ - Only attempt to copy original messages when every unique original reference (chat_id+message_id)
+   is present for the album. If any copy fails, delete any partial copies (best-effort) and
+   fall back to sending media assembled from file_ids (no duplicate copies).
+ - When falling back to send_media_group, only call send_media_group when there are 2+ items;
+   otherwise send a single photo/video/document. This avoids clients showing albums as a single item.
+ - Per-user asyncio.Lock to avoid race conditions that cause duplicate sends.
+ - Respect caption_parse_mode (MARKDOWN_V2 / HTML) if stored on product rows.
+ - Extra debug logging to make diagnosing remaining edge cases straightforward.
 """
+from __future__ import annotations
 
 import asyncio
 import logging
-from typing import List, Tuple, Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 
 from telegram import (
     Update,
@@ -23,464 +28,504 @@ from telegram import (
     InlineKeyboardMarkup,
     InputMediaPhoto,
     InputMediaVideo,
+    InputMediaDocument,
+    CallbackQuery,
 )
-from telegram.error import BadRequest
 from telegram.ext import ContextTypes
+from telegram.constants import ParseMode
 
-from database import Database
-from utils.helpers import is_admin
+from config.taxonomy import CATEGORIES
+from database import db
+from utils.helpers import build_pagination_keyboard, short_caption, delete_last_displayed_messages
+from utils.taxonomy_utils import canonicalize_key, get_display_name, list_subcategories
+from utils.formatting import escape_markdown_v2
 
 logger = logging.getLogger(__name__)
-db = Database()
+
+_user_locks: Dict[int, asyncio.Lock] = {}
+PAGE_SIZE = 8
 
 
-def _parse_product_id_from_callback(data: str) -> Optional[int]:
-    """Parse callback data like 'product|38' or 'product_38' or just '38'."""
-    if not data:
-        return None
-    data = data.strip()
-    parts = data.replace("_", "|").split("|")
-    if parts and parts[0].lower().startswith("product") and len(parts) >= 2:
-        try:
-            return int(parts[-1])
-        except (ValueError, TypeError):
-            return None
-    try:
-        return int(parts[-1])
-    except Exception:
-        return None
-
-
-async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, product_id: int):
-    """
-    Show a product by ID. If it's part of a media_group, send the whole album.
-    Record every message the bot sends for this product in context.user_data["last_displayed_messages"]
-    so they can be deleted when the user returns to the catalog.
-
-    Additionally, if the product was opened from an inline catalog message (callback_query.message),
-    record that origin in context.user_data["origin_catalog_message"] so the Back button can edit
-    the original catalog message instead of sending a new one.
-    """
-    # Ensure a per-user lock to avoid concurrent duplicate sends
-    lock = context.user_data.get("_display_lock")
+def _ensure_user_lock(user_id: int) -> asyncio.Lock:
+    lock = _user_locks.get(user_id)
     if lock is None:
         lock = asyncio.Lock()
-        context.user_data["_display_lock"] = lock
+        _user_locks[user_id] = lock
+    return lock
 
-    async with lock:
-        # Determine destination chat id (always send to the user who invoked)
-        user = update.effective_user
-        if not user:
-            logger.warning("show_product: no effective_user in update")
-            return
-        dest_chat_id = user.id
 
-        # Verify recorded displayed messages still exist before skipping redisplay
-        last_shown = context.user_data.get("_last_shown_product")
-        last_displayed = context.user_data.get("last_displayed_messages") or []
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        if update.message:
+            await update.message.reply_text("Welcome. Use /categories to browse the catalog.")
+    except Exception:
+        logger.exception("cmd_start failed")
 
-        if last_shown == product_id and last_displayed:
-            valid_refs: List[Tuple[int, int]] = []
-            for (c_id, m_id) in last_displayed:
-                try:
-                    # copy_message will raise if the original message is inaccessible.
-                    copied = await context.bot.copy_message(chat_id=dest_chat_id, from_chat_id=c_id, message_id=m_id)
-                    # delete the temporary copy to avoid clutter
-                    try:
-                        await context.bot.delete_message(chat_id=copied.chat.id, message_id=copied.message_id)
-                    except Exception:
-                        # not critical if deletion fails
-                        pass
-                    valid_refs.append((c_id, m_id))
-                except BadRequest as e:
-                    # message missing or inaccessible; skip it
-                    logger.debug("Recorded message missing or inaccessible: %s/%s (%s)", c_id, m_id, e)
-                    continue
-                except Exception:
-                    logger.exception("Unexpected error while validating recorded message %s/%s", c_id, m_id)
-                    continue
 
-            # Update stored refs to only valid ones
-            if valid_refs:
-                context.user_data["last_displayed_messages"] = valid_refs
-                logger.debug(
-                    "Found %d valid recorded message refs for product %s; skipping redisplay",
-                    len(valid_refs),
-                    product_id,
-                )
+async def cmd_categories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        keyboard = [
+            [InlineKeyboardButton(text=get_display_name(cat), callback_data=f"CAT:OPEN_CAT:{cat}")]
+            for cat in CATEGORIES.keys()
+        ]
+        if update.message:
+            await update.message.reply_text("Select a category:", reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception:
+        logger.exception("cmd_categories failed")
+
+
+async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Router for catalog-related callback queries.
+    Accepts callback_data starting with 'CAT:' and dispatches to handlers.
+    """
+    query: Optional[CallbackQuery] = update.callback_query
+    if not query:
+        return
+
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
+    data = (query.data or "").strip()
+    if not data.startswith("CAT:"):
+        try:
+            await query.answer("Invalid catalog action", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    # Remove prefix and split into action and payload
+    _, _, rest = data.partition(":")
+    action, _, payload = rest.partition(":")
+    action = action or ""
+    payload = payload or ""
+
+    try:
+        if action == "OPEN_CAT":
+            cat = canonicalize_key(payload)
+            subs = list_subcategories(cat)
+            keyboard = [
+                [InlineKeyboardButton(text=get_display_name(sub), callback_data=f"CAT:OPEN_SUB:{cat}::{sub}")]
+                for sub in subs
+            ]
+            keyboard.append([InlineKeyboardButton(text="Back", callback_data="CAT:BACK")])
+            await query.edit_message_text(f"Subcategories for {get_display_name(cat)}:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+        elif action == "OPEN_SUB":
+            # IMPORTANT: show the product list only. Do NOT auto-open a product.
+            if "::" not in payload:
+                await query.answer("Malformed subcategory payload", show_alert=True)
                 return
+            cat_raw, sub_raw = payload.split("::", 1)
+            cat = canonicalize_key(cat_raw)
+            sub = canonicalize_key(sub_raw)
+            await show_products_for_category(query, context, cat, sub, page=1)
+
+        elif action == "PAGE":
+            # payload: "<SCOPE>::<PAGE>"
+            if "::" not in payload:
+                await query.answer("Malformed page payload", show_alert=True)
+                return
+            scope, page_str = payload.rsplit("::", 1)
+            try:
+                page = int(page_str)
+            except Exception:
+                page = 1
+            if "::" in scope:
+                cat_raw, sub_raw = scope.split("::", 1)
+                cat = canonicalize_key(cat_raw)
+                sub = canonicalize_key(sub_raw)
+                await show_products_for_category(query, context, cat, sub, page=page)
             else:
-                # No valid recorded messages remain; clear the record and allow redisplay
-                context.user_data.pop("last_displayed_messages", None)
-                logger.debug("No valid recorded messages remain for product %s; allowing redisplay", product_id)
+                await show_products_for_category(query, context, canonicalize_key(scope), None, page=page)
 
-        # Mark as shown (we'll update recorded messages below)
-        context.user_data["_last_shown_product"] = product_id
-
-        # Clear any previously recorded displayed messages for this user (we'll replace below)
-        context.user_data.pop("last_displayed_messages", None)
-
-        # If this product was opened from a catalog inline message, record the origin so Back can edit it.
-        try:
-            if update.callback_query and update.callback_query.message:
-                origin_msg = update.callback_query.message
-                origin_page = context.user_data.get("catalog_page", 1)
-                context.user_data["origin_catalog_message"] = {
-                    "chat_id": origin_msg.chat.id,
-                    "message_id": origin_msg.message_id,
-                    "page": origin_page,
-                }
-                logger.debug("Recorded origin_catalog_message: %s", context.user_data["origin_catalog_message"])
-        except Exception:
-            logger.exception("Failed to record origin_catalog_message (non-fatal)")
-
-        # Fetch product from DB
-        try:
-            product = await db.get_product(product_id)
-        except Exception:
-            logger.exception("Database error fetching product id=%s", product_id)
+        elif action == "VIEW":
+            # payload is product id
             try:
-                await context.bot.send_message(chat_id=dest_chat_id, text="❌ Error fetching item from database.")
+                pid = int(payload)
             except Exception:
-                logger.exception("Failed to notify user about DB error")
-            return
+                await query.answer("Invalid product id", show_alert=True)
+                return
+            await show_product_detail(query, context, pid)
 
-        if not product:
+        elif action == "OPEN_ALBUM":
+            mg = payload
             try:
-                await context.bot.send_message(chat_id=dest_chat_id, text="❌ Product not found.")
-            except Exception:
-                logger.exception("Failed to notify user that product was not found")
-            return
-
-        sent_message_refs: List[Tuple[int, int]] = []  # list of (chat_id, message_id)
-
-        media_group_id = product.get("media_group_id")
-        try:
-            if media_group_id:
-                items = await db.get_products_by_media_group(media_group_id, product.get("chat_id"))
+                items = await db.get_products_by_media_group(mg, None)
                 if items:
-                    refs = await _send_media_group_and_record(context, dest_chat_id, items)
-                    sent_message_refs.extend(refs)
-                else:
-                    msg = await _send_single_and_record(context, dest_chat_id, product)
-                    if msg:
-                        sent_message_refs.append((msg.chat.id, msg.message_id))
-            else:
-                msg = await _send_single_and_record(context, dest_chat_id, product)
-                if msg:
-                    sent_message_refs.append((msg.chat.id, msg.message_id))
-        except Exception:
-            logger.exception("Error while sending product media for product_id=%s", product_id)
-            try:
-                await context.bot.send_message(chat_id=dest_chat_id, text="❌ Failed to send media for this item.")
+                    pid = items[0].get("id")
+                    if pid:
+                        await show_product_detail(query, context, int(pid))
+                        return
             except Exception:
-                logger.exception("Failed to notify user after send error")
+                logger.exception("OPEN_ALBUM: DB lookup failed for media_group %s", mg)
+            await query.answer("Album not found", show_alert=True)
 
-        # Build action buttons; show delete only to admins
-        # Use the recorded origin page (if any) for the Back button so menu handler can restore the same page.
-        origin_info = context.user_data.get("origin_catalog_message")
-        origin_page = origin_info.get("page") if isinstance(origin_info, dict) else context.user_data.get("catalog_page", 1)
-        buttons = [InlineKeyboardButton("⬅️ Back to catalog", callback_data=f"menu|{origin_page}")]
-        try:
-            if user and is_admin(user.id):
-                buttons.append(InlineKeyboardButton("🗑️ Delete", callback_data=f"delete|{product_id}"))
-        except Exception:
-            logger.exception("is_admin check failed; continuing without admin button")
+        elif action == "BACK":
+            # show top-level categories again
+            keyboard = [
+                [InlineKeyboardButton(text=get_display_name(cat), callback_data=f"CAT:OPEN_CAT:{cat}")]
+                for cat in CATEGORIES.keys()
+            ]
+            await query.edit_message_text("Select a category:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-        try:
-            actions_msg = await context.bot.send_message(
-                chat_id=dest_chat_id,
-                text="ACTIONS : DM @FLYAWAYPEP",
-                reply_markup=InlineKeyboardMarkup([buttons]),
-            )
-            sent_message_refs.append((actions_msg.chat.id, actions_msg.message_id))
-        except Exception:
-            logger.exception("Failed to send actions message for product %s", product_id)
-
-        # Save the list so menu/search handlers can delete them when user goes back
-        if sent_message_refs:
-            context.user_data["last_displayed_messages"] = sent_message_refs
         else:
-            # Ensure key is absent if nothing was sent
-            context.user_data.pop("last_displayed_messages", None)
+            try:
+                await query.answer("Unknown action", show_alert=True)
+            except Exception:
+                pass
 
-
-async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Parse callback data and show the referenced product.
-    Acknowledge the callback_query to prevent the client from retrying or showing a spinner.
-    """
-    query = update.callback_query
-    if not query:
-        return
-
-    # Answer early; ignore expired-query BadRequest but log it
-    try:
-        await query.answer()
-    except BadRequest as e:
-        logger.info("Callback answer expired or invalid (ignored): %s", e)
     except Exception:
-        logger.exception("Unexpected error while answering callback query")
-
-    data = (query.data or "").strip()
-    product_id = _parse_product_id_from_callback(data)
-    if product_id is None:
-        logger.warning("handle_product_callback: could not parse product id from data=%r", data)
-        try:
-            await query.answer("Invalid product reference", show_alert=True)
-        except Exception:
-            logger.exception("Failed to notify user about invalid product reference")
-        return
-
-    # Delegate to show_product which handles sending and recording messages
-    await show_product(update, context, product_id)
+        logger.exception("cb_catalog_router failed")
 
 
-async def handle_back_to_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE, page: Optional[int] = None):
+async def show_products_for_category(
+    query: CallbackQuery,
+    context: ContextTypes.DEFAULT_TYPE,
+    category: str,
+    subcategory: Optional[str],
+    page: int = 1,
+    per_page: int = PAGE_SIZE,
+) -> None:
     """
-    Attempt to return the user to the original catalog message by editing it in-place.
-    If editing fails or no origin is recorded, fall back to calling the menu pagination handler
-    to send a fresh catalog message.
-
-    Also deletes any product display messages recorded in context.user_data['last_displayed_messages'].
-    This function is intended to be called when the user taps the Back to catalog button.
+    Show a paginated list of products for a category (and optional subcategory).
+    Builds an inline keyboard of product "View" buttons (user clicks to see media).
     """
-    query = update.callback_query
-    # Acknowledge callback early
-    if query:
-        try:
-            await query.answer()
-        except Exception:
-            logger.exception("Failed to answer back-to-catalog callback (non-fatal)")
+    try:
+        if page < 1:
+            page = 1
+        cat_key = canonicalize_key(category) if category else ""
+        sub_key = canonicalize_key(subcategory) if subcategory else None
 
-    origin = context.user_data.get("origin_catalog_message")
-    # Prefer explicit page argument, then origin, then stored catalog_page, then default 1
-    page_to_show = page or (origin.get("page") if isinstance(origin, dict) else None) or context.user_data.get("catalog_page", 1)
-
-    # First, delete any product display messages we created
-    last_displayed = context.user_data.pop("last_displayed_messages", []) or []
-    for (c_id, m_id) in last_displayed:
-        try:
-            await context.bot.delete_message(chat_id=c_id, message_id=m_id)
-        except Exception:
-            logger.debug("Could not delete displayed message %s/%s (may already be gone)", c_id, m_id)
-
-    # Try to edit the origin catalog message if we have one
-    if origin and isinstance(origin, dict):
-        try:
-            from handlers import menu as menu_module  # local import to avoid circular import at module load
-            # Ask the menu handler to rebuild the page content and keyboard.
-            # If the menu handler exposes a helper to edit an existing message, it should check context.user_data["origin_catalog_message"].
-            # We'll attempt to call the existing handler; it should read origin_catalog_message and edit if possible.
-            await menu_module.handle_catalog_pagination(update, context, page_to_show)
-            # Clear origin reference after returning to catalog
-            context.user_data.pop("origin_catalog_message", None)
+        fetch_limit = page * per_page * 3
+        items = await db.get_catalog_items(limit=fetch_limit)
+        if not items:
+            await query.edit_message_text("No items available in the catalog.")
             return
+
+        filtered: List[Dict[str, Any]] = []
+        for it in items:
+            it_cat = (it.get("category") or "").strip().upper()
+            it_sub = (it.get("subcategory") or "").strip().upper()
+            if cat_key and it_cat != cat_key.upper():
+                continue
+            if sub_key and it_sub != sub_key.upper():
+                continue
+            filtered.append(it)
+
+        total = len(filtered)
+        start = (page - 1) * per_page
+        page_items = filtered[start : start + per_page]
+
+        if not page_items:
+            await query.edit_message_text("No items found in this category.")
+            return
+
+        text_lines: List[str] = []
+        keyboard: List[List[InlineKeyboardButton]] = []
+        for it in page_items:
+            title = (it.get("caption") or "").strip() or f"Item {it.get('id')}"
+            btn_label = short_caption(title, length=40)
+            keyboard.append([InlineKeyboardButton(text=btn_label, callback_data=f"CAT:VIEW:{it['id']}")])
+            text_lines.append(f"• {title}")
+
+        scope = ""
+        if cat_key:
+            scope = cat_key
+            if sub_key:
+                scope = f"{cat_key}::{sub_key}"
+
+        pagination = build_pagination_keyboard(scope=scope, page=page - 1, per_page=per_page, total=total)
+        keyboard.extend(pagination)
+
+        header = f"{get_display_name(category)}"
+        if subcategory:
+            header = f"{header} — {get_display_name(subcategory)}"
+
+        await query.edit_message_text(f"{header}\n\n" + "\n".join(text_lines), reply_markup=InlineKeyboardMarkup(keyboard))
+
+        # Persist navigation context so product detail can show proper "Back" behavior
+        try:
+            if query.message and query.message.chat:
+                context.user_data["origin_catalog_message"] = {
+                    "chat_id": query.message.chat.id,
+                    "message_id": query.message.message_id,
+                }
+            context.user_data["selected_category"] = cat_key or None
+            context.user_data["selected_subcategory"] = sub_key or None
+            context.user_data["catalog_page"] = page
         except Exception:
-            logger.exception("Failed to edit origin catalog message; falling back to sending a new catalog message")
-
-    # Fallback: call the menu handler to send a new catalog message
-    try:
-        from handlers import menu as menu_module  # local import to avoid circular import at module load
-        await menu_module.handle_catalog_pagination(update, context, page_to_show)
+            logger.debug("Failed to persist catalog navigation context")
     except Exception:
-        logger.exception("Failed to send fallback catalog page; user may not see catalog")
+        logger.exception("show_products_for_category failed")
 
 
-async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def _copy_all_originals(dest_chat: int, media_items: List[Dict[str, Any]], context: ContextTypes.DEFAULT_TYPE) -> Optional[List[Tuple[int, int]]]:
     """
-    Handle delete|<product_id> callback.
-    If the product belongs to a media_group, delete all rows for that group.
-    Otherwise delete all rows for the message_id (covers multi-file single-message cases).
-    Also delete any bot-sent messages recorded in context.user_data['last_displayed_messages'].
+    Attempt to copy all original messages for this album into dest_chat.
+    Requirements:
+      - For each distinct original message (orig_chat, message_id) we must have both values.
+    Behavior:
+      - If any required original reference is missing, return None (skip copy).
+      - If a copy op fails part-way, delete any partial copies (best-effort) and return None.
+      - On complete success return list of (chat_id, message_id).
     """
-    query = update.callback_query
-    if not query:
-        return
+    # Build ordered unique (from_chat_id, message_id)
+    to_copy: List[Tuple[int, int]] = []
+    seen = set()
+    for mi in media_items:
+        mid = mi.get("message_id")
+        orig_chat = mi.get("chat_id")
+        if mid is None or orig_chat is None:
+            logger.debug("Album copy aborted: missing original reference for row=%r", mi)
+            return None
+        key = (int(orig_chat), int(mid))
+        if key in seen:
+            continue
+        seen.add(key)
+        to_copy.append(key)
 
-    # Acknowledge immediately; ignore expired query errors
-    try:
-        await query.answer()
-    except BadRequest:
-        logger.info("Delete callback answer expired (ignored)")
-    except Exception:
-        logger.exception("Failed to answer delete callback")
-
-    data = (query.data or "").strip()
-    parts = data.replace("_", "|").split("|")
-    if len(parts) < 2:
+    copied: List[Tuple[int, int]] = []
+    for from_chat_id, message_id in to_copy:
         try:
-            await query.answer("Invalid delete request", show_alert=True)
-        except Exception:
-            logger.exception("Failed to notify user about invalid delete request")
-        return
-
-    try:
-        product_id = int(parts[-1])
-    except Exception:
-        try:
-            await query.answer("Invalid product id", show_alert=True)
-        except Exception:
-            logger.exception("Failed to notify user about invalid product id")
-        return
-
-    # Load product to determine media_group or message_id
-    try:
-        product = await db.get_product(product_id)
-    except Exception:
-        logger.exception("DB error while loading product for delete id=%s", product_id)
-        try:
-            await query.message.reply_text("❌ Error accessing database.")
-        except Exception:
-            logger.exception("Failed to notify user after DB error")
-        return
-
-    if not product:
-        try:
-            await query.message.reply_text("Product not found or already deleted.")
-        except Exception:
-            logger.exception("Failed to notify user that product was not found")
-        return
-
-    chat_id = product.get("chat_id")
-    media_group_id = product.get("media_group_id")
-    message_id = product.get("message_id")
-
-    deleted_ids: List[int] = []
-    try:
-        if media_group_id:
-            deleted_ids = await db.delete_products_by_media_group(media_group_id, chat_id)
-        else:
-            deleted_ids = await db.delete_products_by_message(message_id, chat_id)
-    except Exception:
-        logger.exception("Error deleting product(s) for id=%s", product_id)
-        try:
-            await query.message.reply_text("❌ Error deleting item(s).")
-        except Exception:
-            logger.exception("Failed to notify user after delete error")
-        return
-
-    # Clean up any bot-sent messages that were recorded for this user
-    last_displayed = context.user_data.get("last_displayed_messages") or []
-    if last_displayed:
-        bot = context.bot
-        remaining = []
-        for (c_id, m_id) in last_displayed:
-            try:
-                await bot.delete_message(chat_id=c_id, message_id=m_id)
-            except Exception:
-                # If deletion fails, keep it in remaining so we don't lose the record
-                remaining.append((c_id, m_id))
-        if remaining:
-            context.user_data["last_displayed_messages"] = remaining
-        else:
-            context.user_data.pop("last_displayed_messages", None)
-
-    # Inform the user
-    try:
-        if deleted_ids:
-            await query.message.reply_text(f"Deleted {len(deleted_ids)} item(s) from the catalog.")
-        else:
-            await query.message.reply_text("Nothing to delete (already removed).")
-    except Exception:
-        logger.exception("Failed to send delete confirmation message")
-
-    # Try to refresh the catalog UI if the callback came from a catalog message
-    try:
-        if query.message and query.message.text and query.message.text.startswith("Catalog"):
-            page = context.user_data.get("catalog_page", 1)
-            from handlers import menu as menu_module  # local import to avoid circular import at module load
-            await menu_module.handle_catalog_pagination(update, context, page)
-    except Exception:
-        logger.exception("Failed to refresh catalog UI after deletion")
-
-
-async def _send_single_and_record(context: ContextTypes.DEFAULT_TYPE, chat_id: int, product: Dict[str, Any]):
-    """Send a single media item to chat_id and return the sent Message (or None)."""
-    file_id = product.get("file_id")
-    caption = product.get("caption") or ""
-    file_type = (product.get("file_type") or "").lower()
-    try:
-        if file_type == "photo":
-            return await context.bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption)
-        elif file_type == "video":
-            return await context.bot.send_video(chat_id=chat_id, video=file_id, caption=caption)
-        elif file_type in ("document", "file"):
-            return await context.bot.send_document(chat_id=chat_id, document=file_id, caption=caption)
-        elif file_type in ("animation", "gif"):
-            return await context.bot.send_animation(chat_id=chat_id, animation=file_id, caption=caption)
-        elif file_type == "audio":
-            return await context.bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption)
-        elif file_type == "voice":
-            return await context.bot.send_voice(chat_id=chat_id, voice=file_id, caption=caption)
-        else:
-            # Fallback to document for unknown types
-            return await context.bot.send_document(
-                chat_id=chat_id,
-                document=file_id,
-                caption=f"{caption}\n\n(type: {file_type or 'unknown'})",
-            )
-    except Exception:
-        logger.exception("Failed to send single media for product (file_type=%s)", file_type)
-        return None
-
-
-async def _send_media_group_and_record(context: ContextTypes.DEFAULT_TYPE, chat_id: int, items: List[Dict[str, Any]]):
-    """
-    Send a media group (album) to chat_id and return a list of (chat_id, message_id) for the messages created.
-    Non-photo/video items are sent individually and included in the returned list.
-    """
-    media = []
-    non_media = []
-    for p in items:
-        ft = (p.get("file_type") or "").lower()
-        fid = p.get("file_id")
-        cap = p.get("caption") or ""
-        if ft == "photo":
-            # Only the first media in the group should carry the caption
-            media.append(InputMediaPhoto(media=fid, caption=cap if not media else None))
-        elif ft == "video":
-            media.append(InputMediaVideo(media=fid, caption=cap if not media else None))
-        else:
-            non_media.append((ft, fid, cap))
-
-    sent_refs: List[Tuple[int, int]] = []
-
-    if media:
-        try:
-            msgs = await context.bot.send_media_group(chat_id=chat_id, media=media)
-            for m in msgs:
-                sent_refs.append((m.chat.id, m.message_id))
-        except Exception:
-            logger.exception("send_media_group failed; falling back to individual sends for media items")
-            # Fallback: send individually
-            for m in media:
-                try:
-                    if isinstance(m, InputMediaPhoto):
-                        sent = await context.bot.send_photo(chat_id=chat_id, photo=m.media, caption=m.caption or "")
-                    else:
-                        sent = await context.bot.send_video(chat_id=chat_id, video=m.media, caption=m.caption or "")
-                    if sent:
-                        sent_refs.append((sent.chat.id, sent.message_id))
-                except Exception:
-                    logger.exception("Fallback individual send failed for media item")
-
-    # Send non-media items individually
-    for ft, fid, cap in non_media:
-        try:
-            if ft in ("document", "file"):
-                sent = await context.bot.send_document(chat_id=chat_id, document=fid, caption=cap)
-            elif ft in ("animation", "gif"):
-                sent = await context.bot.send_animation(chat_id=chat_id, animation=fid, caption=cap)
-            elif ft == "audio":
-                sent = await context.bot.send_audio(chat_id=chat_id, audio=fid, caption=cap)
-            elif ft == "voice":
-                sent = await context.bot.send_voice(chat_id=chat_id, voice=fid, caption=cap)
+            msg = await context.bot.copy_message(chat_id=dest_chat, from_chat_id=from_chat_id, message_id=message_id)
+            # Normalize returned object
+            if hasattr(msg, "message_id"):
+                copied.append((msg.chat.id, msg.message_id))
             else:
-                sent = await context.bot.send_document(chat_id=chat_id, document=fid, caption=cap)
-            if sent:
-                sent_refs.append((sent.chat.id, sent.message_id))
+                # Some versions return MessageId-like object; try to coerce
+                try:
+                    mid = int(str(msg))
+                    copied.append((dest_chat, mid))
+                except Exception:
+                    copied.append((dest_chat, -1))
         except Exception:
-            logger.exception("Failed to send non-media item of type %s", ft)
+            logger.debug("copy_message failed for %s/%s; deleting partial copies and falling back", from_chat_id, message_id, exc_info=True)
+            for (c_id, m_id) in copied:
+                try:
+                    if m_id and m_id > 0:
+                        await context.bot.delete_message(chat_id=c_id, message_id=m_id)
+                except Exception:
+                    logger.debug("Failed to delete partial copied message %s/%s (non-fatal)", c_id, m_id)
+            return None
 
-    return sent_refs
+    return copied
+
+
+def _dedupe_media_items(media_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Deduplicate media items preserving order. Prefer file_unique_id, fallback to file_id.
+    """
+    seen = set()
+    out: List[Dict[str, Any]] = []
+    for mi in media_items:
+        key = mi.get("file_unique_id") or mi.get("file_id")
+        if not key:
+            # include items lacking identifiers (will likely fail later)
+            out.append(mi)
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(mi)
+    return out
+
+
+async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAULT_TYPE, product_id: int) -> None:
+    """
+    Show product media and caption. For media_group, try to copy original messages atomically;
+    otherwise assemble and send media from stored file_ids (no partial duplicates).
+    """
+    try:
+        p = await db.get_product(product_id)
+        if not p:
+            try:
+                await query.edit_message_text("Product not found.")
+            except Exception:
+                logger.exception("Failed to notify product not found")
+            return
+
+        dest_chat: Optional[int] = None
+        if query.from_user:
+            dest_chat = query.from_user.id
+        elif getattr(query, "message", None) and getattr(query.message, "chat", None):
+            dest_chat = query.message.chat.id
+
+        if dest_chat is None:
+            logger.error("show_product_detail: no destination to send product media")
+            try:
+                await query.answer("Cannot show product (no destination).", show_alert=True)
+            except Exception:
+                pass
+            return
+
+        user_lock = _ensure_user_lock(dest_chat)
+        async with user_lock:
+            # Clean up prior product display
+            try:
+                await delete_last_displayed_messages(context)
+            except Exception:
+                logger.exception("Failed to delete last displayed messages before showing product detail")
+
+            raw_caption = p.get("caption") or "(No caption)"
+            caption_parse_mode = (p.get("caption_parse_mode") or "").upper() or None
+            parse_mode = None
+            caption_for_api = raw_caption
+            if caption_parse_mode == "MARKDOWN_V2":
+                caption_for_api = escape_markdown_v2(raw_caption)
+                parse_mode = ParseMode.MARKDOWN_V2
+            elif caption_parse_mode == "HTML":
+                caption_for_api = raw_caption
+                parse_mode = ParseMode.HTML
+
+            media_group_id = p.get("media_group_id")
+            file_id = p.get("file_id")
+            file_type = (p.get("file_type") or "").lower()
+
+            sent_records: List[Tuple[int, int]] = []
+
+            # Gather album items robustly: prefer querying all rows for the media_group (no chat filter)
+            media_items: List[Dict[str, Any]] = []
+            if media_group_id:
+                try:
+                    media_items = await db.get_products_by_media_group(media_group_id, None)
+                except Exception:
+                    logger.exception("Failed to fetch products by media_group %s (falling back to single)", media_group_id)
+                    media_items = []
+
+            # If no group items found but product has message_id/chat_id, include at least the product itself
+            if not media_items:
+                # fallback to single item constructed from the product row
+                media_items = [p]
+
+            # Deduplicate items (preserve order)
+            media_items = _dedupe_media_items(media_items)
+            logger.debug("show_product_detail: assembled %d media_items for product_id=%s (mg=%s)", len(media_items), product_id, media_group_id)
+
+            if len(media_items) > 1:
+                # Try copying originals only when all distinct originals have chat_id+message_id
+                copied = await _copy_all_originals(dest_chat, media_items, context)
+                if copied is not None:
+                    logger.debug("show_product_detail: copied %d originals for product_id=%s", len(copied), product_id)
+                    # filter out duplicates in copied list
+                    unique_copied = []
+                    seen_msgs = set()
+                    for c in copied:
+                        if c not in seen_msgs:
+                            seen_msgs.add(c)
+                            unique_copied.append(c)
+                    sent_records.extend(unique_copied)
+                else:
+                    # Build InputMedia list from file_ids (caption only on first)
+                    input_media = []
+                    first = True
+                    for mi in media_items:
+                        fid = mi.get("file_id")
+                        if not fid:
+                            logger.debug("show_product_detail: skipping missing file_id for row=%r", mi)
+                            continue
+                        ftype = (mi.get("file_type") or "").lower()
+                        item_caption = caption_for_api if first else None
+                        first = False
+                        if ftype.startswith("video"):
+                            input_media.append(InputMediaVideo(media=fid, caption=item_caption))
+                        elif ftype.startswith("audio") or ftype.startswith("voice"):
+                            input_media.append(InputMediaDocument(media=fid, caption=item_caption))
+                        else:
+                            input_media.append(InputMediaPhoto(media=fid, caption=item_caption))
+
+                    logger.debug("show_product_detail: prepared %d InputMedia items (fallback send) for product_id=%s", len(input_media), product_id)
+                    try:
+                        if len(input_media) == 0:
+                            logger.warning("No media available to send for product %s", product_id)
+                            await query.edit_message_text("No media available for this product.")
+                        elif len(input_media) == 1:
+                            im = input_media[0]
+                            try:
+                                if isinstance(im, InputMediaVideo):
+                                    m = await context.bot.send_video(chat_id=dest_chat, video=im.media, caption=im.caption, parse_mode=parse_mode)
+                                elif isinstance(im, InputMediaDocument):
+                                    m = await context.bot.send_document(chat_id=dest_chat, document=im.media, caption=im.caption, parse_mode=parse_mode)
+                                else:
+                                    m = await context.bot.send_photo(chat_id=dest_chat, photo=im.media, caption=im.caption, parse_mode=parse_mode)
+                                sent_records.append((m.chat.id, m.message_id))
+                            except Exception:
+                                logger.exception("Failed to send single fallback media for product %s", product_id)
+                        else:
+                            msgs = await context.bot.send_media_group(chat_id=dest_chat, media=input_media)
+                            for m in msgs:
+                                sent_records.append((m.chat.id, m.message_id))
+                    except Exception:
+                        logger.exception("send_media_group fallback failed; trying per-item sends")
+                        first = True
+                        for im in input_media:
+                            try:
+                                if isinstance(im, InputMediaVideo):
+                                    m = await context.bot.send_video(chat_id=dest_chat, video=im.media, caption=im.caption if first else None, parse_mode=parse_mode)
+                                else:
+                                    m = await context.bot.send_photo(chat_id=dest_chat, photo=im.media, caption=im.caption if first else None, parse_mode=parse_mode)
+                                sent_records.append((m.chat.id, m.message_id))
+                                first = False
+                            except Exception:
+                                logger.exception("Failed to send media item %s", getattr(im, "media", "<unknown>"))
+            else:
+                # Single-file product
+                try:
+                    if file_type.startswith("video"):
+                        m = await context.bot.send_video(chat_id=dest_chat, video=file_id, caption=caption_for_api, parse_mode=parse_mode)
+                    elif file_type.startswith("audio") or file_type.startswith("voice"):
+                        m = await context.bot.send_audio(chat_id=dest_chat, audio=file_id, caption=caption_for_api, parse_mode=parse_mode)
+                    else:
+                        m = await context.bot.send_photo(chat_id=dest_chat, photo=file_id, caption=caption_for_api, parse_mode=parse_mode)
+                    sent_records.append((m.chat.id, m.message_id))
+                except Exception:
+                    logger.exception("Failed to send product media for product_id=%s", product_id)
+                    try:
+                        await query.edit_message_text(text=caption_for_api)
+                    except Exception:
+                        logger.exception("Failed to edit message as fallback")
+
+            # Send navigation control message
+            try:
+                cat = context.user_data.get("selected_category")
+                sub = context.user_data.get("selected_subcategory")
+                page = context.user_data.get("catalog_page", 1) or 1
+                scope = ""
+                if cat:
+                    scope = cat
+                    if sub:
+                        scope = f"{cat}::{sub}"
+
+                nav_buttons = []
+                if scope:
+                    nav_buttons.append(InlineKeyboardButton("⬅️ Back", callback_data=f"CAT:PAGE:{scope}::{page}"))
+                else:
+                    nav_buttons.append(InlineKeyboardButton("⬅️ Back", callback_data="CAT:BACK"))
+                nav_buttons.append(InlineKeyboardButton("🏠 Categories", callback_data="CAT:BACK"))
+
+                ctrl = await context.bot.send_message(
+                    chat_id=dest_chat,
+                    text="Use the buttons below to return to the catalog.",
+                    reply_markup=InlineKeyboardMarkup([nav_buttons]),
+                )
+                sent_records.append((ctrl.chat.id, ctrl.message_id))
+            except Exception:
+                logger.exception("Failed to send control message after product media")
+
+            # Record displayed messages for cleanup
+            try:
+                if sent_records:
+                    # remove duplicates before storing
+                    uniq = []
+                    seen = set()
+                    for c, m in sent_records:
+                        if (c, m) not in seen:
+                            seen.add((c, m))
+                            uniq.append((c, m))
+                    context.user_data["last_displayed_messages"] = uniq
+            except Exception:
+                logger.exception("Failed to record last_displayed_messages in user_data")
+    except Exception:
+        logger.exception("show_product_detail failed")

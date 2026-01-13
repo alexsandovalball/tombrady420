@@ -1,69 +1,194 @@
 # utils/helpers.py
-import os
-from typing import Tuple, Optional
-from telegram import Update, Message
+"""
+Helper utilities: logging setup, pagination keyboard builder, small helpers.
 
-def get_channel_id() -> Optional[int]:
-    raw = os.getenv("CHANNEL_ID", "").strip()
-    if not raw:
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None
+This module consolidates:
+ - logging setup
+ - chunked helper
+ - short_caption helper (used for keyboard labels)
+ - delete_last_displayed_messages (async)
+ - safe scope truncation for callback_data
+ - build_pagination_keyboard (used by catalog/product handlers)
+ - create_pagination_keyboard + paginate_items (compatibility helpers merged from utils.pagination)
+"""
 
-def get_channel_username() -> Optional[str]:
-    username = os.getenv("CHANNEL_USERNAME", "").strip()
-    if not username:
-        return None
-    if not username.startswith("@"):
-        username = f"@{username}"
-    return username
+from __future__ import annotations
 
-def has_media(update: Update) -> bool:
-    msg = _get_message(update)
-    if not msg:
-        return False
-    return bool(
-        (getattr(msg, "photo", None) and len(msg.photo) > 0)
-        or getattr(msg, "video", None)
-        or getattr(msg, "document", None)
-        or getattr(msg, "animation", None)
-    )
+import logging
+from typing import List, Iterator, Sequence, Optional, Any, Tuple
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes
+from telegram.error import BadRequest
 
-def get_file_id_and_type(update: Update) -> Tuple[Optional[str], Optional[str]]:
-    msg = _get_message(update)
-    if not msg:
-        return None, None
-    if getattr(msg, "photo", None):
-        return msg.photo[-1].file_id, "photo"
-    if getattr(msg, "video", None):
-        return msg.video.file_id, "video"
-    if getattr(msg, "document", None):
-        return msg.document.file_id, "document"
-    if getattr(msg, "animation", None):
-        return msg.animation.file_id, "animation"
-    return None, None
+logger = logging.getLogger(__name__)
 
-def _get_message(update: Update) -> Optional[Message]:
-    if update.message:
-        return update.message
-    if update.channel_post:
-        return update.channel_post
-    if update.callback_query and update.callback_query.message:
-        return update.callback_query.message
-    return None
 
-def is_admin(user_id: int) -> bool:
+def setup_logging(level: str = "INFO") -> None:
     """
-    Check whether a user_id is listed in ADMIN_IDS environment variable.
-    ADMIN_IDS should be a comma-separated list of numeric IDs, e.g. "12345,67890".
+    Configure root logging once. Call early in application startup.
+
+    `level` may be a string like "DEBUG", "INFO", etc.
     """
-    raw = os.getenv("ADMIN_IDS", "").strip()
-    if not raw:
-        return False
+    lvl = getattr(logging, level.upper(), logging.INFO)
+    logging.basicConfig(level=lvl, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger().setLevel(lvl)
+
+
+def chunked(seq: Sequence, n: int) -> Iterator[Sequence]:
+    """
+    Yield successive n-sized chunks from seq.
+
+    Example:
+        list(chunked([1,2,3,4,5], 2)) -> [[1,2], [3,4], [5]]
+    """
+    if n <= 0:
+        raise ValueError("n must be a positive integer")
+    for i in range(0, len(seq), n):
+        yield seq[i : i + n]
+
+
+def _safe_scope_for_callback(scope: str, max_len: int = 40) -> str:
+    """
+    Ensure the scope string used in callback_data is not excessively long.
+    Truncates long scopes and replaces whitespace with underscores.
+
+    Telegram limits callback_data to 64 bytes; keep scope reasonably short.
+    """
+    if not scope:
+        return ""
+    s = scope.replace(" ", "_")
+    if len(s) <= max_len:
+        return s
+    head = s[: max_len // 2 - 2]
+    tail = s[-(max_len // 2 - 2) :]
+    return f"{head}..{tail}"
+
+
+def short_caption(caption: Optional[str], length: int = 40) -> str:
+    """
+    Return a short, single-line caption suitable for keyboard labels.
+
+    - returns "No caption" for empty/None captions
+    - collapses newlines to spaces and trims
+    - truncates with an ellipsis if longer than `length`
+    """
+    if not caption:
+        return "No caption"
+    c = caption.strip().replace("\n", " ")
+    if len(c) <= length:
+        return c
+    return c[: length - 1].rstrip() + "…"
+
+
+async def delete_last_displayed_messages(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Delete messages recorded in context.user_data['last_displayed_messages'].
+
+    Each entry is expected to be a (chat_id, message_id) tuple/list.
+    The function is defensive: ignores failures and clears the stored list.
+    """
+    bot = context.bot
+    last = context.user_data.get("last_displayed_messages") or []
+    if not last:
+        return
+    for chat_id, message_id in last:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except BadRequest:
+            logger.debug("Could not delete displayed message %s/%s (BadRequest)", chat_id, message_id)
+        except Exception:
+            logger.debug("Could not delete displayed message %s/%s", chat_id, message_id)
+    context.user_data.pop("last_displayed_messages", None)
+
+
+def build_pagination_keyboard(scope: str, page: int, per_page: int, total: int) -> List[List[InlineKeyboardButton]]:
+    """
+    Build a simple pagination keyboard.
+
+    Args:
+      scope: string identifying the scope (category or "category::subcategory").
+      page: zero-based page index.
+      per_page: items per page.
+      total: total number of items.
+
+    Returns:
+      A list of keyboard rows (each row is a list of InlineKeyboardButton).
+    """
+    keyboard: List[List[InlineKeyboardButton]] = []
     try:
-        ids = [int(x.strip()) for x in raw.split(",") if x.strip()]
-    except ValueError:
-        return False
-    return user_id in ids
+        total_pages = max(1, (int(total) + int(per_page) - 1) // int(per_page))
+    except Exception:
+        total_pages = 1
+
+    try:
+        page = int(page)
+    except Exception:
+        page = 0
+    if page < 0:
+        page = 0
+    if page >= total_pages:
+        page = total_pages - 1
+
+    safe_scope = _safe_scope_for_callback(scope or "")
+
+    row: List[InlineKeyboardButton] = []
+    if page > 0:
+        row.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"CAT:PAGE:{safe_scope}::{page-1}"))
+    row.append(InlineKeyboardButton(text=f"Page {page+1}/{total_pages}", callback_data=f"CAT:PAGE:{safe_scope}::{page}"))
+    if page + 1 < total_pages:
+        row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"CAT:PAGE:{safe_scope}::{page+1}"))
+    keyboard.append(row)
+
+    keyboard.append([InlineKeyboardButton(text="Back", callback_data="CAT:BACK")])
+    return keyboard
+
+
+# Compatibility functions merged from previous utils.pagination
+def create_pagination_keyboard(
+    products: List[dict],
+    page: int,
+    total_pages: int,
+    callback_prefix: str,
+    query: Optional[str] = None,
+) -> InlineKeyboardMarkup:
+    """
+    Create a pagination InlineKeyboardMarkup. This is a convenience wrapper used
+    by a few older modules; prefer the lighter `build_pagination_keyboard` for
+    catalog-style flows.
+    """
+    keyboard: List[List[InlineKeyboardButton]] = []
+    # Product buttons (trim)
+    for product in products:
+        caption = product.get("caption", "") or "No caption"
+        button_text = caption[:47] + "..." if len(caption) > 50 else caption
+        if not button_text.strip():
+            button_text = f"Product #{product.get('id')}"
+        callback_data = f"product|{product.get('id')}"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+
+    # Navigation
+    if total_pages > 1:
+        nav_buttons: List[InlineKeyboardButton] = []
+        if page > 1:
+            prev_data = f"page|{callback_prefix}|{query}|{page - 1}" if query else f"page|{callback_prefix}|{page - 1}"
+            nav_buttons.append(InlineKeyboardButton("← Previous", callback_data=prev_data))
+        nav_buttons.append(InlineKeyboardButton(f"Page {page}/{total_pages}", callback_data="noop"))
+        if page < total_pages:
+            next_data = f"page|{callback_prefix}|{query}|{page + 1}" if query else f"page|{callback_prefix}|{page + 1}"
+            nav_buttons.append(InlineKeyboardButton("Next →", callback_data=next_data))
+        keyboard.append(nav_buttons)
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+def paginate_items(items: Sequence[Any], page: int, per_page: int = 5) -> Tuple[List[Any], int]:
+    """
+    Paginate a list of items.
+
+    Returns (items_for_page, total_pages). Page is 1-indexed here (compat).
+    """
+    total_pages = (len(items) + per_page - 1) // per_page if items else 1
+    page = max(1, min(page, total_pages))
+    start_idx = (page - 1) * per_page
+    end_idx = start_idx + per_page
+    return list(items)[start_idx:end_idx], total_pages

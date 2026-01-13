@@ -1,325 +1,270 @@
-"""
-Main entry point for the Telegram media catalog bot.
-"""
-import os
+﻿# main.py
+from __future__ import annotations
+
+# Ensure stdout logging is configured early and consistently for Render
+import logging as _logging
+import sys as _sys
+
+_root_logger = _logging.getLogger()
+if not _root_logger.handlers:
+    _handler = _logging.StreamHandler(stream=_sys.stdout)
+    _formatter = _logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _handler.setFormatter(_formatter)
+    _root_logger.addHandler(_handler)
+# Default to INFO unless overridden by config later
+_root_logger.setLevel(_logging.INFO)
+
+# Make sure uvicorn loggers propagate to root logger
+for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    _lg = _logging.getLogger(_name)
+    _lg.propagate = True
+    if _lg.level == _logging.NOTSET:
+        _lg.setLevel(_logging.INFO)
+
 import logging
-import re
 import asyncio
-from datetime import datetime
-from dotenv import load_dotenv
+from typing import Optional, Callable, Awaitable
+
 from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
-    filters,
     ContextTypes,
+    filters,
 )
 
-from database import Database
-from handlers.start import start_command
-from handlers.menu import menu_command, handle_catalog_pagination
-from handlers.search import handle_search, handle_search_pagination, handle_back_to_search
-from handlers.admin import stats_command, delete_product, nuke_command, list_users_command
-from handlers.product_view import show_product, handle_product_callback, handle_delete_callback
-from utils.helpers import get_file_id_and_type, has_media, get_channel_id, get_channel_username
+from config import BOT_TOKEN, LOG_LEVEL, REDIS_URL
+# DEBUG_LOG_UPDATES is optional in config; default to False if not present
+try:
+    from config import DEBUG_LOG_UPDATES  # type: ignore
+except Exception:
+    DEBUG_LOG_UPDATES = False
 
-# Debug handlers (temporary for debugging; remove in production)
-from handlers.debug import dbcheck_command, dump_user_data
+from database import db, init_db
+from handlers import admin as admin_handlers
+from handlers import product_view as product_handlers
+from handlers import search as search_handlers
+from utils.helpers import setup_logging
 
-# Load environment variables
-load_dotenv()
-
-# Configure logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
 logger = logging.getLogger(__name__)
+setup_logging(LOG_LEVEL)
 
-db = Database()
-user_last_message = {}
+# Background cleanup task handle
+_cleanup_task: Optional[asyncio.Task] = None
 
 
-async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle new posts in the monitored channel and save each media item with media_group_id."""
-    try:
-        message = update.channel_post
-        if not message:
-            return
+def ensure_async(fn: Callable) -> Callable[..., Awaitable]:
+    """
+    Wrap a synchronous handler into an async function using asyncio.to_thread.
+    If fn is already a coroutine function, return it unchanged.
+    """
+    if asyncio.iscoroutinefunction(fn):
+        return fn
 
-        chat_id = message.chat.id
-        msg_id = message.message_id
-        media_group_id = getattr(message, "media_group_id", None)
+    async def _wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            return await asyncio.to_thread(fn, update, context)
+        except Exception:
+            # Re-raise so the Application error handler can catch and log it
+            raise
 
-        logger.debug(
-            "Channel post received: chat_id=%s message_id=%s media_group_id=%s",
-            chat_id,
-            msg_id,
-            media_group_id,
-        )
+    return _wrapper
 
-        if await db.is_message_ignored(msg_id, chat_id):
-            return
 
-        if not has_media(update):
-            return
+def _register_handlers(app: Application) -> None:
+    """
+    Register all bot handlers on the provided Application instance.
+    Keep handlers compact and defensive; use ensure_async for sync callables.
+    """
+    # User commands
+    app.add_handler(CommandHandler("start", ensure_async(product_handlers.cmd_start)))
+    app.add_handler(CommandHandler("categories", ensure_async(product_handlers.cmd_categories)))
+    # search command (fuzzy search)
+    app.add_handler(CommandHandler("search", ensure_async(search_handlers.handle_search)))
 
-        file_id, file_type = get_file_id_and_type(update)
-        if not file_id:
-            return
+    # Admin-only commands
+    app.add_handler(CommandHandler("admin_stats", ensure_async(admin_handlers.cmd_stats)))
+    app.add_handler(CommandHandler("admin_cleanup", ensure_async(admin_handlers.cmd_cleanup)))
+    app.add_handler(CommandHandler("list_products", ensure_async(admin_handlers.list_products_command)))
+    app.add_handler(CommandHandler("setcategory", ensure_async(admin_handlers.set_category_command)))
+    app.add_handler(CommandHandler("listcategories", ensure_async(admin_handlers.list_categories_command)))
+    app.add_handler(CommandHandler("backfill_db", ensure_async(admin_handlers.backfill_db_command)))
+    app.add_handler(CommandHandler("nuke", ensure_async(admin_handlers.nuke_command)))
 
-        caption = message.caption if getattr(message, "caption", None) else (message.text or "")
-        caption = caption.strip() if isinstance(caption, str) else ""
+    # Callback queries for product browsing, search pagination and admin actions
+    app.add_handler(CallbackQueryHandler(ensure_async(product_handlers.cb_catalog_router), pattern=r"^CAT:"))
+    app.add_handler(CallbackQueryHandler(ensure_async(search_handlers.cb_search_router), pattern=r"^search_page\|"))
+    app.add_handler(CallbackQueryHandler(ensure_async(admin_handlers.cb_admin_router), pattern=r"^ADM:"))
+    # Nuke confirmation router (separate)
+    app.add_handler(CallbackQueryHandler(ensure_async(admin_handlers.cb_nuke_router), pattern=r"^ADM:NUKE"))
 
-        if media_group_id and not caption:
+    # Message handler for ingestion: accept channel posts and non-command messages
+    # filters.ALL covers channel_post and message; exclude bot commands to avoid double-handling
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, ensure_async(admin_handlers.ingest_message)))
+
+    # Optional debug handler to log every update (controlled by config.DEBUG_LOG_UPDATES)
+    if DEBUG_LOG_UPDATES:
+        async def _debug_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
-                existing = await db.get_products_by_media_group(media_group_id, chat_id)
-                for ex in existing:
-                    ex_caption = (ex.get("caption") or "").strip()
-                    if ex_caption:
-                        caption = ex_caption
-                        break
+                logger.debug("DEBUG UPDATE: %s", update.to_dict())
             except Exception:
-                logger.exception("Error while looking up existing media_group captions")
+                logger.exception("Failed to serialize debug update")
 
-        product_id = await db.add_product(
-            file_id=file_id,
-            file_type=file_type,
-            caption=caption,
-            message_id=msg_id,
-            chat_id=chat_id,
-            media_group_id=media_group_id,
-        )
-
-        if product_id > 0:
-            logger.info(f"New product saved: ID={product_id}, type={file_type}")
-    except Exception as e:
-        logger.error(f"Error handling channel post: {e}", exc_info=True)
+        app.add_handler(MessageHandler(filters.ALL, _debug_all), group=0)
 
 
-def _split_callback(data: str):
-    """Split callback data into (action, value)."""
-    if not data:
-        return None, None
-    data = data.strip()
-    parts = re.split(r"[|_]", data)
-    if len(parts) == 1:
-        return parts[0], None
-    action = "_".join(parts[:-1])
-    value = parts[-1]
-    return action, value
+def build_application(token: Optional[str] = None) -> Application:
+    """
+    Build and return a configured Application instance.
+    This function does not start the bot; the caller should run startup_tasks(app)
+    and then start the application (run_polling or run_webhook) from the run script.
+    """
+    token = token or BOT_TOKEN
+    if not token:
+        raise RuntimeError("BOT_TOKEN is required in environment")
 
+    app = Application.builder().token(token).build()
 
-async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle inline button callbacks with robust parsing and safe error handling."""
-    query = update.callback_query
-    if not query:
-        return
+    # Register handlers
+    _register_handlers(app)
 
-    # Capture user info on interaction
-    user = update.effective_user
-    if user:
+    # Error handler
+    async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        # Log with both module logger and application logger for maximum visibility
         try:
-            await db.save_user(
-                user_id=user.id,
-                username=user.username or None,
-                first_name=user.first_name or None,
-                last_name=user.last_name or None,
-                last_seen=datetime.utcnow(),
-            )
+            logger.exception("Unhandled exception in update: %s", update)
         except Exception:
-            logger.debug("Failed to save user info")
-
-    try:
-        await query.answer()
-    except Exception:
-        logger.exception("Failed to answer callback query (non-fatal)")
-
-    data = (query.data or "").strip()
-    action, value = _split_callback(data)
-
-    try:
-        # Catalog pagination
-        if action in ("catalog_page", "catalogpage", "catalog"):
-            page = int(value) if value else 1
-            await handle_catalog_pagination(update, context, page)
-            return
-
-        # Search pagination
-        if action in ("search_page", "searchpage", "search"):
-            parts = data.split("|")
-            if len(parts) >= 3:
-                query_text = parts[1]
-                page = int(parts[2])
-                await handle_search_pagination(update, context, query_text, page)
-            return
-
-        # Back to search
-        if action in ("search_back", "backsearch"):
-            await handle_back_to_search(update, context)
-            return
-
-        # Product view
-        if action in ("product", "productview", "item"):
-            await handle_product_callback(update, context)
-            return
-
-        # Delete product
-        if action in ("delete", "remove"):
-            await handle_delete_callback(update, context)
-            return
-
-        # Menu shortcut
-        if action in ("menu", "catalog_menu"):
-            page = 1
-            if value:
-                try:
-                    page = int(value)
-                except ValueError:
-                    page = 1
-            await handle_catalog_pagination(update, context, page)
-            return
-
-        if action == "noop":
-            return
-
-        logger.warning("Unknown callback action: %s (raw=%s)", action, data)
+            pass
         try:
-            await query.answer("Unknown action", show_alert=True)
+            # context may be None in some error cases
+            if context and getattr(context, "application", None):
+                context.application.logger.exception("Unhandled exception in update: %s", update)
         except Exception:
-            logger.exception("Failed to notify user about unknown action")
+            logger.exception("Failed to log to context.application.logger")
 
-    except Exception:
-        logger.exception("Unhandled exception in callback_query_handler for data=%s", data)
+    app.add_error_handler(on_error)
+
+    return app
+
+
+async def startup_tasks(app: Application) -> None:
+    """
+    Tasks to run on startup: init DB and any other warmups.
+    Call this before starting the Application (e.g., before run_polling or run_webhook).
+    """
+    global _cleanup_task
+    logger.info("Running startup tasks")
+    # Initialize DB (idempotent)
+    await init_db()
+    # Expose DB instance to handlers via bot_data for convenience
+    app.bot_data["db"] = db
+
+    # Initialize Redis client if configured and attach to app.bot_data["redis"]
+    if REDIS_URL:
         try:
-            if query.message and getattr(query.message.from_user, "is_bot", False):
+            import redis.asyncio as aioredis  # type: ignore
+            redis_client = aioredis.from_url(REDIS_URL)
+            # test connection
+            try:
+                await redis_client.ping()
+                app.bot_data["redis"] = redis_client
+                logger.info("Connected to Redis at startup for callback token store")
+            except Exception:
+                # If ping fails, still attach client but log the issue
+                app.bot_data["redis"] = redis_client
+                logger.exception("Connected to Redis but ping failed; continuing with client attached")
+        except Exception:
+            logger.exception("Failed to initialize Redis client; continuing without Redis (in-memory fallback will be used)")
+
+    # Import and initialize handlers now that DB is ready (idempotent)
+    try:
+        import handlers  # local import to avoid circulars at module import time
+        # run_db_init is False because init_db() already ran above; enable cleanup here
+        await handlers.initialize_handlers(run_db_init=False, run_cleanup=True, cleanup_older_than_days=30)
+        logger.info("Handlers initialized during startup tasks")
+    except Exception:
+        logger.exception("Failed to initialize handlers during startup tasks")
+
+    # Start a periodic cleanup task to keep processed_media_groups compact (non-fatal)
+    try:
+        async def _periodic_cleanup():
+            while True:
                 try:
-                    await query.edit_message_text("❌ An internal error occurred. Please try again.")
+                    await db.cleanup_processed_media_groups(older_than_days=30)
+                    logger.info("Periodic processed_media_groups cleanup completed")
                 except Exception:
-                    await context.bot.send_message(chat_id=query.from_user.id, text="❌ An internal error occurred. Please try again.")
-            else:
-                await context.bot.send_message(chat_id=query.from_user.id, text="❌ An internal error occurred. Please try again.")
-        except Exception:
-            logger.exception("Failed to notify user after exception in callback handler")
+                    logger.exception("Periodic cleanup failed")
+                await asyncio.sleep(24 * 3600)  # 24 hours
+
+        _cleanup_task = asyncio.create_task(_periodic_cleanup())
+        logger.info("Started periodic processed_media_groups cleanup task")
+    except Exception:
+        logger.exception("Failed to start periodic cleanup task (non-fatal)")
+
+    # If DEBUG_LOG_UPDATES is enabled, log that debug mode is active
+    if DEBUG_LOG_UPDATES:
+        logger.info("DEBUG_LOG_UPDATES is enabled; all updates will be logged at DEBUG level")
+
+    logger.info("Startup tasks complete")
 
 
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Treat all non-command messages as search queries (private chats)."""
-    if update.message and update.message.text and update.message.text.startswith("/"):
-        return
-    if update.channel_post:
-        return
-
-    # Capture user info on interaction
-    user = update.effective_user
-    if user:
-        try:
-            await db.save_user(
-                user_id=user.id,
-                username=user.username or None,
-                first_name=user.first_name or None,
-                last_name=user.last_name or None,
-                last_seen=datetime.utcnow(),
-            )
-        except Exception:
-            logger.debug("Failed to save user info")
-
-    if not user:
-        return
-
-    user_id = user.id
-    current_ts = asyncio.get_event_loop().time()
-    last_ts = user_last_message.get(user_id, 0)
-    if current_ts - last_ts < 1.0:
-        if update.message:
-            await update.message.reply_text("⏳ Please wait a moment before sending another message.")
-        return
-
-    user_last_message[user_id] = current_ts
-
-    if update.message and update.message.text:
-        try:
-            await handle_search(update, context)
-        except Exception:
-            logger.exception("Error while handling search command from message")
-
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Update {update} caused error {context.error}", exc_info=True)
-    if update and update.effective_chat:
-        try:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="❌ An unexpected error occurred. Please try again later.",
-            )
-        except Exception:
-            logger.exception("Failed to notify user about an unexpected error")
-
-
-async def post_init(application: Application):
+async def shutdown_tasks(app: Application) -> None:
+    """
+    Tasks to run on shutdown.
+    """
+    global _cleanup_task
+    logger.info("Running shutdown tasks")
+    # Cancel periodic cleanup task if running
     try:
-        await db.init_db()
-        logger.info("Database initialized")
-    except Exception as e:
-        logger.exception("Failed to initialize database in post_init: %s", e)
-        raise
+        if _cleanup_task:
+            _cleanup_task.cancel()
+            try:
+                await _cleanup_task
+            except Exception:
+                pass
+            _cleanup_task = None
+            logger.info("Periodic cleanup task cancelled")
+    except Exception:
+        logger.exception("Failed to cancel periodic cleanup task")
 
-
-def build_application():
-    bot_token = os.getenv("BOT_TOKEN")
-    if not bot_token:
-        logger.error("BOT_TOKEN not found in environment.")
-        raise RuntimeError("BOT_TOKEN not set")
-
-    application = Application.builder().token(bot_token).post_init(post_init).build()
-
-    # Command handlers
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("menu", menu_command))
-    application.add_handler(CommandHandler("stats", stats_command))
-    application.add_handler(CommandHandler("nuke", nuke_command))
-    application.add_handler(CommandHandler("users", list_users_command))  # new admin command
-
-    # Debug commands (temporary)
-    application.add_handler(CommandHandler("dbcheck", dbcheck_command))
-    application.add_handler(CommandHandler("dumpuserdata", dump_user_data))
-
-    # Callback queries and message handlers
-    application.add_handler(CallbackQueryHandler(callback_query_handler))
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, message_handler)
-    )
-    application.add_error_handler(error_handler)
-
-    # Channel monitoring
-    channel_id = get_channel_id()
-    channel_username = get_channel_username()
-    if channel_id:
-        application.add_handler(
-            MessageHandler(filters.Chat(chat_id=channel_id) & filters.ChatType.CHANNEL, channel_post_handler)
-        )
-        logger.info(f"Channel monitoring enabled for {channel_id}")
-    elif channel_username:
-        application.add_handler(
-            MessageHandler(filters.Chat(username=channel_username.lstrip("@")) & filters.ChatType.CHANNEL, channel_post_handler)
-        )
-        logger.info(f"Channel monitoring enabled for {channel_username}")
-    else:
-        logger.warning("No CHANNEL_ID or CHANNEL_USERNAME set. Channel monitoring disabled.")
-
-    return application
-
-
-# Build the application object so it can be imported by a webhook server (webhook_server.py)
-application = build_application()
-
-if __name__ == "__main__":
-    # When executed directly, run polling (local/dev mode).
-    logger.info("Starting bot in polling mode...")
+    # Close Redis client if present
     try:
-        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-    except Exception as e:
-        logger.exception("Application run_polling exited with exception: %s", e)
+        redis_client = app.bot_data.get("redis")
+        if redis_client is not None:
+            try:
+                # redis.asyncio client exposes close() and connection_pool.disconnect()
+                await redis_client.close()
+                try:
+                    # best-effort disconnect of pool
+                    pool = getattr(redis_client, "connection_pool", None)
+                    if pool is not None and hasattr(pool, "disconnect"):
+                        await pool.disconnect()
+                except Exception:
+                    pass
+                logger.info("Redis client closed during shutdown")
+            except Exception:
+                logger.exception("Error while closing Redis client during shutdown")
+    except Exception:
+        logger.exception("Unexpected error while attempting to close Redis client")
+
+    # Place any cleanup logic here (close connections, flush caches)
+    try:
+        # If the DB exposes a close method, attempt to close it gracefully
+        if hasattr(db, "close"):
+            await db.close()
+            logger.info("Database connection closed during shutdown")
+    except Exception:
+        logger.exception("Error while closing database during shutdown")
+
+    logger.info("Shutdown tasks complete")
+
+
+# Helper to run startup tasks from a run script
+async def run_startup_tasks(app: Application) -> None:
+    try:
+        await startup_tasks(app)
+    except Exception:
+        logger.exception("startup_tasks failed")
         raise
