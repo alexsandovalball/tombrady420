@@ -415,11 +415,11 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
                     item_caption = caption_for_api if first else None
                     first = False
                     if ftype.startswith("video"):
-                        input_media.append(InputMediaVideo(media=fid, caption=item_caption))
+                        input_media.append(InputMediaVideo(media=fid, caption=item_caption, parse_mode=parse_mode))
                     elif ftype.startswith("audio") or ftype.startswith("voice"):
-                        input_media.append(InputMediaDocument(media=fid, caption=item_caption))
+                        input_media.append(InputMediaDocument(media=fid, caption=item_caption, parse_mode=parse_mode))
                     else:
-                        input_media.append(InputMediaPhoto(media=fid, caption=item_caption))
+                        input_media.append(InputMediaPhoto(media=fid, caption=item_caption, parse_mode=parse_mode))
 
                 logger.debug("show_product_detail: prepared %d InputMedia items for product_id=%s", len(input_media), product_id)
                 try:
