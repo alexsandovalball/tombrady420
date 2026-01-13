@@ -86,9 +86,9 @@ async def scan_channel():
         skipped_exists = 0
         skipped_ignored = 0
         
-        try:
-            # Iterate through channel messages
-            async for message in app.get_chat_history(channel_identifier):
+        # Iterate through channel messages
+        async for message in app.get_chat_history(channel_identifier):
+            try:
                 total_messages += 1
                 
                 # Skip messages without media
@@ -137,7 +137,7 @@ async def scan_channel():
                 caption = message.caption or message.text or ""
                 
                 # Handle media groups
-                media_group_id = message.media_group_id if hasattr(message, 'media_group_id') else None
+                media_group_id = getattr(message, 'media_group_id', None)
                 
                 # Add product to database without category (needs admin categorization)
                 try:
@@ -173,11 +173,15 @@ async def scan_channel():
                 # Small delay to avoid rate limiting
                 await asyncio.sleep(0.1)
                 
-        except FloodWait as e:
-            logger.warning(f"Rate limited by Telegram. Waiting {e.value} seconds...")
-            await asyncio.sleep(e.value)
-        except Exception as e:
-            logger.error(f"Error during channel scan: {e}", exc_info=True)
+            except FloodWait as e:
+                logger.warning(f"Rate limited by Telegram. Waiting {e.value} seconds...")
+                await asyncio.sleep(e.value)
+                # Continue scanning after waiting
+                continue
+            except Exception as e:
+                logger.error(f"Error processing message: {e}")
+                # Continue with next message
+                continue
         
         # Summary
         logger.info("=" * 60)

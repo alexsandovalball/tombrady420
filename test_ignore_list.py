@@ -10,10 +10,11 @@ This test verifies:
 import asyncio
 import os
 import sys
+import tempfile
 from database import Database
 
-# Test database path (in tmp to avoid affecting real database)
-TEST_DB_PATH = "/tmp/test_catalog.db"
+# Test database path (using tempfile for cross-platform compatibility)
+TEST_DB_PATH = tempfile.mktemp(suffix='.db', prefix='test_catalog_')
 
 
 async def test_ignore_list_functionality():
