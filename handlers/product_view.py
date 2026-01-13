@@ -46,6 +46,16 @@ _user_locks: Dict[int, asyncio.Lock] = {}
 PAGE_SIZE = 8
 
 
+def _normalize_for_comparison(value: Optional[str]) -> str:
+    """
+    Normalize a category or subcategory value for comparison.
+    Removes underscores to allow matching both old (TOPSHELFCANDY) and new (TOPSHELF_CANDY) formats.
+    """
+    if not value:
+        return ""
+    return value.strip().upper().replace("_", "")
+
+
 def _ensure_user_lock(user_id: int) -> asyncio.Lock:
     lock = _user_locks.get(user_id)
     if lock is None:
@@ -201,6 +211,8 @@ async def show_products_for_category(
 
         fetch_limit = page * per_page * 3
         items = await db.get_catalog_items(limit=fetch_limit)
+        logger.debug("show_products_for_category: cat_key=%s sub_key=%s fetched=%d items", cat_key, sub_key, len(items))
+        
         if not items:
             await query.edit_message_text("No items available in the catalog.")
             return
@@ -209,11 +221,18 @@ async def show_products_for_category(
         for it in items:
             it_cat = (it.get("category") or "").strip().upper()
             it_sub = (it.get("subcategory") or "").strip().upper()
-            if cat_key and it_cat != cat_key.upper():
+            
+            # Normalize both the stored value and the filter key for comparison
+            # This handles both old (TOPSHELFCANDY) and new (TOPSHELF_CANDY) formats
+            if cat_key and _normalize_for_comparison(it_cat) != _normalize_for_comparison(cat_key):
                 continue
-            if sub_key and it_sub != sub_key.upper():
+            
+            if sub_key and _normalize_for_comparison(it_sub) != _normalize_for_comparison(sub_key):
                 continue
+            
             filtered.append(it)
+        
+        logger.debug("show_products_for_category: cat_key=%s sub_key=%s fetched=%d filtered=%d", cat_key, sub_key, len(items), len(filtered))
 
         total = len(filtered)
         start = (page - 1) * per_page

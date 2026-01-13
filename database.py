@@ -515,6 +515,81 @@ class Database:
             logger.exception("get_stats failed")
             return {"total": 0, "today": 0}
 
+    async def get_category_counts(self) -> Dict[str, Any]:
+        """
+        Return counts of products grouped by category and subcategory.
+        Returns dict with structure:
+        {
+            "total": <total_count>,
+            "by_category": {
+                "CATEGORY_NAME": {
+                    "total": <count>,
+                    "by_subcategory": {
+                        "SUBCATEGORY_NAME": <count>,
+                        ...
+                    }
+                },
+                ...
+            },
+            "uncategorized": <count_with_null_category>
+        }
+        """
+        try:
+            conn = self._ensure_conn()
+            result: Dict[str, Any] = {
+                "total": 0,
+                "by_category": {},
+                "uncategorized": 0,
+            }
+            
+            # Get total count
+            async with conn.execute("SELECT COUNT(1) as total FROM products") as cur:
+                row = await cur.fetchone()
+            result["total"] = int(row["total"]) if row else 0
+            
+            # Get uncategorized count
+            async with conn.execute("SELECT COUNT(1) as cnt FROM products WHERE category IS NULL OR TRIM(category) = ''") as cur:
+                row = await cur.fetchone()
+            result["uncategorized"] = int(row["cnt"]) if row else 0
+            
+            # Get counts by category and subcategory
+            async with conn.execute(
+                """
+                SELECT 
+                    COALESCE(category, '') as cat,
+                    COALESCE(subcategory, '') as sub,
+                    COUNT(1) as cnt
+                FROM products
+                WHERE category IS NOT NULL AND TRIM(category) != ''
+                GROUP BY category, subcategory
+                ORDER BY category, subcategory
+                """
+            ) as cur:
+                rows = await cur.fetchall()
+            
+            for row in rows:
+                cat = row["cat"].strip() if row["cat"] else ""
+                sub = row["sub"].strip() if row["sub"] else ""
+                cnt = int(row["cnt"])
+                
+                if cat not in result["by_category"]:
+                    result["by_category"][cat] = {
+                        "total": 0,
+                        "by_subcategory": {}
+                    }
+                
+                result["by_category"][cat]["total"] += cnt
+                
+                if sub:
+                    result["by_category"][cat]["by_subcategory"][sub] = cnt
+                else:
+                    result["by_category"][cat]["by_subcategory"]["(no subcategory)"] = cnt
+            
+            return result
+        except Exception:
+            logger.exception("get_category_counts failed")
+            return {"total": 0, "by_category": {}, "uncategorized": 0}
+
     # -------------------------
     # Callback token helpers (tokenized callbacks)
     # -------------------------
@@ -623,7 +698,7 @@ class Database:
     # -------------------------
     async def backfill_normalize(self) -> int:
         """
-        Normalize category/subcategory storage (uppercase, remove spaces/underscores for subcategory).
+        Normalize category/subcategory storage (uppercase, replace spaces with underscores).
         Returns number of rows changed.
         """
         try:
@@ -634,7 +709,7 @@ class Database:
                 SET category = UPPER(TRIM(category)),
                     subcategory = CASE
                         WHEN subcategory IS NULL OR TRIM(subcategory) = '' THEN NULL
-                        ELSE UPPER(REPLACE(REPLACE(TRIM(subcategory), ' ', ''), '_', ''))
+                        ELSE UPPER(REPLACE(TRIM(subcategory), ' ', '_'))
                     END
                 """
             )
