@@ -60,25 +60,19 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             media_group_id,
         )
 
-        # Quick check if message is ignored
         if await db.is_message_ignored(msg_id, chat_id):
-            logger.debug("Ignoring already processed message_id=%s", msg_id)
             return
 
-        # Quick check for media
         if not has_media(update):
-            logger.debug("No media in message_id=%s, skipping", msg_id)
             return
 
         file_id, file_type = get_file_id_and_type(update)
         if not file_id:
-            logger.debug("Could not extract file_id from message_id=%s", msg_id)
             return
 
         caption = message.caption if getattr(message, "caption", None) else (message.text or "")
         caption = caption.strip() if isinstance(caption, str) else ""
 
-        # For media groups, inherit caption from existing items if current has no caption
         if media_group_id and not caption:
             try:
                 existing = await db.get_products_by_media_group(media_group_id, chat_id)
@@ -86,12 +80,10 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     ex_caption = (ex.get("caption") or "").strip()
                     if ex_caption:
                         caption = ex_caption
-                        logger.debug("Inherited caption from media_group_id=%s", media_group_id)
                         break
             except Exception:
                 logger.exception("Error while looking up existing media_group captions")
 
-        # Add product to database
         product_id = await db.add_product(
             file_id=file_id,
             file_type=file_type,
@@ -102,12 +94,9 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
         if product_id > 0:
-            logger.info("Product saved: ID=%s, type=%s, media_group=%s", product_id, file_type, media_group_id or 'N/A')
-        else:
-            logger.warning("Failed to save product: message_id=%s, chat_id=%s", msg_id, chat_id)
-            
-    except Exception:
-        logger.exception("Error handling channel post")
+            logger.info(f"New product saved: ID={product_id}, type={file_type}")
+    except Exception as e:
+        logger.error(f"Error handling channel post: {e}", exc_info=True)
 
 
 def _split_callback(data: str):
@@ -129,13 +118,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     if not query:
         return
 
-    # Answer query immediately to remove loading state
-    try:
-        await query.answer()
-    except Exception:
-        logger.debug("Failed to answer callback query (non-fatal)")
-
-    # Capture user info asynchronously (don't block on it)
+    # Capture user info on interaction
     user = update.effective_user
     if user:
         try:
@@ -148,6 +131,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             )
         except Exception:
             logger.debug("Failed to save user info")
+
+    try:
+        await query.answer()
+    except Exception:
+        logger.exception("Failed to answer callback query (non-fatal)")
 
     data = (query.data or "").strip()
     action, value = _split_callback(data)
@@ -219,16 +207,28 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Treat all non-command messages as search queries (private chats)."""
-    if not update.message or not update.message.text or update.message.text.startswith("/"):
+    if update.message and update.message.text and update.message.text.startswith("/"):
         return
     if update.channel_post:
         return
 
+    # Capture user info on interaction
     user = update.effective_user
+    if user:
+        try:
+            await db.save_user(
+                user_id=user.id,
+                username=user.username or None,
+                first_name=user.first_name or None,
+                last_name=user.last_name or None,
+                last_seen=datetime.utcnow(),
+            )
+        except Exception:
+            logger.debug("Failed to save user info")
+
     if not user:
         return
 
-    # Rate limiting check
     user_id = user.id
     current_ts = asyncio.get_event_loop().time()
     last_ts = user_last_message.get(user_id, 0)
@@ -239,23 +239,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_last_message[user_id] = current_ts
 
-    # Capture user info asynchronously (non-blocking)
-    try:
-        await db.save_user(
-            user_id=user.id,
-            username=user.username or None,
-            first_name=user.first_name or None,
-            last_name=user.last_name or None,
-            last_seen=datetime.utcnow(),
-        )
-    except Exception:
-        logger.debug("Failed to save user info")
-
-    # Handle search
-    try:
-        await handle_search(update, context)
-    except Exception:
-        logger.exception("Error while handling search command from message")
+    if update.message and update.message.text:
+        try:
+            await handle_search(update, context)
+        except Exception:
+            logger.exception("Error while handling search command from message")
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):

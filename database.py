@@ -11,27 +11,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Use a persistent path by default; Render persistent disk will be mounted at /data
-# Fall back to local path if /data is not accessible
-def _get_db_path():
-    default_path = os.getenv("DB_PATH", "/data/catalog.db")
-    # Check if we can write to the directory
-    db_dir = os.path.dirname(default_path) or "."
-    try:
-        os.makedirs(db_dir, exist_ok=True)
-        # Try to create a test file to verify write access
-        test_file = os.path.join(db_dir, ".write_test")
-        with open(test_file, "w") as f:
-            f.write("test")
-        os.remove(test_file)
-        logger.info("Using persistent database path: %s", default_path)
-        return default_path
-    except (OSError, PermissionError):
-        # Fall back to local directory
-        fallback_path = "catalog.db"
-        logger.warning("Cannot write to %s, falling back to %s", default_path, fallback_path)
-        return fallback_path
+DB_PATH = os.getenv("DB_PATH", "/data/catalog.db")
 
-DB_PATH = _get_db_path()
+# Ensure the directory exists before any DB connections
+_db_dir = os.path.dirname(DB_PATH) or "."
+os.makedirs(_db_dir, exist_ok=True)
+logger.info("Using persistent database path: %s", DB_PATH)
 
 
 class Database:
@@ -46,9 +31,8 @@ class Database:
             # Try to enable WAL for better concurrency
             try:
                 await db.execute("PRAGMA journal_mode=WAL;")
-                logger.debug("WAL mode enabled successfully")
-            except Exception as e:
-                logger.warning("Failed to enable WAL mode: %s", e)
+            except Exception:
+                pass
 
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS products (
@@ -99,39 +83,6 @@ class Database:
                     last_seen TIMESTAMP
                 )
             """)
-            
-            # Performance optimization: Create indices for frequently queried columns
-            try:
-                # Index for media_group_id lookups
-                await db.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_products_media_group 
-                    ON products(media_group_id, chat_id) 
-                    WHERE media_group_id IS NOT NULL
-                """)
-                # Index for caption search
-                await db.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_products_caption 
-                    ON products(caption)
-                """)
-                # Index for created_at ordering
-                await db.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_products_created_at 
-                    ON products(created_at DESC)
-                """)
-                # Index for file_id lookups
-                await db.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_products_file_id 
-                    ON products(file_id, chat_id)
-                """)
-                # Index for message_id lookups
-                await db.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_products_message_id 
-                    ON products(message_id, chat_id)
-                """)
-                logger.info("Database indices created successfully")
-            except Exception as e:
-                logger.warning("Failed to create some indices (may already exist): %s", e)
-            
             await db.commit()
             logger.info("Database initialized successfully")
 

@@ -45,7 +45,6 @@ Edit `.env`:
 
 ```env
 BOT_TOKEN=your_bot_token_here
-WEBHOOK_SECRET=your_random_secret_token_here
 CHANNEL_ID=-1001234567890
 ADMIN_IDS=123456789,987654321
 ```
@@ -53,7 +52,6 @@ ADMIN_IDS=123456789,987654321
 **How to get these values:**
 
 - **BOT_TOKEN**: Create a bot with [@BotFather](https://t.me/botfather) and copy the token
-- **WEBHOOK_SECRET**: (Only needed for webhook mode) Generate a random secret string using `openssl rand -hex 32` or any password generator. This adds security to your webhook endpoint.
 - **CHANNEL_ID**: 
   - Forward a message from your channel to [@userinfobot](https://t.me/userinfobot)
   - Or use [@getidsbot](https://t.me/getidsbot)

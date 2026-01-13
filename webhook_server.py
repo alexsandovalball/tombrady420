@@ -1,122 +1,82 @@
-"""
-Optimized webhook server for Telegram bot.
-Uses FastAPI to receive webhook updates and process them through the telegram Application.
-"""
+# webhook_server.py
 import json
 import logging
-import secrets
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, Response
+
 from telegram import Update
+from main import application  # imports the built Application object
+from database import init_db  # ensure DB schema is created on startup
 
-from main import application
-from config import WEBHOOK_SECRET
-
-# Configure logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-logger = logging.getLogger(__name__)
-
-# Validate that WEBHOOK_SECRET is set
-if not WEBHOOK_SECRET or (isinstance(WEBHOOK_SECRET, str) and not WEBHOOK_SECRET.strip()):
-    raise RuntimeError("WEBHOOK_SECRET is required for webhook mode. Set it in the environment or .env file")
+# Logging setup
+logger = logging.getLogger("webhook")
+logger.setLevel(logging.INFO)
+logger.propagate = False
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 # Reduce noisy library logs
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
 
+app = FastAPI()
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+@app.on_event("startup")
+async def startup_event():
     """
-    Manage application lifespan: startup and shutdown.
-    Initialize and start the telegram Application on startup.
-    Stop and shutdown the telegram Application on shutdown.
+    Initialize the database schema, then ensure the telegram Application is
+    initialized and started when FastAPI starts. This lets the Application
+    consume application.update_queue and run handlers.
     """
-    # Startup
     try:
-        logger.info("Initializing telegram Application...")
+        logger.info("Initializing database...")
+        await init_db()
+        logger.info("Database initialized")
+
+        logger.info("Starting telegram Application...")
         await application.initialize()
         await application.start()
-        logger.info("Telegram Application started successfully")
-    except Exception as e:
-        logger.exception("Failed to start telegram Application: %s", e)
+        logger.info("Telegram Application started")
+    except Exception:
+        logger.exception("Failed to start telegram Application or initialize DB")
         raise
-    
-    yield
-    
-    # Shutdown
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """
+    Stop and shutdown the telegram Application cleanly when FastAPI shuts down.
+    """
     try:
-        logger.info("Shutting down telegram Application...")
+        logger.info("Stopping telegram Application...")
         await application.stop()
         await application.shutdown()
-        logger.info("Telegram Application stopped successfully")
-    except Exception as e:
-        logger.exception("Failed to stop telegram Application: %s", e)
-
-
-app = FastAPI(title="Telegram Bot Webhook", lifespan=lifespan)
-
+        logger.info("Telegram Application stopped")
+    except Exception:
+        logger.exception("Failed to stop telegram Application")
+        raise
 
 @app.get("/")
 async def root():
-    """Health check endpoint."""
-    return {"status": "ok", "message": "Telegram bot webhook server is running"}
+    return {"ok": True}
 
-
-@app.post("/webhook/{token}")
-async def webhook(request: Request, token: str):
-    """
-    Process incoming webhook updates from Telegram.
-    Optimized for fast processing and proper error handling.
-    Requires a secret token in the URL path for security.
-    """
-    # Validate the secret token using constant-time comparison to prevent timing attacks
-    if not secrets.compare_digest(token, WEBHOOK_SECRET):
-        client_host = request.client.host if request.client else "unknown"
-        logger.warning("Invalid webhook token received from %s", client_host)
-        raise HTTPException(status_code=403, detail="Invalid token")
-    
+@app.post("/webhook")
+async def webhook(request: Request):
     try:
-        # Read and parse request body
-        body = await request.body()
-        if not body:
-            logger.warning("Received empty webhook request")
-            raise HTTPException(status_code=400, detail="Empty request body")
-        
-        # Parse JSON
-        try:
-            data = json.loads(body)
-        except json.JSONDecodeError as e:
-            logger.error("Invalid JSON in webhook request: %s", e)
-            raise HTTPException(status_code=400, detail="Invalid JSON")
-        
-        # Log update info
-        update_id = data.get("update_id", "unknown")
-        logger.info("Processing webhook update_id=%s", update_id)
-        
-        # Convert to Telegram Update object
-        try:
-            update = Update.de_json(data, application.bot)
-        except Exception as e:
-            logger.error("Failed to parse Telegram update: %s", e)
-            raise HTTPException(status_code=400, detail="Invalid update format")
-        
-        if not update:
-            logger.warning("Parsed update is None for update_id=%s", update_id)
-            raise HTTPException(status_code=400, detail="Failed to parse update")
-        
-        # Queue the update for processing
+        # Read raw body and log it
+        body_bytes = await request.body()
+        body_text = body_bytes.decode("utf-8")
+        logger.info("WEBHOOK RECEIVED: %s", body_text)
+
+        # Parse JSON and convert to Update
+        data = json.loads(body_text)
+        update = Update.de_json(data, application.bot)
+
+        # Put update into the application's queue
         await application.update_queue.put(update)
-        logger.debug("Update %s queued successfully", update_id)
-        
-        # Return 200 OK immediately
-        return {"ok": True}
-        
-    except HTTPException:
+        logger.info("Update queued: update_id=%s", data.get("update_id"))
+
+        return Response(status_code=200)
+    except Exception:
+        logger.exception("WEBHOOK HANDLER ERROR")
         raise
-    except Exception as e:
-        logger.exception("Unexpected error processing webhook: %s", e)
-        raise HTTPException(status_code=500, detail="Internal server error")
