@@ -2,4 +2,5 @@ python-telegram-bot>=20.0
 python-dotenv>=1.0.0
 aiosqlite>=0.19.0
 rapidfuzz>=3.0.0
-uvicorn>=0.20.0  # Add this line (version pin as needed)
+fastapi>=0.104.0
+uvicorn>=0.24.0

@@ -276,6 +276,15 @@ async def post_init(application: Application):
 
 def main():
     """Main function to start the bot."""
+    # Check if we should use webhook mode
+    use_webhook = os.getenv("USE_WEBHOOK", "false").lower() == "true"
+    
+    if use_webhook:
+        logger.info("Webhook mode detected. Please run webhook_server.py instead.")
+        logger.info("Example: python webhook_server.py")
+        logger.info("Or use: uvicorn webhook_server:app --host 0.0.0.0 --port 8000")
+        return
+    
     # Get bot token
     bot_token = os.getenv("BOT_TOKEN")
     if not bot_token:
@@ -328,8 +337,8 @@ def main():
     # Error handler
     application.add_error_handler(error_handler)
     
-    # Start the bot
-    logger.info("Starting bot...")
+    # Start the bot in polling mode
+    logger.info("Starting bot in polling mode...")
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True
