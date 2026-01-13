@@ -22,6 +22,7 @@ from telegram import (
 )
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 
 from config.taxonomy import CATEGORIES
 from database import db
@@ -51,13 +52,13 @@ async def _safe_edit_message(query: CallbackQuery, text: str, reply_markup=None)
     try:
         await query.edit_message_text(text=text, reply_markup=reply_markup)
         return True
-    except Exception as e:
+    except BadRequest as e:
         error_msg = str(e).lower()
         if "message is not modified" in error_msg or "message_not_modified" in error_msg:
             logger.debug("Message not modified, skipping edit")
             return False
         else:
-            # Re-raise other exceptions
+            # Re-raise other BadRequest exceptions
             logger.exception("Failed to edit message")
             raise
 
