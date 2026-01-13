@@ -1,6 +1,7 @@
 """
 Script to set the Telegram webhook URL for the bot.
-Uses BOT_TOKEN and optional WEBHOOK_SECRET from environment variables.
+Uses BOT_TOKEN (required) and WEBHOOK_SECRET (recommended) from environment variables.
+Note: The current webhook_server.py requires WEBHOOK_SECRET to be set.
 """
 import os
 import sys
@@ -37,7 +38,7 @@ def set_webhook():
     # Telegram API endpoint
     api_url = f"https://api.telegram.org/bot{bot_token}/setWebhook"
     
-    # Prepare request data (using JSON body instead of query params for better special character handling)
+    # Prepare request data (using JSON body for consistency with modern API patterns)
     json_data = {
         "url": webhook_url
     }
