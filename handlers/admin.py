@@ -42,7 +42,35 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /nuke command - deletes ALL products (admin only)."""
+    """Handle /nuke command - deletes ALL products (admin only) with double confirmation."""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            "❌ This command is only available for administrators."
+        )
+        return
+    
+    # First confirmation
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚠️ Yes, I want to nuke", callback_data="nuke_confirm1")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="nuke_cancel")]
+    ])
+    
+    total_count = await db.count_products()
+    
+    await update.message.reply_text(
+        f"⚠️ **NUKE WARNING**\n\n"
+        f"You are about to delete **{total_count}** product(s) from the catalog.\n\n"
+        f"This action cannot be undone!\n\n"
+        f"Are you sure you want to continue?",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+
+
+async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /users command - view all bot users (admin only)."""
     user_id = update.effective_user.id
     
     if not is_admin(user_id):
@@ -52,43 +80,65 @@ async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        # Get all products before deletion to add them to ignore list
-        all_products = await db.get_all_products_for_search()
-        total_count = len(all_products)
+        users = await db.get_all_users()
+        total_users = len(users)
         
-        if total_count == 0:
+        if total_users == 0:
             await update.message.reply_text(
-                "📭 The catalog is already empty. Nothing to delete."
+                "📭 No users have interacted with the bot yet."
             )
             return
         
-        # Add all products to ignore list
-        for product in all_products:
-            if product.get("message_id") and product.get("chat_id"):
-                await db.add_ignored_message(
-                    int(product["message_id"]),
-                    int(product["chat_id"])
-                )
+        # Create user list text (show first 50)
+        user_list_parts = []
+        for i, user in enumerate(users[:50], 1):
+            username = f"@{user['username']}" if user.get('username') else "No username"
+            first_name = user.get('first_name', 'N/A')
+            last_name = user.get('last_name', '')
+            full_name = f"{first_name} {last_name}".strip()
+            
+            last_seen = user.get('last_seen', 'Unknown')
+            if last_seen != 'Unknown':
+                # Format datetime
+                from datetime import datetime
+                try:
+                    dt = datetime.fromisoformat(last_seen)
+                    last_seen = dt.strftime("%Y-%m-%d %H:%M")
+                except:
+                    pass
+            
+            user_text = (
+                f"{i}. **{full_name}** ({username})\n"
+                f"   🆔 ID: `{user['user_id']}`\n"
+                f"   📊 Interactions: {user.get('interaction_count', 0)}\n"
+                f"   🕐 Last seen: {last_seen}"
+            )
+            user_list_parts.append(user_text)
         
-        # Delete all products from database
-        async with aiosqlite.connect(db.db_path) as conn:
-            cursor = await conn.execute("DELETE FROM products")
-            await conn.commit()
-            deleted_count = cursor.rowcount
+        # Split into multiple messages if needed (Telegram message limit is 4096 chars)
+        message_text = f"👥 **Bot Users** ({total_users} total)\n\n"
         
-        text = (
-            f"💥 **NUKE COMPLETE**\n\n"
-            f"🗑️ Deleted {deleted_count} product(s)\n"
-            f"🚫 Added to ignore list to prevent re-addition"
-        )
+        current_message = message_text
+        for user_text in user_list_parts:
+            if len(current_message) + len(user_text) + 2 > 4000:
+                # Send current message and start new one
+                await update.message.reply_text(current_message, parse_mode="Markdown")
+                current_message = user_text + "\n\n"
+            else:
+                current_message += user_text + "\n\n"
         
-        await update.message.reply_text(text, parse_mode="Markdown")
-        logger.warning(f"Admin {user_id} executed /nuke command - deleted {deleted_count} products")
+        # Send remaining text
+        if current_message != message_text:
+            if total_users > 50:
+                current_message += f"\n_Showing first 50 of {total_users} users_"
+            await update.message.reply_text(current_message, parse_mode="Markdown")
+        
+        logger.info(f"Admin {user_id} viewed user list ({total_users} users)")
         
     except Exception as e:
-        logger.error(f"Error executing nuke command: {e}")
+        logger.error(f"Error in users command: {e}")
         await update.message.reply_text(
-            "❌ An error occurred while deleting products."
+            "❌ An error occurred while retrieving user list."
         )
 
 
@@ -188,5 +238,65 @@ async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE, pro
         await update.callback_query.answer(
             "❌ An error occurred while deleting the product.",
             show_alert=True
+        )
+
+
+async def recategorize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /recategorize command - recategorize all products based on their captions (admin only)."""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            "❌ This command is only available for administrators."
+        )
+        return
+    
+    try:
+        # Send initial message
+        status_msg = await update.message.reply_text(
+            "🔄 Starting recategorization process...\n"
+            "This may take a moment."
+        )
+        
+        # Get all products
+        all_products = await db.get_all_products_for_search()
+        
+        if not all_products:
+            await status_msg.edit_text("📭 No products to recategorize.")
+            return
+        
+        # Recategorize each product
+        updated_count = 0
+        categorized_count = 0
+        
+        for product in all_products:
+            caption = product.get("caption", "")
+            
+            # Extract category from caption
+            category, subcategory = extract_category_from_caption(caption)
+            
+            # Update product if category was found or if it needs clearing
+            if category or product.get("category"):
+                await db.update_product_category(product["id"], category, subcategory)
+                updated_count += 1
+                if category:
+                    categorized_count += 1
+        
+        # Send completion message
+        text = (
+            f"✅ **Recategorization Complete**\n\n"
+            f"📊 Total products: {len(all_products)}\n"
+            f"🔄 Updated: {updated_count}\n"
+            f"📂 Categorized: {categorized_count}\n"
+            f"❓ Uncategorized: {len(all_products) - categorized_count}"
+        )
+        
+        await status_msg.edit_text(text, parse_mode="Markdown")
+        logger.info(f"Admin {user_id} recategorized {updated_count} products")
+        
+    except Exception as e:
+        logger.error(f"Error in recategorize command: {e}")
+        await update.message.reply_text(
+            "❌ An error occurred during recategorization."
         )
 

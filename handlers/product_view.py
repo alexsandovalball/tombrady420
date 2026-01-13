@@ -2,11 +2,13 @@
 Product view handler.
 """
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import json
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, InputMediaDocument
 from telegram.ext import ContextTypes
 from database import Database
 from utils.helpers import send_media_message, is_admin
 from utils.pagination import paginate_items
+from utils.categories import format_category_info
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -65,16 +67,79 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         
         keyboard = InlineKeyboardMarkup(keyboard_buttons)
         
-        # Get caption
+        # Get caption and add category info
         caption = product.get("caption") or "No description"
+        category_info = format_category_info(product.get("category"), product.get("subcategory"))
         
-        # Send media with caption
+        # Add category to caption
+        full_caption = f"{caption}\n\n📂 {category_info}"
+        
+        # Check if this is a media group (has additional files)
+        additional_file_ids = product.get("additional_file_ids")
+        
+        if additional_file_ids:
+            # This is a media group - send as album
+            try:
+                file_data = json.loads(additional_file_ids)
+                
+                # Prepare media list
+                media_list = []
+                
+                # Add first media (with caption)
+                first_type = product["file_type"]
+                first_id = product["file_id"]
+                
+                if first_type == "photo":
+                    media_list.append(InputMediaPhoto(media=first_id, caption=full_caption))
+                elif first_type == "video":
+                    media_list.append(InputMediaVideo(media=first_id, caption=full_caption))
+                else:
+                    # For other types, fall back to single message
+                    await send_media_message(
+                        context,
+                        update.effective_chat.id,
+                        first_id,
+                        first_type,
+                        caption=full_caption,
+                        reply_markup=keyboard
+                    )
+                    await update.callback_query.answer()
+                    return
+                
+                # Add additional media
+                for file_id, file_type in file_data:
+                    if file_type == "photo":
+                        media_list.append(InputMediaPhoto(media=file_id))
+                    elif file_type == "video":
+                        media_list.append(InputMediaVideo(media=file_id))
+                
+                # Send media group
+                await context.bot.send_media_group(
+                    chat_id=update.effective_chat.id,
+                    media=media_list
+                )
+                
+                # Send keyboard in a separate message since media groups can't have keyboards
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="👆 Album controls:",
+                    reply_markup=keyboard
+                )
+                
+                await update.callback_query.answer()
+                return
+                
+            except Exception as e:
+                logger.error(f"Error sending media group: {e}")
+                # Fall back to single media
+        
+        # Send single media with caption
         await send_media_message(
             context,
             update.effective_chat.id,
             product["file_id"],
             product["file_type"],
-            caption=caption,
+            caption=full_caption,
             reply_markup=keyboard
         )
         
