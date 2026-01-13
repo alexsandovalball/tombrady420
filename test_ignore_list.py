@@ -117,17 +117,18 @@ async def test_ignore_list_functionality():
         print("\n" + "=" * 60)
         print("✅ ALL TESTS PASSED")
         print("=" * 60)
+        
+        print("\nSummary:")
+        print("- Ignore list check works correctly")
+        print("- Product deletion does NOT add to ignore list")
+        print("- Products can be re-added after deletion")
+        print("- Ignore list still available for preventing duplicates during scanning")
     
     finally:
         # Cleanup test database
         if os.path.exists(TEST_DB_PATH):
             os.close(_test_db_fd)
             os.remove(TEST_DB_PATH)
-    print("\nSummary:")
-    print("- Ignore list check works correctly")
-    print("- Product deletion does NOT add to ignore list")
-    print("- Products can be re-added after deletion")
-    print("- Ignore list still available for preventing duplicates during scanning")
     
 
 async def test_nuke_simulation():
@@ -204,7 +205,7 @@ async def test_nuke_simulation():
         if os.path.exists(TEST_DB_PATH):
             try:
                 os.close(_test_db_fd)
-            except:
+            except OSError:
                 pass  # File descriptor might already be closed
             os.remove(TEST_DB_PATH)
 

@@ -137,6 +137,7 @@ async def scan_channel():
                 caption = message.caption or message.text or ""
                 
                 # Handle media groups
+                # Note: In Pyrogram, media_group_id is None when message isn't part of a group
                 media_group_id = getattr(message, 'media_group_id', None)
                 
                 # Add product to database without category (needs admin categorization)
@@ -171,6 +172,8 @@ async def scan_channel():
                     )
                 
                 # Small delay to avoid rate limiting
+                # Note: This is conservative. If scanning large channels (10K+ messages),
+                # consider reducing to 0.05 or removing if FloodWait handles it
                 await asyncio.sleep(0.1)
                 
             except FloodWait as e:
