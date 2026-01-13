@@ -18,6 +18,8 @@ from main import (
     menu_command,
     stats_command,
     nuke_command,
+    recategorize_command,
+    users_command,
     channel_post_handler,
     callback_query_handler,
     message_handler,
@@ -34,12 +36,18 @@ from utils.helpers import get_channel_id, get_channel_username
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Configure logging with structured format for better visibility on Render
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    format='%(asctime)s - %(name)s - %(levelname)s - [%(funcName)s:%(lineno)d] - %(message)s',
+    level=logging.INFO,
+    force=True  # Ensure this configuration takes precedence
 )
 logger = logging.getLogger(__name__)
+
+# Ensure all loggers use INFO level
+logging.getLogger('telegram').setLevel(logging.INFO)
+logging.getLogger('httpx').setLevel(logging.WARNING)  # Reduce noise from HTTP library
+logging.getLogger('uvicorn.access').setLevel(logging.INFO)  # Keep access logs visible
 
 
 async def setup_application():
@@ -60,6 +68,8 @@ async def setup_application():
     bot_app.add_handler(CommandHandler("menu", menu_command))
     bot_app.add_handler(CommandHandler("stats", stats_command))
     bot_app.add_handler(CommandHandler("nuke", nuke_command))
+    bot_app.add_handler(CommandHandler("recategorize", recategorize_command))
+    bot_app.add_handler(CommandHandler("users", users_command))
     
     # Channel post handler (for monitoring channel)
     channel_id = get_channel_id()
@@ -152,6 +162,8 @@ async def root():
 @app.post("/webhook")
 async def webhook(request: Request):
     """Handle incoming webhook updates from Telegram."""
+    logger.info("Received webhook request")
+    
     # Check if bot is initialized
     if not hasattr(request.app.state, "bot_app") or request.app.state.bot_app is None:
         logger.error("Bot application not initialized")
@@ -162,9 +174,20 @@ async def webhook(request: Request):
         json_data = await request.json()
         update = Update.de_json(json_data, request.app.state.bot_app.bot)
         
+        # Log update details
+        if update.message:
+            logger.info(f"Processing message update from user {update.message.from_user.id}")
+        elif update.callback_query:
+            logger.info(f"Processing callback query from user {update.callback_query.from_user.id}: {update.callback_query.data}")
+        elif update.channel_post:
+            logger.info(f"Processing channel post from chat {update.channel_post.chat.id}")
+        else:
+            logger.info(f"Processing update type: {update.update_id}")
+        
         # Process the update
         await request.app.state.bot_app.process_update(update)
         
+        logger.info("Webhook request processed successfully")
         return Response(status_code=status.HTTP_200_OK)
     except Exception as e:
         logger.error(f"Error processing webhook update: {e}", exc_info=True)

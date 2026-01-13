@@ -37,12 +37,17 @@ from utils.categories import get_all_categories, get_category_display_name, get_
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Configure logging with structured format for better visibility on Render
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    format='%(asctime)s - %(name)s - %(levelname)s - [%(funcName)s:%(lineno)d] - %(message)s',
+    level=logging.INFO,
+    force=True  # Ensure this configuration takes precedence
 )
 logger = logging.getLogger(__name__)
+
+# Ensure all loggers use INFO level
+logging.getLogger('telegram').setLevel(logging.INFO)
+logging.getLogger('httpx').setLevel(logging.WARNING)  # Reduce noise from HTTP library
 
 # Initialize database
 db = Database()
@@ -331,34 +336,76 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             
             if total_count == 0:
                 await query.edit_message_text("📭 The catalog is already empty. Nothing to delete.")
+                logger.info(f"Admin {query.from_user.id} attempted nuke on empty catalog")
                 return
             
-            # Add all products to ignore list
+            logger.warning(f"Admin {query.from_user.id} executing nuke - deleting {total_count} products")
+            
+            # Track deletion statistics
+            channel_delete_success = 0
+            channel_delete_failed = 0
+            ignored_added = 0
+            
+            # Delete channel messages and add to ignore list
             for product in all_products:
+                # Attempt to delete message from channel
                 if product.get("message_id") and product.get("chat_id"):
-                    await db.add_ignored_message(
-                        int(product["message_id"]),
-                        int(product["chat_id"])
-                    )
+                    try:
+                        chat_id = int(product["chat_id"])
+                        message_id = int(product["message_id"])
+                        
+                        await context.bot.delete_message(
+                            chat_id=chat_id,
+                            message_id=message_id
+                        )
+                        channel_delete_success += 1
+                        logger.debug(f"Deleted channel message {message_id} from chat {chat_id}")
+                    except Exception as e:
+                        channel_delete_failed += 1
+                        logger.warning(f"Could not delete channel message {message_id} from chat {chat_id}: {e}")
+                    
+                    # Add to ignore list regardless of deletion success
+                    try:
+                        await db.add_ignored_message(message_id, chat_id)
+                        ignored_added += 1
+                    except Exception as e:
+                        logger.error(f"Failed to add message {message_id} to ignore list: {e}")
             
-            # Delete all products from database
+            # Delete all products from database in a transaction
             async with aiosqlite.connect(db.db_path) as conn:
-                cursor = await conn.execute("DELETE FROM products")
-                await conn.commit()
-                deleted_count = cursor.rowcount
+                try:
+                    cursor = await conn.execute("DELETE FROM products")
+                    await conn.commit()
+                    deleted_count = cursor.rowcount
+                    logger.info(f"Deleted {deleted_count} products from database")
+                except Exception as e:
+                    await conn.rollback()
+                    logger.error(f"Failed to delete products from database: {e}")
+                    raise
             
+            # Build detailed completion message
             text = (
                 f"💥 **NUKE COMPLETE**\n\n"
-                f"🗑️ Deleted {deleted_count} product(s)\n"
-                f"🚫 Added to ignore list to prevent re-addition"
+                f"🗑️ Deleted {deleted_count} product(s) from database\n"
+                f"✅ Channel messages deleted: {channel_delete_success}\n"
             )
             
+            if channel_delete_failed > 0:
+                text += f"⚠️ Channel messages failed: {channel_delete_failed}\n"
+            
+            text += f"🚫 Added {ignored_added} to ignore list"
+            
             await query.edit_message_text(text, parse_mode="Markdown")
-            logger.warning(f"Admin {query.from_user.id} executed nuke - deleted {deleted_count} products")
+            logger.warning(
+                f"Nuke complete - DB: {deleted_count}, Channel success: {channel_delete_success}, "
+                f"Channel failed: {channel_delete_failed}, Ignored: {ignored_added}"
+            )
             
         except Exception as e:
-            logger.error(f"Error executing nuke: {e}")
-            await query.edit_message_text("❌ An error occurred while deleting products.")
+            logger.error(f"Error executing nuke: {e}", exc_info=True)
+            await query.edit_message_text(
+                "❌ An error occurred while deleting products. Check logs for details."
+            )
         
         return
     
