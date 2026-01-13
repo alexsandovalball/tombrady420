@@ -46,8 +46,9 @@ class Database:
             # Try to enable WAL for better concurrency
             try:
                 await db.execute("PRAGMA journal_mode=WAL;")
-            except Exception:
-                pass
+                logger.debug("WAL mode enabled successfully")
+            except Exception as e:
+                logger.warning("Failed to enable WAL mode: %s", e)
 
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS products (

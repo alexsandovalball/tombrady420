@@ -4,7 +4,8 @@ Uses FastAPI to receive webhook updates and process them through the telegram Ap
 """
 import json
 import logging
-from fastapi import FastAPI, Request, Response, HTTPException
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request, HTTPException
 from telegram import Update
 
 from main import application
@@ -20,15 +21,15 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-app = FastAPI(title="Telegram Bot Webhook")
 
-
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """
-    Initialize and start the telegram Application.
-    Database initialization is handled by the application's post_init hook.
+    Manage application lifespan: startup and shutdown.
+    Initialize and start the telegram Application on startup.
+    Stop and shutdown the telegram Application on shutdown.
     """
+    # Startup
     try:
         logger.info("Initializing telegram Application...")
         await application.initialize()
@@ -37,13 +38,10 @@ async def startup_event():
     except Exception as e:
         logger.exception("Failed to start telegram Application: %s", e)
         raise
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """
-    Stop and shutdown the telegram Application cleanly.
-    """
+    
+    yield
+    
+    # Shutdown
     try:
         logger.info("Shutting down telegram Application...")
         await application.stop()
@@ -51,6 +49,9 @@ async def shutdown_event():
         logger.info("Telegram Application stopped successfully")
     except Exception as e:
         logger.exception("Failed to stop telegram Application: %s", e)
+
+
+app = FastAPI(title="Telegram Bot Webhook", lifespan=lifespan)
 
 
 @app.get("/")

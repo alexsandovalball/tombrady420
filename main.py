@@ -102,12 +102,12 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
         if product_id > 0:
-            logger.info(f"Product saved: ID={product_id}, type={file_type}, media_group={media_group_id or 'N/A'}")
+            logger.info("Product saved: ID=%s, type=%s, media_group=%s", product_id, file_type, media_group_id or 'N/A')
         else:
-            logger.warning(f"Failed to save product: message_id={msg_id}, chat_id={chat_id}")
+            logger.warning("Failed to save product: message_id=%s, chat_id=%s", msg_id, chat_id)
             
-    except Exception as e:
-        logger.error(f"Error handling channel post: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Error handling channel post")
 
 
 def _split_callback(data: str):
