@@ -333,8 +333,8 @@ def _dedupe_media_items(media_items: List[Dict[str, Any]]) -> List[Dict[str, Any
 
 async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAULT_TYPE, product_id: int) -> None:
     """
-    Show product media and caption. For media_group, try to copy original messages atomically;
-    otherwise assemble and send media from stored file_ids (no partial duplicates).
+    Show product media and caption. For albums (multiple media items), send as grouped
+    album using send_media_group to preserve grouping. For single items, send individually.
     """
     try:
         p = await db.get_product(product_id)
@@ -437,6 +437,8 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
                         try:
                             if isinstance(im, InputMediaVideo):
                                 m = await context.bot.send_video(chat_id=dest_chat, video=im.media, caption=im.caption if first else None, parse_mode=parse_mode)
+                            elif isinstance(im, InputMediaDocument):
+                                m = await context.bot.send_document(chat_id=dest_chat, document=im.media, caption=im.caption if first else None, parse_mode=parse_mode)
                             else:
                                 m = await context.bot.send_photo(chat_id=dest_chat, photo=im.media, caption=im.caption if first else None, parse_mode=parse_mode)
                             sent_records.append((m.chat.id, m.message_id))
