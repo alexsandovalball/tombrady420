@@ -23,11 +23,14 @@ def set_webhook():
     
     # Build the webhook URL
     # Allow override via WEBHOOK_BASE_URL, default to the render.com deployment
-    base_url = os.getenv("WEBHOOK_BASE_URL", "https://tombrady420mediabot.onrender.com/webhook")
+    base_url = os.getenv("WEBHOOK_BASE_URL", "https://tombrady420mediabot.onrender.com")
     if webhook_secret:
-        webhook_url = f"{base_url}/{webhook_secret}"
+        webhook_url = f"{base_url}/webhook/{webhook_secret}"
     else:
-        webhook_url = base_url
+        # If no secret is provided, use base webhook path without token
+        # Note: The current webhook_server.py requires WEBHOOK_SECRET, so this may not work
+        # without modifying the webhook server
+        webhook_url = f"{base_url}/webhook"
     
     # Telegram API endpoint
     api_url = f"https://api.telegram.org/bot{bot_token}/setWebhook"
