@@ -1,202 +1,225 @@
-﻿# handlers/search.py
-"""
-Search handlers using fuzzy matching.
-
-- /search <terms> to search catalog captions (fuzzy)
-- Callback pagination uses callback_data: search_page|{encoded_query}|{page}
-"""
-
-from __future__ import annotations
-
+# handlers/search.py
 import logging
-from typing import List, Dict, Any
-from urllib.parse import quote_plus, unquote_plus
-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
-
-from database import db
-from utils.helpers import short_caption, delete_last_displayed_messages
-from utils.fuzzy_search import fuzzy_search_products
+from database import Database
 
 logger = logging.getLogger(__name__)
-
+db = Database()
 PAGE_SIZE = 5
 
 
-async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+def _short_caption(caption: str, length: int = 40) -> str:
+    if not caption:
+        return "No caption"
+    caption = caption.strip().replace("\n", " ")
+    return caption if len(caption) <= length else caption[: length - 1].rstrip() + "…"
+
+
+async def _delete_last_displayed_messages(context: ContextTypes.DEFAULT_TYPE):
+    """Delete product display messages recorded in user_data."""
+    bot = context.bot
+    last = context.user_data.get("last_displayed_messages") or []
+    if not last:
+        return
+    for chat_id, message_id in last:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            logger.debug("Could not delete displayed message %s/%s", chat_id, message_id)
+    context.user_data.pop("last_displayed_messages", None)
+
+
+def _dedupe_products(products):
     """
-    /search <query> command handler or text search handler.
-    Performs a fuzzy search over recent catalog items and displays paginated buttons.
+    Deduplicate products by media_group_id (album) or message_id (single),
+    keeping the first occurrence as the representative entry.
     """
-    # Extract search query: prefer command args else full message
-    text = ""
-    try:
-        if context.args:
-            text = " ".join(context.args).strip()
-        elif update.message and update.message.text:
-            # If invoked as plain message, assume whole text is query
-            text = update.message.text.strip()
-    except Exception:
-        logger.exception("Failed to read incoming search text")
+    unique = {}
+    for p in products or []:
+        key = p.get("media_group_id") or p.get("message_id")
+        if key is None:
+            # Fallback: use product id if both are missing
+            key = p.get("id")
+        if key not in unique:
+            unique[key] = p
+    return list(unique.values())
 
-    if not text:
-        try:
-            if update.message:
-                await update.message.reply_text("❌ Usage: /search <terms> — enter some search words.")
-        except Exception:
-            logger.debug("Failed to send empty-query reply")
+
+async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handle a search query typed by the user.
+    Sends a search results message with product buttons and records it in user_data.
+    """
+    query_text = update.message.text.strip()
+    if not query_text:
+        await update.message.reply_text("❌ Please enter a search term.")
         return
 
-    # Delete previous displayed media
-    try:
-        await delete_last_displayed_messages(context)
-    except Exception:
-        logger.exception("Failed to delete last displayed messages before search")
+    # Delete previous product display messages
+    await _delete_last_displayed_messages(context)
 
-    # Fetch a reasonably sized catalog to search in-memory (tune limit as needed)
-    try:
-        products = await db.get_catalog_items(limit=2000)
-    except Exception:
-        logger.exception("Database get_catalog_items failed for search")
-        try:
-            if update.message:
-                await update.message.reply_text("⚠️ Search failed due to an internal error. Please try again later.")
-        except Exception:
-            logger.debug("Failed to notify user about search failure")
+    products = await db.search_products(query_text, limit=PAGE_SIZE, offset=0)
+    products = _dedupe_products(products)
+    if not products:
+        await update.message.reply_text(f"No results found for '{query_text}'.")
         return
 
-    # Run fuzzy search (falls back to simple heuristics if rapidfuzz missing)
-    matches = fuzzy_search_products(products, text, score_cutoff=60, limit=100)
-    if not matches:
+    keyboard = []
+    for p in products:
+        label = _short_caption(p.get("caption", "")) or f"Product {p['id']}"
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"product|{p['id']}")])
+
+    nav_row = [
+        InlineKeyboardButton("Page 1", callback_data="noop"),
+        InlineKeyboardButton("➡️ Next", callback_data=f"search_page|{query_text}|2"),
+    ]
+    keyboard.append(nav_row)
+
+    msg = await update.message.reply_text(
+        f"Search results for '{query_text}':",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+    # Record origin search message
+    context.user_data["search_message"] = {
+        "chat_id": msg.chat.id,
+        "message_id": msg.message_id,
+        "query": query_text,
+        "page": 1,
+    }
+
+
+async def handle_search_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE, query_text: str, page: int):
+    """Show a specific page of search results."""
+    q = update.callback_query
+    if q:
         try:
-            if update.message:
-                await update.message.reply_text(f"No results found for '{text}'.")
+            await q.answer()
         except Exception:
-            logger.debug("Failed to send no-results reply")
-        return
+            pass
 
-    # Show first page
-    await _render_search_page(update, context, matches, text, page=1)
+    await _delete_last_displayed_messages(context)
 
+    if page < 1:
+        page = 1
 
-async def _render_search_page(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    matches: List[Dict[str, Any]],
-    query_text: str,
-    page: int = 1,
-) -> None:
-    # Paginate matches
-    total = len(matches)
-    pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-    page = max(1, min(page, pages))
     offset = (page - 1) * PAGE_SIZE
-    page_items = matches[offset : offset + PAGE_SIZE]
+    products = await db.search_products(query_text, limit=PAGE_SIZE, offset=offset)
+    products = _dedupe_products(products)
+    if not products:
+        try:
+            await q.message.reply_text("No more results.")
+        except Exception:
+            logger.debug("Failed to send 'No more results.' message")
+        return
 
-    keyboard: List[List[InlineKeyboardButton]] = []
-    for p in page_items:
-        label = short_caption(p.get("caption", "")) or f"Product {p.get('id')}"
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"CAT:VIEW:{p.get('id')}")])
+    keyboard = []
+    for p in products:
+        label = _short_caption(p.get("caption", "")) or f"Product {p['id']}"
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"product|{p['id']}")])
 
-    # Navigation row
-    nav_row: List[InlineKeyboardButton] = []
+    nav_row = []
     if page > 1:
-        nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"search_page|{quote_plus(query_text)}|{page-1}"))
-    nav_row.append(InlineKeyboardButton(f"Page {page}/{pages}", callback_data="noop"))
-    if page < pages:
-        nav_row.append(InlineKeyboardButton("➡️ Next", callback_data=f"search_page|{quote_plus(query_text)}|{page+1}"))
+        nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"search_page|{query_text}|{page-1}"))
+    nav_row.append(InlineKeyboardButton(f"Page {page}", callback_data="noop"))
+    nav_row.append(InlineKeyboardButton("➡️ Next", callback_data=f"search_page|{query_text}|{page+1}"))
     keyboard.append(nav_row)
 
     text = f"Search results for '{query_text}':"
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    q = update.callback_query
     try:
-        if q and q.message:
-            try:
-                await q.message.edit_text(text, reply_markup=reply_markup)
-            except BadRequest as e:
-                # Message not modified or other BadRequest: handle gracefully
-                if "Message is not modified" in str(e):
-                    logger.debug("Search message already up to date")
-                else:
-                    logger.exception("Failed to edit existing search message; sending a new message instead")
-                    sent = await q.message.reply_text(text, reply_markup=reply_markup)
-                    context.user_data["search_message"] = {"chat_id": sent.chat.id, "message_id": sent.message_id, "query": query_text, "page": page}
-                    return
-            context.user_data["search_message"] = {"chat_id": q.message.chat.id, "message_id": q.message.message_id, "query": query_text, "page": page}
-        elif update.message:
-            msg = await update.message.reply_text(text, reply_markup=reply_markup)
-            context.user_data["search_message"] = {"chat_id": msg.chat.id, "message_id": msg.message_id, "query": query_text, "page": page}
-        else:
-            # fallback: send to effective chat if available
-            dest = update.effective_chat.id if update.effective_chat else None
-            if dest:
-                sent = await context.bot.send_message(chat_id=dest, text=text, reply_markup=reply_markup)
-                context.user_data["search_message"] = {"chat_id": sent.chat.id, "message_id": sent.message_id, "query": query_text, "page": page}
+        await q.message.edit_text(text, reply_markup=reply_markup)
+        context.user_data["search_message"] = {
+            "chat_id": q.message.chat.id,
+            "message_id": q.message.message_id,
+            "query": query_text,
+            "page": page,
+        }
     except BadRequest as e:
         if "Message is not modified" in str(e):
             logger.debug("Search message already up to date")
         else:
-            logger.exception("Failed to render search page")
-    except Exception:
-        logger.exception("Unexpected error rendering search page")
+            logger.exception("Failed to edit search pagination message")
+            try:
+                await q.message.reply_text(text, reply_markup=reply_markup)
+            except Exception:
+                logger.debug("Fallback send after edit failure also failed")
 
 
-async def cb_search_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_back_to_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Parse search pagination callback_data like:
-        search_page|{encoded_query}|{page}
+    Return to the original search results message by editing it in place.
+    Deletes product display messages to keep chat tidy.
     """
     q = update.callback_query
-    if not q or not q.data:
-        return
-    try:
-        await q.answer()
-    except Exception:
-        pass
-
-    data = q.data
-    if not data.startswith("search_page|"):
+    if q:
         try:
-            await q.answer("Invalid search action", show_alert=True)
+            await q.answer()
         except Exception:
             pass
-        return
 
-    try:
-        _, rest = data.split("|", 1)
-        encoded_q, page_str = rest.rsplit("|", 1)
-        query_text = unquote_plus(encoded_q)
-        page = int(page_str)
-    except Exception:
+    await _delete_last_displayed_messages(context)
+
+    origin = context.user_data.get("search_message")
+    if origin:
+        query_text = origin.get("query")
+        page = origin.get("page", 1)
+        offset = (page - 1) * PAGE_SIZE
+        products = await db.search_products(query_text, limit=PAGE_SIZE, offset=offset)
+        products = _dedupe_products(products)
+
+        if not products:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=origin["chat_id"],
+                    message_id=origin["message_id"],
+                    text=f"No results found for '{query_text}'.",
+                )
+            except BadRequest as e:
+                if "Message is not modified" in str(e):
+                    logger.debug("Search message already shows empty results")
+                else:
+                    logger.exception("Failed to edit empty search message")
+            except Exception:
+                logger.exception("Unexpected error editing empty search message")
+            return
+
+        keyboard = []
+        for p in products:
+            label = _short_caption(p.get("caption", "")) or f"Product {p['id']}"
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"product|{p['id']}")])
+
+        nav_row = []
+        if page > 1:
+            nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"search_page|{query_text}|{page-1}"))
+        nav_row.append(InlineKeyboardButton(f"Page {page}", callback_data="noop"))
+        nav_row.append(InlineKeyboardButton("➡️ Next", callback_data=f"search_page|{query_text}|{page+1}"))
+        keyboard.append(nav_row)
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
         try:
-            await q.answer("Malformed search pagination", show_alert=True)
-        except Exception:
-            pass
-        return
-
-    # Re-run matching on fresh data (or optionally cache earlier results in user_data)
-    try:
-        products = await db.get_catalog_items(limit=2000)
-    except Exception:
-        logger.exception("DB fetch failed during search pagination")
-        try:
-            if q.message:
-                await q.message.reply_text("Search failed; please try again later.")
-        except Exception:
-            pass
-        return
-
-    matches = fuzzy_search_products(products, query_text, score_cutoff=60, limit=100)
-    if not matches:
-        try:
-            if q.message:
-                await q.message.edit_text(f"No results found for '{query_text}'.")
-        except Exception:
-            logger.debug("Failed to edit search message to show empty results")
-        return
-
-    await _render_search_page(update, context, matches, query_text, page=page)
+            await context.bot.edit_message_text(
+                chat_id=origin["chat_id"],
+                message_id=origin["message_id"],
+                text=f"Search results for '{query_text}':",
+                reply_markup=reply_markup,
+            )
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                logger.debug("Search message already up to date")
+            else:
+                logger.exception("Failed to edit search message; fallback to sending new one")
+                try:
+                    await context.bot.send_message(
+                        chat_id=origin["chat_id"],
+                        text=f"Search results for '{query_text}':",
+                        reply_markup=reply_markup,
+                    )
+                except Exception:
+                    logger.exception("Fallback send after edit failure also failed")
+    else:
+        # Fallback: no origin recorded, just rerun search
+        await handle_search(update, context)

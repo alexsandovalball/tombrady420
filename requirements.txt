@@ -4,4 +4,3 @@ aiosqlite==0.18.0
 fastapi==0.95.2
 uvicorn==0.22.0
 httpx==0.25.1
-redis>=5.0.0
