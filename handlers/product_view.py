@@ -2,14 +2,11 @@
 """
 User-facing handlers: categories, browsing, product view, pagination.
 
-Streamlined version to address media display requirements:
+Simplified version to address media display issues:
  - Never auto-open a product when entering a subcategory (user must click "View").
- - Robustly assemble a product's full media set by querying all rows for the group.
- - Deduplicate media items by file_unique_id / file_id preserving insertion order.
- - For albums (2+ media items), use send_media_group to preserve album grouping.
- - For single items, send as individual photo/video/document.
+ - Products are displayed as text-only (caption) without media files.
+ - Safeguards added to prevent "Message is not modified" errors during navigation.
  - Per-user asyncio.Lock to avoid race conditions.
- - Simplified logic by removing unnecessary copy_message functionality.
 """
 from __future__ import annotations
 
@@ -21,13 +18,11 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    InputMediaPhoto,
-    InputMediaVideo,
-    InputMediaDocument,
     CallbackQuery,
 )
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 
 from config.taxonomy import CATEGORIES
 from database import db
@@ -47,6 +42,25 @@ def _ensure_user_lock(user_id: int) -> asyncio.Lock:
         lock = asyncio.Lock()
         _user_locks[user_id] = lock
     return lock
+
+
+async def _safe_edit_message(query: CallbackQuery, text: str, reply_markup=None) -> bool:
+    """
+    Safely edit a message, catching "Message is not modified" errors.
+    Returns True if edit succeeded, False if message was not modified or error occurred.
+    """
+    try:
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
+        return True
+    except BadRequest as e:
+        error_msg = str(e).lower()
+        if "message is not modified" in error_msg or "message_not_modified" in error_msg:
+            logger.debug("Message not modified, skipping edit")
+            return False
+        else:
+            # Re-raise other BadRequest exceptions
+            logger.exception("Failed to edit message")
+            raise
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -106,7 +120,7 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 for sub in subs
             ]
             keyboard.append([InlineKeyboardButton(text="Back", callback_data="CAT:BACK")])
-            await query.edit_message_text(f"Subcategories for {get_display_name(cat)}:", reply_markup=InlineKeyboardMarkup(keyboard))
+            await _safe_edit_message(query, f"Subcategories for {get_display_name(cat)}:", reply_markup=InlineKeyboardMarkup(keyboard))
 
         elif action == "OPEN_SUB":
             # IMPORTANT: show the product list only. Do NOT auto-open a product.
@@ -164,7 +178,7 @@ async def cb_catalog_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 [InlineKeyboardButton(text=get_display_name(cat), callback_data=f"CAT:OPEN_CAT:{cat}")]
                 for cat in CATEGORIES.keys()
             ]
-            await query.edit_message_text("Select a category:", reply_markup=InlineKeyboardMarkup(keyboard))
+            await _safe_edit_message(query, "Select a category:", reply_markup=InlineKeyboardMarkup(keyboard))
 
         else:
             try:
@@ -197,7 +211,7 @@ async def show_products_for_category(
         fetch_limit = page * per_page * 3
         items = await db.get_catalog_items(limit=fetch_limit)
         if not items:
-            await query.edit_message_text("No items available in the catalog.")
+            await _safe_edit_message(query, "No items available in the catalog.")
             return
 
         filtered: List[Dict[str, Any]] = []
@@ -215,7 +229,7 @@ async def show_products_for_category(
         page_items = filtered[start : start + per_page]
 
         if not page_items:
-            await query.edit_message_text("No items found in this category.")
+            await _safe_edit_message(query, "No items found in this category.")
             return
 
         text_lines: List[str] = []
@@ -239,7 +253,7 @@ async def show_products_for_category(
         if subcategory:
             header = f"{header} — {get_display_name(subcategory)}"
 
-        await query.edit_message_text(f"{header}\n\n" + "\n".join(text_lines), reply_markup=InlineKeyboardMarkup(keyboard))
+        await _safe_edit_message(query, f"{header}\n\n" + "\n".join(text_lines), reply_markup=InlineKeyboardMarkup(keyboard))
 
         # Persist navigation context so product detail can show proper "Back" behavior
         try:
@@ -259,36 +273,15 @@ async def show_products_for_category(
 
 
 
-
-def _dedupe_media_items(media_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Deduplicate media items preserving order. Prefer file_unique_id, fallback to file_id.
-    """
-    seen = set()
-    out: List[Dict[str, Any]] = []
-    for mi in media_items:
-        key = mi.get("file_unique_id") or mi.get("file_id")
-        if not key:
-            # include items lacking identifiers (will likely fail later)
-            out.append(mi)
-            continue
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(mi)
-    return out
-
-
 async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAULT_TYPE, product_id: int) -> None:
     """
-    Show product media and caption. For albums (multiple media items), send as grouped
-    album using send_media_group to preserve grouping. For single items, send individually.
+    Show product caption as text only (no media). Simplified to avoid media display issues.
     """
     try:
         p = await db.get_product(product_id)
         if not p:
             try:
-                await query.edit_message_text("Product not found.")
+                await _safe_edit_message(query, "Product not found.")
             except Exception:
                 logger.exception("Failed to notify product not found")
             return
@@ -300,7 +293,7 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
             dest_chat = query.message.chat.id
 
         if dest_chat is None:
-            logger.error("show_product_detail: no destination to send product media")
+            logger.error("show_product_detail: no destination to send product")
             try:
                 await query.answer("Cannot show product (no destination).", show_alert=True)
             except Exception:
@@ -326,94 +319,19 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
                 caption_for_api = raw_caption
                 parse_mode = ParseMode.HTML
 
-            media_group_id = p.get("media_group_id")
-            file_id = p.get("file_id")
-            file_type = (p.get("file_type") or "").lower()
-
             sent_records: List[Tuple[int, int]] = []
 
-            # Gather album items: query all rows for the media_group (no chat filter for robustness)
-            media_items: List[Dict[str, Any]] = []
-            if media_group_id and media_group_id.strip():
-                try:
-                    media_items = await db.get_products_by_media_group(media_group_id, None)
-                    logger.debug("Found %d items for media_group %s", len(media_items), media_group_id)
-                except Exception:
-                    logger.exception("Failed to fetch products by media_group %s", media_group_id)
-                    media_items = []
-
-            # Fallback to single item if no group items found
-            if not media_items:
-                media_items = [p]
-
-            # Deduplicate items by file_unique_id/file_id (preserve order)
-            media_items = _dedupe_media_items(media_items)
-            logger.info("Displaying product %s: %d media item(s), media_group_id=%s", product_id, len(media_items), media_group_id)
-
-            if len(media_items) > 1:
-                # Multiple items: send as media group
-                input_media = []
-                first = True
-                for mi in media_items:
-                    fid = mi.get("file_id")
-                    if not fid:
-                        logger.debug("Skipping item with missing file_id: %r", mi)
-                        continue
-                    ftype = (mi.get("file_type") or "").lower()
-                    item_caption = caption_for_api if first else None
-                    first = False
-
-                    if ftype.startswith("video"):
-                        input_media.append(InputMediaVideo(media=fid, caption=item_caption, parse_mode=parse_mode))
-                    elif ftype.startswith("audio") or ftype.startswith("voice"):
-                        input_media.append(InputMediaDocument(media=fid, caption=item_caption, parse_mode=parse_mode))
-                    else:
-                        input_media.append(InputMediaPhoto(media=fid, caption=item_caption, parse_mode=parse_mode))
-
-                if not input_media:
-                    logger.warning("No media available to send for product %s", product_id)
-                    await query.edit_message_text("No media available for this product.")
-                    return
-
-                logger.debug("Sending media group with %d items for product %s", len(input_media), product_id)
-                try:
-                    msgs = await context.bot.send_media_group(chat_id=dest_chat, media=input_media)
-                    for m in msgs:
-                        sent_records.append((m.chat.id, m.message_id))
-                    logger.info("Successfully sent media group for product %s (%d messages)", product_id, len(msgs))
-                except Exception:
-                    logger.exception("send_media_group failed for product %s, trying individual sends", product_id)
-                    # Fallback: send each item individually
-                    first = True
-                    for im in input_media:
-                        try:
-                            if isinstance(im, InputMediaVideo):
-                                m = await context.bot.send_video(chat_id=dest_chat, video=im.media, caption=im.caption if first else None, parse_mode=parse_mode)
-                            elif isinstance(im, InputMediaDocument):
-                                m = await context.bot.send_document(chat_id=dest_chat, document=im.media, caption=im.caption if first else None, parse_mode=parse_mode)
-                            else:
-                                m = await context.bot.send_photo(chat_id=dest_chat, photo=im.media, caption=im.caption if first else None, parse_mode=parse_mode)
-                            sent_records.append((m.chat.id, m.message_id))
-                            first = False
-                        except Exception:
-                            logger.exception("Failed to send media item %s", getattr(im, "media", "<unknown>"))
-            else:
-                # Single item: send individually
-                try:
-                    if file_type.startswith("video"):
-                        m = await context.bot.send_video(chat_id=dest_chat, video=file_id, caption=caption_for_api, parse_mode=parse_mode)
-                    elif file_type.startswith("audio") or file_type.startswith("voice"):
-                        m = await context.bot.send_audio(chat_id=dest_chat, audio=file_id, caption=caption_for_api, parse_mode=parse_mode)
-                    else:
-                        m = await context.bot.send_photo(chat_id=dest_chat, photo=file_id, caption=caption_for_api, parse_mode=parse_mode)
-                    sent_records.append((m.chat.id, m.message_id))
-                    logger.info("Successfully sent single media for product %s", product_id)
-                except Exception:
-                    logger.exception("Failed to send product media for product_id=%s", product_id)
-                    try:
-                        await query.edit_message_text(text=caption_for_api)
-                    except Exception:
-                        logger.exception("Failed to edit message as fallback")
+            # Send only the caption as a text message (no media)
+            try:
+                m = await context.bot.send_message(
+                    chat_id=dest_chat,
+                    text=caption_for_api,
+                    parse_mode=parse_mode
+                )
+                sent_records.append((m.chat.id, m.message_id))
+                logger.info("Successfully sent caption for product %s", product_id)
+            except Exception:
+                logger.exception("Failed to send product caption for product_id=%s", product_id)
 
             # Send navigation control message
             try:
@@ -440,7 +358,7 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
                 )
                 sent_records.append((ctrl.chat.id, ctrl.message_id))
             except Exception:
-                logger.exception("Failed to send control message after product media")
+                logger.exception("Failed to send control message after product caption")
 
             # Record displayed messages for cleanup
             try:
