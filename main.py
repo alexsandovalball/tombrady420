@@ -8,7 +8,7 @@ import json
 import aiosqlite
 from datetime import datetime
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
