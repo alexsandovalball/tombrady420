@@ -5,6 +5,7 @@ which is more suitable for serverless deployments like Render.com.
 """
 import os
 import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, status
 from telegram import Update
 from telegram.ext import Application
@@ -40,17 +41,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Create FastAPI app
-app = FastAPI(title="Telegram Bot Webhook Server")
-
-# Global variable to hold the bot application
-bot_app: Application = None
-
 
 async def setup_application():
     """Initialize and configure the bot application."""
-    global bot_app
-    
     # Get bot token
     bot_token = os.getenv("BOT_TOKEN")
     if not bot_token:
@@ -125,22 +118,25 @@ async def setup_application():
     return bot_app
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize bot on server startup."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan - startup and shutdown."""
+    # Startup
     logger.info("Starting webhook server...")
-    await setup_application()
+    app.state.bot_app = await setup_application()
+    yield
+    # Shutdown
+    logger.info("Shutting down bot application...")
+    await app.state.bot_app.stop()
+    await app.state.bot_app.shutdown()
+    logger.info("Bot application shut down successfully")
 
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on server shutdown."""
-    global bot_app
-    if bot_app:
-        logger.info("Shutting down bot application...")
-        await bot_app.stop()
-        await bot_app.shutdown()
-        logger.info("Bot application shut down successfully")
+# Create FastAPI app with lifespan
+app = FastAPI(
+    title="Telegram Bot Webhook Server",
+    lifespan=lifespan
+)
 
 
 @app.get("/")
@@ -156,13 +152,18 @@ async def root():
 @app.post("/webhook")
 async def webhook(request: Request):
     """Handle incoming webhook updates from Telegram."""
+    # Check if bot is initialized
+    if not hasattr(request.app.state, "bot_app") or request.app.state.bot_app is None:
+        logger.error("Bot application not initialized")
+        return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+    
     try:
         # Parse the update
         json_data = await request.json()
-        update = Update.de_json(json_data, bot_app.bot)
+        update = Update.de_json(json_data, request.app.state.bot_app.bot)
         
         # Process the update
-        await bot_app.process_update(update)
+        await request.app.state.bot_app.process_update(update)
         
         return Response(status_code=status.HTTP_200_OK)
     except Exception as e:
