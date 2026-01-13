@@ -192,13 +192,6 @@ async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE, pro
         # Delete from database
         deleted = await db.delete_product(product_id)
         
-        # Add to ignore list so it won't be re-added if the post still exists in channel
-        if deleted and product.get("message_id") and product.get("chat_id"):
-            await db.add_ignored_message(
-                int(product["message_id"]),
-                int(product["chat_id"])
-            )
-        
         if deleted:
             # Get user's previous page to return to
             catalog_page = await db.get_pagination_state(user_id, "catalog", None)

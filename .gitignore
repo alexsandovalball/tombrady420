@@ -31,6 +31,10 @@ ENV/
 *.sqlite
 *.sqlite3
 
+# Pyrogram session files (for channel scanner)
+*.session
+*.session-journal
+
 # Environment variables
 .env
 .env.local
