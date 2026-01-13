@@ -735,6 +735,45 @@ async def list_categories_command(update: Update, context: ContextTypes.DEFAULT_
         await _safe_reply_text(update, "❌ Failed to list categories.")
 
 
+async def category_counts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin command to show product counts by category and subcategory.
+    Useful for debugging "No items found in this category" issues.
+    """
+    try:
+        user = update.effective_user
+        if not user or user.id not in ADMIN_IDS:
+            await _safe_reply_text(update, "❌ You are not authorized to use this command.")
+            return
+        
+        await _safe_reply_text(update, "Fetching category counts...")
+        counts = await db.get_category_counts()
+        
+        lines: List[str] = [
+            f"📊 Product Distribution:",
+            f"Total products: {counts['total']}",
+            f"Uncategorized: {counts['uncategorized']}",
+            "",
+        ]
+        
+        for cat, cat_data in sorted(counts["by_category"].items()):
+            lines.append(f"📁 {get_display_name(cat)} ({cat_data['total']} total)")
+            for sub, sub_count in sorted(cat_data["by_subcategory"].items()):
+                if sub == "(no subcategory)":
+                    lines.append(f"   • {sub}: {sub_count}")
+                else:
+                    lines.append(f"   • {get_display_name(sub)}: {sub_count}")
+            lines.append("")
+        
+        text = "\n".join(lines)
+        # Split into chunks if too long
+        for chunk in [text[i:i + 3900] for i in range(0, len(text), 3900)]:
+            await _safe_reply_text(update, chunk)
+    except Exception:
+        logger.exception("category_counts_command failed")
+        await _safe_reply_text(update, "❌ Failed to get category counts.")
+
+
 async def backfill_db_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         user = update.effective_user

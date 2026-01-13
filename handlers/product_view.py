@@ -201,6 +201,8 @@ async def show_products_for_category(
 
         fetch_limit = page * per_page * 3
         items = await db.get_catalog_items(limit=fetch_limit)
+        logger.debug("show_products_for_category: cat_key=%s sub_key=%s fetched=%d items", cat_key, sub_key, len(items))
+        
         if not items:
             await query.edit_message_text("No items available in the catalog.")
             return
@@ -209,11 +211,23 @@ async def show_products_for_category(
         for it in items:
             it_cat = (it.get("category") or "").strip().upper()
             it_sub = (it.get("subcategory") or "").strip().upper()
-            if cat_key and it_cat != cat_key.upper():
+            # Normalize both the stored value and the filter key by removing underscores for comparison
+            # This handles both old (TOPSHELFCANDY) and new (TOPSHELF_CANDY) formats
+            it_cat_normalized = it_cat.replace("_", "")
+            cat_key_normalized = cat_key.upper().replace("_", "") if cat_key else ""
+            
+            if cat_key and it_cat_normalized != cat_key_normalized:
                 continue
-            if sub_key and it_sub != sub_key.upper():
-                continue
+            
+            if sub_key:
+                it_sub_normalized = it_sub.replace("_", "")
+                sub_key_normalized = sub_key.upper().replace("_", "")
+                if it_sub_normalized != sub_key_normalized:
+                    continue
+            
             filtered.append(it)
+        
+        logger.debug("show_products_for_category: cat_key=%s sub_key=%s fetched=%d filtered=%d", cat_key, sub_key, len(items), len(filtered))
 
         total = len(filtered)
         start = (page - 1) * per_page
