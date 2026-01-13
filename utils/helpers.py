@@ -28,13 +28,20 @@ def setup_logging(level: str = "INFO") -> None:
     Configure root logging once. Call early in application startup.
 
     `level` may be a string like "DEBUG", "INFO", etc.
+
+    This function is defensive: if the root logger already has handlers,
+    it will only set the level and not call basicConfig again to avoid
+    interfering with platform logging (e.g., Render, systemd).
     """
     lvl = getattr(logging, level.upper(), logging.INFO)
-    logging.basicConfig(level=lvl, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    logging.getLogger().setLevel(lvl)
+    root = logging.getLogger()
+    # If handlers already exist, avoid reconfiguring basicConfig
+    if not root.handlers:
+        logging.basicConfig(level=lvl, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    root.setLevel(lvl)
 
 
-def chunked(seq: Sequence, n: int) -> Iterator[Sequence]:
+def chunked(seq: Sequence[Any], n: int) -> Iterator[Sequence[Any]]:
     """
     Yield successive n-sized chunks from seq.
 
@@ -56,7 +63,8 @@ def _safe_scope_for_callback(scope: str, max_len: int = 40) -> str:
     """
     if not scope:
         return ""
-    s = scope.replace(" ", "_")
+    s = str(scope).replace(" ", "_")
+    # Keep ASCII length under max_len; if non-ascii present, fall back to truncation by characters
     if len(s) <= max_len:
         return s
     head = s[: max_len // 2 - 2]
@@ -64,17 +72,24 @@ def _safe_scope_for_callback(scope: str, max_len: int = 40) -> str:
     return f"{head}..{tail}"
 
 
-def short_caption(caption: Optional[str], length: int = 40) -> str:
+def short_caption(caption: Optional[Any], length: int = 40) -> str:
     """
     Return a short, single-line caption suitable for keyboard labels.
 
     - returns "No caption" for empty/None captions
-    - collapses newlines to spaces and trims
+    - collapses newlines and runs of whitespace to single spaces and trims
     - truncates with an ellipsis if longer than `length`
     """
-    if not caption:
+    if caption is None:
         return "No caption"
-    c = caption.strip().replace("\n", " ")
+    try:
+        c = str(caption).strip()
+    except Exception:
+        return "No caption"
+    # collapse whitespace (newlines, tabs) to single spaces
+    c = " ".join(c.split())
+    if not c:
+        return "No caption"
     if len(c) <= length:
         return c
     return c[: length - 1].rstrip() + "…"
@@ -87,17 +102,37 @@ async def delete_last_displayed_messages(context: ContextTypes.DEFAULT_TYPE) -> 
     Each entry is expected to be a (chat_id, message_id) tuple/list.
     The function is defensive: ignores failures and clears the stored list.
     """
-    bot = context.bot
+    bot = getattr(context, "bot", None)
+    if bot is None:
+        # Nothing to do; ensure stored list is removed
+        context.user_data.pop("last_displayed_messages", None)
+        return
+
     last = context.user_data.get("last_displayed_messages") or []
     if not last:
         return
-    for chat_id, message_id in last:
+
+    for entry in list(last):
         try:
+            # support both tuple/list and dict forms
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                chat_id, message_id = entry[0], entry[1]
+            elif isinstance(entry, dict):
+                chat_id, message_id = entry.get("chat_id"), entry.get("message_id")
+            else:
+                logger.debug("Unexpected last_displayed_messages entry format: %r", entry)
+                continue
+
+            if chat_id is None or message_id is None:
+                logger.debug("Skipping deletion for incomplete entry: %r", entry)
+                continue
+
             await bot.delete_message(chat_id=chat_id, message_id=message_id)
         except BadRequest:
             logger.debug("Could not delete displayed message %s/%s (BadRequest)", chat_id, message_id)
         except Exception:
             logger.debug("Could not delete displayed message %s/%s", chat_id, message_id)
+    # Always clear stored list to avoid repeated attempts
     context.user_data.pop("last_displayed_messages", None)
 
 
@@ -127,7 +162,7 @@ def build_pagination_keyboard(scope: str, page: int, per_page: int, total: int) 
     if page < 0:
         page = 0
     if page >= total_pages:
-        page = total_pages - 1
+        page = max(0, total_pages - 1)
 
     safe_scope = _safe_scope_for_callback(scope or "")
 
@@ -164,6 +199,9 @@ def create_pagination_keyboard(
         if not button_text.strip():
             button_text = f"Product #{product.get('id')}"
         callback_data = f"product|{product.get('id')}"
+        # Ensure callback_data is not excessively long
+        if len(callback_data) > 60:
+            callback_data = callback_data[:60]
         keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
     # Navigation
@@ -171,10 +209,14 @@ def create_pagination_keyboard(
         nav_buttons: List[InlineKeyboardButton] = []
         if page > 1:
             prev_data = f"page|{callback_prefix}|{query}|{page - 1}" if query else f"page|{callback_prefix}|{page - 1}"
+            if len(prev_data) > 60:
+                prev_data = prev_data[:60]
             nav_buttons.append(InlineKeyboardButton("← Previous", callback_data=prev_data))
         nav_buttons.append(InlineKeyboardButton(f"Page {page}/{total_pages}", callback_data="noop"))
         if page < total_pages:
             next_data = f"page|{callback_prefix}|{query}|{page + 1}" if query else f"page|{callback_prefix}|{page + 1}"
+            if len(next_data) > 60:
+                next_data = next_data[:60]
             nav_buttons.append(InlineKeyboardButton("Next →", callback_data=next_data))
         keyboard.append(nav_buttons)
 
@@ -187,6 +229,8 @@ def paginate_items(items: Sequence[Any], page: int, per_page: int = 5) -> Tuple[
 
     Returns (items_for_page, total_pages). Page is 1-indexed here (compat).
     """
+    if per_page <= 0:
+        raise ValueError("per_page must be a positive integer")
     total_pages = (len(items) + per_page - 1) // per_page if items else 1
     page = max(1, min(page, total_pages))
     start_idx = (page - 1) * per_page

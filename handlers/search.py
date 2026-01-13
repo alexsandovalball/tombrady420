@@ -68,7 +68,18 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     # Run fuzzy search (falls back to simple heuristics if rapidfuzz missing)
-    matches = fuzzy_search_products(products, text, score_cutoff=60, limit=100)
+    try:
+        matches = fuzzy_search_products(products, text, score_cutoff=60, limit=100)
+    except Exception:
+        logger.exception("fuzzy_search_products failed; falling back to simple substring match")
+        # Fallback: simple case-insensitive substring match on caption
+        try:
+            q = text.lower()
+            matches = [p for p in products if q in (p.get("caption") or "").lower()]
+        except Exception:
+            logger.exception("Fallback substring search also failed")
+            matches = []
+
     if not matches:
         try:
             if update.message:
@@ -123,19 +134,29 @@ async def _render_search_page(
                     logger.debug("Search message already up to date")
                 else:
                     logger.exception("Failed to edit existing search message; sending a new message instead")
-                    sent = await q.message.reply_text(text, reply_markup=reply_markup)
-                    context.user_data["search_message"] = {"chat_id": sent.chat.id, "message_id": sent.message_id, "query": query_text, "page": page}
+                    try:
+                        sent = await q.message.reply_text(text, reply_markup=reply_markup)
+                        context.user_data["search_message"] = {"chat_id": sent.chat.id, "message_id": sent.message_id, "query": query_text, "page": page}
+                    except Exception:
+                        logger.exception("Failed to send fallback search message")
                     return
+            # store context for navigation
             context.user_data["search_message"] = {"chat_id": q.message.chat.id, "message_id": q.message.message_id, "query": query_text, "page": page}
         elif update.message:
-            msg = await update.message.reply_text(text, reply_markup=reply_markup)
-            context.user_data["search_message"] = {"chat_id": msg.chat.id, "message_id": msg.message_id, "query": query_text, "page": page}
+            try:
+                msg = await update.message.reply_text(text, reply_markup=reply_markup)
+                context.user_data["search_message"] = {"chat_id": msg.chat.id, "message_id": msg.message_id, "query": query_text, "page": page}
+            except Exception:
+                logger.exception("Failed to send search results message")
         else:
             # fallback: send to effective chat if available
             dest = update.effective_chat.id if update.effective_chat else None
             if dest:
-                sent = await context.bot.send_message(chat_id=dest, text=text, reply_markup=reply_markup)
-                context.user_data["search_message"] = {"chat_id": sent.chat.id, "message_id": sent.message_id, "query": query_text, "page": page}
+                try:
+                    sent = await context.bot.send_message(chat_id=dest, text=text, reply_markup=reply_markup)
+                    context.user_data["search_message"] = {"chat_id": sent.chat.id, "message_id": sent.message_id, "query": query_text, "page": page}
+                except Exception:
+                    logger.exception("Failed to send fallback search message to effective chat")
     except BadRequest as e:
         if "Message is not modified" in str(e):
             logger.debug("Search message already up to date")
@@ -167,6 +188,7 @@ async def cb_search_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     try:
+        # data format: search_page|{encoded_query}|{page}
         _, rest = data.split("|", 1)
         encoded_q, page_str = rest.rsplit("|", 1)
         query_text = unquote_plus(encoded_q)
@@ -190,7 +212,17 @@ async def cb_search_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             pass
         return
 
-    matches = fuzzy_search_products(products, query_text, score_cutoff=60, limit=100)
+    try:
+        matches = fuzzy_search_products(products, query_text, score_cutoff=60, limit=100)
+    except Exception:
+        logger.exception("fuzzy_search_products failed during pagination; using substring fallback")
+        try:
+            ql = query_text.lower()
+            matches = [p for p in products if ql in (p.get("caption") or "").lower()]
+        except Exception:
+            logger.exception("Fallback substring search failed during pagination")
+            matches = []
+
     if not matches:
         try:
             if q.message:

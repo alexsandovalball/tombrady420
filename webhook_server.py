@@ -7,28 +7,11 @@ Starts the telegram Application on startup and stops it on shutdown.
 
 from __future__ import annotations
 
-# Ensure stdout logging is configured early and consistently for Render
-import logging as _logging
-import sys as _sys
-
-_root_logger = _logging.getLogger()
-if not _root_logger.handlers:
-    _handler = _logging.StreamHandler(stream=_sys.stdout)
-    _formatter = _logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    _handler.setFormatter(_formatter)
-    _root_logger.addHandler(_handler)
-_root_logger.setLevel(_logging.INFO)
-for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-    _lg = _logging.getLogger(_name)
-    _lg.propagate = True
-    if _lg.level == _logging.NOTSET:
-        _lg.setLevel(_logging.INFO)
-
-# Local imports
 import json
 import logging
 import os
 import re
+import sys
 from typing import Optional, Any
 
 from fastapi import FastAPI, Request, Response, HTTPException
@@ -39,12 +22,29 @@ from telegram.ext import Application
 from main import build_application, startup_tasks, shutdown_tasks
 from config import USE_WEBHOOK, WEBHOOK_URL, LOG_LEVEL
 
+# Root logger and early stdout handler
+_root_logger = logging.getLogger()
+if not _root_logger.handlers:
+    _handler = logging.StreamHandler(stream=sys.stdout)
+    _formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _handler.setFormatter(_formatter)
+    _root_logger.addHandler(_handler)
+_root_logger.setLevel(logging.INFO)
+
+# Ensure uvicorn logs propagate
+for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    _lg = logging.getLogger(_name)
+    _lg.propagate = True
+    if _lg.level == logging.NOTSET:
+        _lg.setLevel(logging.INFO)
+
 # Optional env var to allow permissive token checking while debugging.
 # Set ALLOW_INSECURE_WEBHOOK=true only temporarily for debugging.
 _ALLOW_INSECURE = os.getenv("ALLOW_INSECURE_WEBHOOK", "false").lower() in ("1", "true", "yes")
 
-# Configure module logger (root handler already configured above)
+# Configure module logger
 logger = logging.getLogger(__name__)
+logger.setLevel(getattr(logging, (LOG_LEVEL or "INFO").upper(), logging.INFO))
 
 app = FastAPI()
 telegram_app: Optional[Application] = None
@@ -52,14 +52,17 @@ telegram_app: Optional[Application] = None
 # Token-like pattern used for masking in logs
 _TOKEN_RE = re.compile(r"\d{6,}:[A-Za-z0-9_-]{20,}")
 
+
 def _mask_token(token: Optional[str]) -> str:
     """Return a masked representation of a token for safe logging."""
     if not token or len(token) < 8:
         return "REDACTED"
     return token[:4] + "…" + token[-4:]
 
+
 class MaskTokenFilter(logging.Filter):
     """Logging filter to redact token-like substrings from log messages."""
+
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             msg = record.getMessage()
@@ -70,6 +73,7 @@ class MaskTokenFilter(logging.Filter):
             # Never fail logging due to masking
             pass
         return True
+
 
 # Register the filter on the root logger so all logs are masked
 _root_logger.addFilter(MaskTokenFilter())

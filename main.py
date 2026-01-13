@@ -5,47 +5,7 @@ from __future__ import annotations
 import logging as _logging
 import sys as _sys
 import os
-
-_root_logger = _logging.getLogger()
-if not _root_logger.handlers:
-    _handler = _logging.StreamHandler(stream=_sys.stdout)
-    _formatter = _logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    _handler.setFormatter(_formatter)
-    _root_logger.addHandler(_handler)
-# Default to INFO unless overridden by config later
-_root_logger.setLevel(_logging.INFO)
-
-# Make sure uvicorn loggers propagate to root logger
-for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-    _lg = _logging.getLogger(_name)
-    _lg.propagate = True
-    if _lg.level == _logging.NOTSET:
-        _lg.setLevel(_logging.INFO)
-
-# --- Redact token-like strings from logs early ---
 import re as _re
-
-_TOKEN_RE = _re.compile(r"\d{6,}:[A-Za-z0-9_-]{20,}")
-
-class MaskTokenFilter(_logging.Filter):
-    def filter(self, record: _logging.LogRecord) -> bool:
-        try:
-            # Use getMessage() to respect formatting and avoid double-formatting
-            msg = record.getMessage()
-            if msg:
-                masked = _TOKEN_RE.sub("[REDACTED_TOKEN]", msg)
-                # Replace record.msg and clear args so logging doesn't re-format original
-                record.msg = masked
-                record.args = ()
-        except Exception:
-            # Never fail logging due to masking
-            pass
-        return True
-
-_root_logger.addFilter(MaskTokenFilter())
-# --- end redaction setup ---
-
-import logging
 import asyncio
 from typing import Optional, Callable, Awaitable
 
@@ -73,7 +33,48 @@ from handlers import product_view as product_handlers
 from handlers import search as search_handlers
 from utils.helpers import setup_logging
 
-logger = logging.getLogger(__name__)
+# Root logger and early stdout handler
+_root_logger = _logging.getLogger()
+if not _root_logger.handlers:
+    _handler = _logging.StreamHandler(stream=_sys.stdout)
+    _formatter = _logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    _handler.setFormatter(_formatter)
+    _root_logger.addHandler(_handler)
+_root_logger.setLevel(_logging.INFO)
+
+# Make sure uvicorn loggers propagate to root logger
+for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    _lg = _logging.getLogger(_name)
+    _lg.propagate = True
+    if _lg.level == _logging.NOTSET:
+        _lg.setLevel(_logging.INFO)
+
+# --- Redact token-like strings from logs early ---
+_TOKEN_RE = _re.compile(r"\d{6,}:[A-Za-z0-9_-]{20,}")
+
+
+class MaskTokenFilter(_logging.Filter):
+    def filter(self, record: _logging.LogRecord) -> bool:
+        try:
+            # Use getMessage() to respect formatting and avoid double-formatting
+            msg = record.getMessage()
+            if msg:
+                masked = _TOKEN_RE.sub("[REDACTED_TOKEN]", msg)
+                # Replace record.msg and clear args so logging doesn't re-format original
+                record.msg = masked
+                record.args = ()
+        except Exception:
+            # Never fail logging due to masking
+            pass
+        return True
+
+
+_root_logger.addFilter(MaskTokenFilter())
+# --- end redaction setup ---
+
+logger = _logging.getLogger(__name__)
+
+# Apply configured logging level (setup_logging is defensive)
 setup_logging(LOG_LEVEL)
 
 # Background cleanup task handle
@@ -154,7 +155,9 @@ def build_application(token: Optional[str] = None) -> Application:
 
     # Warn if using config.BOT_TOKEN instead of env var (helps surface accidental checked-in tokens)
     if not os.environ.get("TELEGRAM_TOKEN") and BOT_TOKEN:
-        logger.warning("Using BOT_TOKEN from config as TELEGRAM_TOKEN env var is not set. Prefer setting TELEGRAM_TOKEN at runtime.")
+        logger.warning(
+            "Using BOT_TOKEN from config as TELEGRAM_TOKEN env var is not set. Prefer setting TELEGRAM_TOKEN at runtime."
+        )
 
     app = Application.builder().token(token).build()
 

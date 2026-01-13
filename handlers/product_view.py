@@ -451,6 +451,8 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
                         if ftype.startswith("video"):
                             input_media.append(InputMediaVideo(media=fid, caption=item_caption))
                         elif ftype.startswith("audio") or ftype.startswith("voice"):
+                            # audio/voice cannot be part of media_group as InputMediaAudio is not supported in all clients;
+                            # send as document in fallback to preserve file
                             input_media.append(InputMediaDocument(media=fid, caption=item_caption))
                         else:
                             input_media.append(InputMediaPhoto(media=fid, caption=item_caption))
@@ -473,6 +475,7 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
                             except Exception:
                                 logger.exception("Failed to send single fallback media for product %s", product_id)
                         else:
+                            # Only call send_media_group when there are 2+ items
                             msgs = await context.bot.send_media_group(chat_id=dest_chat, media=input_media)
                             for m in msgs:
                                 sent_records.append((m.chat.id, m.message_id))
@@ -483,6 +486,8 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
                             try:
                                 if isinstance(im, InputMediaVideo):
                                     m = await context.bot.send_video(chat_id=dest_chat, video=im.media, caption=im.caption if first else None, parse_mode=parse_mode)
+                                elif isinstance(im, InputMediaDocument):
+                                    m = await context.bot.send_document(chat_id=dest_chat, document=im.media, caption=im.caption if first else None, parse_mode=parse_mode)
                                 else:
                                     m = await context.bot.send_photo(chat_id=dest_chat, photo=im.media, caption=im.caption if first else None, parse_mode=parse_mode)
                                 sent_records.append((m.chat.id, m.message_id))
