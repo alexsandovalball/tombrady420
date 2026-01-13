@@ -26,7 +26,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👋 Welcome, {user.first_name}!\n\n"
         "I'm your media product catalog bot. I help you browse and search "
         "products from our catalog.\n\n"
-        "Use /menu to view all products or simply type what you're looking for!"
+        "Use /menu to view all products or simply type what you're looking for!  DM @FLYAWAYPEP TO ORDER"
     )
     
     keyboard = InlineKeyboardMarkup([
