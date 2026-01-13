@@ -31,6 +31,9 @@ from utils.taxonomy_utils import validate_category_and_subcategory, canonicalize
 
 logger = logging.getLogger(__name__)
 
+# Maximum length for a single Telegram message (with safety margin)
+MAX_MESSAGE_CHUNK_LENGTH = 3900
+
 # -------------------------
 # Token store (Redis preferred, fallback to in-memory)
 # -------------------------
@@ -677,7 +680,7 @@ async def list_products_command(update: Update, context: ContextTypes.DEFAULT_TY
             cap = (r.get("caption") or "").replace("\n", " ")[:80]
             lines.append(f"{pid} | {cat} / {sub} | chat={chat} msg={msg} | {cap}")
         text = "Recent products:\n" + "\n".join(lines)
-        for chunk in [text[i:i + 3900] for i in range(0, len(text), 3900)]:
+        for chunk in [text[i:i + MAX_MESSAGE_CHUNK_LENGTH] for i in range(0, len(text), MAX_MESSAGE_CHUNK_LENGTH)]:
             await _safe_reply_text(update, chunk)
     except Exception:
         logger.exception("list_products_command failed")
@@ -728,7 +731,7 @@ async def list_categories_command(update: Update, context: ContextTypes.DEFAULT_
             else:
                 lines.append(f"{get_display_name(cat)} -> (no subcategories)")
         text = "Categories:\n" + "\n".join(lines)
-        for chunk in [text[i:i + 3900] for i in range(0, len(text), 3900)]:
+        for chunk in [text[i:i + MAX_MESSAGE_CHUNK_LENGTH] for i in range(0, len(text), MAX_MESSAGE_CHUNK_LENGTH)]:
             await _safe_reply_text(update, chunk)
     except Exception:
         logger.exception("list_categories_command failed")
@@ -767,7 +770,7 @@ async def category_counts_command(update: Update, context: ContextTypes.DEFAULT_
         
         text = "\n".join(lines)
         # Split into chunks if too long
-        for chunk in [text[i:i + 3900] for i in range(0, len(text), 3900)]:
+        for chunk in [text[i:i + MAX_MESSAGE_CHUNK_LENGTH] for i in range(0, len(text), MAX_MESSAGE_CHUNK_LENGTH)]:
             await _safe_reply_text(update, chunk)
     except Exception:
         logger.exception("category_counts_command failed")

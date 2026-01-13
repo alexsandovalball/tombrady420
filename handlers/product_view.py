@@ -46,6 +46,16 @@ _user_locks: Dict[int, asyncio.Lock] = {}
 PAGE_SIZE = 8
 
 
+def _normalize_for_comparison(value: Optional[str]) -> str:
+    """
+    Normalize a category or subcategory value for comparison.
+    Removes underscores to allow matching both old (TOPSHELFCANDY) and new (TOPSHELF_CANDY) formats.
+    """
+    if not value:
+        return ""
+    return value.strip().upper().replace("_", "")
+
+
 def _ensure_user_lock(user_id: int) -> asyncio.Lock:
     lock = _user_locks.get(user_id)
     if lock is None:
@@ -211,19 +221,14 @@ async def show_products_for_category(
         for it in items:
             it_cat = (it.get("category") or "").strip().upper()
             it_sub = (it.get("subcategory") or "").strip().upper()
-            # Normalize both the stored value and the filter key by removing underscores for comparison
-            # This handles both old (TOPSHELFCANDY) and new (TOPSHELF_CANDY) formats
-            it_cat_normalized = it_cat.replace("_", "")
-            cat_key_normalized = cat_key.upper().replace("_", "") if cat_key else ""
             
-            if cat_key and it_cat_normalized != cat_key_normalized:
+            # Normalize both the stored value and the filter key for comparison
+            # This handles both old (TOPSHELFCANDY) and new (TOPSHELF_CANDY) formats
+            if cat_key and _normalize_for_comparison(it_cat) != _normalize_for_comparison(cat_key):
                 continue
             
-            if sub_key:
-                it_sub_normalized = it_sub.replace("_", "")
-                sub_key_normalized = sub_key.upper().replace("_", "")
-                if it_sub_normalized != sub_key_normalized:
-                    continue
+            if sub_key and _normalize_for_comparison(it_sub) != _normalize_for_comparison(sub_key):
+                continue
             
             filtered.append(it)
         
