@@ -4,6 +4,7 @@ from __future__ import annotations
 # Ensure stdout logging is configured early and consistently for Render
 import logging as _logging
 import sys as _sys
+import os
 
 _root_logger = _logging.getLogger()
 if not _root_logger.handlers:
@@ -21,6 +22,29 @@ for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
     if _lg.level == _logging.NOTSET:
         _lg.setLevel(_logging.INFO)
 
+# --- Redact token-like strings from logs early ---
+import re as _re
+
+_TOKEN_RE = _re.compile(r"\d{6,}:[A-Za-z0-9_-]{20,}")
+
+class MaskTokenFilter(_logging.Filter):
+    def filter(self, record: _logging.LogRecord) -> bool:
+        try:
+            # Use getMessage() to respect formatting and avoid double-formatting
+            msg = record.getMessage()
+            if msg:
+                masked = _TOKEN_RE.sub("[REDACTED_TOKEN]", msg)
+                # Replace record.msg and clear args so logging doesn't re-format original
+                record.msg = masked
+                record.args = ()
+        except Exception:
+            # Never fail logging due to masking
+            pass
+        return True
+
+_root_logger.addFilter(MaskTokenFilter())
+# --- end redaction setup ---
+
 import logging
 import asyncio
 from typing import Optional, Callable, Awaitable
@@ -35,6 +59,7 @@ from telegram.ext import (
     filters,
 )
 
+# Prefer runtime env var TELEGRAM_TOKEN; config.BOT_TOKEN remains a fallback
 from config import BOT_TOKEN, LOG_LEVEL, REDIS_URL
 # DEBUG_LOG_UPDATES is optional in config; default to False if not present
 try:
@@ -121,9 +146,14 @@ def build_application(token: Optional[str] = None) -> Application:
     This function does not start the bot; the caller should run startup_tasks(app)
     and then start the application (run_polling or run_webhook) from the run script.
     """
-    token = token or BOT_TOKEN
+    # Prefer explicit token argument, then TELEGRAM_TOKEN env var, then config.BOT_TOKEN
+    token = token or os.environ.get("TELEGRAM_TOKEN") or BOT_TOKEN
     if not token:
-        raise RuntimeError("BOT_TOKEN is required in environment")
+        raise RuntimeError("TELEGRAM_TOKEN (env) or BOT_TOKEN (config) is required")
+
+    # Warn if using config.BOT_TOKEN instead of env var (helps surface accidental checked-in tokens)
+    if not os.environ.get("TELEGRAM_TOKEN") and BOT_TOKEN:
+        logger.warning("Using BOT_TOKEN from config as TELEGRAM_TOKEN env var is not set. Prefer setting TELEGRAM_TOKEN at runtime.")
 
     app = Application.builder().token(token).build()
 

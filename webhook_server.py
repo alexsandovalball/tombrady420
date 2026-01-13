@@ -24,10 +24,12 @@ for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
     if _lg.level == _logging.NOTSET:
         _lg.setLevel(_logging.INFO)
 
+# Local imports
 import json
 import logging
 import os
-from typing import Optional
+import re
+from typing import Optional, Any
 
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -47,6 +49,8 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 telegram_app: Optional[Application] = None
 
+# Token-like pattern used for masking in logs
+_TOKEN_RE = re.compile(r"\d{6,}:[A-Za-z0-9_-]{20,}")
 
 def _mask_token(token: Optional[str]) -> str:
     """Return a masked representation of a token for safe logging."""
@@ -54,11 +58,27 @@ def _mask_token(token: Optional[str]) -> str:
         return "REDACTED"
     return token[:4] + "…" + token[-4:]
 
+class MaskTokenFilter(logging.Filter):
+    """Logging filter to redact token-like substrings from log messages."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+            if msg:
+                record.msg = _TOKEN_RE.sub("[REDACTED_TOKEN]", msg)
+                record.args = ()
+        except Exception:
+            # Never fail logging due to masking
+            pass
+        return True
+
+# Register the filter on the root logger so all logs are masked
+_root_logger.addFilter(MaskTokenFilter())
 
 @app.on_event("startup")
 async def _startup():
     global telegram_app
     logger.info("ASGI startup: building Telegram Application")
+    # build_application will prefer TELEGRAM_TOKEN env var, falling back to config.BOT_TOKEN
     telegram_app = build_application()
 
     # Initialize application (creates DB etc)
@@ -70,7 +90,6 @@ async def _startup():
         logger.exception("Failed to initialize/start Telegram Application")
         # If initialization fails, ensure we don't leave a partially started app
         try:
-            # attempt graceful shutdown if partially started
             if telegram_app:
                 await telegram_app.shutdown()
         except Exception:
@@ -78,7 +97,8 @@ async def _startup():
         # attempt to close DB connection if present
         try:
             from database import db as database_instance  # local import to avoid circulars
-            await database_instance.close()
+            if hasattr(database_instance, "close"):
+                await database_instance.close()
         except Exception:
             logger.debug("No DB connection to close or failed to close DB during startup failure")
         telegram_app = None
@@ -88,10 +108,9 @@ async def _startup():
     if USE_WEBHOOK:
         if not WEBHOOK_URL:
             raise RuntimeError("USE_WEBHOOK is true but WEBHOOK_URL is not set")
-        # Ensure webhook URL includes the token path so Telegram posts to /webhook/{token}
         try:
-            bot_token = telegram_app.bot.token
-            if bot_token is None:
+            bot_token = getattr(telegram_app.bot, "token", None)
+            if not isinstance(bot_token, str) or not bot_token:
                 raise RuntimeError("Bot token is not available on telegram_app.bot")
             # If WEBHOOK_URL already contains the token path, use it as-is; otherwise append
             if f"/webhook/{bot_token}" in WEBHOOK_URL:
@@ -100,6 +119,7 @@ async def _startup():
                 webhook_target = WEBHOOK_URL.rstrip("/") + f"/webhook/{bot_token}"
             logger.info("Setting webhook to %s", webhook_target)
             await telegram_app.bot.set_webhook(webhook_target)
+            logger.info("Webhook set successfully")
         except Exception:
             logger.exception("Failed to set webhook")
             # Do not raise here; allow the app to run so you can inspect logs and retry
@@ -114,7 +134,8 @@ async def _shutdown():
         # still attempt to close DB if present
         try:
             from database import db as database_instance
-            await database_instance.close()
+            if hasattr(database_instance, "close"):
+                await database_instance.close()
         except Exception:
             logger.debug("No DB connection to close on shutdown")
         return
@@ -145,8 +166,9 @@ async def _shutdown():
     # Ensure DB connection closed
     try:
         from database import db as database_instance
-        await database_instance.close()
-        logger.info("Database connection closed")
+        if hasattr(database_instance, "close"):
+            await database_instance.close()
+            logger.info("Database connection closed")
     except Exception:
         logger.exception("Failed to close DB connection on shutdown")
 
@@ -173,11 +195,11 @@ async def telegram_webhook(token: str, request: Request) -> Response:
 
     # Read request body robustly: prefer JSON parsing but fall back to raw bytes
     try:
-        # Try fast path: if content-type is JSON, use request.json()
         content_type = request.headers.get("content-type", "")
         if "application/json" in content_type.lower():
             payload = await request.json()
-            body_text = json.dumps(payload)
+            # Avoid logging full body; create a small preview
+            body_text = json.dumps(payload, ensure_ascii=False)
         else:
             body_bytes = await request.body()
             body_text = body_bytes.decode("utf-8", errors="replace")
@@ -189,10 +211,12 @@ async def telegram_webhook(token: str, request: Request) -> Response:
         logger.exception("Failed to read request body: %s", e)
         raise HTTPException(status_code=400, detail="Failed to read request body")
 
-    # Log a masked token and a short preview of the body for debugging
+    # Log a masked token and a short preview of the body for debugging (bounded length)
     try:
         preview = (body_text[:2000] + "...") if len(body_text) > 2000 else body_text
-        logger.info("WEBHOOK RAW BODY token_path=%s bot=%s body_preview=%s", _mask_token(token), _mask_token(bot_token), preview)
+        # Mask any token-like substrings in the preview before logging
+        preview_masked = _TOKEN_RE.sub("[REDACTED_TOKEN]", preview)
+        logger.info("WEBHOOK RAW BODY token_path=%s bot=%s body_preview=%s", _mask_token(token), _mask_token(bot_token), preview_masked)
     except Exception:
         logger.debug("Failed to log webhook raw body preview")
 
