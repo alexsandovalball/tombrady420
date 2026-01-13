@@ -90,6 +90,7 @@ def _register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("list_products", ensure_async(admin_handlers.list_products_command)))
     app.add_handler(CommandHandler("setcategory", ensure_async(admin_handlers.set_category_command)))
     app.add_handler(CommandHandler("listcategories", ensure_async(admin_handlers.list_categories_command)))
+    app.add_handler(CommandHandler("category_counts", ensure_async(admin_handlers.category_counts_command)))
     app.add_handler(CommandHandler("backfill_db", ensure_async(admin_handlers.backfill_db_command)))
     app.add_handler(CommandHandler("nuke", ensure_async(admin_handlers.nuke_command)))
 
