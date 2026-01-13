@@ -48,8 +48,9 @@ def extract_category_from_caption(caption: str) -> Tuple[Optional[str], Optional
     # Normalize caption to uppercase for matching
     caption_upper = caption.upper()
     
-    # Extract all hashtags
-    hashtags = re.findall(r'#(\w+(?:\s+\w+)*)', caption_upper)
+    # Extract all hashtags - improved pattern to handle spaces within hashtags
+    # Matches #WORD, #WORD WORD, etc.
+    hashtags = re.findall(r'#([A-Z0-9]+(?:\s+[A-Z0-9]+)*)', caption_upper)
     
     if not hashtags:
         return None, None

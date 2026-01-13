@@ -4,6 +4,8 @@ Main entry point for the Telegram media catalog bot.
 import os
 import logging
 import asyncio
+import json
+import aiosqlite
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update
@@ -164,14 +166,12 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
     
     if existing_product_id:
         # Update existing product with new file IDs
-        import json
         additional_files = json.dumps(list(zip(file_ids[1:], file_types[1:])))
         await db.update_product_media(existing_product_id, additional_files)
         logger.info(f"Updated media group product {existing_product_id} with {len(file_ids)} files")
         return
     
     # Create new product with first file as primary (NO automatic categorization)
-    import json
     additional_files = json.dumps(list(zip(file_ids[1:], file_types[1:]))) if len(file_ids) > 1 else None
     
     product_id = await db.add_product(
@@ -342,7 +342,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     )
             
             # Delete all products from database
-            import aiosqlite
             async with aiosqlite.connect(db.db_path) as conn:
                 cursor = await conn.execute("DELETE FROM products")
                 await conn.commit()

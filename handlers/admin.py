@@ -2,6 +2,7 @@
 Admin handlers.
 """
 import logging
+import asyncio
 import aiosqlite
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -242,7 +243,7 @@ async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE, pro
 
 
 async def recategorize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /recategorize command - recategorize all products based on their captions (admin only)."""
+    """Handle /recategorize command - send categorization notifications for uncategorized products (admin only)."""
     user_id = update.effective_user.id
     
     if not is_admin(user_id):
@@ -254,7 +255,7 @@ async def recategorize_command(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         # Send initial message
         status_msg = await update.message.reply_text(
-            "🔄 Starting recategorization process...\n"
+            "🔄 Checking for uncategorized products...\n"
             "This may take a moment."
         )
         
@@ -262,37 +263,46 @@ async def recategorize_command(update: Update, context: ContextTypes.DEFAULT_TYP
         all_products = await db.get_all_products_for_search()
         
         if not all_products:
-            await status_msg.edit_text("📭 No products to recategorize.")
+            await status_msg.edit_text("📭 No products found.")
             return
         
-        # Recategorize each product
-        updated_count = 0
-        categorized_count = 0
+        # Find uncategorized products
+        uncategorized = [p for p in all_products if not p.get("category")]
         
-        for product in all_products:
-            caption = product.get("caption", "")
-            
-            # Extract category from caption
-            category, subcategory = extract_category_from_caption(caption)
-            
-            # Update product if category was found or if it needs clearing
-            if category or product.get("category"):
-                await db.update_product_category(product["id"], category, subcategory)
-                updated_count += 1
-                if category:
-                    categorized_count += 1
+        if not uncategorized:
+            await status_msg.edit_text(
+                f"✅ All {len(all_products)} products are already categorized!"
+            )
+            return
+        
+        # Send categorization notifications for uncategorized products
+        # Import the notification function
+        from main import notify_admins_for_categorization
+        
+        notified = 0
+        for product in uncategorized[:10]:  # Limit to 10 at a time to avoid spam
+            try:
+                await notify_admins_for_categorization(context, product["id"])
+                notified += 1
+                await asyncio.sleep(0.5)  # Small delay between notifications
+            except Exception as e:
+                logger.error(f"Failed to notify for product {product['id']}: {e}")
         
         # Send completion message
+        categorized_count = len(all_products) - len(uncategorized)
         text = (
-            f"✅ **Recategorization Complete**\n\n"
-            f"📊 Total products: {len(all_products)}\n"
-            f"🔄 Updated: {updated_count}\n"
-            f"📂 Categorized: {categorized_count}\n"
-            f"❓ Uncategorized: {len(all_products) - categorized_count}"
+            f"📊 **Categorization Status**\n\n"
+            f"📦 Total products: {len(all_products)}\n"
+            f"✅ Categorized: {categorized_count}\n"
+            f"❓ Uncategorized: {len(uncategorized)}\n"
+            f"📤 Notifications sent: {notified}"
         )
         
+        if len(uncategorized) > 10:
+            text += f"\n\n⚠️ Only sent notifications for first 10 uncategorized products.\nRun command again to process more."
+        
         await status_msg.edit_text(text, parse_mode="Markdown")
-        logger.info(f"Admin {user_id} recategorized {updated_count} products")
+        logger.info(f"Admin {user_id} triggered recategorization - sent {notified} notifications")
         
     except Exception as e:
         logger.error(f"Error in recategorize command: {e}")
