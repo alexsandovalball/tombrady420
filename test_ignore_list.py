@@ -13,15 +13,15 @@ import sys
 import tempfile
 from database import Database
 
-# Test database path (using tempfile for cross-platform compatibility and security)
-_test_db_fd, TEST_DB_PATH = tempfile.mkstemp(suffix='.db', prefix='test_catalog_')
-
 
 async def test_ignore_list_functionality():
     """Test that ignore list works correctly after our changes."""
     
+    # Create temporary database for this test
+    test_db_fd, test_db_path = tempfile.mkstemp(suffix='.db', prefix='test_catalog_')
+    
     # Initialize test database
-    db = Database(TEST_DB_PATH)
+    db = Database(test_db_path)
     
     try:
         await db.init_db()
@@ -126,16 +126,23 @@ async def test_ignore_list_functionality():
     
     finally:
         # Cleanup test database
-        if os.path.exists(TEST_DB_PATH):
-            os.close(_test_db_fd)
-            os.remove(TEST_DB_PATH)
+        try:
+            os.close(test_db_fd)
+        except OSError:
+            pass  # Already closed
+        
+        if os.path.exists(test_db_path):
+            os.remove(test_db_path)
     
 
 async def test_nuke_simulation():
     """Simulate nuke command to verify no ignore list additions."""
     
+    # Create temporary database for this test
+    test_db_fd, test_db_path = tempfile.mkstemp(suffix='.db', prefix='test_catalog_nuke_')
+    
     # Initialize test database
-    db = Database(TEST_DB_PATH)
+    db = Database(test_db_path)
     
     try:
         await db.init_db()
@@ -202,12 +209,12 @@ async def test_nuke_simulation():
     
     finally:
         # Cleanup test database
-        if os.path.exists(TEST_DB_PATH):
+        if os.path.exists(test_db_path):
             try:
-                os.close(_test_db_fd)
+                os.close(test_db_fd)
             except OSError:
                 pass  # File descriptor might already be closed
-            os.remove(TEST_DB_PATH)
+            os.remove(test_db_path)
 
 
 async def main():
