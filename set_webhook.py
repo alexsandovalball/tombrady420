@@ -28,9 +28,11 @@ def set_webhook():
         webhook_url = f"{base_url}/webhook/{webhook_secret}"
     else:
         # If no secret is provided, use base webhook path without token
-        # Note: The current webhook_server.py requires WEBHOOK_SECRET, so this may not work
-        # without modifying the webhook server
         webhook_url = f"{base_url}/webhook"
+        print("⚠️  WARNING: WEBHOOK_SECRET is not set.", file=sys.stderr)
+        print("⚠️  The current webhook_server.py requires WEBHOOK_SECRET to be set.", file=sys.stderr)
+        print("⚠️  The webhook will be set but may not work properly.", file=sys.stderr)
+        print("", file=sys.stderr)
     
     # Telegram API endpoint
     api_url = f"https://api.telegram.org/bot{bot_token}/setWebhook"
