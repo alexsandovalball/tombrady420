@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, HTTPException
 from telegram import Update
 
 from main import application
+from config import WEBHOOK_SECRET
 
 # Configure logging
 logging.basicConfig(
@@ -16,6 +17,10 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+# Validate that WEBHOOK_SECRET is set
+if not WEBHOOK_SECRET:
+    raise RuntimeError("WEBHOOK_SECRET is required for webhook mode. Set it in the environment or .env file")
 
 # Reduce noisy library logs
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -60,12 +65,18 @@ async def root():
     return {"status": "ok", "message": "Telegram bot webhook server is running"}
 
 
-@app.post("/webhook")
-async def webhook(request: Request):
+@app.post("/webhook/{token}")
+async def webhook(request: Request, token: str):
     """
     Process incoming webhook updates from Telegram.
     Optimized for fast processing and proper error handling.
+    Requires a secret token in the URL path for security.
     """
+    # Validate the secret token
+    if token != WEBHOOK_SECRET:
+        logger.warning("Invalid webhook token received: %s", token)
+        raise HTTPException(status_code=403, detail="Invalid token")
+    
     try:
         # Read and parse request body
         body = await request.body()
