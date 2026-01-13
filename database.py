@@ -275,6 +275,25 @@ class Database:
                 row = await cursor.fetchone()
                 return row[0] if row else None
     
+    async def get_latest_pagination_state(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Get the most recent pagination state for a user."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT state_type, query, page FROM pagination_state
+                WHERE user_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (user_id,)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return {
+                        "state_type": row["state_type"],
+                        "query": row["query"],
+                        "page": row["page"]
+                    }
+                return None
+    
     async def cleanup_old_pagination_states(self, minutes: int = 10):
         """Clean up pagination states older than specified minutes."""
         async with aiosqlite.connect(self.db_path) as db:

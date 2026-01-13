@@ -29,10 +29,24 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         # Get user's pagination state to determine back button behavior
         user_id = update.effective_user.id
         
-        # Check catalog pagination first (if user is browsing catalog)
-        catalog_page = await db.get_pagination_state(user_id, "catalog", None)
-        if catalog_page:
-            back_callback = f"menu|{catalog_page}"
+        # Get the most recent pagination state to determine where user was browsing
+        latest_state = await db.get_latest_pagination_state(user_id)
+        
+        if latest_state:
+            state_type = latest_state["state_type"]
+            page = latest_state["page"]
+            query = latest_state["query"]
+            
+            # Check if user was browsing a category
+            if state_type.startswith("category_") and query:
+                # The query field contains the category name
+                back_callback = f"category|{query}|{page}"
+            elif state_type == "catalog":
+                # User was browsing all products
+                back_callback = f"menu|{page}"
+            else:
+                # Default fallback
+                back_callback = "menu|1"
         else:
             # Check last search (if user came from search)
             last_search = await db.get_last_search(user_id)
