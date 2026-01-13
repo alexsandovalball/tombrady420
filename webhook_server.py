@@ -19,7 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Validate that WEBHOOK_SECRET is set
-if not WEBHOOK_SECRET:
+if not WEBHOOK_SECRET or not WEBHOOK_SECRET.strip():
     raise RuntimeError("WEBHOOK_SECRET is required for webhook mode. Set it in the environment or .env file")
 
 # Reduce noisy library logs
@@ -74,7 +74,8 @@ async def webhook(request: Request, token: str):
     """
     # Validate the secret token
     if token != WEBHOOK_SECRET:
-        logger.warning("Invalid webhook token received")
+        client_host = request.client.host if request.client else "unknown"
+        logger.warning("Invalid webhook token received from %s", client_host)
         raise HTTPException(status_code=403, detail="Invalid token")
     
     try:
