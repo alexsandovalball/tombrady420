@@ -35,10 +35,7 @@ logger = logging.getLogger(__name__)
 _HANDLER_MODULES: List[str] = [
     "admin",
     "product_view",
-    # Optional modules; include them here if they exist in your package
     "search",
-    "start",
-    "debug",
 ]
 
 

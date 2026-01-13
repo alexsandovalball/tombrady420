@@ -2,17 +2,14 @@
 """
 User-facing handlers: categories, browsing, product view, pagination.
 
-Final hardened version to address:
+Streamlined version to address media display requirements:
  - Never auto-open a product when entering a subcategory (user must click "View").
- - Robustly assemble a product's full media set even if ingestion missed propagating
-   media_group_id to some rows by querying all rows for the group (no chat filter).
+ - Robustly assemble a product's full media set by querying all rows for the group.
  - Deduplicate media items by file_unique_id / file_id preserving insertion order.
- - For albums (2+ media items), always use send_media_group to preserve album grouping
-   instead of copying original messages which would send them separately.
+ - For albums (2+ media items), use send_media_group to preserve album grouping.
  - For single items, send as individual photo/video/document.
- - Per-user asyncio.Lock to avoid race conditions that cause duplicate sends.
- - Respect caption_parse_mode (MARKDOWN_V2 / HTML) if stored on product rows.
- - Extra debug logging to make diagnosing remaining edge cases straightforward.
+ - Per-user asyncio.Lock to avoid race conditions.
+ - Simplified logic by removing unnecessary copy_message functionality.
 """
 from __future__ import annotations
 
@@ -260,56 +257,7 @@ async def show_products_for_category(
         logger.exception("show_products_for_category failed")
 
 
-async def _copy_all_originals(dest_chat: int, media_items: List[Dict[str, Any]], context: ContextTypes.DEFAULT_TYPE) -> Optional[List[Tuple[int, int]]]:
-    """
-    Attempt to copy all original messages for this album into dest_chat.
-    Requirements:
-      - For each distinct original message (orig_chat, message_id) we must have both values.
-    Behavior:
-      - If any required original reference is missing, return None (skip copy).
-      - If a copy op fails part-way, delete any partial copies (best-effort) and return None.
-      - On complete success return list of (chat_id, message_id).
-    """
-    # Build ordered unique (from_chat_id, message_id)
-    to_copy: List[Tuple[int, int]] = []
-    seen = set()
-    for mi in media_items:
-        mid = mi.get("message_id")
-        orig_chat = mi.get("chat_id")
-        if mid is None or orig_chat is None:
-            logger.debug("Album copy aborted: missing original reference for row=%r", mi)
-            return None
-        key = (int(orig_chat), int(mid))
-        if key in seen:
-            continue
-        seen.add(key)
-        to_copy.append(key)
 
-    copied: List[Tuple[int, int]] = []
-    for from_chat_id, message_id in to_copy:
-        try:
-            msg = await context.bot.copy_message(chat_id=dest_chat, from_chat_id=from_chat_id, message_id=message_id)
-            # Normalize returned object
-            if hasattr(msg, "message_id"):
-                copied.append((msg.chat.id, msg.message_id))
-            else:
-                # Some versions return MessageId-like object; try to coerce
-                try:
-                    mid = int(str(msg))
-                    copied.append((dest_chat, mid))
-                except Exception:
-                    copied.append((dest_chat, -1))
-        except Exception:
-            logger.debug("copy_message failed for %s/%s; deleting partial copies and falling back", from_chat_id, message_id, exc_info=True)
-            for (c_id, m_id) in copied:
-                try:
-                    if m_id and m_id > 0:
-                        await context.bot.delete_message(chat_id=c_id, message_id=m_id)
-                except Exception:
-                    logger.debug("Failed to delete partial copied message %s/%s (non-fatal)", c_id, m_id)
-            return None
-
-    return copied
 
 
 def _dedupe_media_items(media_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -384,36 +332,37 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
 
             sent_records: List[Tuple[int, int]] = []
 
-            # Gather album items robustly: prefer querying all rows for the media_group (no chat filter)
+            # Gather album items: query all rows for the media_group (no chat filter for robustness)
             media_items: List[Dict[str, Any]] = []
-            if media_group_id:
+            if media_group_id and media_group_id.strip():
                 try:
                     media_items = await db.get_products_by_media_group(media_group_id, None)
+                    logger.debug("Found %d items for media_group %s", len(media_items), media_group_id)
                 except Exception:
-                    logger.exception("Failed to fetch products by media_group %s (falling back to single)", media_group_id)
+                    logger.exception("Failed to fetch products by media_group %s", media_group_id)
                     media_items = []
 
-            # If no group items found but product has message_id/chat_id, include at least the product itself
+            # Fallback to single item if no group items found
             if not media_items:
-                # fallback to single item constructed from the product row
                 media_items = [p]
 
-            # Deduplicate items (preserve order)
+            # Deduplicate items by file_unique_id/file_id (preserve order)
             media_items = _dedupe_media_items(media_items)
-            logger.debug("show_product_detail: assembled %d media_items for product_id=%s (mg=%s)", len(media_items), product_id, media_group_id)
+            logger.info("Displaying product %s: %d media item(s), media_group_id=%s", product_id, len(media_items), media_group_id)
 
             if len(media_items) > 1:
-                # Build InputMedia list from file_ids (caption only on first) and send as media group
+                # Multiple items: send as media group
                 input_media = []
                 first = True
                 for mi in media_items:
                     fid = mi.get("file_id")
                     if not fid:
-                        logger.debug("show_product_detail: skipping missing file_id for row=%r", mi)
+                        logger.debug("Skipping item with missing file_id: %r", mi)
                         continue
                     ftype = (mi.get("file_type") or "").lower()
                     item_caption = caption_for_api if first else None
                     first = False
+
                     if ftype.startswith("video"):
                         input_media.append(InputMediaVideo(media=fid, caption=item_caption, parse_mode=parse_mode))
                     elif ftype.startswith("audio") or ftype.startswith("voice"):
@@ -421,17 +370,20 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
                     else:
                         input_media.append(InputMediaPhoto(media=fid, caption=item_caption, parse_mode=parse_mode))
 
-                logger.debug("show_product_detail: prepared %d InputMedia items for product_id=%s", len(input_media), product_id)
+                if not input_media:
+                    logger.warning("No media available to send for product %s", product_id)
+                    await query.edit_message_text("No media available for this product.")
+                    return
+
+                logger.debug("Sending media group with %d items for product %s", len(input_media), product_id)
                 try:
-                    if len(input_media) == 0:
-                        logger.warning("No media available to send for product %s", product_id)
-                        await query.edit_message_text("No media available for this product.")
-                    else:
-                        msgs = await context.bot.send_media_group(chat_id=dest_chat, media=input_media)
-                        for m in msgs:
-                            sent_records.append((m.chat.id, m.message_id))
+                    msgs = await context.bot.send_media_group(chat_id=dest_chat, media=input_media)
+                    for m in msgs:
+                        sent_records.append((m.chat.id, m.message_id))
+                    logger.info("Successfully sent media group for product %s (%d messages)", product_id, len(msgs))
                 except Exception:
-                    logger.exception("send_media_group failed; trying per-item sends")
+                    logger.exception("send_media_group failed for product %s, trying individual sends", product_id)
+                    # Fallback: send each item individually
                     first = True
                     for im in input_media:
                         try:
@@ -446,7 +398,7 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
                         except Exception:
                             logger.exception("Failed to send media item %s", getattr(im, "media", "<unknown>"))
             else:
-                # Single-file product
+                # Single item: send individually
                 try:
                     if file_type.startswith("video"):
                         m = await context.bot.send_video(chat_id=dest_chat, video=file_id, caption=caption_for_api, parse_mode=parse_mode)
@@ -455,6 +407,7 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
                     else:
                         m = await context.bot.send_photo(chat_id=dest_chat, photo=file_id, caption=caption_for_api, parse_mode=parse_mode)
                     sent_records.append((m.chat.id, m.message_id))
+                    logger.info("Successfully sent single media for product %s", product_id)
                 except Exception:
                     logger.exception("Failed to send product media for product_id=%s", product_id)
                     try:
@@ -492,7 +445,7 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
             # Record displayed messages for cleanup
             try:
                 if sent_records:
-                    # remove duplicates before storing
+                    # Remove duplicates
                     uniq = []
                     seen = set()
                     for c, m in sent_records:
