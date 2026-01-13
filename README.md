@@ -109,6 +109,25 @@ The bot will:
 
 ## Deployment
 
+### Render.com (Webhook Mode - Recommended for Production)
+
+The bot now supports webhook mode for better performance on serverless platforms like Render.com.
+
+1. Create a new Web Service on [Render.com](https://render.com)
+2. Connect your GitHub repository
+3. Configure the service:
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `uvicorn webhook_server:app --host 0.0.0.0 --port $PORT`
+4. Add environment variables:
+   - `BOT_TOKEN` - Your bot token
+   - `CHANNEL_ID` - Your channel ID
+   - `ADMIN_IDS` - Admin user IDs (comma-separated)
+   - `USE_WEBHOOK=true` - Enable webhook mode
+   - `WEBHOOK_URL` - Your Render app URL (e.g., https://your-app.onrender.com)
+5. Deploy!
+
+For detailed webhook deployment instructions, see [WEBHOOK_DEPLOYMENT.md](WEBHOOK_DEPLOYMENT.md).
+
 ### PythonAnywhere
 
 1. Upload all files to your PythonAnywhere account
