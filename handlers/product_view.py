@@ -7,11 +7,9 @@ Final hardened version to address:
  - Robustly assemble a product's full media set even if ingestion missed propagating
    media_group_id to some rows by querying all rows for the group (no chat filter).
  - Deduplicate media items by file_unique_id / file_id preserving insertion order.
- - Only attempt to copy original messages when every unique original reference (chat_id+message_id)
-   is present for the album. If any copy fails, delete any partial copies (best-effort) and
-   fall back to sending media assembled from file_ids (no duplicate copies).
- - When falling back to send_media_group, only call send_media_group when there are 2+ items;
-   otherwise send a single photo/video/document. This avoids clients showing albums as a single item.
+ - For albums (2+ media items), always use send_media_group to preserve album grouping
+   instead of copying original messages which would send them separately.
+ - For single items, send as individual photo/video/document.
  - Per-user asyncio.Lock to avoid race conditions that cause duplicate sends.
  - Respect caption_parse_mode (MARKDOWN_V2 / HTML) if stored on product rows.
  - Extra debug logging to make diagnosing remaining edge cases straightforward.
@@ -335,8 +333,8 @@ def _dedupe_media_items(media_items: List[Dict[str, Any]]) -> List[Dict[str, Any
 
 async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAULT_TYPE, product_id: int) -> None:
     """
-    Show product media and caption. For media_group, try to copy original messages atomically;
-    otherwise assemble and send media from stored file_ids (no partial duplicates).
+    Show product media and caption. For albums (multiple media items), send as grouped
+    album using send_media_group to preserve grouping. For single items, send individually.
     """
     try:
         p = await db.get_product(product_id)
@@ -405,71 +403,48 @@ async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAUL
             logger.debug("show_product_detail: assembled %d media_items for product_id=%s (mg=%s)", len(media_items), product_id, media_group_id)
 
             if len(media_items) > 1:
-                # Try copying originals only when all distinct originals have chat_id+message_id
-                copied = await _copy_all_originals(dest_chat, media_items, context)
-                if copied is not None:
-                    logger.debug("show_product_detail: copied %d originals for product_id=%s", len(copied), product_id)
-                    # filter out duplicates in copied list
-                    unique_copied = []
-                    seen_msgs = set()
-                    for c in copied:
-                        if c not in seen_msgs:
-                            seen_msgs.add(c)
-                            unique_copied.append(c)
-                    sent_records.extend(unique_copied)
-                else:
-                    # Build InputMedia list from file_ids (caption only on first)
-                    input_media = []
-                    first = True
-                    for mi in media_items:
-                        fid = mi.get("file_id")
-                        if not fid:
-                            logger.debug("show_product_detail: skipping missing file_id for row=%r", mi)
-                            continue
-                        ftype = (mi.get("file_type") or "").lower()
-                        item_caption = caption_for_api if first else None
-                        first = False
-                        if ftype.startswith("video"):
-                            input_media.append(InputMediaVideo(media=fid, caption=item_caption))
-                        elif ftype.startswith("audio") or ftype.startswith("voice"):
-                            input_media.append(InputMediaDocument(media=fid, caption=item_caption))
-                        else:
-                            input_media.append(InputMediaPhoto(media=fid, caption=item_caption))
+                # Build InputMedia list from file_ids (caption only on first) and send as media group
+                input_media = []
+                first = True
+                for mi in media_items:
+                    fid = mi.get("file_id")
+                    if not fid:
+                        logger.debug("show_product_detail: skipping missing file_id for row=%r", mi)
+                        continue
+                    ftype = (mi.get("file_type") or "").lower()
+                    item_caption = caption_for_api if first else None
+                    first = False
+                    if ftype.startswith("video"):
+                        input_media.append(InputMediaVideo(media=fid, caption=item_caption, parse_mode=parse_mode))
+                    elif ftype.startswith("audio") or ftype.startswith("voice"):
+                        input_media.append(InputMediaDocument(media=fid, caption=item_caption, parse_mode=parse_mode))
+                    else:
+                        input_media.append(InputMediaPhoto(media=fid, caption=item_caption, parse_mode=parse_mode))
 
-                    logger.debug("show_product_detail: prepared %d InputMedia items (fallback send) for product_id=%s", len(input_media), product_id)
-                    try:
-                        if len(input_media) == 0:
-                            logger.warning("No media available to send for product %s", product_id)
-                            await query.edit_message_text("No media available for this product.")
-                        elif len(input_media) == 1:
-                            im = input_media[0]
-                            try:
-                                if isinstance(im, InputMediaVideo):
-                                    m = await context.bot.send_video(chat_id=dest_chat, video=im.media, caption=im.caption, parse_mode=parse_mode)
-                                elif isinstance(im, InputMediaDocument):
-                                    m = await context.bot.send_document(chat_id=dest_chat, document=im.media, caption=im.caption, parse_mode=parse_mode)
-                                else:
-                                    m = await context.bot.send_photo(chat_id=dest_chat, photo=im.media, caption=im.caption, parse_mode=parse_mode)
-                                sent_records.append((m.chat.id, m.message_id))
-                            except Exception:
-                                logger.exception("Failed to send single fallback media for product %s", product_id)
-                        else:
-                            msgs = await context.bot.send_media_group(chat_id=dest_chat, media=input_media)
-                            for m in msgs:
-                                sent_records.append((m.chat.id, m.message_id))
-                    except Exception:
-                        logger.exception("send_media_group fallback failed; trying per-item sends")
-                        first = True
-                        for im in input_media:
-                            try:
-                                if isinstance(im, InputMediaVideo):
-                                    m = await context.bot.send_video(chat_id=dest_chat, video=im.media, caption=im.caption if first else None, parse_mode=parse_mode)
-                                else:
-                                    m = await context.bot.send_photo(chat_id=dest_chat, photo=im.media, caption=im.caption if first else None, parse_mode=parse_mode)
-                                sent_records.append((m.chat.id, m.message_id))
-                                first = False
-                            except Exception:
-                                logger.exception("Failed to send media item %s", getattr(im, "media", "<unknown>"))
+                logger.debug("show_product_detail: prepared %d InputMedia items for product_id=%s", len(input_media), product_id)
+                try:
+                    if len(input_media) == 0:
+                        logger.warning("No media available to send for product %s", product_id)
+                        await query.edit_message_text("No media available for this product.")
+                    else:
+                        msgs = await context.bot.send_media_group(chat_id=dest_chat, media=input_media)
+                        for m in msgs:
+                            sent_records.append((m.chat.id, m.message_id))
+                except Exception:
+                    logger.exception("send_media_group failed; trying per-item sends")
+                    first = True
+                    for im in input_media:
+                        try:
+                            if isinstance(im, InputMediaVideo):
+                                m = await context.bot.send_video(chat_id=dest_chat, video=im.media, caption=im.caption if first else None, parse_mode=parse_mode)
+                            elif isinstance(im, InputMediaDocument):
+                                m = await context.bot.send_document(chat_id=dest_chat, document=im.media, caption=im.caption if first else None, parse_mode=parse_mode)
+                            else:
+                                m = await context.bot.send_photo(chat_id=dest_chat, photo=im.media, caption=im.caption if first else None, parse_mode=parse_mode)
+                            sent_records.append((m.chat.id, m.message_id))
+                            first = False
+                        except Exception:
+                            logger.exception("Failed to send media item %s", getattr(im, "media", "<unknown>"))
             else:
                 # Single-file product
                 try:
