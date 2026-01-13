@@ -33,6 +33,7 @@ This guide explains how to set up and configure the webhook for the Telegram bot
 1. A deployed server with a public HTTPS URL (e.g., Render, Railway, Heroku)
 2. Bot token from [@BotFather](https://t.me/botfather)
 3. Channel ID or username for monitoring
+4. **Webhook secret token** - Generate a random secret string (e.g., using `openssl rand -hex 32` or any password generator)
 
 ### Deployment Steps
 
@@ -46,6 +47,7 @@ This guide explains how to set up and configure the webhook for the Telegram bot
 4. **Add environment variables**:
    ```
    BOT_TOKEN=your_bot_token_here
+   WEBHOOK_SECRET=your_random_secret_token_here
    CHANNEL_ID=-1001234567890
    ADMIN_IDS=123456789,987654321
    DB_PATH=/data/catalog.db
@@ -54,7 +56,7 @@ This guide explains how to set up and configure the webhook for the Telegram bot
 
 6. **Set the webhook** using curl or a browser:
    ```bash
-   curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://your-app.onrender.com/webhook"
+   curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://your-app.onrender.com/webhook/<YOUR_WEBHOOK_SECRET>"
    ```
 
 #### Option 2: Railway.app
@@ -75,7 +77,7 @@ This guide explains how to set up and configure the webhook for the Telegram bot
 4. **Deploy** - Heroku will use the `Procfile`
 5. **Set the webhook**:
    ```bash
-   curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://your-app.herokuapp.com/webhook"
+   curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://your-app.herokuapp.com/webhook/<YOUR_WEBHOOK_SECRET>"
    ```
 
 ### Verifying Webhook Setup
@@ -90,7 +92,7 @@ This guide explains how to set up and configure the webhook for the Telegram bot
    {
      "ok": true,
      "result": {
-       "url": "https://your-app.example.com/webhook",
+       "url": "https://your-app.example.com/webhook/your-secret-token",
        "has_custom_certificate": false,
        "pending_update_count": 0,
        "max_connections": 40
@@ -147,6 +149,7 @@ pip install -r requirements.txt
 
 # Set environment variables
 export BOT_TOKEN="your_bot_token"
+export WEBHOOK_SECRET="your_random_secret_token"
 export CHANNEL_ID="-1001234567890"
 
 # Run the server
@@ -160,7 +163,7 @@ ngrok http 8000
 
 Set the webhook to your ngrok URL:
 ```bash
-curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://your-ngrok-url.ngrok.io/webhook"
+curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://your-ngrok-url.ngrok.io/webhook/<YOUR_WEBHOOK_SECRET>"
 ```
 
 ## Switching Between Polling and Webhook
@@ -177,7 +180,7 @@ python main.py
 ### Switch to Webhook (for production)
 ```bash
 # Set webhook
-curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://your-server.com/webhook"
+curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://your-server.com/webhook/<YOUR_WEBHOOK_SECRET>"
 
 # Run webhook server
 uvicorn webhook_server:app --host 0.0.0.0 --port $PORT
@@ -186,10 +189,17 @@ uvicorn webhook_server:app --host 0.0.0.0 --port $PORT
 ## Security Notes
 
 - All optimizations passed CodeQL security scan with **0 alerts**
+- **Webhook URL includes secret token** - Only requests with the correct token in the URL path are accepted
 - Webhook validates request content before processing
 - Proper error handling prevents information leakage
 - Database uses parameterized queries (SQL injection protection)
 - Environment variables protect sensitive credentials
+
+**Important**: The `WEBHOOK_SECRET` should be:
+- A long, random string (at least 32 characters)
+- Never committed to version control
+- Kept secret and not shared publicly
+- Changed if compromised
 
 ## Support
 
