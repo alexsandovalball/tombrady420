@@ -273,26 +273,6 @@ async def show_products_for_category(
 
 
 
-
-def _dedupe_media_items(media_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Deduplicate media items preserving order. Prefer file_unique_id, fallback to file_id.
-    """
-    seen = set()
-    out: List[Dict[str, Any]] = []
-    for mi in media_items:
-        key = mi.get("file_unique_id") or mi.get("file_id")
-        if not key:
-            # include items lacking identifiers (will likely fail later)
-            out.append(mi)
-            continue
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(mi)
-    return out
-
-
 async def show_product_detail(query: CallbackQuery, context: ContextTypes.DEFAULT_TYPE, product_id: int) -> None:
     """
     Show product caption as text only (no media). Simplified to avoid media display issues.
