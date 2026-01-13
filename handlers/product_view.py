@@ -32,7 +32,7 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         # Get the most recent pagination state to determine where user was browsing
         latest_state = await db.get_latest_pagination_state(user_id)
         
-        if latest_state:
+        if latest_state and "state_type" in latest_state and "page" in latest_state and "query" in latest_state:
             state_type = latest_state["state_type"]
             page = latest_state["page"]
             query = latest_state["query"]
@@ -40,6 +40,7 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
             # Check if user was browsing a category
             if state_type.startswith("category_") and query:
                 # The query field contains the category name
+                # Note: Categories are controlled values from CATEGORIES dict, so they are safe
                 back_callback = f"category|{query}|{page}"
             elif state_type == "catalog":
                 # User was browsing all products

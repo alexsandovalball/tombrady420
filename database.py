@@ -276,7 +276,11 @@ class Database:
                 return row[0] if row else None
     
     async def get_latest_pagination_state(self, user_id: int) -> Optional[Dict[str, Any]]:
-        """Get the most recent pagination state for a user."""
+        """Get the most recent pagination state for a user.
+        
+        Returns:
+            A dict with state_type, query, and page, or None if no state exists.
+        """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("""
