@@ -265,6 +265,25 @@ The bot uses SQLite by default (stored as `catalog.db`). The database contains:
 
 - **products**: All saved products with file_id, caption, message metadata
 - **pagination_state**: User pagination states (auto-cleaned after 10 minutes)
+- **ignored_messages**: Messages that should be skipped during scanning
+- **media_groups**: Tracks media groups (photo albums)
+- **pending_categorization**: Products awaiting admin categorization
+- **bot_users**: Tracks users who interact with the bot
+
+### Database Persistence
+
+⚠️ **Important**: By default, the database is stored locally and may be lost on redeploys.
+
+For production deployments, you should:
+1. **Use persistent disk storage** (Render, Docker volumes)
+2. **Use PostgreSQL** for better scalability
+3. **Set up regular backups**
+
+📚 See [DATABASE_PERSISTENCE.md](DATABASE_PERSISTENCE.md) for detailed instructions on:
+- Setting up persistent storage for different platforms
+- Importing existing channel messages after database loss
+- Migration from SQLite to PostgreSQL
+- Backup strategies
 
 To use PostgreSQL instead, modify `database.py` to use `asyncpg` or `psycopg2`.
 

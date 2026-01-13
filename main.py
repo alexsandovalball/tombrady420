@@ -330,7 +330,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             return
         
         try:
-            # Get all products before deletion to add them to ignore list
+            # Get all products before deletion
             all_products = await db.get_all_products_for_search()
             total_count = len(all_products)
             
@@ -344,9 +344,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             # Track deletion statistics
             channel_delete_success = 0
             channel_delete_failed = 0
-            ignored_added = 0
             
-            # Delete channel messages and add to ignore list
+            # Delete channel messages
             for product in all_products:
                 # Attempt to delete message from channel
                 if product.get("message_id") and product.get("chat_id"):
@@ -363,13 +362,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     except Exception as e:
                         channel_delete_failed += 1
                         logger.warning(f"Could not delete channel message {message_id} from chat {chat_id}: {e}")
-                    
-                    # Add to ignore list regardless of deletion success
-                    try:
-                        await db.add_ignored_message(message_id, chat_id)
-                        ignored_added += 1
-                    except Exception as e:
-                        logger.error(f"Failed to add message {message_id} to ignore list: {e}")
             
             # Delete all products from database in a transaction
             async with aiosqlite.connect(db.db_path) as conn:
@@ -391,14 +383,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             )
             
             if channel_delete_failed > 0:
-                text += f"⚠️ Channel messages failed: {channel_delete_failed}\n"
-            
-            text += f"🚫 Added {ignored_added} to ignore list"
+                text += f"⚠️ Channel messages failed: {channel_delete_failed}"
             
             await query.edit_message_text(text, parse_mode="Markdown")
             logger.warning(
                 f"Nuke complete - DB: {deleted_count}, Channel success: {channel_delete_success}, "
-                f"Channel failed: {channel_delete_failed}, Ignored: {ignored_added}"
+                f"Channel failed: {channel_delete_failed}"
             )
             
         except Exception as e:
