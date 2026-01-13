@@ -4,6 +4,8 @@ Main entry point for the Telegram media catalog bot.
 import os
 import logging
 import asyncio
+import json
+import aiosqlite
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update
@@ -22,13 +24,15 @@ from handlers.start import start_command
 from handlers.menu import menu_command, show_catalog_page, handle_catalog_pagination
 from handlers.search import handle_search, show_search_results, handle_search_pagination
 from handlers.product_view import show_product, handle_product_callback
-from handlers.admin import stats_command, delete_product, nuke_command
+from handlers.admin import stats_command, delete_product, nuke_command, recategorize_command, users_command
 from utils.helpers import (
     get_file_id_and_type,
     has_media,
     get_channel_id,
-    get_channel_username
+    get_channel_username,
+    get_admin_ids
 )
+from utils.categories import get_all_categories, get_category_display_name, get_subcategories, CATEGORIES
 
 # Load environment variables
 load_dotenv()
@@ -46,12 +50,159 @@ db = Database()
 # Rate limiting (simple in-memory store)
 user_last_message = {}
 
+# Media group collection (temporary storage for grouping messages)
+media_group_messages = {}
+media_group_timers = {}
+
+
+async def notify_admins_for_categorization(context: ContextTypes.DEFAULT_TYPE, product_id: int):
+    """Send categorization request to all admins for a new product."""
+    try:
+        product = await db.get_product(product_id)
+        if not product:
+            return
+        
+        # Get all admin IDs
+        admin_ids = get_admin_ids()
+        
+        if not admin_ids:
+            logger.warning("No admin IDs configured. Product will remain uncategorized.")
+            return
+        
+        # Create category selection keyboard
+        keyboard_buttons = []
+        
+        for category in get_all_categories():
+            display_name = get_category_display_name(category)
+            keyboard_buttons.append([
+                InlineKeyboardButton(display_name, callback_data=f"setcat|{product_id}|{category}")
+            ])
+        
+        keyboard = InlineKeyboardMarkup(keyboard_buttons)
+        
+        # Prepare notification message
+        caption = product.get("caption", "No caption")
+        caption_preview = caption[:100] + "..." if len(caption) > 100 else caption
+        
+        message_text = (
+            f"🆕 **New Product Added - Needs Categorization**\n\n"
+            f"📝 Caption: {caption_preview}\n"
+            f"🆔 Product ID: {product_id}\n\n"
+            f"Please select a category:"
+        )
+        
+        # Send notification to each admin
+        for admin_id in admin_ids:
+            try:
+                # Send the product media with categorization keyboard
+                from utils.helpers import send_media_message
+                
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=message_text,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
+                
+                logger.info(f"Sent categorization request to admin {admin_id} for product {product_id}")
+                
+            except Exception as e:
+                logger.error(f"Failed to notify admin {admin_id}: {e}")
+        
+        # Mark as pending categorization
+        await db.add_pending_categorization(product_id)
+        
+    except Exception as e:
+        logger.error(f"Error notifying admins for categorization: {e}")
+
+
+async def process_media_group(media_group_id: str, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    """Process collected media group messages after a short delay."""
+    await asyncio.sleep(1.5)  # Wait for all messages in the group to arrive
+    
+    if media_group_id not in media_group_messages:
+        return
+    
+    messages = media_group_messages.pop(media_group_id, [])
+    media_group_timers.pop(media_group_id, None)
+    
+    if not messages:
+        return
+    
+    # Sort messages by message_id to ensure consistent ordering
+    messages.sort(key=lambda m: m.message_id)
+    
+    # Use the first message for primary data
+    first_message = messages[0]
+    
+    # Get caption from the first message that has one
+    caption = None
+    for msg in messages:
+        if msg.caption or msg.text:
+            caption = msg.caption or msg.text
+            break
+    
+    if not caption:
+        caption = f"[Album - {len(messages)} items]"
+    
+    # Collect all file IDs
+    file_ids = []
+    file_types = []
+    
+    for msg in messages:
+        # Create a temporary update object for each message
+        temp_update = Update(0, channel_post=msg)
+        file_id, file_type = get_file_id_and_type(temp_update)
+        if file_id:
+            file_ids.append(file_id)
+            file_types.append(file_type)
+    
+    if not file_ids:
+        logger.warning(f"No file IDs extracted from media group {media_group_id}")
+        return
+    
+    # Check if this media group already has a product
+    existing_product_id = await db.get_or_create_media_group_product(media_group_id, chat_id)
+    
+    if existing_product_id:
+        # Update existing product with new file IDs
+        additional_files = json.dumps(list(zip(file_ids[1:], file_types[1:])))
+        await db.update_product_media(existing_product_id, additional_files)
+        logger.info(f"Updated media group product {existing_product_id} with {len(file_ids)} files")
+        return
+    
+    # Create new product with first file as primary (NO automatic categorization)
+    additional_files = json.dumps(list(zip(file_ids[1:], file_types[1:]))) if len(file_ids) > 1 else None
+    
+    product_id = await db.add_product(
+        file_id=file_ids[0],
+        file_type=file_types[0],
+        caption=caption,
+        message_id=first_message.message_id,
+        chat_id=chat_id,
+        media_group_id=media_group_id,
+        additional_file_ids=additional_files,
+        category=None,  # No automatic categorization
+        subcategory=None
+    )
+    
+    if product_id > 0:
+        # Register this media group
+        await db.register_media_group(media_group_id, chat_id, product_id)
+        logger.info(
+            f"New media group product saved: ID={product_id}, files={len(file_ids)}"
+        )
+        
+        # Notify admins for categorization
+        await notify_admins_for_categorization(context, product_id)
+
+
 
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handle new posts in the monitored channel.
     Detects media posts and saves them as products.
-    Supports photo albums (media groups).
+    Properly handles photo albums (media groups) as single entries.
     """
     try:
         message = update.channel_post
@@ -70,42 +221,24 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         
         # Handle media groups (photo albums)
         if message.media_group_id:
-            # For media groups, we'll store the first photo as the main product
-            # and store all file_ids in the caption or as a separate field
-            # For simplicity, we store the first media item
-            file_id, file_type = get_file_id_and_type(update)
+            # Collect messages from the same media group
+            media_group_id = message.media_group_id
             
-            if not file_id:
-                logger.warning(f"Could not extract file_id from media group message {message.message_id}")
-                return
+            if media_group_id not in media_group_messages:
+                media_group_messages[media_group_id] = []
             
-            # Get caption (usually on the first message of the group)
-            caption = message.caption or message.text or ""
+            media_group_messages[media_group_id].append(message)
             
-            # Check if we already processed this media group
-            existing = await db.get_product_by_message(message.message_id, message.chat.id)
-            if existing:
-                logger.debug(f"Media group already processed: {message.media_group_id}")
-                return
+            # Cancel existing timer if any
+            if media_group_id in media_group_timers:
+                media_group_timers[media_group_id].cancel()
             
-            # Save the first media item as the product
-            # Note: In a full implementation, you might want to store all media_group items
-            # For now, we store the first one and note it's part of a group in the caption
-            product_id = await db.add_product(
-                file_id=file_id,
-                file_type=file_type,
-                caption=caption or f"[Photo Album - {message.media_group_id}]",
-                message_id=message.message_id,
-                chat_id=message.chat.id
+            # Schedule processing of this media group (pass context)
+            timer = asyncio.create_task(
+                process_media_group(media_group_id, message.chat.id, context)
             )
+            media_group_timers[media_group_id] = timer
             
-            if product_id > 0:
-                logger.info(
-                    f"New product saved from media group: ID={product_id}, "
-                    f"message_id={message.message_id}, "
-                    f"media_group_id={message.media_group_id}, "
-                    f"type={file_type}"
-                )
             return
         
         # Handle single media messages
@@ -118,13 +251,15 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         # Get caption
         caption = message.caption or message.text or ""
         
-        # Save product to database
+        # Save product to database WITHOUT automatic categorization
         product_id = await db.add_product(
             file_id=file_id,
             file_type=file_type,
             caption=caption,
             message_id=message.message_id,
-            chat_id=message.chat.id
+            chat_id=message.chat.id,
+            category=None,  # No automatic categorization
+            subcategory=None
         )
         
         if product_id > 0:
@@ -133,6 +268,9 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 f"message_id={message.message_id}, "
                 f"type={file_type}"
             )
+            
+            # Notify admins for categorization
+            await notify_admins_for_categorization(context, product_id)
         else:
             logger.debug(f"Product already exists for message {message.message_id}")
             
@@ -151,11 +289,183 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     if callback_data == "noop":
         return
     
+    # Handle categories menu
+    if callback_data == "categories":
+        from handlers.menu import show_category_menu
+        await show_category_menu(update, context)
+        return
+    
+    # Handle nuke confirmations
+    if callback_data == "nuke_cancel":
+        await query.edit_message_text("✅ Nuke cancelled. No products were deleted.")
+        return
+    
+    if callback_data == "nuke_confirm1":
+        # Second confirmation
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💥 YES, NUKE EVERYTHING", callback_data="nuke_confirm2")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="nuke_cancel")]
+        ])
+        
+        await query.edit_message_text(
+            f"⚠️ **FINAL WARNING**\n\n"
+            f"This is your last chance to cancel!\n\n"
+            f"Are you ABSOLUTELY SURE you want to delete ALL products?\n\n"
+            f"Type /nuke again to start over if you're unsure.",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+        return
+    
+    if callback_data == "nuke_confirm2":
+        # Execute nuke
+        from utils.helpers import is_admin
+        if not is_admin(query.from_user.id):
+            await query.answer("❌ Only admins can nuke.", show_alert=True)
+            return
+        
+        try:
+            # Get all products before deletion to add them to ignore list
+            all_products = await db.get_all_products_for_search()
+            total_count = len(all_products)
+            
+            if total_count == 0:
+                await query.edit_message_text("📭 The catalog is already empty. Nothing to delete.")
+                return
+            
+            # Add all products to ignore list
+            for product in all_products:
+                if product.get("message_id") and product.get("chat_id"):
+                    await db.add_ignored_message(
+                        int(product["message_id"]),
+                        int(product["chat_id"])
+                    )
+            
+            # Delete all products from database
+            async with aiosqlite.connect(db.db_path) as conn:
+                cursor = await conn.execute("DELETE FROM products")
+                await conn.commit()
+                deleted_count = cursor.rowcount
+            
+            text = (
+                f"💥 **NUKE COMPLETE**\n\n"
+                f"🗑️ Deleted {deleted_count} product(s)\n"
+                f"🚫 Added to ignore list to prevent re-addition"
+            )
+            
+            await query.edit_message_text(text, parse_mode="Markdown")
+            logger.warning(f"Admin {query.from_user.id} executed nuke - deleted {deleted_count} products")
+            
+        except Exception as e:
+            logger.error(f"Error executing nuke: {e}")
+            await query.edit_message_text("❌ An error occurred while deleting products.")
+        
+        return
+    
     try:
         parts = callback_data.split("|")
         
+        # Handle category setting (admin categorization)
+        if parts[0] == "setcat":
+            if len(parts) >= 3:
+                product_id = int(parts[1])
+                category = parts[2]
+                
+                # Check if user is admin
+                from utils.helpers import is_admin
+                if not is_admin(update.effective_user.id):
+                    await query.answer("❌ Only admins can categorize products.", show_alert=True)
+                    return
+                
+                # Check if this is a main category or we need subcategory
+                subcategories = get_subcategories(category)
+                
+                if subcategories:
+                    # Show subcategory selection
+                    keyboard_buttons = []
+                    for subcat in subcategories:
+                        keyboard_buttons.append([
+                            InlineKeyboardButton(subcat.title(), callback_data=f"setsubcat|{product_id}|{category}|{subcat}")
+                        ])
+                    
+                    # Add "No Subcategory" option
+                    keyboard_buttons.append([
+                        InlineKeyboardButton("✅ Save without subcategory", callback_data=f"savecat|{product_id}|{category}|")
+                    ])
+                    
+                    keyboard = InlineKeyboardMarkup(keyboard_buttons)
+                    
+                    await query.edit_message_text(
+                        f"📂 Category: {get_category_display_name(category)}\n\n"
+                        f"Select a subcategory or save without one:",
+                        reply_markup=keyboard
+                    )
+                else:
+                    # No subcategories, save directly
+                    await db.update_product_category(product_id, category, None)
+                    await query.edit_message_text(
+                        f"✅ Product #{product_id} categorized as:\n"
+                        f"📂 {get_category_display_name(category)}"
+                    )
+                    logger.info(f"Product {product_id} categorized as {category} by admin {update.effective_user.id}")
+            else:
+                await query.answer("Invalid category data", show_alert=True)
+        
+        # Handle subcategory setting
+        elif parts[0] == "setsubcat":
+            if len(parts) >= 4:
+                product_id = int(parts[1])
+                category = parts[2]
+                subcategory = parts[3]
+                
+                # Confirmation message
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Confirm", callback_data=f"savecat|{product_id}|{category}|{subcategory}")],
+                    [InlineKeyboardButton("🔙 Back", callback_data=f"setcat|{product_id}|{category}")]
+                ])
+                
+                await query.edit_message_text(
+                    f"📂 Category: {get_category_display_name(category)}\n"
+                    f"📁 Subcategory: {subcategory.title()}\n\n"
+                    f"Confirm categorization?",
+                    reply_markup=keyboard
+                )
+            else:
+                await query.answer("Invalid subcategory data", show_alert=True)
+        
+        # Handle save category
+        elif parts[0] == "savecat":
+            if len(parts) >= 3:
+                product_id = int(parts[1])
+                category = parts[2]
+                subcategory = parts[3] if len(parts) > 3 and parts[3] else None
+                
+                # Save categorization
+                await db.update_product_category(product_id, category, subcategory)
+                
+                category_text = get_category_display_name(category)
+                if subcategory:
+                    category_text += f" • {subcategory.title()}"
+                
+                await query.edit_message_text(
+                    f"✅ Product #{product_id} categorized successfully!\n\n"
+                    f"📂 {category_text}"
+                )
+                logger.info(f"Product {product_id} categorized as {category}/{subcategory} by admin {update.effective_user.id}")
+            else:
+                await query.answer("Invalid save data", show_alert=True)
+        
+        # Handle category browsing
+        elif parts[0] == "category":
+            if len(parts) >= 3:
+                category = parts[1]
+                page = int(parts[2])
+                await handle_catalog_pagination(update, context, page, category)
+            else:
+                await query.answer("Invalid category data", show_alert=True)
+        
         # Handle pagination
-        if parts[0] == "page":
+        elif parts[0] == "page":
             if len(parts) == 3:  # page|catalog|2
                 state_type = parts[1]
                 page = int(parts[2])
@@ -211,6 +521,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Skip channel posts (handled separately)
     if update.channel_post:
         return
+    
+    # Track user
+    user = update.effective_user
+    await db.track_user(
+        user_id=user.id,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name
+    )
     
     # Rate limiting (simple)
     user_id = update.effective_user.id
@@ -299,6 +618,8 @@ def main():
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("nuke", nuke_command))
+    application.add_handler(CommandHandler("recategorize", recategorize_command))
+    application.add_handler(CommandHandler("users", users_command))
     
     # Channel post handler (for monitoring channel)
     channel_id = get_channel_id()

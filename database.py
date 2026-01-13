@@ -30,6 +30,10 @@ class Database:
                     caption TEXT,
                     message_id INTEGER NOT NULL,
                     chat_id INTEGER NOT NULL,
+                    media_group_id TEXT,
+                    additional_file_ids TEXT,
+                    category TEXT,
+                    subcategory TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(message_id, chat_id)
                 )
@@ -64,6 +68,57 @@ class Database:
                 )
             """)
             
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS media_groups (
+                    media_group_id TEXT PRIMARY KEY,
+                    chat_id INTEGER NOT NULL,
+                    product_id INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+                )
+            """)
+            
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS pending_categorization (
+                    product_id INTEGER PRIMARY KEY,
+                    notified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+                )
+            """)
+            
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS bot_users (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    last_name TEXT,
+                    first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    interaction_count INTEGER DEFAULT 1
+                )
+            """)
+            
+            # Add columns if they don't exist (for existing databases)
+            try:
+                await db.execute("ALTER TABLE products ADD COLUMN media_group_id TEXT")
+            except:
+                pass  # Column already exists
+            
+            try:
+                await db.execute("ALTER TABLE products ADD COLUMN additional_file_ids TEXT")
+            except:
+                pass
+            
+            try:
+                await db.execute("ALTER TABLE products ADD COLUMN category TEXT")
+            except:
+                pass
+            
+            try:
+                await db.execute("ALTER TABLE products ADD COLUMN subcategory TEXT")
+            except:
+                pass
+            
             await db.commit()
             logger.info("Database initialized successfully")
     
@@ -73,18 +128,24 @@ class Database:
         file_type: str,
         caption: Optional[str],
         message_id: int,
-        chat_id: int
+        chat_id: int,
+        media_group_id: Optional[str] = None,
+        additional_file_ids: Optional[str] = None,
+        category: Optional[str] = None,
+        subcategory: Optional[str] = None
     ) -> int:
         """Add a new product to the database."""
         async with aiosqlite.connect(self.db_path) as db:
             try:
                 cursor = await db.execute("""
-                    INSERT INTO products (file_id, file_type, caption, message_id, chat_id, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (file_id, file_type, caption or "", message_id, chat_id, datetime.now()))
+                    INSERT INTO products (file_id, file_type, caption, message_id, chat_id, 
+                                        media_group_id, additional_file_ids, category, subcategory, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (file_id, file_type, caption or "", message_id, chat_id, 
+                      media_group_id, additional_file_ids, category, subcategory, datetime.now()))
                 await db.commit()
                 product_id = cursor.lastrowid
-                logger.info(f"Product added: ID={product_id}, message_id={message_id}")
+                logger.info(f"Product added: ID={product_id}, message_id={message_id}, category={category}")
                 return product_id
             except aiosqlite.IntegrityError:
                 logger.warning(f"Product already exists: message_id={message_id}, chat_id={chat_id}")
@@ -266,4 +327,142 @@ class Database:
             """, (message_id, chat_id)) as cursor:
                 row = await cursor.fetchone()
                 return row is not None
+    
+    async def get_or_create_media_group_product(self, media_group_id: str, chat_id: int) -> Optional[int]:
+        """Get existing product_id for a media group or return None if it doesn't exist."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT product_id FROM media_groups 
+                WHERE media_group_id = ? AND chat_id = ?
+            """, (media_group_id, chat_id)) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else None
+    
+    async def register_media_group(self, media_group_id: str, chat_id: int, product_id: int):
+        """Register a media group with its product."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT OR REPLACE INTO media_groups (media_group_id, chat_id, product_id, created_at)
+                VALUES (?, ?, ?, ?)
+            """, (media_group_id, chat_id, product_id, datetime.now()))
+            await db.commit()
+    
+    async def update_product_media(self, product_id: int, additional_file_ids: str):
+        """Update a product's additional file IDs for media groups."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE products SET additional_file_ids = ? WHERE id = ?
+            """, (additional_file_ids, product_id))
+            await db.commit()
+    
+    async def get_products_by_category(self, category: str, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
+        """Get products filtered by category."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            query = "SELECT * FROM products WHERE category = ? ORDER BY created_at DESC"
+            if limit:
+                query += f" LIMIT {limit} OFFSET {offset}"
+            async with db.execute(query, (category,)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+    
+    async def count_products_by_category(self, category: str) -> int:
+        """Count products in a category."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT COUNT(*) FROM products WHERE category = ?", (category,)) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else 0
+    
+    async def get_all_categories(self) -> List[str]:
+        """Get list of all unique categories."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT DISTINCT category FROM products 
+                WHERE category IS NOT NULL 
+                ORDER BY category
+            """) as cursor:
+                rows = await cursor.fetchall()
+                return [row[0] for row in rows]
+    
+    async def update_product_category(self, product_id: int, category: str, subcategory: Optional[str] = None):
+        """Update a product's category and subcategory."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE products SET category = ?, subcategory = ? WHERE id = ?
+            """, (category, subcategory, product_id))
+            await db.commit()
+            
+            # Remove from pending categorization if it exists
+            await db.execute("""
+                DELETE FROM pending_categorization WHERE product_id = ?
+            """, (product_id,))
+            await db.commit()
+    
+    async def add_pending_categorization(self, product_id: int):
+        """Mark a product as needing categorization."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT OR IGNORE INTO pending_categorization (product_id, notified_at)
+                VALUES (?, ?)
+            """, (product_id, datetime.now()))
+            await db.commit()
+    
+    async def remove_pending_categorization(self, product_id: int):
+        """Remove a product from pending categorization."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                DELETE FROM pending_categorization WHERE product_id = ?
+            """, (product_id,))
+            await db.commit()
+    
+    async def get_pending_categorizations(self) -> List[int]:
+        """Get list of product IDs that need categorization."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT product_id FROM pending_categorization ORDER BY notified_at
+            """) as cursor:
+                rows = await cursor.fetchall()
+                return [row[0] for row in rows]
+    
+    async def track_user(self, user_id: int, username: Optional[str] = None, 
+                        first_name: Optional[str] = None, last_name: Optional[str] = None):
+        """Track or update a bot user."""
+        async with aiosqlite.connect(self.db_path) as db:
+            # Check if user exists
+            async with db.execute("SELECT user_id FROM bot_users WHERE user_id = ?", (user_id,)) as cursor:
+                exists = await cursor.fetchone()
+            
+            if exists:
+                # Update existing user
+                await db.execute("""
+                    UPDATE bot_users 
+                    SET username = ?, first_name = ?, last_name = ?, 
+                        last_seen = ?, interaction_count = interaction_count + 1
+                    WHERE user_id = ?
+                """, (username, first_name, last_name, datetime.now(), user_id))
+            else:
+                # Insert new user
+                await db.execute("""
+                    INSERT INTO bot_users (user_id, username, first_name, last_name, first_seen, last_seen)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (user_id, username, first_name, last_name, datetime.now(), datetime.now()))
+            
+            await db.commit()
+    
+    async def get_all_users(self) -> List[Dict[str, Any]]:
+        """Get all bot users."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM bot_users ORDER BY last_seen DESC
+            """) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+    
+    async def count_users(self) -> int:
+        """Get total number of users."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT COUNT(*) FROM bot_users") as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else 0
 
