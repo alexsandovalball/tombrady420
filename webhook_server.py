@@ -74,7 +74,7 @@ async def webhook(request: Request, token: str):
     """
     # Validate the secret token
     if token != WEBHOOK_SECRET:
-        logger.warning("Invalid webhook token received: %s", token)
+        logger.warning("Invalid webhook token received")
         raise HTTPException(status_code=403, detail="Invalid token")
     
     try:
