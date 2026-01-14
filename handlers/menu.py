@@ -8,7 +8,7 @@ from telegram.error import TelegramError
 from database import Database
 from utils.pagination import create_pagination_keyboard, paginate_items
 from utils.helpers import is_admin
-from utils.categories import get_all_categories, get_category_display_name, CATEGORIES
+from utils.categories import get_all_categories, get_category_display_name, get_subcategories, CATEGORIES
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -31,7 +31,6 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
             button_text = f"{display_name} ({count})"
             
             # Check if category has subcategories
-            from utils.categories import get_subcategories
             subcategories = get_subcategories(category)
             
             if subcategories:
@@ -96,8 +95,6 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str):
     """Show subcategory selection menu for a given category."""
     try:
-        from utils.categories import get_subcategories
-        
         # Get subcategories for this category
         subcategories = get_subcategories(category)
         

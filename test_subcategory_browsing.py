@@ -12,6 +12,7 @@ import os
 import sys
 import tempfile
 from database import Database
+from utils.categories import get_subcategories, get_all_categories
 
 
 async def test_database_subcategory_methods():
@@ -178,8 +179,6 @@ async def test_subcategory_logic():
     print("\n" + "=" * 60)
     print("Testing Subcategory Logic Integration")
     print("=" * 60)
-    
-    from utils.categories import get_subcategories, get_all_categories
     
     # Test 1: Verify categories with subcategories
     print("\n[Test 1] Verifying categories with subcategories...")
