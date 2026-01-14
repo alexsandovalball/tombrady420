@@ -501,6 +501,25 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             else:
                 await query.answer("Invalid category data", show_alert=True)
         
+        # Handle browse_category (show subcategory menu)
+        elif parts[0] == "browse_category":
+            if len(parts) >= 2:
+                category = parts[1]
+                from handlers.menu import show_subcategory_menu
+                await show_subcategory_menu(update, context, category)
+            else:
+                await query.answer("Invalid category data", show_alert=True)
+        
+        # Handle subcategory browsing
+        elif parts[0] == "subcategory":
+            if len(parts) >= 4:
+                category = parts[1]
+                subcategory = parts[2]
+                page = int(parts[3])
+                await handle_catalog_pagination(update, context, page, category, subcategory)
+            else:
+                await query.answer("Invalid subcategory data", show_alert=True)
+        
         # Handle pagination
         elif parts[0] == "page":
             if len(parts) == 3:  # page|catalog|2

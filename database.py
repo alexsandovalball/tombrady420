@@ -407,6 +407,42 @@ class Database:
                 rows = await cursor.fetchall()
                 return [row[0] for row in rows]
     
+    async def get_products_by_category_and_subcategory(
+        self, category: str, subcategory: str, limit: int = None, offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Get products filtered by category and subcategory."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            query = "SELECT * FROM products WHERE category = ? AND subcategory = ? ORDER BY created_at DESC"
+            if limit:
+                query += f" LIMIT {limit} OFFSET {offset}"
+            async with db.execute(query, (category, subcategory)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+    
+    async def count_products_by_category_and_subcategory(self, category: str, subcategory: str) -> int:
+        """Count products in a category and subcategory."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM products WHERE category = ? AND subcategory = ?",
+                (category, subcategory)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else 0
+    
+    async def get_subcategories_with_counts(self, category: str) -> List[Dict[str, Any]]:
+        """Get subcategories for a category with product counts."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT subcategory, COUNT(*) as count
+                FROM products
+                WHERE category = ? AND subcategory IS NOT NULL
+                GROUP BY subcategory
+                ORDER BY subcategory
+            """, (category,)) as cursor:
+                rows = await cursor.fetchall()
+                return [{"subcategory": row[0], "count": row[1]} for row in rows]
+    
     async def update_product_category(self, product_id: int, category: str, subcategory: Optional[str] = None):
         """Update a product's category and subcategory."""
         async with aiosqlite.connect(self.db_path) as db:
