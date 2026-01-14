@@ -28,8 +28,20 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
             count = await db.count_products_by_category(category)
             display_name = get_category_display_name(category)
             button_text = f"{display_name} ({count})"
+            
+            # Check if category has subcategories
+            from utils.categories import get_subcategories
+            subcategories = get_subcategories(category)
+            
+            if subcategories:
+                # Use browse_category to show subcategory menu
+                callback_data = f"browse_category|{category}"
+            else:
+                # No subcategories, go directly to products
+                callback_data = f"category|{category}|1"
+            
             category_buttons.append([
-                InlineKeyboardButton(button_text, callback_data=f"category|{category}|1")
+                InlineKeyboardButton(button_text, callback_data=callback_data)
             ])
         
         # Add "All Products" option
@@ -80,11 +92,95 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(error_text)
 
 
-async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1, category: str = None):
-    """Show a page of the catalog, optionally filtered by category."""
+async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str):
+    """Show subcategory selection menu for a given category."""
     try:
-        # Get products (filtered by category if specified)
-        if category:
+        from utils.categories import get_subcategories
+        
+        # Get subcategories for this category
+        subcategories = get_subcategories(category)
+        
+        if not subcategories:
+            # No subcategories, go directly to catalog
+            await show_catalog_page(update, context, page=1, category=category)
+            return
+        
+        # Get subcategory counts from database
+        subcategory_counts = await db.get_subcategories_with_counts(category)
+        count_dict = {item["subcategory"]: item["count"] for item in subcategory_counts}
+        
+        # Build subcategory buttons
+        subcategory_buttons = []
+        
+        for subcat in subcategories:
+            count = count_dict.get(subcat, 0)
+            button_text = f"{subcat.title()} ({count})"
+            subcategory_buttons.append([
+                InlineKeyboardButton(button_text, callback_data=f"subcategory|{category}|{subcat}|1")
+            ])
+        
+        # Add "All in Category" option
+        all_count = await db.count_products_by_category(category)
+        subcategory_buttons.insert(0, [
+            InlineKeyboardButton(f"📦 All {get_category_display_name(category)} ({all_count})", 
+                                callback_data=f"category|{category}|1")
+        ])
+        
+        # Add back button
+        subcategory_buttons.append([
+            InlineKeyboardButton("🔙 Back to Categories", callback_data="categories")
+        ])
+        
+        keyboard = InlineKeyboardMarkup(subcategory_buttons)
+        
+        text = (
+            f"📂 **{get_category_display_name(category)}**\n\n"
+            f"Select a subcategory to browse products:"
+        )
+        
+        if update.callback_query:
+            message = update.callback_query.message
+            if message.photo or message.video or message.document or message.animation or message.audio:
+                try:
+                    await message.delete()
+                except:
+                    pass
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=text,
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
+                )
+            else:
+                await update.callback_query.edit_message_text(
+                    text,
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
+                )
+        else:
+            await update.message.reply_text(
+                text,
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+            
+    except Exception as e:
+        logger.error(f"Error showing subcategory menu: {e}")
+        error_text = "❌ An error occurred. Please try again."
+        if update.callback_query:
+            await update.callback_query.answer(error_text, show_alert=True)
+        else:
+            await update.message.reply_text(error_text)
+
+
+async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1, category: str = None, subcategory: str = None):
+    """Show a page of the catalog, optionally filtered by category and subcategory."""
+    try:
+        # Get products (filtered by category and/or subcategory if specified)
+        if category and subcategory:
+            all_products = await db.get_products_by_category_and_subcategory(category, subcategory)
+            title = f"📋 {get_category_display_name(category)} • {subcategory.title()}"
+        elif category:
             all_products = await db.get_products_by_category(category)
             title = f"📋 {get_category_display_name(category)}"
         else:
@@ -92,11 +188,27 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             title = "📋 All Products"
         
         if not all_products:
-            text = f"📭 No products in this {('category' if category else 'catalog')}."
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back to Categories", callback_data="categories")],
-                [InlineKeyboardButton("🔄 Refresh", callback_data=f"{'category|' + category + '|' if category else 'menu|'}1")]
-            ])
+            text = f"📭 No products in this {('subcategory' if subcategory else 'category' if category else 'catalog')}."
+            
+            # Build back button based on context
+            back_buttons = []
+            if subcategory and category:
+                back_buttons.append([InlineKeyboardButton("🔙 Back to Subcategories", callback_data=f"browse_category|{category}")])
+            elif category:
+                back_buttons.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="categories")])
+            else:
+                back_buttons.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="categories")])
+            
+            # Add refresh button
+            if subcategory and category:
+                refresh_data = f"subcategory|{category}|{subcategory}|1"
+            elif category:
+                refresh_data = f"category|{category}|1"
+            else:
+                refresh_data = "menu|1"
+            back_buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data=refresh_data)])
+            
+            keyboard = InlineKeyboardMarkup(back_buttons)
             
             if update.callback_query:
                 await update.callback_query.edit_message_text(text, reply_markup=keyboard)
@@ -109,7 +221,12 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         
         # Save pagination state
         user_id = update.effective_user.id
-        state_key = f"category_{category}" if category else "catalog"
+        if subcategory and category:
+            state_key = f"subcategory_{category}_{subcategory}"
+        elif category:
+            state_key = f"category_{category}"
+        else:
+            state_key = "catalog"
         await db.save_pagination_state(user_id, state_key, category or "", page)
         
         # Create keyboard with product buttons
@@ -130,19 +247,32 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             nav_buttons = []
             
             if page > 1:
-                prev_data = f"{'category|' + category + '|' if category else 'page|catalog|'}{page - 1}"
+                if subcategory and category:
+                    prev_data = f"subcategory|{category}|{subcategory}|{page - 1}"
+                elif category:
+                    prev_data = f"category|{category}|{page - 1}"
+                else:
+                    prev_data = f"page|catalog|{page - 1}"
                 nav_buttons.append(InlineKeyboardButton("← Previous", callback_data=prev_data))
             
             nav_buttons.append(InlineKeyboardButton(f"Page {page}/{total_pages}", callback_data="noop"))
             
             if page < total_pages:
-                next_data = f"{'category|' + category + '|' if category else 'page|catalog|'}{page + 1}"
+                if subcategory and category:
+                    next_data = f"subcategory|{category}|{subcategory}|{page + 1}"
+                elif category:
+                    next_data = f"category|{category}|{page + 1}"
+                else:
+                    next_data = f"page|catalog|{page + 1}"
                 nav_buttons.append(InlineKeyboardButton("Next →", callback_data=next_data))
             
             keyboard_buttons.append(nav_buttons)
         
-        # Add back to categories button
-        keyboard_buttons.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="categories")])
+        # Add appropriate back button
+        if subcategory and category:
+            keyboard_buttons.append([InlineKeyboardButton("🔙 Back to Subcategories", callback_data=f"browse_category|{category}")])
+        else:
+            keyboard_buttons.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="categories")])
         
         keyboard = InlineKeyboardMarkup(keyboard_buttons)
         
@@ -186,7 +316,7 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             await update.message.reply_text(error_text)
 
 
-async def handle_catalog_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int, category: str = None):
+async def handle_catalog_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int, category: str = None, subcategory: str = None):
     """Handle catalog pagination callback."""
-    await show_catalog_page(update, context, page, category)
+    await show_catalog_page(update, context, page, category, subcategory)
 
