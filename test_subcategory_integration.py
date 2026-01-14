@@ -8,7 +8,7 @@ This test simulates the callback query flow to verify that:
 """
 import asyncio
 import sys
-from utils.categories import get_subcategories, get_all_categories, CATEGORIES
+from utils.categories import get_subcategories, get_all_categories
 
 
 def test_callback_data_parsing():

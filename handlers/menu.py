@@ -4,6 +4,7 @@ Menu and catalog handlers.
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
+from telegram.error import TelegramError
 from database import Database
 from utils.pagination import create_pagination_keyboard, paginate_items
 from utils.helpers import is_admin
@@ -62,8 +63,8 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if message.photo or message.video or message.document or message.animation or message.audio:
                 try:
                     await message.delete()
-                except:
-                    pass
+                except TelegramError:
+                    pass  # Message may already be deleted or not accessible
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text=text,
@@ -143,8 +144,8 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
             if message.photo or message.video or message.document or message.animation or message.audio:
                 try:
                     await message.delete()
-                except:
-                    pass
+                except TelegramError:
+                    pass  # Message may already be deleted or not accessible
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text=text,
@@ -285,7 +286,7 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 # Delete the media message and send a new text message
                 try:
                     await message.delete()
-                except:
+                except TelegramError:
                     pass  # If deletion fails, continue anyway
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,

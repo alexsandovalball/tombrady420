@@ -179,7 +179,7 @@ async def test_subcategory_logic():
     print("Testing Subcategory Logic Integration")
     print("=" * 60)
     
-    from utils.categories import get_subcategories, get_all_categories, CATEGORIES
+    from utils.categories import get_subcategories, get_all_categories
     
     # Test 1: Verify categories with subcategories
     print("\n[Test 1] Verifying categories with subcategories...")
