@@ -52,8 +52,11 @@ async def test_escape_markdown_with_none_values():
         print(f"\n  Testing user {i}: {user}")
         
         # Simulate the fixed code from handlers/admin.py
-        username_raw = user.get('username', '')
-        username = escape_markdown(f"@{str(username_raw)}") if username_raw else "No username"
+        username_raw = user.get('username')
+        if username_raw:
+            username = escape_markdown(f"@{str(username_raw)}")
+        else:
+            username = "No username"
         first_name = escape_markdown(str(user.get('first_name', 'N/A')))
         last_name = escape_markdown(str(user.get('last_name', '')))
         full_name = f"{first_name} {last_name}".strip()
@@ -102,8 +105,11 @@ async def test_escape_markdown_with_none_values():
         
         for user in users:
             # Apply the fixed logic
-            username_raw = user.get('username', '')
-            username = escape_markdown(f"@{str(username_raw)}") if username_raw else "No username"
+            username_raw = user.get('username')
+            if username_raw:
+                username = escape_markdown(f"@{str(username_raw)}")
+            else:
+                username = "No username"
             first_name = escape_markdown(str(user.get('first_name', 'N/A')))
             last_name = escape_markdown(str(user.get('last_name', '')))
             full_name = f"{first_name} {last_name}".strip()
