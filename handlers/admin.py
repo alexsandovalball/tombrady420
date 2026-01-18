@@ -96,9 +96,9 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for i, user in enumerate(users[:50], 1):
             # Escape Markdown characters in user data to prevent parsing errors
             username_raw = user.get('username', '')
-            username = f"@{escape_markdown(username_raw)}" if username_raw else "No username"
-            first_name = escape_markdown(user.get('first_name', 'N/A'))
-            last_name = escape_markdown(user.get('last_name', ''))
+            username = escape_markdown(f"@{str(username_raw)}") if username_raw else "No username"
+            first_name = escape_markdown(str(user.get('first_name', 'N/A')))
+            last_name = escape_markdown(str(user.get('last_name', '')))
             full_name = f"{first_name} {last_name}".strip()
             
             last_seen = user.get('last_seen', 'Unknown')
