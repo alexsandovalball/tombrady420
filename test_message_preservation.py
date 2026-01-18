@@ -17,6 +17,7 @@ async def test_message_preservation():
     
     # Create temporary database for this test
     test_db_fd, test_db_path = tempfile.mkstemp(suffix='.db', prefix='test_message_preservation_')
+    os.close(test_db_fd)  # Close file descriptor immediately for aiosqlite
     
     # Initialize test database
     db = Database(test_db_path)
@@ -143,7 +144,6 @@ async def test_message_preservation():
     finally:
         # Clean up test database
         try:
-            os.close(test_db_fd)
             os.unlink(test_db_path)
             print(f"\n🧹 Cleaned up test database: {test_db_path}")
         except:
