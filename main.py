@@ -30,7 +30,8 @@ from utils.helpers import (
     has_media,
     get_channel_id,
     get_channel_username,
-    get_admin_ids
+    get_admin_ids,
+    is_admin
 )
 from utils.categories import get_all_categories, get_category_display_name, get_subcategories, CATEGORIES
 
@@ -324,7 +325,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     
     if callback_data == "nuke_confirm2":
         # Execute nuke
-        from utils.helpers import is_admin
         if not is_admin(query.from_user.id):
             await query.answer("❌ Only admins can nuke.", show_alert=True)
             return
@@ -409,7 +409,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 category = parts[2]
                 
                 # Check if user is admin
-                from utils.helpers import is_admin
                 if not is_admin(update.effective_user.id):
                     await query.answer("❌ Only admins can categorize products.", show_alert=True)
                     return
@@ -553,6 +552,33 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         elif parts[0] == "delete":
             product_id = int(parts[1])
             await delete_product(update, context, product_id)
+        
+        # Handle recategorize
+        elif parts[0] == "recategorize":
+            product_id = int(parts[1])
+            
+            # Check if user is admin
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can recategorize products.", show_alert=True)
+                return
+            
+            # Show category selection menu (same as initial categorization)
+            keyboard_buttons = []
+            
+            for category in get_all_categories():
+                display_name = get_category_display_name(category)
+                keyboard_buttons.append([
+                    InlineKeyboardButton(display_name, callback_data=f"setcat|{product_id}|{category}")
+                ])
+            
+            keyboard = InlineKeyboardMarkup(keyboard_buttons)
+            
+            await query.edit_message_text(
+                f"📂 **Recategorize Product #{product_id}**\n\n"
+                f"Please select a new category:",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
         
         else:
             await query.answer("Unknown action", show_alert=True)

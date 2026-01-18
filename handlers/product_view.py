@@ -71,9 +71,13 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
             [InlineKeyboardButton("🔙 Back to results", callback_data=back_callback)]
         ]
         
-        # Add delete button for admins
+        # Add delete and recategorize buttons for admins
         if is_admin(user_id):
             keyboard_buttons.append([
+                InlineKeyboardButton(
+                    "🔄 Recategorize",
+                    callback_data=f"recategorize|{product_id}"
+                ),
                 InlineKeyboardButton(
                     "🗑 Delete this product",
                     callback_data=f"delete|{product_id}"
