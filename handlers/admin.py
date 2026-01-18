@@ -6,6 +6,7 @@ import asyncio
 import aiosqlite
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
+from telegram.helpers import escape_markdown
 from database import Database
 from utils.helpers import is_admin, get_channel_id, get_channel_username
 
@@ -93,10 +94,12 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Create user list text (show first 50)
         user_list_parts = []
         for i, user in enumerate(users[:50], 1):
-            username = f"@{user['username']}" if user.get('username') else "No username"
-            first_name = user.get('first_name', 'N/A')
-            last_name = user.get('last_name', '')
-            full_name = f"{first_name} {last_name}".strip()
+            # Escape Markdown characters in user data to prevent parsing errors
+            username_raw = user.get('username', '')
+            username = f"@{escape_markdown(username_raw)}" if username_raw else "No username"
+            first_name = escape_markdown(user.get('first_name', 'N/A'))
+            last_name = escape_markdown(user.get('last_name', ''))
+            full_name = f"{first_name} {last_name}".strip() if last_name else first_name
             
             last_seen = user.get('last_seen', 'Unknown')
             if last_seen != 'Unknown':
