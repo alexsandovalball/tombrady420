@@ -122,9 +122,12 @@ async def test_escape_markdown_with_none_values():
         import os
         try:
             os.close(test_db_fd)
+        except (OSError, ValueError):
+            pass  # Already closed or invalid fd
+        try:
             os.unlink(test_db_path)
-        except:
-            pass
+        except (OSError, FileNotFoundError):
+            pass  # File doesn't exist or can't be deleted
     
     print("\n" + "=" * 60)
     print("✅ All tests passed!")
