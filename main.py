@@ -30,7 +30,8 @@ from utils.helpers import (
     has_media,
     get_channel_id,
     get_channel_username,
-    get_admin_ids
+    get_admin_ids,
+    is_admin
 )
 from utils.categories import get_all_categories, get_category_display_name, get_subcategories, CATEGORIES
 
@@ -324,7 +325,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     
     if callback_data == "nuke_confirm2":
         # Execute nuke
-        from utils.helpers import is_admin
         if not is_admin(query.from_user.id):
             await query.answer("❌ Only admins can nuke.", show_alert=True)
             return
@@ -409,7 +409,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 category = parts[2]
                 
                 # Check if user is admin
-                from utils.helpers import is_admin
                 if not is_admin(update.effective_user.id):
                     await query.answer("❌ Only admins can categorize products.", show_alert=True)
                     return
@@ -559,7 +558,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             product_id = int(parts[1])
             
             # Check if user is admin
-            from utils.helpers import is_admin
             if not is_admin(update.effective_user.id):
                 await query.answer("❌ Only admins can recategorize products.", show_alert=True)
                 return
