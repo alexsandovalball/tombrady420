@@ -26,11 +26,11 @@ View all bot users (admin only)
 - Useful for monitoring bot engagement
 
 ### `/nuke`
-Delete ALL products (admin only)
+Delete ALL products from catalog (admin only)
 - **Double confirmation required!**
 - First confirmation: "Are you sure?"
 - Second confirmation: "Are you ABSOLUTELY SURE?"
-- Adds deleted products to ignore list to prevent re-addition
+- **Channel messages remain intact** - admins must manually clear channel if needed
 - Use with extreme caution!
 
 ### `/recategorize`
@@ -134,7 +134,7 @@ _(No subcategories)_
 - **Never use `/nuke` unless absolutely necessary**
 - The double confirmation exists for a reason
 - Consider backing up catalog.db before nuking
-- Deleted products are added to ignore list (won't be re-added if still in channel)
+- **Deleted products leave channel messages intact** - you can manually clear channel messages if desired
 
 ### Uncategorized Products
 - Use `/recategorize` to find products that weren't categorized

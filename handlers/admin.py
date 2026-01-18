@@ -168,31 +168,7 @@ async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE, pro
             )
             return
         
-        # Delete from channel if possible
-        if product.get("message_id") and product.get("chat_id"):
-            try:
-                # Ensure chat_id is an integer (SQLite might return it as string)
-                chat_id = int(product["chat_id"])
-                message_id = int(product["message_id"])
-                
-                # Use the stored chat_id from the product
-                await context.bot.delete_message(
-                    chat_id=chat_id,
-                    message_id=message_id
-                )
-                logger.info(f"✅ Deleted message {message_id} from channel {chat_id}")
-            except Exception as e:
-                error_msg = str(e)
-                logger.error(f"❌ Could not delete message from channel: {error_msg}")
-                logger.error(f"   chat_id: {product.get('chat_id')}, message_id: {product.get('message_id')}")
-                # Show user a more informative error
-                await update.callback_query.answer(
-                    f"⚠️ Product deleted from catalog, but couldn't delete from channel: {error_msg[:50]}",
-                    show_alert=True
-                )
-                # Continue with database deletion even if channel deletion fails
-        
-        # Delete from database
+        # Delete from database (channel message will remain)
         deleted = await db.delete_product(product_id)
         
         if deleted:

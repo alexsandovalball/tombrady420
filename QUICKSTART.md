@@ -27,7 +27,6 @@ ADMIN_IDS=123456789,987654321
 1. Add your bot to your public channel as an **Administrator**
 2. Grant permissions:
    - ✅ Can post messages
-   - ✅ Can delete messages
 3. Make sure the channel is public or the bot has access
 
 ## 4. Run the Bot
