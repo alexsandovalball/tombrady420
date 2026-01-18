@@ -341,29 +341,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             
             logger.warning(f"Admin {query.from_user.id} executing nuke - deleting {total_count} products")
             
-            # Track deletion statistics
-            channel_delete_success = 0
-            channel_delete_failed = 0
-            
-            # Delete channel messages
-            for product in all_products:
-                # Attempt to delete message from channel
-                if product.get("message_id") and product.get("chat_id"):
-                    try:
-                        chat_id = int(product["chat_id"])
-                        message_id = int(product["message_id"])
-                        
-                        await context.bot.delete_message(
-                            chat_id=chat_id,
-                            message_id=message_id
-                        )
-                        channel_delete_success += 1
-                        logger.debug(f"Deleted channel message {message_id} from chat {chat_id}")
-                    except Exception as e:
-                        channel_delete_failed += 1
-                        logger.warning(f"Could not delete channel message {message_id} from chat {chat_id}: {e}")
-            
-            # Delete all products from database in a transaction
+            # Delete all products from database in a transaction (channel messages will remain)
             async with aiosqlite.connect(db.db_path) as conn:
                 try:
                     cursor = await conn.execute("DELETE FROM products")
@@ -379,17 +357,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             text = (
                 f"💥 **NUKE COMPLETE**\n\n"
                 f"🗑️ Deleted {deleted_count} product(s) from database\n"
-                f"✅ Channel messages deleted: {channel_delete_success}\n"
+                f"📝 Channel messages remain intact (manual cleanup required)"
             )
-            
-            if channel_delete_failed > 0:
-                text += f"⚠️ Channel messages failed: {channel_delete_failed}"
             
             await query.edit_message_text(text, parse_mode="Markdown")
-            logger.warning(
-                f"Nuke complete - DB: {deleted_count}, Channel success: {channel_delete_success}, "
-                f"Channel failed: {channel_delete_failed}"
-            )
+            logger.warning(f"Nuke complete - DB: {deleted_count}, Channel messages preserved")
             
         except Exception as e:
             logger.error(f"Error executing nuke: {e}", exc_info=True)

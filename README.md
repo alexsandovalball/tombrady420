@@ -17,7 +17,7 @@ A complete, production-ready Telegram bot that acts as a media product catalog. 
 
 - Python 3.8+
 - Telegram Bot Token (from [@BotFather](https://t.me/botfather))
-- A public Telegram channel where the bot is an admin with "Can post messages" and "Can delete messages" rights
+- A public Telegram channel where the bot is an admin with "Can post messages" rights
 
 ## Installation
 
@@ -65,7 +65,6 @@ ADMIN_IDS=123456789,987654321
 1. Add the bot to your public channel as an **Administrator**
 2. Grant the bot these permissions:
    - ✅ Can post messages
-   - ✅ Can delete messages
 3. Make sure the channel is public or the bot has access
 
 ## Usage
@@ -104,7 +103,7 @@ The bot will:
    - View individual products with original media
 
 3. **Admin Actions**: Admins can:
-   - Delete products (removes from both database and channel)
+   - Delete products from catalog (channel messages remain intact for manual cleanup)
    - View statistics
 
 ## Deployment
@@ -303,7 +302,7 @@ To use PostgreSQL instead, modify `database.py` to use `asyncpg` or `psycopg2`.
 
 ### Permission errors
 
-- Ensure the bot has "Can post messages" and "Can delete messages" rights
+- Ensure the bot has "Can post messages" rights
 - Check that the bot hasn't been removed from the channel
 
 ### Database errors
