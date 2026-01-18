@@ -99,7 +99,7 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             username = f"@{escape_markdown(username_raw)}" if username_raw else "No username"
             first_name = escape_markdown(user.get('first_name', 'N/A'))
             last_name = escape_markdown(user.get('last_name', ''))
-            full_name = f"{first_name} {last_name}".strip() if last_name else first_name
+            full_name = f"{first_name} {last_name}".strip()
             
             last_seen = user.get('last_seen', 'Unknown')
             if last_seen != 'Unknown':
