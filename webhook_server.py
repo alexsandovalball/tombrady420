@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request, Response, status
 from telegram import Update
 from telegram.ext import Application
 
-from config import Config
+from config import Config, ConfigError
 # Import the bot setup functions
 from main import (
     post_init,
@@ -51,7 +51,7 @@ async def setup_application():
     # Validate configuration on startup
     try:
         Config.validate()
-    except ValueError as e:
+    except ConfigError as e:
         logger.error(str(e))
         raise
     

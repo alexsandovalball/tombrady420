@@ -17,7 +17,7 @@ from telegram.ext import (
 )
 from telegram.error import TelegramError
 
-from config import Config
+from config import Config, ConfigError
 from database import Database
 from handlers.start import start_command
 from handlers.menu import menu_command, show_catalog_page, handle_catalog_pagination
@@ -648,7 +648,7 @@ def main():
     # Validate configuration on startup
     try:
         Config.validate()
-    except ValueError as e:
+    except ConfigError as e:
         logger.error(str(e))
         return
     
