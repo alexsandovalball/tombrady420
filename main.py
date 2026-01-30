@@ -288,7 +288,6 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle all callback queries (buttons)."""
     query = update.callback_query
-    await query.answer()  # Always answer callback to prevent loading spinner
     
     # Check if user is blocked (except for admins)
     user_id = update.effective_user.id
@@ -300,6 +299,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 show_alert=True
             )
             return
+    
+    await query.answer()  # Answer callback to prevent loading spinner
     
     callback_data = query.data
     
@@ -622,6 +623,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             else:
                 # Re-subscribe
                 await db.set_user_notifications(user_id, True)
+                
+                # Remove buttons after subscribing
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                except:
+                    pass  # Message may not have markup to edit
+                
                 await query.answer("🔔 You've been subscribed to notifications!", show_alert=True)
                 logger.info(f"User {user_id} subscribed via button")
         
@@ -629,11 +637,26 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         elif callback_data == "confirm_unsubscribe":
             user_id = update.effective_user.id
             await db.set_user_notifications(user_id, False)
+            
+            # Remove confirmation buttons after action
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except:
+                pass  # Message may not have markup to edit
+            
             await query.answer("🔕 You've been unsubscribed from notifications. Use /subscribe to re-enable.", show_alert=True)
             logger.info(f"User {user_id} unsubscribed via button")
         
         # Handle cancellation of unsubscribe
         elif callback_data == "cancel_unsubscribe":
+            # Restore original notification keyboard
+            try:
+                # Get product_id from context if available to restore original button
+                # For now, just remove the confirmation buttons
+                await query.edit_message_reply_markup(reply_markup=None)
+            except:
+                pass  # Message may not have markup to edit
+            
             await query.answer("✅ Unsubscribe cancelled", show_alert=False)
         
         # Handle legacy unsubscribe button (for backwards compatibility)

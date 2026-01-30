@@ -244,7 +244,7 @@ async def test_unsubscribe_confirmation_prompt():
         # Verify user is still subscribed
         is_subscribed = await db.is_user_subscribed(test_user_id)
         assert is_subscribed == True, "User should remain subscribed after cancel"
-        assert answer_text is not None and "cancel" in answer_text.lower(), "Cancel message should be shown"
+        assert answer_text is not None and "cancel" in answer_text.lower(), "Answer text should indicate cancellation was successful"
         print(f"✓ User remains subscribed after cancelling: {answer_text}")
         
     except AssertionError as e:
@@ -290,8 +290,15 @@ async def test_notification_toggle():
         mock_user = MagicMock(spec=User)
         mock_user.id = test_user_id
         
+        mock_chat = MagicMock(spec=Chat)
+        mock_chat.id = test_user_id
+        
+        mock_message = MagicMock(spec=Message)
+        mock_message.chat = mock_chat
+        
         mock_query = AsyncMock(spec=CallbackQuery)
         mock_query.data = "toggle_notifications"
+        mock_query.message = mock_message
         
         mock_update = MagicMock(spec=Update)
         mock_update.callback_query = mock_query
@@ -331,11 +338,21 @@ async def test_notification_toggle():
         # When unsubscribed, toggling should re-subscribe immediately
         edit_called = False
         answer_text = None
+        edit_markup_value = None
+        
+        async def mock_edit_markup2(reply_markup=None):
+            nonlocal edit_called, edit_markup_value
+            edit_called = True
+            edit_markup_value = reply_markup
+        
+        mock_query.edit_message_reply_markup = mock_edit_markup2
         
         with patch('main.db', db):
             await callback_query_handler(mock_update, mock_context)
         
-        assert not edit_called, "Should not show confirmation when re-subscribing"
+        # Should edit markup to remove buttons (reply_markup=None) but not show confirmation dialog
+        assert edit_called, "Should remove buttons after re-subscribing"
+        assert edit_markup_value is None, "Should remove buttons (set to None)"
         assert answer_text is not None and "subscribed" in answer_text.lower(), "Should confirm subscription"
         
         is_subscribed = await db.is_user_subscribed(test_user_id)
@@ -399,46 +416,3 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 
-
-
-async def main():
-    """Run all tests."""
-    print("=" * 60)
-    print("Running Block and Unsubscribe Fixes Tests")
-    print("=" * 60)
-    print()
-    
-    tests = [
-        ("Blocked User Callback Prevention", test_blocked_user_callback_prevention),
-        ("Unsubscribe Confirmation Prompt", test_unsubscribe_confirmation_prompt),
-        ("Notification Toggle", test_notification_toggle),
-    ]
-    
-    results = []
-    for test_name, test_func in tests:
-        print(f"\n{'=' * 60}")
-        print(f"Test: {test_name}")
-        print('=' * 60)
-        result = await test_func()
-        results.append((test_name, result))
-        print()
-    
-    # Print summary
-    print("=" * 60)
-    print("TEST SUMMARY")
-    print("=" * 60)
-    for test_name, result in results:
-        status = "✅ PASSED" if result else "❌ FAILED"
-        print(f"{status}: {test_name}")
-    print()
-    
-    all_passed = all(result for _, result in results)
-    if all_passed:
-        print("🎉 All tests passed!")
-    else:
-        print("⚠️  Some tests failed!")
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
