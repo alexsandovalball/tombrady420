@@ -8,20 +8,11 @@ A complete, production-ready Telegram bot that acts as a media product catalog. 
 - ✅ **Full Catalog Browsing**: View all products with pagination and category filtering
 - ✅ **Fuzzy Search**: Natural language search with typo tolerance
 - ✅ **Product Viewing**: View individual products with original media and captions
-- ✅ **Auto-Translate**: 🌐 NEW! Automatic translation of product captions to 12+ languages
 - ✅ **Category & Subcategory Support**: Organized browsing with hierarchical categories
 - ✅ **Admin Features**: Delete products, view statistics, manage categorization
 - ✅ **Rate Limiting**: Prevents spam and abuse
 - ✅ **Pagination**: Smart pagination for catalog and search results
 - ✅ **Error Handling**: Robust error handling and logging
-
-## New: Auto-Translate Feature 🌐
-
-Users can now view product captions in their preferred language! Supported languages include:
-- English, Spanish, French, German, Italian, Portuguese
-- Russian, Chinese, Japanese, Korean, Arabic, Hindi
-
-Use `/language` to select your preferred language. See [AUTO_TRANSLATE_GUIDE.md](AUTO_TRANSLATE_GUIDE.md) for details.
 
 ## Requirements
 

@@ -9,7 +9,6 @@ from database import Database
 from utils.helpers import send_media_message, is_admin
 from utils.pagination import paginate_items
 from utils.categories import format_category_info
-from handlers.language import translate_caption_for_user
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -102,14 +101,10 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         # Get caption and add category info
         caption = product.get("caption") or "No description"
         
-        # Translate caption for user
-        user_id = update.effective_user.id
-        translated_caption = await translate_caption_for_user(caption, user_id)
-        
         category_info = format_category_info(product.get("category"), product.get("subcategory"))
         
         # Add category to caption
-        full_caption = f"{translated_caption}\n\n📂 {category_info}"
+        full_caption = f"{caption}\n\n📂 {category_info}"
         
         # Check if this is a media group (has additional files)
         additional_file_ids = product.get("additional_file_ids")
