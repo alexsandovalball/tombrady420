@@ -34,6 +34,9 @@ CATEGORY_DISPLAY = {
     "CLIENTTOUCHDOWNS": "✈️ Client Touchdowns"
 }
 
+# Categories to exclude from "All Products" view
+EXCLUDED_FROM_ALL_PRODUCTS = ["DATEDPROOFS", "CLIENTTOUCHDOWNS"]
+
 
 def extract_category_from_caption(caption: str) -> Tuple[Optional[str], Optional[str]]:
     """

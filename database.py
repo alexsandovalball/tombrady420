@@ -181,6 +181,35 @@ class Database:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
     
+    async def count_products_excluding_categories(self, excluded_categories: List[str]) -> int:
+        """
+        Count products excluding those in specified categories.
+        Products with no category assigned (NULL or empty) are included.
+        
+        Args:
+            excluded_categories: List of category names to exclude
+        
+        Returns:
+            Count of products excluding specified categories
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            if not excluded_categories:
+                # If no categories to exclude, count all products
+                async with db.execute("SELECT COUNT(*) FROM products") as cursor:
+                    row = await cursor.fetchone()
+                    return row[0] if row else 0
+            
+            # Build placeholders for SQL query
+            placeholders = ','.join('?' * len(excluded_categories))
+            query = f"""
+                SELECT COUNT(*) FROM products 
+                WHERE category IS NULL OR category NOT IN ({placeholders})
+            """
+            
+            async with db.execute(query, excluded_categories) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else 0
+    
     async def search_products(self, query: str, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
         """Search products by caption (for fuzzy search filtering)."""
         async with aiosqlite.connect(self.db_path) as db:
@@ -201,6 +230,38 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("SELECT * FROM products ORDER BY created_at DESC") as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+    
+    async def get_all_products_excluding_categories(self, excluded_categories: List[str]) -> List[Dict[str, Any]]:
+        """
+        Get all products excluding those in specified categories.
+        Products with no category assigned (NULL or empty) are included.
+        
+        Args:
+            excluded_categories: List of category names to exclude (e.g., ['DATEDPROOFS', 'CLIENTTOUCHDOWNS'])
+        
+        Returns:
+            List of product dictionaries excluding products from specified categories
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            
+            if not excluded_categories:
+                # If no categories to exclude, return all products
+                async with db.execute("SELECT * FROM products ORDER BY created_at DESC") as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(row) for row in rows]
+            
+            # Build placeholders for SQL query
+            placeholders = ','.join('?' * len(excluded_categories))
+            query = f"""
+                SELECT * FROM products 
+                WHERE category IS NULL OR category NOT IN ({placeholders})
+                ORDER BY created_at DESC
+            """
+            
+            async with db.execute(query, excluded_categories) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
     
