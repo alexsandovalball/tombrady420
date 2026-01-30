@@ -11,7 +11,9 @@ A complete, production-ready Telegram bot that acts as a media product catalog. 
 - ✅ **Category & Subcategory Support**: Organized browsing with hierarchical categories
 - ✅ **Product Notifications**: Notify subscribed users about new products with anti-spam rate limiting
 - ✅ **Manual Product Addition**: Admins can manually add products with `/add_product`
-- ✅ **User Management**: Admins can control notification preferences for individual users
+- ✅ **User Management**: Admins can control notification preferences and block users
+- ✅ **Custom Messaging**: Admins can send direct messages or broadcast to all users
+- ✅ **User Blocking**: Admins can block/unblock users from using the bot
 - ✅ **Admin Features**: Delete products, view statistics, manage categorization
 - ✅ **Rate Limiting**: Prevents spam and abuse
 - ✅ **Pagination**: Smart pagination for catalog and search results
@@ -106,7 +108,11 @@ The bot will:
 ### Admin Commands
 
 - `/add_product` - Manually add a product with category (send as caption to media)
-- `/users` - View and manage user notification preferences
+- `/users` - View and manage users (notifications, blocking)
+- `/block <user_id>` - Block a user from using the bot
+- `/unblock <user_id>` - Unblock a user
+- `/send <user_id> <message>` - Send a custom message to a specific user
+- `/broadcast <message>` - Send a message to all users
 - `/stats` - View catalog statistics (total products, added today)
 - `/recategorize` - Send categorization prompts for uncategorized products
 - `/nuke` - Delete all products (with double confirmation)
