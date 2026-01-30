@@ -216,11 +216,15 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         user_id = update.effective_user.id
         if subcategory and category:
             state_key = f"subcategory_{category}_{subcategory}"
+            # Store the state_key in query field for proper back navigation
+            await db.save_pagination_state(user_id, state_key, state_key, page)
         elif category:
             state_key = f"category_{category}"
+            # Store category in query field for back navigation
+            await db.save_pagination_state(user_id, state_key, category, page)
         else:
             state_key = "catalog"
-        await db.save_pagination_state(user_id, state_key, category or "", page)
+            await db.save_pagination_state(user_id, state_key, "", page)
         
         # Create keyboard with product buttons
         keyboard_buttons = []

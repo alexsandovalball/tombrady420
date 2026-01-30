@@ -288,7 +288,19 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle all callback queries (buttons)."""
     query = update.callback_query
-    await query.answer()  # Always answer callback to prevent loading spinner
+    
+    # Check if user is blocked (except for admins)
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        is_blocked = await db.is_user_blocked(user_id)
+        if is_blocked:
+            await query.answer(
+                "🚫 You have been blocked from using this bot.",
+                show_alert=True
+            )
+            return
+    
+    await query.answer()  # Answer callback to prevent loading spinner
     
     callback_data = query.data
     
@@ -591,12 +603,76 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             page = int(parts[1]) if len(parts) > 1 else 1
             await show_users_page(update, context, page)
         
-        # Handle unsubscribe from notifications button
-        elif callback_data == "unsubscribe_notifications":
+        # Handle notification toggle (subscribe/unsubscribe)
+        elif callback_data == "toggle_notifications":
+            user_id = update.effective_user.id
+            is_subscribed = await db.is_user_subscribed(user_id)
+            
+            if is_subscribed:
+                # Show confirmation before unsubscribing
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Yes, Unsubscribe", callback_data="confirm_unsubscribe")],
+                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_unsubscribe")]
+                ])
+                
+                await query.edit_message_reply_markup(reply_markup=keyboard)
+                await query.answer(
+                    "⚠️ Are you sure you want to unsubscribe from notifications?",
+                    show_alert=True
+                )
+            else:
+                # Re-subscribe
+                await db.set_user_notifications(user_id, True)
+                
+                # Remove buttons after subscribing
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                except:
+                    pass  # Message may not have markup to edit
+                
+                await query.answer("🔔 You've been subscribed to notifications!", show_alert=True)
+                logger.info(f"User {user_id} subscribed via button")
+        
+        # Handle confirmation of unsubscribe
+        elif callback_data == "confirm_unsubscribe":
             user_id = update.effective_user.id
             await db.set_user_notifications(user_id, False)
+            
+            # Remove confirmation buttons after action
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except:
+                pass  # Message may not have markup to edit
+            
             await query.answer("🔕 You've been unsubscribed from notifications. Use /subscribe to re-enable.", show_alert=True)
             logger.info(f"User {user_id} unsubscribed via button")
+        
+        # Handle cancellation of unsubscribe
+        elif callback_data == "cancel_unsubscribe":
+            # Restore original notification keyboard
+            try:
+                # Get product_id from context if available to restore original button
+                # For now, just remove the confirmation buttons
+                await query.edit_message_reply_markup(reply_markup=None)
+            except:
+                pass  # Message may not have markup to edit
+            
+            await query.answer("✅ Unsubscribe cancelled", show_alert=False)
+        
+        # Handle legacy unsubscribe button (for backwards compatibility)
+        elif callback_data == "unsubscribe_notifications":
+            user_id = update.effective_user.id
+            # Show confirmation before unsubscribing
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Yes, Unsubscribe", callback_data="confirm_unsubscribe")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_unsubscribe")]
+            ])
+            
+            await query.edit_message_reply_markup(reply_markup=keyboard)
+            await query.answer(
+                "⚠️ Are you sure you want to unsubscribe from notifications?",
+                show_alert=True
+            )
         
         # Handle add_product subcategory selection
         elif parts[0] == "addprod_subcat":

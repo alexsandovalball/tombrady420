@@ -32,10 +32,10 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         # Get the most recent pagination state to determine where user was browsing
         latest_state = await db.get_latest_pagination_state(user_id)
         
-        if latest_state and "state_type" in latest_state and "page" in latest_state and "query" in latest_state:
+        if latest_state and "state_type" in latest_state and "page" in latest_state:
             state_type = latest_state["state_type"]
             page = latest_state["page"]
-            query = latest_state["query"]
+            query = latest_state.get("query", "")
             
             # Check if user was browsing a subcategory
             if state_type.startswith("subcategory_"):
@@ -50,10 +50,27 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                     # Fallback if format is unexpected
                     back_callback = "menu|1"
             # Check if user was browsing a category
-            elif state_type.startswith("category_") and query:
-                # The query field contains the category name
-                # Note: Categories are controlled values from CATEGORIES dict, so they are safe
-                back_callback = f"category|{query}|{page}"
+            elif state_type.startswith("category_"):
+                # Extract category from state_type: category_{categoryname}
+                parts = state_type.split("_", 1)
+                if len(parts) >= 2:
+                    category = parts[1]
+                    back_callback = f"category|{category}|{page}"
+                else:
+                    # Fallback
+                    back_callback = "menu|1"
+            elif state_type == "search":
+                # User was searching - use the query from the state
+                if query:
+                    # Replace pipe characters to avoid breaking callback data
+                    safe_query = query.replace("|", "_PIPE_")
+                    # Truncate if needed (Telegram callback_data limit is 64 bytes)
+                    max_query_len = 64 - 16
+                    if len(safe_query) > max_query_len:
+                        safe_query = safe_query[:max_query_len]
+                    back_callback = f"page|search|{safe_query}|{page}"
+                else:
+                    back_callback = "menu|1"
             elif state_type == "catalog":
                 # User was browsing all products
                 back_callback = f"menu|{page}"
@@ -61,22 +78,8 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 # Default fallback
                 back_callback = "menu|1"
         else:
-            # Check last search (if user came from search)
-            last_search = await db.get_last_search(user_id)
-            if last_search and last_search.get("query"):
-                # Use the stored query and page for search results
-                query = last_search['query']
-                page = last_search['page']
-                # Replace pipe characters in query to avoid breaking callback data
-                # Also truncate if too long (Telegram callback_data limit is 64 bytes)
-                safe_query = query.replace("|", "_PIPE_")
-                # Estimate: "page|search|" = 12, "|" + page (max 3 digits) = 4, so ~16 bytes overhead
-                max_query_len = 64 - 16
-                if len(safe_query) > max_query_len:
-                    safe_query = safe_query[:max_query_len]
-                back_callback = f"page|search|{safe_query}|{page}"
-            else:
-                back_callback = "menu|1"  # Default to catalog page 1
+            # No pagination state, fallback to menu
+            back_callback = "menu|1"
         
         # Create keyboard
         keyboard_buttons = [
