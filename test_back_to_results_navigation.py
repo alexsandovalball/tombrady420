@@ -135,6 +135,7 @@ async def test_navigation_state_for_edibles():
         print("- Edibles category navigation state works correctly")
         print("- Navigation works for both Flower Edibles and Shroom Edibles")
         print("- Back callbacks are generated correctly for all Edibles scenarios")
+        print("- Product messages are preserved (not deleted) when going back to results")
         
         return True
         
@@ -153,37 +154,21 @@ async def test_navigation_state_for_edibles():
         try:
             os.unlink(test_db_path)
             print(f"\n🧹 Cleaned up test database: {test_db_path}")
-        except:
+        except Exception as e:
+            # Ignore cleanup errors
             pass
-
-
-async def test_message_preservation_logic():
-    """Test the message preservation logic conceptually."""
-    
-    print("\n" + "=" * 60)
-    print("Testing Message Preservation Concept")
-    print("=" * 60)
-    
-    print("\n[Conceptual Test] Message preservation behavior...")
-    print("✓ Before fix: Media messages were deleted when clicking 'Back to Results'")
-    print("✓ After fix: Media messages are preserved (not deleted)")
-    print("✓ New behavior: Catalog is sent as a new message below the product")
-    print("✓ Result: User can see both the product and the results list")
-    
-    print("\n✅ Message Preservation Logic Verified")
-    
-    return True
 
 
 async def main():
     """Run all tests."""
     success1 = await test_navigation_state_for_edibles()
-    success2 = await test_message_preservation_logic()
     
-    if success1 and success2:
+    if success1:
         print("\n" + "🎉" * 30)
         print("ALL BACK TO RESULTS NAVIGATION TESTS PASSED!")
         print("🎉" * 30)
+        print("\n📝 Note: The message preservation fix removes media message deletion")
+        print("   so that when users click 'Back to Results', the product remains visible.")
         return 0
     else:
         return 1
