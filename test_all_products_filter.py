@@ -46,6 +46,7 @@ async def test_all_products_exclusion():
             {"category": "CLIENTTOUCHDOWNS", "subcategory": None, "caption": "Client Touchdown Product 2"},
             {"category": None, "subcategory": None, "caption": "Uncategorized Product 1"},
             {"category": None, "subcategory": None, "caption": "Uncategorized Product 2"},
+            {"category": "", "subcategory": None, "caption": "Empty Category Product 1"},
         ]
         
         product_ids = []
@@ -68,7 +69,7 @@ async def test_all_products_exclusion():
         print("\n[Test 2] Counting all products without filter...")
         total_count = await db.count_products()
         print(f"  Total products: {total_count}")
-        assert total_count == 10, f"Expected 10 total products, got {total_count}"
+        assert total_count == 11, f"Expected 11 total products, got {total_count}"
         print("✓ Total count correct")
         
         # Test 3: Verify count with exclusion filter
@@ -77,8 +78,8 @@ async def test_all_products_exclusion():
         print(f"  Filtered products: {filtered_count}")
         print(f"  Excluded categories: {EXCLUDED_FROM_ALL_PRODUCTS}")
         # Should exclude 2 DATEDPROOFS + 2 CLIENTTOUCHDOWNS = 4 products
-        # Should include 4 regular + 2 uncategorized = 6 products
-        assert filtered_count == 6, f"Expected 6 filtered products, got {filtered_count}"
+        # Should include 4 regular + 2 uncategorized + 1 empty string = 7 products
+        assert filtered_count == 7, f"Expected 7 filtered products, got {filtered_count}"
         print("✓ Filtered count correct")
         
         # Test 4: Verify get_all_products_excluding_categories returns correct products
@@ -96,11 +97,11 @@ async def test_all_products_exclusion():
         print("✓ No excluded category products in result")
         
         # Test 5: Verify uncategorized products are included
-        print("\n[Test 5] Verifying uncategorized products are included...")
-        uncategorized_count = sum(1 for p in filtered_products if p['category'] is None)
-        print(f"  Uncategorized products in result: {uncategorized_count}")
-        assert uncategorized_count == 2, f"Expected 2 uncategorized products, got {uncategorized_count}"
-        print("✓ Uncategorized products included correctly")
+        print("\n[Test 5] Verifying uncategorized and empty category products are included...")
+        uncategorized_count = sum(1 for p in filtered_products if p['category'] is None or p['category'] == '')
+        print(f"  Uncategorized/empty products in result: {uncategorized_count}")
+        assert uncategorized_count == 3, f"Expected 3 uncategorized/empty products, got {uncategorized_count}"
+        print("✓ Uncategorized and empty category products included correctly")
         
         # Test 6: Verify specific categories are included
         print("\n[Test 6] Verifying specific included categories...")
@@ -121,14 +122,14 @@ async def test_all_products_exclusion():
         print("\n[Test 7] Testing with empty exclusion list...")
         all_products = await db.get_all_products_excluding_categories([])
         print(f"  Products with empty exclusion: {len(all_products)}")
-        assert len(all_products) == 10, f"Expected 10 products with empty exclusion, got {len(all_products)}"
+        assert len(all_products) == 11, f"Expected 11 products with empty exclusion, got {len(all_products)}"
         print("✓ Empty exclusion list handled correctly")
         
         # Test 8: Test count with empty exclusion list
         print("\n[Test 8] Testing count with empty exclusion list...")
         count_all = await db.count_products_excluding_categories([])
         print(f"  Count with empty exclusion: {count_all}")
-        assert count_all == 10, f"Expected 10 products count with empty exclusion, got {count_all}"
+        assert count_all == 11, f"Expected 11 products count with empty exclusion, got {count_all}"
         print("✓ Empty exclusion count handled correctly")
         
         # Test 9: Verify excluded categories still accessible directly

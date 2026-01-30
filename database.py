@@ -184,7 +184,7 @@ class Database:
     async def count_products_excluding_categories(self, excluded_categories: List[str]) -> int:
         """
         Count products excluding those in specified categories.
-        Products with no category assigned (NULL or empty) are included.
+        Products with no category assigned (NULL or empty string) are included.
         
         Args:
             excluded_categories: List of category names to exclude
@@ -203,7 +203,7 @@ class Database:
             placeholders = ','.join('?' * len(excluded_categories))
             query = f"""
                 SELECT COUNT(*) FROM products 
-                WHERE category IS NULL OR category NOT IN ({placeholders})
+                WHERE (category IS NULL OR category = '') OR category NOT IN ({placeholders})
             """
             
             async with db.execute(query, excluded_categories) as cursor:
@@ -236,7 +236,7 @@ class Database:
     async def get_all_products_excluding_categories(self, excluded_categories: List[str]) -> List[Dict[str, Any]]:
         """
         Get all products excluding those in specified categories.
-        Products with no category assigned (NULL or empty) are included.
+        Products with no category assigned (NULL or empty string) are included.
         
         Args:
             excluded_categories: List of category names to exclude (e.g., ['DATEDPROOFS', 'CLIENTTOUCHDOWNS'])
@@ -257,7 +257,7 @@ class Database:
             placeholders = ','.join('?' * len(excluded_categories))
             query = f"""
                 SELECT * FROM products 
-                WHERE category IS NULL OR category NOT IN ({placeholders})
+                WHERE (category IS NULL OR category = '') OR category NOT IN ({placeholders})
                 ORDER BY created_at DESC
             """
             
