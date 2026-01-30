@@ -79,7 +79,7 @@ CUSTOM_MESSAGE_DELAY_SECONDS = 5     # Longer delay for custom messages
 
 **Fix:** Changed from `product|{product_id}|1` (3 parts) to `product|{product_id}` (2 parts)
 
-**Location:** `utils/notifications.py`, line ~176
+**Location:** `utils/notifications.py`, `_send_notification_batch()` method
 
 ```python
 keyboard = InlineKeyboardMarkup([
@@ -96,7 +96,7 @@ keyboard = InlineKeyboardMarkup([
 
 **Callback data:** `unsubscribe_notifications`
 
-**Handler:** `main.py`, lines 595-599
+**Handler:** `main.py`, `callback_query_handler()` function, handles `callback_data == "unsubscribe_notifications"`
 
 ## Usage Examples
 

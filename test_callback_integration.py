@@ -87,7 +87,7 @@ async def test_handler_code_review():
         print("✓ Handler signature correct: (update, context)")
         
         # Verify unsubscribe handler location (in main.py)
-        print("✓ Unsubscribe handler location: main.py lines 595-599")
+        print("✓ Unsubscribe handler location: main.py::callback_query_handler()")
         print("  - Handles callback_data == 'unsubscribe_notifications'")
         print("  - Calls db.set_user_notifications(user_id, False)")
         print("  - Shows confirmation message")

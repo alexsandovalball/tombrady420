@@ -23,7 +23,7 @@ BATCH_DELAY_SECONDS = 3  # Delay between batches to avoid hitting rate limits
 # Staggered delivery configuration
 ENABLE_STAGGERED_DELIVERY = True  # Enable staggered delivery to avoid spam flags
 STAGGER_GROUP_SIZE = 10  # Number of users per group for staggered delivery
-STAGGER_INTERVAL_SECONDS = 30  # Delay between groups (30 seconds or 60 for 1 minute)
+STAGGER_INTERVAL_SECONDS = 30  # Delay in seconds between groups (e.g., 30 or 60)
 
 # Custom message rate limiting
 MAX_CUSTOM_MESSAGES_PER_HOUR = 3  # Maximum custom messages per user per hour
@@ -121,7 +121,7 @@ class NotificationService:
             # Implement staggered delivery by groups
             sent_count = 0
             
-            if ENABLE_STAGGERED_DELIVERY and len(eligible_users) > STAGGER_GROUP_SIZE:
+            if ENABLE_STAGGERED_DELIVERY and len(eligible_users) >= STAGGER_GROUP_SIZE:
                 logger.info(f"Using staggered delivery: {len(eligible_users)} users in groups of {STAGGER_GROUP_SIZE}")
                 
                 # Split users into groups
