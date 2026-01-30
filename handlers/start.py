@@ -26,14 +26,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👋 Welcome, {user.first_name}!\n\n"
         "I'm your media product catalog bot. I help you browse and search "
         "products from our catalog.\n\n"
-        "🌐 **New**: Use /language to set your preferred language!\n"
-        "All product descriptions will be automatically translated.\n\n"
         "Use /menu to view all products or simply type what you're looking for!  DM @FLYAWAYPEP TO ORDER"
     )
     
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 View Catalog", callback_data="categories")],
-        [InlineKeyboardButton("🌐 Language Settings", callback_data="language")]
+        [InlineKeyboardButton("📋 View Catalog", callback_data="categories")]
     ])
     
     await update.message.reply_text(
