@@ -10,8 +10,8 @@ Add these environment variables to your deployment platform:
 
 ```env
 BOT_TOKEN=your_bot_token_here
-CHANNEL_ID=-1001234567890
-ADMIN_IDS=123456789,987654321
+CHANNEL_ID=-your channel ID here
+ADMIN_IDS=Admin IDs here
 USE_WEBHOOK=true
 WEBHOOK_URL=https://your-app.onrender.com
 PORT=8000
