@@ -1,6 +1,6 @@
 """
 Translation utilities for the bot.
-Provides auto-translation capabilities for product captions and bot messages.
+Provides auto-translation capabilities for product captions.
 """
 import logging
 from typing import Optional

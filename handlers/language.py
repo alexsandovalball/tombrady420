@@ -5,7 +5,7 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import Database
-from utils.translation import SUPPORTED_LANGUAGES, translate_text, get_language_name
+from utils.translation import SUPPORTED_LANGUAGES, translate_text, get_language_name, is_supported_language
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -33,7 +33,7 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🌐 **Language Settings**\n\n"
             f"Current language: {current_lang_name}\n\n"
             "Select your preferred language:\n"
-            "All product captions and bot messages will be automatically translated."
+            "Product captions will be automatically translated."
         )
         
         if update.callback_query:
@@ -61,6 +61,15 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, lang_code: str):
     """Handle language selection callback."""
     try:
+        # Validate language code
+        if not is_supported_language(lang_code):
+            logger.warning(f"Invalid language code received: {lang_code}")
+            await update.callback_query.answer(
+                "❌ Invalid language selection.",
+                show_alert=True
+            )
+            return
+        
         user_id = update.effective_user.id
         
         # Save language preference
@@ -122,33 +131,7 @@ async def translate_caption_for_user(caption: str, user_id: int) -> str:
         return caption
 
 
-async def translate_message_for_user(message: str, user_id: int) -> str:
-    """
-    Translate bot message based on user's language preference.
-    
-    Args:
-        message: Original message text
-        user_id: User ID to get language preference
-        
-    Returns:
-        Translated message or original if translation fails or language is English
-    """
-    try:
-        user_lang = await db.get_user_language(user_id)
-        
-        # No translation needed for English
-        if user_lang == 'en':
-            return message
-        
-        translated = translate_text(message, user_lang)
-        
-        # If translation fails, return original
-        if not translated:
-            logger.warning(f"Translation failed for user {user_id}, returning original message")
-            return message
-        
-        return translated
-        
-    except Exception as e:
-        logger.error(f"Error translating message for user {user_id}: {e}")
-        return message
+# Note: Bot UI messages (menus, buttons, etc.) are currently not translated.
+# They remain in English to maintain consistency and avoid translation overhead.
+# Future enhancement: Implement translate_message_for_user() and integrate
+# it into message sending logic if full UI translation is desired.

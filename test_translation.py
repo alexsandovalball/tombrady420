@@ -76,7 +76,9 @@ async def test_database_language_storage():
     db = Database()
     await db.init_db()
     
-    test_user_id = 999999
+    # Use a random high number to avoid conflicts with previous test runs
+    import random
+    test_user_id = random.randint(100000000, 999999999)
     
     # Test default language
     default_lang = await db.get_user_language(test_user_id)
