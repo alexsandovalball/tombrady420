@@ -88,11 +88,7 @@ async def show_search_results(
             # Check if the message is a media message (can't edit media messages)
             message = update.callback_query.message
             if message.photo or message.video or message.document or message.animation or message.audio:
-                # Delete the media message and send a new text message
-                try:
-                    await message.delete()
-                except:
-                    pass  # If deletion fails, continue anyway
+                # Don't delete media message - send new message to preserve product view
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text=text,
