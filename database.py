@@ -94,7 +94,8 @@ class Database:
                     last_name TEXT,
                     first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    interaction_count INTEGER DEFAULT 1
+                    interaction_count INTEGER DEFAULT 1,
+                    preferred_language TEXT DEFAULT 'en'
                 )
             """)
             
@@ -116,6 +117,11 @@ class Database:
             
             try:
                 await db.execute("ALTER TABLE products ADD COLUMN subcategory TEXT")
+            except:
+                pass
+            
+            try:
+                await db.execute("ALTER TABLE bot_users ADD COLUMN preferred_language TEXT DEFAULT 'en'")
             except:
                 pass
             
@@ -585,4 +591,27 @@ class Database:
             async with db.execute("SELECT COUNT(*) FROM bot_users") as cursor:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
+    
+    async def get_user_language(self, user_id: int) -> str:
+        """Get user's preferred language. Returns 'en' if not set."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT preferred_language FROM bot_users WHERE user_id = ?",
+                (user_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row["preferred_language"] if row and row["preferred_language"] else "en"
+    
+    async def set_user_language(self, user_id: int, language: str):
+        """Set user's preferred language."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO bot_users (user_id, preferred_language, first_seen, last_seen, interaction_count)
+                VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
+                ON CONFLICT(user_id) DO UPDATE SET preferred_language = ?
+            """, (user_id, language, language))
+            await db.commit()
+            logger.info(f"Set language preference for user {user_id} to {language}")
+
 

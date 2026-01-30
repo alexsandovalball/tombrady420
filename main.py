@@ -25,6 +25,7 @@ from handlers.menu import menu_command, show_catalog_page, handle_catalog_pagina
 from handlers.search import handle_search, show_search_results, handle_search_pagination
 from handlers.product_view import show_product, handle_product_callback
 from handlers.admin import stats_command, delete_product, nuke_command, recategorize_command, users_command
+from handlers.language import language_command, handle_language_callback
 from utils.helpers import (
     get_file_id_and_type,
     has_media,
@@ -301,6 +302,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         await show_category_menu(update, context)
         return
     
+    # Handle language menu
+    if callback_data == "language":
+        await language_command(update, context)
+        return
+    
     # Handle nuke confirmations
     if callback_data == "nuke_cancel":
         await query.edit_message_text("✅ Nuke cancelled. No products were deleted.")
@@ -552,6 +558,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 parse_mode="Markdown"
             )
         
+        # Handle language setting
+        elif parts[0] == "setlang":
+            if len(parts) >= 2:
+                lang_code = parts[1]
+                await handle_language_callback(update, context, lang_code)
+            else:
+                await query.answer("Invalid language data", show_alert=True)
+        
         else:
             await query.answer("Unknown action", show_alert=True)
             
@@ -670,6 +684,7 @@ def main():
     # Register handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("menu", menu_command))
+    application.add_handler(CommandHandler("language", language_command))
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("nuke", nuke_command))
     application.add_handler(CommandHandler("recategorize", recategorize_command))
