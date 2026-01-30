@@ -60,10 +60,7 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if update.callback_query:
             message = update.callback_query.message
             if message.photo or message.video or message.document or message.animation or message.audio:
-                try:
-                    await message.delete()
-                except TelegramError:
-                    pass  # Message may already be deleted or not accessible
+                # Don't delete media message - send new message to preserve product view
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text=text,
@@ -139,10 +136,7 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
         if update.callback_query:
             message = update.callback_query.message
             if message.photo or message.video or message.document or message.animation or message.audio:
-                try:
-                    await message.delete()
-                except TelegramError:
-                    pass  # Message may already be deleted or not accessible
+                # Don't delete media message - send new message to preserve product view
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text=text,
@@ -281,11 +275,7 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             # Check if the message is a media message (can't edit media messages)
             message = update.callback_query.message
             if message.photo or message.video or message.document or message.animation or message.audio:
-                # Delete the media message and send a new text message
-                try:
-                    await message.delete()
-                except TelegramError:
-                    pass  # If deletion fails, continue anyway
+                # Don't delete media message - send new message to preserve product view
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text=text,
