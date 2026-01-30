@@ -3,6 +3,10 @@ Test product view navigation to ensure back button works correctly.
 
 This test verifies that the back button in product view correctly
 determines the previous location based on pagination state.
+
+Note: This test replicates the navigation logic from handlers/product_view.py
+to validate the state parsing and callback generation independently.
+For full integration testing of the callback routing, see test_subcategory_integration.py.
 """
 
 
@@ -84,10 +88,16 @@ def test_navigation_scenarios():
             "description": "Should return to all products page 1"
         },
         {
-            "name": "From subcategory with multi-word name",
-            "state": {"state_type": "subcategory_FLOWER_TOPSHELFCANDY", "page": 3, "query": ""},
-            "expected": "subcategory|FLOWER|TOPSHELFCANDY|3",
-            "description": "Should handle multi-word subcategories correctly"
+            "name": "From subcategory with spaces in name",
+            "state": {"state_type": "subcategory_EDIBLES_FLOWER EDIBLES", "page": 3, "query": ""},
+            "expected": "subcategory|EDIBLES|FLOWER EDIBLES|3",
+            "description": "Should handle subcategories with spaces correctly"
+        },
+        {
+            "name": "From subcategory with multi-word and spaces",
+            "state": {"state_type": "subcategory_CONCENTRATES_HASH AND KIEF", "page": 2, "query": ""},
+            "expected": "subcategory|CONCENTRATES|HASH AND KIEF|2",
+            "description": "Should handle multi-word subcategories with spaces"
         },
     ]
     
