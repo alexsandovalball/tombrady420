@@ -37,8 +37,20 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
             page = latest_state["page"]
             query = latest_state["query"]
             
+            # Check if user was browsing a subcategory
+            if state_type.startswith("subcategory_"):
+                # Extract category and subcategory from state_type
+                # Format: subcategory_{category}_{subcategory}
+                parts = state_type.split("_", 2)  # Split into at most 3 parts
+                if len(parts) >= 3:
+                    category = parts[1]
+                    subcategory = parts[2]
+                    back_callback = f"subcategory|{category}|{subcategory}|{page}"
+                else:
+                    # Fallback if format is unexpected
+                    back_callback = "menu|1"
             # Check if user was browsing a category
-            if state_type.startswith("category_") and query:
+            elif state_type.startswith("category_") and query:
                 # The query field contains the category name
                 # Note: Categories are controlled values from CATEGORIES dict, so they are safe
                 back_callback = f"category|{query}|{page}"
