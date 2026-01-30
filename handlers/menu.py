@@ -8,7 +8,7 @@ from telegram.error import TelegramError
 from database import Database
 from utils.pagination import create_pagination_keyboard, paginate_items
 from utils.helpers import is_admin
-from utils.categories import get_all_categories, get_category_display_name, get_subcategories, CATEGORIES
+from utils.categories import get_all_categories, get_category_display_name, get_subcategories, CATEGORIES, EXCLUDED_FROM_ALL_PRODUCTS
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -45,7 +45,7 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
             ])
         
         # Add "All Products" option
-        total_count = await db.count_products()
+        total_count = await db.count_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
         category_buttons.insert(0, [
             InlineKeyboardButton(f"📦 All Products ({total_count})", callback_data="menu|1")
         ])
@@ -182,7 +182,8 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             all_products = await db.get_products_by_category(category)
             title = f"📋 {get_category_display_name(category)}"
         else:
-            all_products = await db.get_all_products_for_search()
+            # When showing all products, exclude specified categories
+            all_products = await db.get_all_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
             title = "📋 All Products"
         
         if not all_products:
