@@ -19,11 +19,15 @@ from telegram.error import TelegramError
 
 from config import Config, ConfigError
 from database import Database
-from handlers.start import start_command
+from handlers.start import start_command, subscribe_command, unsubscribe_command
 from handlers.menu import menu_command, show_catalog_page, handle_catalog_pagination
 from handlers.search import handle_search, show_search_results, handle_search_pagination
 from handlers.product_view import show_product, handle_product_callback
-from handlers.admin import stats_command, delete_product, nuke_command, recategorize_command, users_command
+from handlers.admin import (
+    stats_command, delete_product, nuke_command, recategorize_command, 
+    users_command, show_users_page, add_product_command,
+    block_command, unblock_command, send_command, broadcast_command
+)
 from utils.helpers import (
     get_file_id_and_type,
     has_media,
@@ -33,6 +37,7 @@ from utils.helpers import (
     is_admin
 )
 from utils.categories import get_all_categories, get_category_display_name, get_subcategories, CATEGORIES
+from utils.notifications import NotificationService
 
 # Configure logging with structured format for better visibility on Render
 logging.basicConfig(
@@ -456,6 +461,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     f"📂 {category_text}"
                 )
                 logger.info(f"Product {product_id} categorized as {category}/{subcategory} by admin {update.effective_user.id}")
+                
+                # Notify subscribed users about the new categorized product
+                notification_service = NotificationService(db)
+                await notification_service.notify_users_about_product(context, product_id)
             else:
                 await query.answer("Invalid save data", show_alert=True)
         
@@ -548,6 +557,144 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 parse_mode="Markdown"
             )
         
+        # Handle user notification toggle (admin only)
+        elif parts[0] == "toggle_notif":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can manage notifications.", show_alert=True)
+                return
+            
+            if len(parts) >= 2:
+                target_user_id = int(parts[1])
+                page = int(parts[2]) if len(parts) > 2 else 1
+                
+                # Get current status
+                is_subscribed = await db.is_user_subscribed(target_user_id)
+                
+                # Toggle notifications
+                await db.set_user_notifications(target_user_id, not is_subscribed)
+                
+                # Refresh the users page
+                await show_users_page(update, context, page)
+                
+                status_text = "disabled" if is_subscribed else "enabled"
+                await query.answer(f"✅ Notifications {status_text} for user", show_alert=False)
+                logger.info(f"Admin {update.effective_user.id} toggled notifications for user {target_user_id} to {not is_subscribed}")
+            else:
+                await query.answer("Invalid data", show_alert=True)
+        
+        # Handle users pagination
+        elif parts[0] == "users_page":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can view users.", show_alert=True)
+                return
+            
+            page = int(parts[1]) if len(parts) > 1 else 1
+            await show_users_page(update, context, page)
+        
+        # Handle unsubscribe from notifications button
+        elif callback_data == "unsubscribe_notifications":
+            user_id = update.effective_user.id
+            await db.set_user_notifications(user_id, False)
+            await query.answer("🔕 You've been unsubscribed from notifications. Use /subscribe to re-enable.", show_alert=True)
+            logger.info(f"User {user_id} unsubscribed via button")
+        
+        # Handle add_product subcategory selection
+        elif parts[0] == "addprod_subcat":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can add products.", show_alert=True)
+                return
+            
+            # Get pending product data
+            pending_product = context.user_data.get('pending_product')
+            if not pending_product:
+                await query.answer("❌ Session expired. Please try again.", show_alert=True)
+                return
+            
+            subcategory = parts[1] if len(parts) > 1 and parts[1] else None
+            
+            # Add product with category and subcategory
+            product_id = await db.add_product(
+                file_id=pending_product['file_id'],
+                file_type=pending_product['file_type'],
+                caption=pending_product['caption'],
+                message_id=pending_product['message_id'],
+                chat_id=pending_product['chat_id'],
+                category=pending_product['category'],
+                subcategory=subcategory
+            )
+            
+            # Clear pending data
+            context.user_data.pop('pending_product', None)
+            
+            if product_id > 0:
+                category_text = get_category_display_name(pending_product['category'])
+                if subcategory:
+                    category_text += f" • {subcategory.title()}"
+                
+                await query.edit_message_text(
+                    f"✅ **Product Added Successfully!**\n\n"
+                    f"🆔 Product ID: {product_id}\n"
+                    f"📂 Category: {category_text}\n"
+                    f"📝 Description: {pending_product['caption'][:100]}...\n\n"
+                    f"Notifying subscribed users...",
+                    parse_mode="Markdown"
+                )
+                
+                # Notify users about the new product
+                notification_service = NotificationService(db)
+                await notification_service.notify_users_about_product(context, product_id)
+                
+                logger.info(f"Admin {update.effective_user.id} manually added product {product_id}")
+            else:
+                await query.edit_message_text("❌ Product could not be added.")
+        
+        # Handle block user
+        elif parts[0] == "block_user":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can block users.", show_alert=True)
+                return
+            
+            if len(parts) >= 2:
+                target_user_id = int(parts[1])
+                page = int(parts[2]) if len(parts) > 2 else 1
+                
+                # Prevent blocking admins
+                if is_admin(target_user_id):
+                    await query.answer("❌ Cannot block an admin user.", show_alert=True)
+                    return
+                
+                # Block the user
+                await db.block_user(target_user_id)
+                
+                # Refresh the users page
+                await show_users_page(update, context, page)
+                
+                await query.answer("🚫 User blocked", show_alert=False)
+                logger.info(f"Admin {update.effective_user.id} blocked user {target_user_id}")
+            else:
+                await query.answer("Invalid data", show_alert=True)
+        
+        # Handle unblock user
+        elif parts[0] == "unblock_user":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can unblock users.", show_alert=True)
+                return
+            
+            if len(parts) >= 2:
+                target_user_id = int(parts[1])
+                page = int(parts[2]) if len(parts) > 2 else 1
+                
+                # Unblock the user
+                await db.unblock_user(target_user_id)
+                
+                # Refresh the users page
+                await show_users_page(update, context, page)
+                
+                await query.answer("✅ User unblocked", show_alert=False)
+                logger.info(f"Admin {update.effective_user.id} unblocked user {target_user_id}")
+            else:
+                await query.answer("Invalid data", show_alert=True)
+        
         else:
             await query.answer("Unknown action", show_alert=True)
             
@@ -581,8 +728,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_name=user.last_name
     )
     
-    # Rate limiting (simple)
+    # Check if user is blocked
     user_id = update.effective_user.id
+    if not is_admin(user_id):
+        is_blocked = await db.is_user_blocked(user_id)
+        if is_blocked:
+            await update.message.reply_text(
+                "🚫 You have been blocked from using this bot.\n\n"
+                "If you believe this is an error, please contact an administrator."
+            )
+            return
+    
+    # Rate limiting (simple)
     current_time = datetime.now().timestamp()
     
     if user_id in user_last_message:
@@ -598,6 +755,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Handle as search query
     if update.message and update.message.text:
         await handle_search(update, context)
+
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -672,6 +830,13 @@ def main():
     application.add_handler(CommandHandler("nuke", nuke_command))
     application.add_handler(CommandHandler("recategorize", recategorize_command))
     application.add_handler(CommandHandler("users", users_command))
+    application.add_handler(CommandHandler("add_product", add_product_command))
+    application.add_handler(CommandHandler("subscribe", subscribe_command))
+    application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
+    application.add_handler(CommandHandler("block", block_command))
+    application.add_handler(CommandHandler("unblock", unblock_command))
+    application.add_handler(CommandHandler("send", send_command))
+    application.add_handler(CommandHandler("broadcast", broadcast_command))
     
     # Channel post handler (for monitoring channel)
     channel_id = get_channel_id()

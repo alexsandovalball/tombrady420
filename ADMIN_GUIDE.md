@@ -20,10 +20,20 @@ View catalog statistics (admin only)
 - Products added today
 
 ### `/users`
-View all bot users (admin only)
-- Shows up to 50 users
-- Displays: username, full name, ID, interaction count, last seen
-- Useful for monitoring bot engagement
+View and manage bot users (admin only)
+- Shows 10 users per page with pagination
+- Displays: username, full name, ID, interaction count, last seen, **notification status**
+- **Toggle notifications** for individual users with one click
+- Navigate pages with ⬅️ Previous / ➡️ Next buttons
+- Useful for monitoring bot engagement and controlling who gets notifications
+
+### `/add_product`
+Manually add a product to the catalog (admin only)
+- **Usage**: Send media (photo/video/document) with caption `/add_product <CATEGORY> <description>`
+- **Example**: Send a photo with caption `/add_product CARTRIDGES Premium Blue Dream Cart`
+- Bot will prompt for subcategory if applicable
+- Product is immediately added and **all subscribed users are notified**
+- Categories: CARTRIDGES, EDIBLES, CONCENTRATES, PREROLLS, SHROOMS, FLOWER, DATEDPROOFS, CLIENTTOUCHDOWNS
 
 ### `/nuke`
 Delete ALL products from catalog (admin only)
@@ -39,7 +49,9 @@ Send categorization notifications for uncategorized products (admin only)
 - Sends up to 10 categorization requests
 - Run multiple times to process all uncategorized products
 
-## New Product Workflow
+## New Product Workflows
+
+### Workflow 1: Automatic from Channel
 
 When a new product is posted to the monitored channel:
 
@@ -66,7 +78,68 @@ When a new product is posted to the monitored channel:
 6. **Product is categorized**
    - Confirmation message shown
    - Product now appears in category filter
-   - Users can browse by category
+   - **All subscribed users are notified automatically**
+
+### Workflow 2: Manual Addition by Admin
+
+Using the `/add_product` command:
+
+1. **Admin sends media with command**
+   - Photo, video, or document with caption
+   - Caption format: `/add_product <CATEGORY> <description>`
+   - Example: `/add_product FLOWER Premium Blue Dream`
+
+2. **Bot validates and prompts**
+   - Checks if category is valid
+   - If category has subcategories, shows selection menu
+   - Admin selects subcategory or "No Subcategory"
+
+3. **Product is added immediately**
+   - Product saved with category/subcategory
+   - Assigned unique product ID
+   - Confirmation shown to admin
+
+4. **Users are notified**
+   - **All subscribed users receive notification**
+   - Notification includes category and description
+   - Users can view product immediately
+
+## User Notification Management
+
+### Viewing Users
+
+Use `/users` command to see all bot users:
+- **Paginated view**: 10 users per page
+- **User details**: Username, full name, ID, interactions, last seen
+- **Notification status**: 🔔 ON or 🔕 OFF for each user
+
+### Toggling Notifications
+
+Each user has a toggle button in the `/users` interface:
+- **Click button** to toggle notifications for that user
+- **Immediate effect**: Changes apply instantly
+- **Visual feedback**: Button updates to show new status
+- **Use cases**:
+  - Disable notifications for inactive users
+  - Prevent notifications to specific users
+  - Re-enable for users who want to subscribe again
+
+### Best Practices
+
+**Selective Notifications:**
+- Review user list regularly
+- Disable notifications for users who don't interact
+- Enable only for engaged/premium users if desired
+
+**Spam Prevention:**
+- System automatically limits to 5 notifications per user per hour
+- Disable problem users manually via `/users`
+- Users who block the bot are auto-unsubscribed
+
+**User Privacy:**
+- Users can self-manage via `/subscribe` and `/unsubscribe`
+- Admin toggles override user preferences
+- Use responsibly to maintain user trust
 
 ## Categories & Subcategories
 
