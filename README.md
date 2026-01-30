@@ -36,13 +36,15 @@ pip install -r requirements.txt
 
 ### 3. Configure Environment Variables
 
+The bot uses `python-decouple` for secure configuration management. **Never hardcode sensitive data like bot tokens in your source code.**
+
 Copy `.env.example` to `.env` and fill in your values:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
+Edit `.env` with your actual values:
 
 ```env
 BOT_TOKEN=your_bot_token_here
@@ -52,14 +54,23 @@ ADMIN_IDS=123456789,987654321
 
 **How to get these values:**
 
-- **BOT_TOKEN**: Create a bot with [@BotFather](https://t.me/botfather) and copy the token
+- **BOT_TOKEN**: 
+  1. Open Telegram and message [@BotFather](https://t.me/botfather)
+  2. Send `/newbot` command and follow the instructions
+  3. Copy the bot token provided (format: `1234567890:ABCdefGHIjklMNOpqrsTUVwxyz`)
+  4. ⚠️ **Keep this token secret!** Anyone with this token can control your bot
+
 - **CHANNEL_ID**: 
-  - Forward a message from your channel to [@userinfobot](https://t.me/userinfobot)
-  - Or use [@getidsbot](https://t.me/getidsbot)
-  - Channel IDs are negative numbers (e.g., `-1001234567890`)
+  1. Forward any message from your channel to [@userinfobot](https://t.me/userinfobot)
+  2. The bot will show the channel ID (must be a negative number, e.g., `-1001234567890`)
+  3. Alternatively, use [@getidsbot](https://t.me/getidsbot)
+  
 - **ADMIN_IDS**: 
-  - Message [@userinfobot](https://t.me/userinfobot) to get your user ID
-  - Add multiple IDs separated by commas (no spaces)
+  1. Message [@userinfobot](https://t.me/userinfobot) to get your Telegram user ID
+  2. Add multiple admin IDs separated by commas with no spaces (e.g., `123456789,987654321`)
+  3. These users will have admin privileges in the bot
+
+**Security Note:** The `.env` file is already in `.gitignore` and will not be committed to Git. Never share your `.env` file or commit it to version control.
 
 ### 4. Set Up the Bot in Your Channel
 

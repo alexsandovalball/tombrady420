@@ -3,14 +3,13 @@ Webhook server for Telegram bot using FastAPI and uvicorn.
 This allows the bot to receive updates via webhooks instead of polling,
 which is more suitable for serverless deployments like Render.com.
 """
-import os
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, status
 from telegram import Update
 from telegram.ext import Application
-from dotenv import load_dotenv
 
+from config import Config, ConfigError
 # Import the bot setup functions
 from main import (
     post_init,
@@ -33,9 +32,6 @@ from telegram.ext import (
 )
 from utils.helpers import get_channel_id, get_channel_username
 
-# Load environment variables
-load_dotenv()
-
 # Configure logging with structured format for better visibility on Render
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - [%(funcName)s:%(lineno)d] - %(message)s',
@@ -52,10 +48,15 @@ logging.getLogger('uvicorn.access').setLevel(logging.INFO)  # Keep access logs v
 
 async def setup_application():
     """Initialize and configure the bot application."""
-    # Get bot token
-    bot_token = os.getenv("BOT_TOKEN")
-    if not bot_token:
-        raise ValueError("BOT_TOKEN not found in environment variables!")
+    # Validate configuration on startup
+    try:
+        Config.validate()
+    except ConfigError as e:
+        logger.error(str(e))
+        raise
+    
+    # Get bot token from config
+    bot_token = Config.BOT_TOKEN
     
     # Create application
     bot_app = Application.builder().token(bot_token).build()
@@ -113,7 +114,7 @@ async def setup_application():
     await bot_app.start()
     
     # Set webhook
-    webhook_url = os.getenv("WEBHOOK_URL")
+    webhook_url = Config.WEBHOOK_URL
     if webhook_url:
         await bot_app.bot.set_webhook(
             url=f"{webhook_url}/webhook",

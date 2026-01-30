@@ -3,21 +3,20 @@ Database models and operations for the media catalog bot.
 Uses SQLite with aiosqlite for async operations.
 """
 import aiosqlite
-import os
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 import logging
 
-logger = logging.getLogger(__name__)
+from config import Config
 
-DB_PATH = os.getenv("DB_PATH", "catalog.db")
+logger = logging.getLogger(__name__)
 
 
 class Database:
     """Database manager for product catalog."""
     
-    def __init__(self, db_path: str = DB_PATH):
-        self.db_path = db_path
+    def __init__(self, db_path: str = None):
+        self.db_path = db_path or Config.DB_PATH
     
     async def init_db(self):
         """Initialize database with schema."""

@@ -1,13 +1,11 @@
 """
 Main entry point for the Telegram media catalog bot.
 """
-import os
 import logging
 import asyncio
 import json
 import aiosqlite
 from datetime import datetime
-from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -19,6 +17,7 @@ from telegram.ext import (
 )
 from telegram.error import TelegramError
 
+from config import Config, ConfigError
 from database import Database
 from handlers.start import start_command
 from handlers.menu import menu_command, show_catalog_page, handle_catalog_pagination
@@ -34,9 +33,6 @@ from utils.helpers import (
     is_admin
 )
 from utils.categories import get_all_categories, get_category_display_name, get_subcategories, CATEGORIES
-
-# Load environment variables
-load_dotenv()
 
 # Configure logging with structured format for better visibility on Render
 logging.basicConfig(
@@ -649,20 +645,22 @@ async def post_init(application: Application):
 
 def main():
     """Main function to start the bot."""
-    # Check if we should use webhook mode
-    use_webhook = os.getenv("USE_WEBHOOK", "false").lower() == "true"
+    # Validate configuration on startup
+    try:
+        Config.validate()
+    except ConfigError as e:
+        logger.error(str(e))
+        return
     
-    if use_webhook:
+    # Check if we should use webhook mode
+    if Config.USE_WEBHOOK:
         logger.info("Webhook mode detected. Please run webhook_server.py instead.")
         logger.info("Example: python webhook_server.py")
         logger.info("Or use: uvicorn webhook_server:app --host 0.0.0.0 --port 8000")
         return
     
-    # Get bot token
-    bot_token = os.getenv("BOT_TOKEN")
-    if not bot_token:
-        logger.error("BOT_TOKEN not found in environment variables!")
-        return
+    # Get bot token from config
+    bot_token = Config.BOT_TOKEN
     
     # Create application
     application = Application.builder().token(bot_token).post_init(post_init).build()

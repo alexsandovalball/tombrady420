@@ -1,26 +1,19 @@
 """
 Helper utilities for the bot.
 """
-import os
 import logging
 from typing import List, Optional
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from config import Config
+
 logger = logging.getLogger(__name__)
 
 
 def get_admin_ids() -> List[int]:
-    """Get admin user IDs from environment variable."""
-    admin_ids_str = os.getenv("ADMIN_IDS", "")
-    if not admin_ids_str:
-        return []
-    
-    try:
-        return [int(uid.strip()) for uid in admin_ids_str.split(",") if uid.strip()]
-    except ValueError:
-        logger.error(f"Invalid ADMIN_IDS format: {admin_ids_str}")
-        return []
+    """Get admin user IDs from configuration."""
+    return Config.ADMIN_IDS
 
 
 def is_admin(user_id: int) -> bool:
@@ -29,20 +22,13 @@ def is_admin(user_id: int) -> bool:
 
 
 def get_channel_id() -> Optional[int]:
-    """Get channel ID from environment variable."""
-    channel_id_str = os.getenv("CHANNEL_ID", "")
-    if channel_id_str:
-        try:
-            return int(channel_id_str)
-        except ValueError:
-            logger.error(f"Invalid CHANNEL_ID format: {channel_id_str}")
-    
-    return None
+    """Get channel ID from configuration."""
+    return Config.CHANNEL_ID
 
 
 def get_channel_username() -> Optional[str]:
-    """Get channel username from environment variable."""
-    username = os.getenv("CHANNEL_USERNAME", "")
+    """Get channel username from configuration."""
+    username = Config.CHANNEL_USERNAME
     if username and not username.startswith("@"):
         username = "@" + username
     return username if username else None
