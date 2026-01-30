@@ -33,7 +33,6 @@ async def test_navigation_state_for_edibles():
         
         user_id = 12345
         state_type = "subcategory_EDIBLES_FLOWER EDIBLES"
-        category = "EDIBLES"
         page = 2
         
         # Save pagination state (as would happen when browsing)
@@ -122,6 +121,8 @@ async def test_navigation_state_for_edibles():
                 back_callback_shroom = f"subcategory|{parts[1]}|{parts[2]}|{latest_state_shroom['page']}"
             else:
                 back_callback_shroom = "menu|1"
+        else:
+            back_callback_shroom = "menu|1"
         
         expected_callback_shroom = f"subcategory|EDIBLES|SHROOM EDIBLES|{page_shroom}"
         assert back_callback_shroom == expected_callback_shroom, f"Expected '{expected_callback_shroom}', got '{back_callback_shroom}'"
@@ -154,7 +155,7 @@ async def test_navigation_state_for_edibles():
         try:
             os.unlink(test_db_path)
             print(f"\n🧹 Cleaned up test database: {test_db_path}")
-        except Exception as e:
+        except (OSError, IOError) as e:
             # Ignore cleanup errors
             pass
 
