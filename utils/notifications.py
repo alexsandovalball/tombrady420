@@ -20,6 +20,11 @@ MAX_NOTIFICATIONS_PER_HOUR = 5  # Maximum notifications per user per hour
 NOTIFICATION_BATCH_SIZE = 10  # Send notifications in batches
 BATCH_DELAY_SECONDS = 3  # Delay between batches to avoid hitting rate limits
 
+# Staggered delivery configuration
+ENABLE_STAGGERED_DELIVERY = True  # Enable staggered delivery to avoid spam flags
+STAGGER_GROUP_SIZE = 10  # Number of users per group for staggered delivery
+STAGGER_INTERVAL_SECONDS = 30  # Delay in seconds between groups (e.g., 30 or 60)
+
 # Custom message rate limiting
 MAX_CUSTOM_MESSAGES_PER_HOUR = 3  # Maximum custom messages per user per hour
 CUSTOM_MESSAGE_BATCH_SIZE = 5  # Send custom messages in smaller batches
@@ -74,7 +79,8 @@ class NotificationService:
     
     async def process_notification_queue(self, context: ContextTypes.DEFAULT_TYPE):
         """
-        Process pending notifications from the queue with rate limiting.
+        Process pending notifications from the queue with rate limiting and staggered delivery.
+        Groups users and sends notifications at staggered intervals to avoid spam flags.
         """
         try:
             pending = await self.db.get_pending_notifications(limit=100)
@@ -92,10 +98,8 @@ class NotificationService:
                     user_notifications[user_id] = []
                 user_notifications[user_id].append(notification)
             
-            # Process notifications in batches
-            sent_count = 0
-            batch = []
-            
+            # Filter users who haven't exceeded rate limits
+            eligible_users = []
             for user_id, notifications in user_notifications.items():
                 # Check rate limit for this user
                 recent_count = await self.db.get_recent_notifications_count(user_id, minutes=60)
@@ -107,9 +111,54 @@ class NotificationService:
                 # Calculate how many more notifications we can send to this user
                 remaining = MAX_NOTIFICATIONS_PER_HOUR - recent_count
                 
-                # Send only the allowed number of notifications
-                for notification in notifications[:remaining]:
-                    batch.append(notification)
+                # Add user with their limited notifications
+                eligible_users.append((user_id, notifications[:remaining]))
+            
+            if not eligible_users:
+                logger.info("No eligible users after rate limiting")
+                return
+            
+            # Implement staggered delivery by groups
+            sent_count = 0
+            
+            if ENABLE_STAGGERED_DELIVERY and len(eligible_users) >= STAGGER_GROUP_SIZE:
+                logger.info(f"Using staggered delivery: {len(eligible_users)} users in groups of {STAGGER_GROUP_SIZE}")
+                
+                # Split users into groups
+                user_groups = []
+                for i in range(0, len(eligible_users), STAGGER_GROUP_SIZE):
+                    user_groups.append(eligible_users[i:i + STAGGER_GROUP_SIZE])
+                
+                # Process each group with staggered delay
+                for group_idx, user_group in enumerate(user_groups):
+                    logger.info(f"Processing group {group_idx + 1}/{len(user_groups)} with {len(user_group)} users")
+                    
+                    # Collect all notifications for this group
+                    group_batch = []
+                    for user_id, notifications in user_group:
+                        group_batch.extend(notifications)
+                    
+                    # Send notifications in smaller batches within the group
+                    for i in range(0, len(group_batch), NOTIFICATION_BATCH_SIZE):
+                        batch = group_batch[i:i + NOTIFICATION_BATCH_SIZE]
+                        sent = await self._send_notification_batch(context, batch)
+                        sent_count += sent
+                        
+                        # Small delay between batches within a group
+                        if i + NOTIFICATION_BATCH_SIZE < len(group_batch):
+                            await asyncio.sleep(BATCH_DELAY_SECONDS)
+                    
+                    # Stagger delay before next group (except for last group)
+                    if group_idx < len(user_groups) - 1:
+                        logger.info(f"Waiting {STAGGER_INTERVAL_SECONDS}s before next group...")
+                        await asyncio.sleep(STAGGER_INTERVAL_SECONDS)
+            else:
+                # Standard batch processing without staggering
+                logger.info("Using standard batch processing (staggering disabled or small user count)")
+                batch = []
+                
+                for user_id, notifications in eligible_users:
+                    batch.extend(notifications)
                     
                     # Send in batches to avoid overwhelming Telegram
                     if len(batch) >= NOTIFICATION_BATCH_SIZE:
@@ -117,11 +166,11 @@ class NotificationService:
                         sent_count += sent
                         batch = []
                         await asyncio.sleep(BATCH_DELAY_SECONDS)
-            
-            # Send remaining batch
-            if batch:
-                sent = await self._send_notification_batch(context, batch)
-                sent_count += sent
+                
+                # Send remaining batch
+                if batch:
+                    sent = await self._send_notification_batch(context, batch)
+                    sent_count += sent
             
             logger.info(f"Sent {sent_count} notifications successfully")
             
@@ -173,7 +222,7 @@ class NotificationService:
                 
                 # Create inline keyboard with view product button
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("👁️ View Product", callback_data=f"product|{product_id}|1")],
+                    [InlineKeyboardButton("👁️ View Product", callback_data=f"product|{product_id}")],
                     [InlineKeyboardButton("🔕 Unsubscribe", callback_data="unsubscribe_notifications")]
                 ])
                 
