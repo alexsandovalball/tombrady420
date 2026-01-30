@@ -94,7 +94,8 @@ class Database:
                     first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     interaction_count INTEGER DEFAULT 1,
-                    notifications_enabled INTEGER DEFAULT 1
+                    notifications_enabled INTEGER DEFAULT 1,
+                    is_blocked INTEGER DEFAULT 0
                 )
             """)
             
@@ -106,6 +107,16 @@ class Database:
                     sent_at TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+                )
+            """)
+            
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS custom_message_queue (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    message_text TEXT NOT NULL,
+                    sent_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             
@@ -132,6 +143,11 @@ class Database:
             
             try:
                 await db.execute("ALTER TABLE bot_users ADD COLUMN notifications_enabled INTEGER DEFAULT 1")
+            except:
+                pass
+            
+            try:
+                await db.execute("ALTER TABLE bot_users ADD COLUMN is_blocked INTEGER DEFAULT 0")
             except:
                 pass
             
@@ -668,6 +684,72 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("""
                 SELECT COUNT(*) FROM notification_queue 
+                WHERE user_id = ? AND sent_at IS NOT NULL
+                AND datetime(sent_at) > datetime('now', '-' || ? || ' minutes')
+            """, (user_id, minutes)) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else 0
+    
+    async def block_user(self, user_id: int):
+        """Block a user from using the bot."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE bot_users SET is_blocked = 1 WHERE user_id = ?
+            """, (user_id,))
+            await db.commit()
+    
+    async def unblock_user(self, user_id: int):
+        """Unblock a user."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE bot_users SET is_blocked = 0 WHERE user_id = ?
+            """, (user_id,))
+            await db.commit()
+    
+    async def is_user_blocked(self, user_id: int) -> bool:
+        """Check if a user is blocked."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT is_blocked FROM bot_users WHERE user_id = ?
+            """, (user_id,)) as cursor:
+                row = await cursor.fetchone()
+                return row[0] == 1 if row else False
+    
+    async def queue_custom_message(self, user_id: int, message_text: str):
+        """Queue a custom message for a user."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO custom_message_queue (user_id, message_text, created_at)
+                VALUES (?, ?, ?)
+            """, (user_id, message_text, datetime.now()))
+            await db.commit()
+    
+    async def get_pending_custom_messages(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get pending custom messages from queue."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM custom_message_queue 
+                WHERE sent_at IS NULL 
+                ORDER BY created_at ASC 
+                LIMIT ?
+            """, (limit,)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+    
+    async def mark_custom_message_sent(self, message_id: int):
+        """Mark a custom message as sent."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE custom_message_queue SET sent_at = ? WHERE id = ?
+            """, (datetime.now(), message_id))
+            await db.commit()
+    
+    async def get_recent_custom_messages_count(self, user_id: int, minutes: int = 60) -> int:
+        """Count custom messages sent to user in the last N minutes."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT COUNT(*) FROM custom_message_queue 
                 WHERE user_id = ? AND sent_at IS NOT NULL
                 AND datetime(sent_at) > datetime('now', '-' || ? || ' minutes')
             """, (user_id, minutes)) as cursor:

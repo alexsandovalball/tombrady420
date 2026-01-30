@@ -25,7 +25,8 @@ from handlers.search import handle_search, show_search_results, handle_search_pa
 from handlers.product_view import show_product, handle_product_callback
 from handlers.admin import (
     stats_command, delete_product, nuke_command, recategorize_command, 
-    users_command, show_users_page, add_product_command
+    users_command, show_users_page, add_product_command,
+    block_command, unblock_command, send_command, broadcast_command
 )
 from utils.helpers import (
     get_file_id_and_type,
@@ -647,6 +648,53 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             else:
                 await query.edit_message_text("❌ Product could not be added.")
         
+        # Handle block user
+        elif parts[0] == "block_user":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can block users.", show_alert=True)
+                return
+            
+            if len(parts) >= 2:
+                target_user_id = int(parts[1])
+                page = int(parts[2]) if len(parts) > 2 else 1
+                
+                # Prevent blocking admins
+                if is_admin(target_user_id):
+                    await query.answer("❌ Cannot block an admin user.", show_alert=True)
+                    return
+                
+                # Block the user
+                await db.block_user(target_user_id)
+                
+                # Refresh the users page
+                await show_users_page(update, context, page)
+                
+                await query.answer("🚫 User blocked", show_alert=False)
+                logger.info(f"Admin {update.effective_user.id} blocked user {target_user_id}")
+            else:
+                await query.answer("Invalid data", show_alert=True)
+        
+        # Handle unblock user
+        elif parts[0] == "unblock_user":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can unblock users.", show_alert=True)
+                return
+            
+            if len(parts) >= 2:
+                target_user_id = int(parts[1])
+                page = int(parts[2]) if len(parts) > 2 else 1
+                
+                # Unblock the user
+                await db.unblock_user(target_user_id)
+                
+                # Refresh the users page
+                await show_users_page(update, context, page)
+                
+                await query.answer("✅ User unblocked", show_alert=False)
+                logger.info(f"Admin {update.effective_user.id} unblocked user {target_user_id}")
+            else:
+                await query.answer("Invalid data", show_alert=True)
+        
         else:
             await query.answer("Unknown action", show_alert=True)
             
@@ -680,8 +728,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_name=user.last_name
     )
     
-    # Rate limiting (simple)
+    # Check if user is blocked
     user_id = update.effective_user.id
+    if not is_admin(user_id):
+        is_blocked = await db.is_user_blocked(user_id)
+        if is_blocked:
+            await update.message.reply_text(
+                "🚫 You have been blocked from using this bot.\n\n"
+                "If you believe this is an error, please contact an administrator."
+            )
+            return
+    
+    # Rate limiting (simple)
     current_time = datetime.now().timestamp()
     
     if user_id in user_last_message:
@@ -697,6 +755,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Handle as search query
     if update.message and update.message.text:
         await handle_search(update, context)
+
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -774,6 +833,10 @@ def main():
     application.add_handler(CommandHandler("add_product", add_product_command))
     application.add_handler(CommandHandler("subscribe", subscribe_command))
     application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
+    application.add_handler(CommandHandler("block", block_command))
+    application.add_handler(CommandHandler("unblock", unblock_command))
+    application.add_handler(CommandHandler("send", send_command))
+    application.add_handler(CommandHandler("broadcast", broadcast_command))
     
     # Channel post handler (for monitoring channel)
     channel_id = get_channel_id()

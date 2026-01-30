@@ -134,6 +134,10 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
             notif_enabled = user.get('notifications_enabled', 1) == 1
             notif_status = "🔔 ON" if notif_enabled else "🔕 OFF"
             
+            # Blocked status
+            is_blocked = user.get('is_blocked', 0) == 1
+            blocked_status = "🚫 BLOCKED" if is_blocked else ""
+            
             last_seen = user.get('last_seen', 'Unknown')
             if last_seen != 'Unknown':
                 from datetime import datetime
@@ -150,6 +154,11 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
                 f"   🕐 Last seen: {last_seen}\n"
                 f"   📬 Notifications: {notif_status}"
             )
+            
+            # Add blocked status if applicable
+            if blocked_status:
+                user_text += f"\n   ⚠️ Status: {blocked_status}"
+            
             message_lines.append(user_text)
         
         message_text = "\n".join(message_lines)
@@ -159,16 +168,32 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
         for user in page_users:
             uid = user['user_id']
             notif_enabled = user.get('notifications_enabled', 1) == 1
+            is_blocked = user.get('is_blocked', 0) == 1
             
             # Get user display name
             username = user.get('username') or user.get('first_name', 'Unknown')
-            if len(username) > 15:
-                username = username[:12] + "..."
+            if len(username) > 12:
+                username = username[:9] + "..."
             
-            button_text = f"{'🔕' if notif_enabled else '🔔'} {username}"
-            keyboard_buttons.append([
-                InlineKeyboardButton(button_text, callback_data=f"toggle_notif|{uid}|{page}")
-            ])
+            # Create row with notification toggle and block/unblock button
+            row_buttons = [
+                InlineKeyboardButton(
+                    f"{'🔕' if notif_enabled else '🔔'} {username}",
+                    callback_data=f"toggle_notif|{uid}|{page}"
+                )
+            ]
+            
+            # Add block/unblock button
+            if is_blocked:
+                row_buttons.append(
+                    InlineKeyboardButton("✅ Unblock", callback_data=f"unblock_user|{uid}|{page}")
+                )
+            else:
+                row_buttons.append(
+                    InlineKeyboardButton("🚫 Block", callback_data=f"block_user|{uid}|{page}")
+                )
+            
+            keyboard_buttons.append(row_buttons)
         
         # Add pagination buttons
         nav_buttons = []
@@ -486,6 +511,252 @@ async def add_product_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.error(f"Error in add_product command: {e}", exc_info=True)
         await message.reply_text(
             "❌ An error occurred while adding the product."
+        )
+
+
+async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /block command - block a user from using the bot (admin only).
+    
+    Usage: /block <user_id>
+    Example: /block 123456789
+    """
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            "❌ This command is only available for administrators."
+        )
+        return
+    
+    # Check arguments
+    if not context.args or len(context.args) < 1:
+        await update.message.reply_text(
+            "❌ **Invalid format**\n\n"
+            "**Usage:** `/block <user_id>`\n\n"
+            "**Example:** `/block 123456789`\n\n"
+            "💡 Tip: Use `/users` to find user IDs",
+            parse_mode="Markdown"
+        )
+        return
+    
+    try:
+        target_user_id = int(context.args[0])
+        
+        # Prevent blocking admins
+        if is_admin(target_user_id):
+            await update.message.reply_text(
+                "❌ Cannot block an admin user."
+            )
+            return
+        
+        # Block the user
+        await db.block_user(target_user_id)
+        
+        await update.message.reply_text(
+            f"✅ **User Blocked**\n\n"
+            f"🆔 User ID: `{target_user_id}`\n\n"
+            f"This user can no longer use the bot.\n"
+            f"Use `/unblock {target_user_id}` to unblock.",
+            parse_mode="Markdown"
+        )
+        logger.info(f"Admin {user_id} blocked user {target_user_id}")
+        
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Invalid user ID. Please provide a valid number."
+        )
+    except Exception as e:
+        logger.error(f"Error in block command: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ An error occurred while blocking the user."
+        )
+
+
+async def unblock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /unblock command - unblock a user (admin only).
+    
+    Usage: /unblock <user_id>
+    Example: /unblock 123456789
+    """
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            "❌ This command is only available for administrators."
+        )
+        return
+    
+    # Check arguments
+    if not context.args or len(context.args) < 1:
+        await update.message.reply_text(
+            "❌ **Invalid format**\n\n"
+            "**Usage:** `/unblock <user_id>`\n\n"
+            "**Example:** `/unblock 123456789`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    try:
+        target_user_id = int(context.args[0])
+        
+        # Unblock the user
+        await db.unblock_user(target_user_id)
+        
+        await update.message.reply_text(
+            f"✅ **User Unblocked**\n\n"
+            f"🆔 User ID: `{target_user_id}`\n\n"
+            f"This user can now use the bot again.",
+            parse_mode="Markdown"
+        )
+        logger.info(f"Admin {user_id} unblocked user {target_user_id}")
+        
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Invalid user ID. Please provide a valid number."
+        )
+    except Exception as e:
+        logger.error(f"Error in unblock command: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ An error occurred while unblocking the user."
+        )
+
+
+async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /send command - send a custom message to a specific user (admin only).
+    
+    Usage: /send <user_id> <message>
+    Example: /send 123456789 Hello! This is a custom message.
+    """
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            "❌ This command is only available for administrators."
+        )
+        return
+    
+    # Check arguments
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "❌ **Invalid format**\n\n"
+            "**Usage:** `/send <user_id> <message>`\n\n"
+            "**Example:** `/send 123456789 Hello! This is a custom message.`\n\n"
+            "💡 Tip: Use `/users` to find user IDs\n"
+            "⚠️ Rate limit: 3 messages per user per hour",
+            parse_mode="Markdown"
+        )
+        return
+    
+    try:
+        target_user_id = int(context.args[0])
+        message_text = " ".join(context.args[1:])
+        
+        # Check if user is blocked
+        is_blocked = await db.is_user_blocked(target_user_id)
+        if is_blocked:
+            await update.message.reply_text(
+                f"❌ Cannot send message to blocked user `{target_user_id}`.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Send the message using notification service
+        from utils.notifications import NotificationService
+        notification_service = NotificationService(db)
+        
+        success = await notification_service.send_custom_message_to_user(
+            context,
+            target_user_id,
+            message_text
+        )
+        
+        if success:
+            await update.message.reply_text(
+                f"✅ **Message Queued**\n\n"
+                f"🆔 User ID: `{target_user_id}`\n"
+                f"📝 Message: {message_text[:100]}{'...' if len(message_text) > 100 else ''}\n\n"
+                f"Message will be delivered shortly.",
+                parse_mode="Markdown"
+            )
+            logger.info(f"Admin {user_id} sent custom message to user {target_user_id}")
+        else:
+            await update.message.reply_text(
+                "❌ Failed to queue message. Check logs for details."
+            )
+        
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Invalid user ID. Please provide a valid number."
+        )
+    except Exception as e:
+        logger.error(f"Error in send command: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ An error occurred while sending the message."
+        )
+
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /broadcast command - send a message to all users (admin only).
+    
+    Usage: /broadcast <message>
+    Example: /broadcast New products added! Check them out with /menu
+    """
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            "❌ This command is only available for administrators."
+        )
+        return
+    
+    # Check arguments
+    if not context.args or len(context.args) < 1:
+        await update.message.reply_text(
+            "❌ **Invalid format**\n\n"
+            "**Usage:** `/broadcast <message>`\n\n"
+            "**Example:** `/broadcast New products added! Check them out with /menu`\n\n"
+            "⚠️ **Important:**\n"
+            "• Rate limit: 3 messages per user per hour\n"
+            "• Blocked users are automatically excluded\n"
+            "• Admins are excluded from broadcasts\n"
+            "• Messages are queued and delivered with delays",
+            parse_mode="Markdown"
+        )
+        return
+    
+    try:
+        message_text = " ".join(context.args)
+        
+        # Send status message
+        status_msg = await update.message.reply_text(
+            "📡 **Broadcasting message...**\n\n"
+            "Please wait while the message is queued for all users.",
+            parse_mode="Markdown"
+        )
+        
+        # Broadcast using notification service
+        from utils.notifications import NotificationService
+        notification_service = NotificationService(db)
+        
+        queued_count = await notification_service.broadcast_custom_message(
+            context,
+            message_text,
+            exclude_blocked=True
+        )
+        
+        await status_msg.edit_text(
+            f"✅ **Broadcast Complete**\n\n"
+            f"📨 Messages queued: {queued_count}\n"
+            f"📝 Message: {message_text[:100]}{'...' if len(message_text) > 100 else ''}\n\n"
+            f"Messages will be delivered with rate-limiting intervals.",
+            parse_mode="Markdown"
+        )
+        logger.info(f"Admin {user_id} broadcast message to {queued_count} users")
+        
+    except Exception as e:
+        logger.error(f"Error in broadcast command: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ An error occurred while broadcasting the message."
         )
 
 

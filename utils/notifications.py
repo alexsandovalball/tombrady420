@@ -20,6 +20,11 @@ MAX_NOTIFICATIONS_PER_HOUR = 5  # Maximum notifications per user per hour
 NOTIFICATION_BATCH_SIZE = 10  # Send notifications in batches
 BATCH_DELAY_SECONDS = 3  # Delay between batches to avoid hitting rate limits
 
+# Custom message rate limiting
+MAX_CUSTOM_MESSAGES_PER_HOUR = 3  # Maximum custom messages per user per hour
+CUSTOM_MESSAGE_BATCH_SIZE = 5  # Send custom messages in smaller batches
+CUSTOM_MESSAGE_DELAY_SECONDS = 5  # Longer delay for custom messages
+
 
 class NotificationService:
     """Service for managing and sending product notifications."""
@@ -202,3 +207,197 @@ class NotificationService:
                 await self.db.mark_notification_sent(notification_id)
         
         return sent_count
+    
+    async def send_custom_message_to_user(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        user_id: int,
+        message_text: str
+    ):
+        """
+        Send a custom message to a specific user with rate limiting.
+        """
+        try:
+            # Check if user is blocked
+            is_blocked = await self.db.is_user_blocked(user_id)
+            if is_blocked:
+                logger.warning(f"Cannot send message to blocked user {user_id}")
+                return False
+            
+            # Queue the message
+            await self.db.queue_custom_message(user_id, message_text)
+            
+            # Process the queue
+            await self.process_custom_message_queue(context)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error sending custom message to user {user_id}: {e}", exc_info=True)
+            return False
+    
+    async def broadcast_custom_message(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        message_text: str,
+        exclude_blocked: bool = True
+    ):
+        """
+        Broadcast a custom message to all users with rate limiting.
+        """
+        try:
+            # Get all users
+            all_users = await self.db.get_all_users()
+            
+            if not all_users:
+                logger.debug("No users to broadcast to")
+                return 0
+            
+            logger.info(f"Broadcasting custom message to {len(all_users)} users")
+            
+            # Queue messages for all non-blocked users
+            queued = 0
+            for user in all_users:
+                user_id = user["user_id"]
+                
+                # Skip blocked users if requested
+                if exclude_blocked and user.get("is_blocked", 0) == 1:
+                    continue
+                
+                # Skip admin users
+                from utils.helpers import get_admin_ids
+                if user_id in get_admin_ids():
+                    continue
+                
+                await self.db.queue_custom_message(user_id, message_text)
+                queued += 1
+            
+            logger.info(f"Queued {queued} custom messages")
+            
+            # Process the queue
+            await self.process_custom_message_queue(context)
+            
+            return queued
+            
+        except Exception as e:
+            logger.error(f"Error broadcasting custom message: {e}", exc_info=True)
+            return 0
+    
+    async def process_custom_message_queue(self, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Process pending custom messages from the queue with rate limiting.
+        """
+        try:
+            pending = await self.db.get_pending_custom_messages(limit=100)
+            
+            if not pending:
+                return
+            
+            logger.info(f"Processing {len(pending)} pending custom messages")
+            
+            # Group messages by user for rate limiting
+            user_messages = {}
+            for message in pending:
+                user_id = message["user_id"]
+                if user_id not in user_messages:
+                    user_messages[user_id] = []
+                user_messages[user_id].append(message)
+            
+            # Process messages in batches
+            sent_count = 0
+            batch = []
+            
+            for user_id, messages in user_messages.items():
+                # Check if user is blocked
+                is_blocked = await self.db.is_user_blocked(user_id)
+                if is_blocked:
+                    # Mark as sent to remove from queue
+                    for msg in messages:
+                        await self.db.mark_custom_message_sent(msg["id"])
+                    continue
+                
+                # Check rate limit for this user
+                recent_count = await self.db.get_recent_custom_messages_count(user_id, minutes=60)
+                
+                if recent_count >= MAX_CUSTOM_MESSAGES_PER_HOUR:
+                    logger.debug(f"User {user_id} reached custom message rate limit, skipping")
+                    continue
+                
+                # Calculate how many more messages we can send to this user
+                remaining = MAX_CUSTOM_MESSAGES_PER_HOUR - recent_count
+                
+                # Send only the allowed number of messages
+                for message in messages[:remaining]:
+                    batch.append(message)
+                    
+                    # Send in batches to avoid overwhelming Telegram
+                    if len(batch) >= CUSTOM_MESSAGE_BATCH_SIZE:
+                        sent = await self._send_custom_message_batch(context, batch)
+                        sent_count += sent
+                        batch = []
+                        await asyncio.sleep(CUSTOM_MESSAGE_DELAY_SECONDS)
+            
+            # Send remaining batch
+            if batch:
+                sent = await self._send_custom_message_batch(context, batch)
+                sent_count += sent
+            
+            logger.info(f"Sent {sent_count} custom messages successfully")
+            
+        except Exception as e:
+            logger.error(f"Error processing custom message queue: {e}", exc_info=True)
+    
+    async def _send_custom_message_batch(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        messages: List[dict]
+    ) -> int:
+        """
+        Send a batch of custom messages.
+        Returns the number of successfully sent messages.
+        """
+        sent_count = 0
+        
+        for message in messages:
+            try:
+                user_id = message["user_id"]
+                message_text = message["message_text"]
+                message_id = message["id"]
+                
+                # Check if user is blocked
+                is_blocked = await self.db.is_user_blocked(user_id)
+                if is_blocked:
+                    # Mark as sent to remove from queue
+                    await self.db.mark_custom_message_sent(message_id)
+                    continue
+                
+                # Send custom message
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=message_text,
+                    parse_mode="Markdown"
+                )
+                
+                # Mark as sent
+                await self.db.mark_custom_message_sent(message_id)
+                sent_count += 1
+                
+                logger.debug(f"Sent custom message to user {user_id}")
+                
+            except Forbidden:
+                # User blocked the bot, block them in our system
+                logger.info(f"User {user_id} blocked the bot, marking as blocked")
+                await self.db.block_user(user_id)
+                await self.db.mark_custom_message_sent(message_id)
+                
+            except TelegramError as e:
+                logger.error(f"Telegram error sending custom message to {user_id}: {e}")
+                # Don't mark as sent, will retry later
+                
+            except Exception as e:
+                logger.error(f"Error sending custom message to {user_id}: {e}")
+                # Mark as sent to avoid infinite retries
+                await self.db.mark_custom_message_sent(message_id)
+        
+        return sent_count
+
