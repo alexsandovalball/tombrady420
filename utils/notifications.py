@@ -11,7 +11,7 @@ from telegram.ext import ContextTypes
 from telegram.error import TelegramError, Forbidden
 
 from database import Database
-from utils.categories import get_category_display_name
+from utils.categories import get_category_display_name, EXCLUDED_FROM_ALL_PRODUCTS
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ BATCH_DELAY_SECONDS = 3  # Delay between batches to avoid hitting rate limits
 # Staggered delivery configuration
 ENABLE_STAGGERED_DELIVERY = True  # Enable staggered delivery to avoid spam flags
 STAGGER_GROUP_SIZE = 10  # Number of users per group for staggered delivery
-STAGGER_INTERVAL_SECONDS = 30  # Delay in seconds between groups (e.g., 30 or 60)
+STAGGER_INTERVAL_SECONDS = 10  # Delay in seconds between groups (reduced from 30 to improve responsiveness)
 
 # Custom message rate limiting
 MAX_CUSTOM_MESSAGES_PER_HOUR = 3  # Maximum custom messages per user per hour
@@ -58,6 +58,12 @@ class NotificationService:
                 logger.debug(f"Product {product_id} not categorized, skipping notification")
                 return
             
+            # Skip notifications for excluded categories (DATEDPROOFS, CLIENTTOUCHDOWNS)
+            category = product.get("category")
+            if category in EXCLUDED_FROM_ALL_PRODUCTS:
+                logger.info(f"Product {product_id} is in excluded category '{category}', skipping notification")
+                return
+            
             # Get all subscribed users
             subscribed_users = await self.db.get_subscribed_users()
             
@@ -71,8 +77,19 @@ class NotificationService:
             for user_id in subscribed_users:
                 await self.db.queue_notification(user_id, product_id)
             
-            # Process the notification queue
-            await self.process_notification_queue(context)
+            # Process the notification queue asynchronously (non-blocking)
+            # Schedule as a background task so it doesn't block other operations
+            # Store task reference to prevent it from being garbage collected
+            task = asyncio.create_task(self.process_notification_queue(context))
+            
+            # Add exception handling callback to log any errors
+            def log_task_exception(task_obj):
+                try:
+                    task_obj.result()
+                except Exception as e:
+                    logger.error(f"Error in background notification task: {e}", exc_info=True)
+            
+            task.add_done_callback(log_task_exception)
             
         except Exception as e:
             logger.error(f"Error notifying users about product {product_id}: {e}", exc_info=True)

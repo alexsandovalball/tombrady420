@@ -32,6 +32,9 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         # Get the most recent pagination state to determine where user was browsing
         latest_state = await db.get_latest_pagination_state(user_id)
         
+        # Determine appropriate back button based on context
+        back_callback = "menu|1"  # Default fallback
+        
         if latest_state and "state_type" in latest_state and "page" in latest_state:
             state_type = latest_state["state_type"]
             page = latest_state["page"]
@@ -78,8 +81,18 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 # Default fallback
                 back_callback = "menu|1"
         else:
-            # No pagination state, fallback to menu
-            back_callback = "menu|1"
+            # No pagination state found - user likely came from notification
+            # Use product's category/subcategory to determine back button
+            product_category = product.get("category")
+            product_subcategory = product.get("subcategory")
+            
+            if product_category and product_subcategory:
+                # Product has both category and subcategory - go to subcategory view
+                back_callback = f"subcategory|{product_category}|{product_subcategory}|1"
+            elif product_category:
+                # Product has only category - go to category view
+                back_callback = f"category|{product_category}|1"
+            # else: keep default "menu|1"
         
         # Create keyboard
         keyboard_buttons = [
