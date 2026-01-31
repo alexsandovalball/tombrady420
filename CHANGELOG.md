@@ -5,7 +5,7 @@ All notable changes to the Telegram Media Catalog Bot are documented in this fil
 ## [Latest] - 2025-01-31
 
 ### Added
-- **Announcements Category**: Added new "📢 Announcements" category that WILL trigger user notifications (unlike DATEDPROOFS and CLIENTTOUCHDOWNS)
+- **Announcements Category**: Added new "📢 Announcements" category that WILL trigger user notifications (unlike DATEDPROOFS and CLIENTTOUCHDOWNS) but is excluded from "All Products" view
 - **DM Message Consistency**: All product views now consistently display "👆 DM TO ORDER:@FLYAWAYPEP" message
 - **View Catalog Button**: Added "📋 View Catalog" button to notification messages that remains visible after subscribe/unsubscribe actions
 - **Resubscribe Button**: Added "🔔 Resubscribe to Notifications" button for users who previously unsubscribed

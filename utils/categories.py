@@ -39,7 +39,13 @@ CATEGORY_DISPLAY = {
 # Categories to exclude from "All Products" view
 # Add category names here to hide them from the "All Products" button/view
 # while keeping them accessible when browsing categories directly
-EXCLUDED_FROM_ALL_PRODUCTS = ["DATEDPROOFS", "CLIENTTOUCHDOWNS"]
+EXCLUDED_FROM_ALL_PRODUCTS = ["DATEDPROOFS", "CLIENTTOUCHDOWNS", "ANNOUNCEMENTS"]
+
+# Categories to exclude from triggering notifications
+# Note: ANNOUNCEMENTS is NOT in this list - it will trigger notifications
+#       even though it's excluded from "All Products" view
+NOTIFICATION_EXCLUDED_CATEGORIES = ["DATEDPROOFS", "CLIENTTOUCHDOWNS"]
+
 
 
 def extract_category_from_caption(caption: str) -> Tuple[Optional[str], Optional[str]]:

@@ -11,7 +11,7 @@ from telegram.ext import ContextTypes
 from telegram.error import TelegramError, Forbidden
 
 from database import Database
-from utils.categories import get_category_display_name, EXCLUDED_FROM_ALL_PRODUCTS
+from utils.categories import get_category_display_name, NOTIFICATION_EXCLUDED_CATEGORIES
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +59,9 @@ class NotificationService:
                 return
             
             # Skip notifications for excluded categories (DATEDPROOFS, CLIENTTOUCHDOWNS)
+            # Note: ANNOUNCEMENTS is NOT excluded from notifications
             category = product.get("category")
-            if category in EXCLUDED_FROM_ALL_PRODUCTS:
+            if category in NOTIFICATION_EXCLUDED_CATEGORIES:
                 logger.info(f"Product {product_id} is in excluded category '{category}', skipping notification")
                 return
             
