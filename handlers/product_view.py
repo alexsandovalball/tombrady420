@@ -188,6 +188,13 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
             product["file_id"],
             product["file_type"],
             caption=full_caption,
+            reply_markup=None  # Don't add keyboard to media message
+        )
+        
+        # Send DM message with keyboard separately for consistency
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="👆 DM TO ORDER:@FLYAWAYPEP",
             reply_markup=keyboard
         )
         

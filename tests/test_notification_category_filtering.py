@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database import Database
 from utils.notifications import NotificationService
-from utils.categories import EXCLUDED_FROM_ALL_PRODUCTS
+from utils.categories import EXCLUDED_FROM_ALL_PRODUCTS, NOTIFICATION_EXCLUDED_CATEGORIES
 
 
 async def test_notification_filtering():
@@ -128,12 +128,14 @@ async def test_notification_filtering():
         assert len(normal_notifications) == 1, "FLOWER should create notifications"
         print(f"✓ FLOWER product correctly queued {len(normal_notifications)} notification(s)")
         
-        # Test 7: Verify the EXCLUDED_FROM_ALL_PRODUCTS list is correct
-        print(f"\nTest: Verify excluded categories list")
-        print(f"  Excluded categories: {EXCLUDED_FROM_ALL_PRODUCTS}")
-        assert "DATEDPROOFS" in EXCLUDED_FROM_ALL_PRODUCTS, "DATEDPROOFS should be in excluded list"
-        assert "CLIENTTOUCHDOWNS" in EXCLUDED_FROM_ALL_PRODUCTS, "CLIENTTOUCHDOWNS should be in excluded list"
-        print("✓ Excluded categories list is correct")
+        # Test 7: Verify the exclusion lists are correct
+        print(f"\nTest: Verify excluded categories lists")
+        print(f"  Excluded from 'All Products': {EXCLUDED_FROM_ALL_PRODUCTS}")
+        print(f"  Excluded from notifications: {NOTIFICATION_EXCLUDED_CATEGORIES}")
+        assert "DATEDPROOFS" in NOTIFICATION_EXCLUDED_CATEGORIES, "DATEDPROOFS should be in notification exclusion list"
+        assert "CLIENTTOUCHDOWNS" in NOTIFICATION_EXCLUDED_CATEGORIES, "CLIENTTOUCHDOWNS should be in notification exclusion list"
+        assert "ANNOUNCEMENTS" not in NOTIFICATION_EXCLUDED_CATEGORIES, "ANNOUNCEMENTS should NOT be in notification exclusion list"
+        print("✓ Exclusion lists are correct")
         
         print("\n" + "="*70)
         print("✅ ALL TESTS PASSED - Notification filtering works correctly!")
