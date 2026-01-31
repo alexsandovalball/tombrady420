@@ -25,7 +25,7 @@ from handlers.search import handle_search, show_search_results, handle_search_pa
 from handlers.product_view import show_product, handle_product_callback
 from handlers.admin import (
     stats_command, delete_product, nuke_command, recategorize_command, 
-    users_command, show_users_page, add_product_command,
+    users_command, show_users_page,
     block_command, unblock_command, send_command, broadcast_command
 )
 from utils.helpers import (
@@ -625,7 +625,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await show_users_page(update, context, page)
                 
                 status_text = "disabled" if was_subscribed else "enabled"
-                await query.answer(f"✅ Notifications {status_text} for user", show_alert=False)
+                await query.answer(f"✅ Notifications {status_text} for user successfully", show_alert=True)
                 logger.info(f"Admin {update.effective_user.id} toggled notifications for user {target_user_id} to {not was_subscribed}")
             else:
                 await query.answer("Invalid data", show_alert=True)
@@ -686,7 +686,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 except:
                     pass  # Message may not have markup to edit
                 
-                await query.answer("🔔 You've been subscribed to notifications!", show_alert=True)
+                await query.answer("✅ You have been subscribed to notifications successfully! You will now receive updates about new products.", show_alert=True)
                 logger.info(f"User {user_id} subscribed via button")
         
         # Handle confirmation of unsubscribe
@@ -704,7 +704,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             except:
                 pass  # Message may not have markup to edit
             
-            await query.answer("🔕 You've been unsubscribed from notifications. Click 'Resubscribe to Notifications' button or use /subscribe to re-enable.", show_alert=True)
+            await query.answer("✅ You have been unsubscribed from notifications successfully. You can resubscribe anytime using the 'Resubscribe to Notifications' button or /subscribe command.", show_alert=True)
             logger.info(f"User {user_id} unsubscribed via button")
         
         # Handle cancellation of unsubscribe
@@ -736,56 +736,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 show_alert=True
             )
         
-        # Handle add_product subcategory selection
-        elif parts[0] == "addprod_subcat":
-            if not is_admin(update.effective_user.id):
-                await query.answer("❌ Only admins can add products.", show_alert=True)
-                return
-            
-            # Get pending product data
-            pending_product = context.user_data.get('pending_product')
-            if not pending_product:
-                await query.answer("❌ Session expired. Please try again.", show_alert=True)
-                return
-            
-            subcategory = parts[1] if len(parts) > 1 and parts[1] else None
-            
-            # Add product with category and subcategory
-            product_id = await db.add_product(
-                file_id=pending_product['file_id'],
-                file_type=pending_product['file_type'],
-                caption=pending_product['caption'],
-                message_id=pending_product['message_id'],
-                chat_id=pending_product['chat_id'],
-                category=pending_product['category'],
-                subcategory=subcategory
-            )
-            
-            # Clear pending data
-            context.user_data.pop('pending_product', None)
-            
-            if product_id > 0:
-                category_text = get_category_display_name(pending_product['category'])
-                if subcategory:
-                    category_text += f" • {subcategory.title()}"
-                
-                await query.edit_message_text(
-                    f"✅ **Product Added Successfully!**\n\n"
-                    f"🆔 Product ID: {product_id}\n"
-                    f"📂 Category: {category_text}\n"
-                    f"📝 Description: {pending_product['caption'][:100]}...\n\n"
-                    f"Notifying subscribed users...",
-                    parse_mode="Markdown"
-                )
-                
-                # Notify users about the new product
-                notification_service = NotificationService(db)
-                await notification_service.notify_users_about_product(context, product_id)
-                
-                logger.info(f"Admin {update.effective_user.id} manually added product {product_id}")
-            else:
-                await query.edit_message_text("❌ Product could not be added.")
-        
         # Handle block user
         elif parts[0] == "block_user":
             if not is_admin(update.effective_user.id):
@@ -809,12 +759,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 # Replace the block button with confirmation buttons
                 try:
-                    # Get user info for display
-                    from handlers.admin import show_users_page
-                    # Instead of refreshing the whole page, just show a confirmation dialog
-                    # We'll use a callback with confirm_ prefix
-                    pass  # The confirmation will be handled via answer alert
-                    
                     # Update the message to show confirmation buttons
                     confirmation_keyboard = InlineKeyboardMarkup([
                         [InlineKeyboardButton("✅ Yes, Block User", callback_data=f"confirm_block|{target_user_id}|{page}")],
@@ -847,7 +791,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Refresh the users page
                 await show_users_page(update, context, page)
                 
-                await query.answer("🚫 User blocked", show_alert=False)
+                await query.answer("✅ User has been blocked successfully", show_alert=True)
                 logger.info(f"Admin {update.effective_user.id} blocked user {target_user_id}")
             else:
                 await query.answer("Invalid data", show_alert=True)
@@ -884,7 +828,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Refresh the users page
                 await show_users_page(update, context, page)
                 
-                await query.answer("✅ User unblocked", show_alert=False)
+                await query.answer("✅ User has been unblocked successfully", show_alert=True)
                 logger.info(f"Admin {update.effective_user.id} unblocked user {target_user_id}")
             else:
                 await query.answer("Invalid data", show_alert=True)
@@ -1024,7 +968,6 @@ def main():
     application.add_handler(CommandHandler("nuke", nuke_command))
     application.add_handler(CommandHandler("recategorize", recategorize_command))
     application.add_handler(CommandHandler("users", users_command))
-    application.add_handler(CommandHandler("add_product", add_product_command))
     application.add_handler(CommandHandler("subscribe", subscribe_command))
     application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
     application.add_handler(CommandHandler("block", block_command))

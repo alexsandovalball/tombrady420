@@ -22,6 +22,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_name=user.last_name
     )
     
+    # Check if user is subscribed to notifications
+    is_subscribed = await db.is_user_subscribed(user.id)
+    
     welcome_text = (
         f"👋 Welcome, {user.first_name}!\n\n"
         "I'm your media product catalog bot. I help you browse and search "
@@ -29,9 +32,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Use /menu to view all products or simply type what you're looking for!  DM @FLYAWAYPEP TO ORDER"
     )
     
-    keyboard = InlineKeyboardMarkup([
+    # Build keyboard based on subscription status
+    keyboard_buttons = [
         [InlineKeyboardButton("📋 View Catalog", callback_data="categories")]
-    ])
+    ]
+    
+    # Add resubscribe button only for users who have unsubscribed
+    if not is_subscribed:
+        keyboard_buttons.append(
+            [InlineKeyboardButton("🔔 Resubscribe to Notifications", callback_data="toggle_notifications")]
+        )
+    
+    keyboard = InlineKeyboardMarkup(keyboard_buttons)
     
     await update.message.reply_text(
         welcome_text,
