@@ -125,7 +125,7 @@ async def notify_admins_for_categorization(context: ContextTypes.DEFAULT_TYPE, p
 
 async def process_media_group(media_group_id: str, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Process collected media group messages after a short delay."""
-    await asyncio.sleep(1.5)  # Wait for all messages in the group to arrive
+    await asyncio.sleep(0.5)  # Wait for all messages in the group to arrive
     
     if media_group_id not in media_group_messages:
         return
@@ -624,9 +624,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Re-subscribe
                 await db.set_user_notifications(user_id, True)
                 
-                # Remove buttons after subscribing
+                # Replace with unsubscribe option to allow toggling back
                 try:
-                    await query.edit_message_reply_markup(reply_markup=None)
+                    unsubscribe_keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔕 Unsubscribe", callback_data="toggle_notifications")]
+                    ])
+                    await query.edit_message_reply_markup(reply_markup=unsubscribe_keyboard)
                 except:
                     pass  # Message may not have markup to edit
                 
@@ -638,22 +641,26 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             user_id = update.effective_user.id
             await db.set_user_notifications(user_id, False)
             
-            # Remove confirmation buttons after action
+            # Replace buttons with a resubscribe option instead of removing them
             try:
-                await query.edit_message_reply_markup(reply_markup=None)
+                resubscribe_keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔔 Resubscribe", callback_data="toggle_notifications")]
+                ])
+                await query.edit_message_reply_markup(reply_markup=resubscribe_keyboard)
             except:
                 pass  # Message may not have markup to edit
             
-            await query.answer("🔕 You've been unsubscribed from notifications. Use /subscribe to re-enable.", show_alert=True)
+            await query.answer("🔕 You've been unsubscribed from notifications. Click 'Resubscribe' button or use /subscribe to re-enable.", show_alert=True)
             logger.info(f"User {user_id} unsubscribed via button")
         
         # Handle cancellation of unsubscribe
         elif callback_data == "cancel_unsubscribe":
-            # Restore original notification keyboard
+            # Restore original unsubscribe button
             try:
-                # Get product_id from context if available to restore original button
-                # For now, just remove the confirmation buttons
-                await query.edit_message_reply_markup(reply_markup=None)
+                original_keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔕 Unsubscribe", callback_data="toggle_notifications")]
+                ])
+                await query.edit_message_reply_markup(reply_markup=original_keyboard)
             except:
                 pass  # Message may not have markup to edit
             
