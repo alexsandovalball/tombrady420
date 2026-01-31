@@ -582,15 +582,67 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Get current status
                 is_subscribed = await db.is_user_subscribed(target_user_id)
                 
+                # Show confirmation prompt
+                action_text = "disable" if is_subscribed else "enable"
+                await query.answer(
+                    f"⚠️ Are you sure you want to {action_text} notifications for this user?",
+                    show_alert=True
+                )
+                
+                # Replace with confirmation buttons
+                try:
+                    confirmation_keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton(f"✅ Yes, {action_text.title()} Notifications", callback_data=f"confirm_toggle_notif|{target_user_id}|{page}|{int(is_subscribed)}")],
+                        [InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_toggle_notif|{page}")]
+                    ])
+                    await query.edit_message_reply_markup(reply_markup=confirmation_keyboard)
+                except Exception as e:
+                    logger.error(f"Error showing notification toggle confirmation: {e}")
+                    # Fallback to just toggling
+                    await db.set_user_notifications(target_user_id, not is_subscribed)
+                    await show_users_page(update, context, page)
+                    status_text = "disabled" if is_subscribed else "enabled"
+                    await query.answer(f"✅ Notifications {status_text} for user", show_alert=False)
+                    logger.info(f"Admin {update.effective_user.id} toggled notifications for user {target_user_id} to {not is_subscribed}")
+            else:
+                await query.answer("Invalid data", show_alert=True)
+        
+        # Handle confirm toggle notifications
+        elif parts[0] == "confirm_toggle_notif":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can manage notifications.", show_alert=True)
+                return
+            
+            if len(parts) >= 3:
+                target_user_id = int(parts[1])
+                page = int(parts[2])
+                was_subscribed = bool(int(parts[3])) if len(parts) > 3 else False
+                
                 # Toggle notifications
-                await db.set_user_notifications(target_user_id, not is_subscribed)
+                await db.set_user_notifications(target_user_id, not was_subscribed)
                 
                 # Refresh the users page
                 await show_users_page(update, context, page)
                 
-                status_text = "disabled" if is_subscribed else "enabled"
+                status_text = "disabled" if was_subscribed else "enabled"
                 await query.answer(f"✅ Notifications {status_text} for user", show_alert=False)
-                logger.info(f"Admin {update.effective_user.id} toggled notifications for user {target_user_id} to {not is_subscribed}")
+                logger.info(f"Admin {update.effective_user.id} toggled notifications for user {target_user_id} to {not was_subscribed}")
+            else:
+                await query.answer("Invalid data", show_alert=True)
+        
+        # Handle cancel toggle notifications
+        elif parts[0] == "cancel_toggle_notif":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can manage notifications.", show_alert=True)
+                return
+            
+            if len(parts) >= 1:
+                page = int(parts[1]) if len(parts) > 1 else 1
+                
+                # Refresh the users page
+                await show_users_page(update, context, page)
+                
+                await query.answer("✅ Toggle cancelled", show_alert=False)
             else:
                 await query.answer("Invalid data", show_alert=True)
         
@@ -624,9 +676,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Re-subscribe
                 await db.set_user_notifications(user_id, True)
                 
-                # Replace with unsubscribe option to allow toggling back
+                # Replace with unsubscribe option and keep View Catalog visible
                 try:
                     unsubscribe_keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📋 View Catalog", callback_data="categories")],
                         [InlineKeyboardButton("🔕 Unsubscribe", callback_data="toggle_notifications")]
                     ])
                     await query.edit_message_reply_markup(reply_markup=unsubscribe_keyboard)
@@ -641,23 +694,25 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             user_id = update.effective_user.id
             await db.set_user_notifications(user_id, False)
             
-            # Replace buttons with a resubscribe option instead of removing them
+            # Replace buttons with a resubscribe option and keep View Catalog visible
             try:
                 resubscribe_keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔔 Re-subscribe", callback_data="toggle_notifications")]
+                    [InlineKeyboardButton("📋 View Catalog", callback_data="categories")],
+                    [InlineKeyboardButton("🔔 Resubscribe to Notifications", callback_data="toggle_notifications")]
                 ])
                 await query.edit_message_reply_markup(reply_markup=resubscribe_keyboard)
             except:
                 pass  # Message may not have markup to edit
             
-            await query.answer("🔕 You've been unsubscribed from notifications. Click 'Re-subscribe' button or use /subscribe to re-enable.", show_alert=True)
+            await query.answer("🔕 You've been unsubscribed from notifications. Click 'Resubscribe to Notifications' button or use /subscribe to re-enable.", show_alert=True)
             logger.info(f"User {user_id} unsubscribed via button")
         
         # Handle cancellation of unsubscribe
         elif callback_data == "cancel_unsubscribe":
-            # Restore original unsubscribe button
+            # Restore original buttons with View Catalog and Unsubscribe
             try:
                 original_keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 View Catalog", callback_data="categories")],
                     [InlineKeyboardButton("🔕 Unsubscribe", callback_data="toggle_notifications")]
                 ])
                 await query.edit_message_reply_markup(reply_markup=original_keyboard)
@@ -746,6 +801,46 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     await query.answer("❌ Cannot block an admin user.", show_alert=True)
                     return
                 
+                # Show confirmation prompt
+                await query.answer(
+                    "⚠️ Are you sure you want to block this user?",
+                    show_alert=True
+                )
+                
+                # Replace the block button with confirmation buttons
+                try:
+                    # Get user info for display
+                    from handlers.admin import show_users_page
+                    # Instead of refreshing the whole page, just show a confirmation dialog
+                    # We'll use a callback with confirm_ prefix
+                    pass  # The confirmation will be handled via answer alert
+                    
+                    # Update the message to show confirmation buttons
+                    confirmation_keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("✅ Yes, Block User", callback_data=f"confirm_block|{target_user_id}|{page}")],
+                        [InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_block|{page}")]
+                    ])
+                    await query.edit_message_reply_markup(reply_markup=confirmation_keyboard)
+                except Exception as e:
+                    logger.error(f"Error showing block confirmation: {e}")
+                    # Fallback to just blocking
+                    await db.block_user(target_user_id)
+                    await show_users_page(update, context, page)
+                    await query.answer("🚫 User blocked", show_alert=False)
+                    logger.info(f"Admin {update.effective_user.id} blocked user {target_user_id}")
+            else:
+                await query.answer("Invalid data", show_alert=True)
+        
+        # Handle confirm block user
+        elif parts[0] == "confirm_block":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can block users.", show_alert=True)
+                return
+            
+            if len(parts) >= 2:
+                target_user_id = int(parts[1])
+                page = int(parts[2]) if len(parts) > 2 else 1
+                
                 # Block the user
                 await db.block_user(target_user_id)
                 
@@ -754,6 +849,22 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 await query.answer("🚫 User blocked", show_alert=False)
                 logger.info(f"Admin {update.effective_user.id} blocked user {target_user_id}")
+            else:
+                await query.answer("Invalid data", show_alert=True)
+        
+        # Handle cancel block user
+        elif parts[0] == "cancel_block":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can manage users.", show_alert=True)
+                return
+            
+            if len(parts) >= 1:
+                page = int(parts[1]) if len(parts) > 1 else 1
+                
+                # Refresh the users page
+                await show_users_page(update, context, page)
+                
+                await query.answer("✅ Block cancelled", show_alert=False)
             else:
                 await query.answer("Invalid data", show_alert=True)
         

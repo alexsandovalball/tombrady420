@@ -240,6 +240,7 @@ class NotificationService:
                 # Create inline keyboard with view product button
                 keyboard = InlineKeyboardMarkup([
                     [InlineKeyboardButton("👁️ View Product", callback_data=f"product|{product_id}")],
+                    [InlineKeyboardButton("📋 View Catalog", callback_data="categories")],
                     [InlineKeyboardButton("🔕 Unsubscribe", callback_data="unsubscribe_notifications")]
                 ])
                 
