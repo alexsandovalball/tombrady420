@@ -19,7 +19,8 @@ CATEGORIES = {
         "PREMIUMLIGHTDEPS", "LIGHTDEPS", "LIGHTASSIST", "LOWS"
     ],
     "DATEDPROOFS": [],
-    "CLIENTTOUCHDOWNS": []
+    "CLIENTTOUCHDOWNS": [],
+    "ANNOUNCEMENTS": []
 }
 
 # Category display names with emojis
@@ -31,13 +32,14 @@ CATEGORY_DISPLAY = {
     "SHROOMS": "🍄 Shrooms",
     "FLOWER": "🌸 Flower",
     "DATEDPROOFS": "📅 Dated Proofs",
-    "CLIENTTOUCHDOWNS": "✈️ Client Touchdowns"
+    "CLIENTTOUCHDOWNS": "✈️ Client Touchdowns",
+    "ANNOUNCEMENTS": "📢 Announcements"
 }
 
 # Categories to exclude from "All Products" view
 # Add category names here to hide them from the "All Products" button/view
 # while keeping them accessible when browsing categories directly
-EXCLUDED_FROM_ALL_PRODUCTS = ["DATEDPROOFS", "CLIENTTOUCHDOWNS"]
+EXCLUDED_FROM_ALL_PRODUCTS = ["DATEDPROOFS", "CLIENTTOUCHDOWNS", "ANNOUNCEMENTS"]
 
 
 def extract_category_from_caption(caption: str) -> Tuple[Optional[str], Optional[str]]:
