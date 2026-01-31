@@ -79,7 +79,17 @@ class NotificationService:
             
             # Process the notification queue asynchronously (non-blocking)
             # Schedule as a background task so it doesn't block other operations
-            asyncio.create_task(self.process_notification_queue(context))
+            # Store task reference to prevent it from being garbage collected
+            task = asyncio.create_task(self.process_notification_queue(context))
+            
+            # Add exception handling callback to log any errors
+            def log_task_exception(task_obj):
+                try:
+                    task_obj.result()
+                except Exception as e:
+                    logger.error(f"Error in background notification task: {e}", exc_info=True)
+            
+            task.add_done_callback(log_task_exception)
             
         except Exception as e:
             logger.error(f"Error notifying users about product {product_id}: {e}", exc_info=True)

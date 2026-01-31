@@ -644,13 +644,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             # Replace buttons with a resubscribe option instead of removing them
             try:
                 resubscribe_keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔔 Resubscribe", callback_data="toggle_notifications")]
+                    [InlineKeyboardButton("🔔 Re-subscribe", callback_data="toggle_notifications")]
                 ])
                 await query.edit_message_reply_markup(reply_markup=resubscribe_keyboard)
             except:
                 pass  # Message may not have markup to edit
             
-            await query.answer("🔕 You've been unsubscribed from notifications. Click 'Resubscribe' button or use /subscribe to re-enable.", show_alert=True)
+            await query.answer("🔕 You've been unsubscribed from notifications. Click 'Re-subscribe' button or use /subscribe to re-enable.", show_alert=True)
             logger.info(f"User {user_id} unsubscribed via button")
         
         # Handle cancellation of unsubscribe
