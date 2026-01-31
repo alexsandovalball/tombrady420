@@ -39,10 +39,10 @@ def test_announcements_display_name():
 
 
 def test_announcements_excluded_from_all_products():
-    """Test that ANNOUNCEMENTS is excluded from All Products view."""
-    assert "ANNOUNCEMENTS" in EXCLUDED_FROM_ALL_PRODUCTS, \
-        "ANNOUNCEMENTS should be in EXCLUDED_FROM_ALL_PRODUCTS list"
-    print("✓ ANNOUNCEMENTS is excluded from All Products view")
+    """Test that ANNOUNCEMENTS is NOT excluded from All Products view (it triggers notifications)."""
+    assert "ANNOUNCEMENTS" not in EXCLUDED_FROM_ALL_PRODUCTS, \
+        "ANNOUNCEMENTS should NOT be in EXCLUDED_FROM_ALL_PRODUCTS list (it should trigger notifications)"
+    print("✓ ANNOUNCEMENTS is NOT excluded from All Products view (will trigger notifications)")
 
 
 def test_get_category_display_name():
@@ -65,18 +65,29 @@ def test_all_excluded_categories_exist():
     for category in EXCLUDED_FROM_ALL_PRODUCTS:
         assert category in CATEGORIES, \
             f"Excluded category '{category}' should exist in CATEGORIES"
+    # Should only be 2 excluded categories now (DATEDPROOFS, CLIENTTOUCHDOWNS)
+    assert len(EXCLUDED_FROM_ALL_PRODUCTS) == 2, \
+        f"Should have exactly 2 excluded categories, found {len(EXCLUDED_FROM_ALL_PRODUCTS)}"
     print(f"✓ All {len(EXCLUDED_FROM_ALL_PRODUCTS)} excluded categories exist in CATEGORIES")
 
 
-def test_announcements_same_as_other_excluded():
-    """Test that ANNOUNCEMENTS follows same pattern as DATEDPROOFS and CLIENTTOUCHDOWNS."""
+def test_announcements_different_from_other_excluded():
+    """Test that ANNOUNCEMENTS has different behavior than DATEDPROOFS and CLIENTTOUCHDOWNS."""
     # All three should have no subcategories
     for category in ["ANNOUNCEMENTS", "DATEDPROOFS", "CLIENTTOUCHDOWNS"]:
         assert category in CATEGORIES, f"{category} should be in CATEGORIES"
         assert CATEGORIES[category] == [], f"{category} should have no subcategories"
-        assert category in EXCLUDED_FROM_ALL_PRODUCTS, f"{category} should be excluded from All Products"
         assert category in CATEGORY_DISPLAY, f"{category} should have a display name"
-    print("✓ ANNOUNCEMENTS follows same pattern as DATEDPROOFS and CLIENTTOUCHDOWNS")
+    
+    # BUT, ANNOUNCEMENTS should NOT be excluded (it should trigger notifications)
+    assert "ANNOUNCEMENTS" not in EXCLUDED_FROM_ALL_PRODUCTS, \
+        "ANNOUNCEMENTS should NOT be excluded (different from DATEDPROOFS/CLIENTTOUCHDOWNS)"
+    assert "DATEDPROOFS" in EXCLUDED_FROM_ALL_PRODUCTS, \
+        "DATEDPROOFS should be excluded"
+    assert "CLIENTTOUCHDOWNS" in EXCLUDED_FROM_ALL_PRODUCTS, \
+        "CLIENTTOUCHDOWNS should be excluded"
+    
+    print("✓ ANNOUNCEMENTS has different notification behavior than DATEDPROOFS and CLIENTTOUCHDOWNS")
 
 
 if __name__ == "__main__":
@@ -89,6 +100,11 @@ if __name__ == "__main__":
     test_get_category_display_name()
     test_get_subcategories()
     test_all_excluded_categories_exist()
-    test_announcements_same_as_other_excluded()
+    test_announcements_different_from_other_excluded()
     
     print("\n✅ All tests passed!")
+    print("\n📌 Summary:")
+    print("   - ANNOUNCEMENTS category exists and has proper display name")
+    print("   - ANNOUNCEMENTS will appear in 'All Products' view")
+    print("   - ANNOUNCEMENTS WILL trigger user notifications")
+    print("   - This is different from DATEDPROOFS and CLIENTTOUCHDOWNS which are excluded")
