@@ -2,6 +2,8 @@
 
 A complete, production-ready Telegram bot that acts as a media product catalog. The bot automatically monitors a public channel for media posts, saves them as products, and allows users to browse and search the catalog.
 
+📋 **[See recent changes in CHANGELOG.md](CHANGELOG.md)**
+
 ## Features
 
 - ✅ **Automatic Product Detection**: Monitors a public channel and automatically saves media posts as products
@@ -117,7 +119,7 @@ The bot will:
 - `/recategorize` - Send categorization prompts for uncategorized products
 - `/nuke` - Delete all products (with double confirmation)
 
-For detailed information about the notification system, see [NOTIFICATION_SYSTEM.md](NOTIFICATION_SYSTEM.md).
+For detailed admin instructions, see [ADMIN_GUIDE.md](ADMIN_GUIDE.md).
 
 ### How It Works
 
@@ -269,23 +271,41 @@ docker-compose up -d
 ## Project Structure
 
 ```
-media-catalog-bot/
-├── main.py                 # Main entry point
-├── database.py             # Database models and operations
-├── handlers/               # Command and message handlers
-│   ├── start.py           # /start command
-│   ├── menu.py            # /menu and catalog browsing
-│   ├── search.py          # Search functionality
-│   ├── product_view.py    # Product viewing
-│   └── admin.py           # Admin commands
-├── utils/                  # Utility functions
-│   ├── pagination.py      # Pagination logic
-│   ├── fuzzy_search.py    # Fuzzy search implementation
-│   └── helpers.py         # Helper functions
-├── requirements.txt        # Python dependencies
-├── .env.example           # Environment variables template
-└── README.md              # This file
+tombrady420/
+├── main.py                     # Main entry point
+├── config.py                   # Configuration management
+├── database.py                 # Database models and operations
+├── webhook_server.py           # Webhook server for production
+├── scan_channel.py             # Channel scanning utility
+├── handlers/                   # Command and message handlers
+│   ├── start.py               # /start command
+│   ├── menu.py                # /menu and catalog browsing
+│   ├── search.py              # Search functionality
+│   ├── product_view.py        # Product viewing
+│   └── admin.py               # Admin commands
+├── utils/                      # Utility functions
+│   ├── notifications.py       # Notification system
+│   ├── pagination.py          # Pagination logic
+│   ├── fuzzy_search.py        # Fuzzy search implementation
+│   ├── categories.py          # Category definitions
+│   └── helpers.py             # Helper functions
+├── tests/                      # Test files
+├── requirements.txt            # Python dependencies
+├── .env.example               # Environment variables template
+├── README.md                  # Main documentation
+├── CHANGELOG.md               # Version history and changes
+├── ADMIN_GUIDE.md             # Admin instructions
+├── DATABASE_PERSISTENCE.md    # Database setup guide
+└── WEBHOOK_DEPLOYMENT.md      # Webhook deployment guide
 ```
+
+## Documentation
+
+- **[README.md](README.md)** - Main documentation (this file)
+- **[CHANGELOG.md](CHANGELOG.md)** - Version history and recent changes
+- **[ADMIN_GUIDE.md](ADMIN_GUIDE.md)** - Detailed admin instructions
+- **[DATABASE_PERSISTENCE.md](DATABASE_PERSISTENCE.md)** - Database setup and migration
+- **[WEBHOOK_DEPLOYMENT.md](WEBHOOK_DEPLOYMENT.md)** - Production deployment guide
 
 ## Database
 
