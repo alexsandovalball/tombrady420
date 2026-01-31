@@ -186,6 +186,11 @@ _(No subcategories)_
 ### ✈️ Client Touchdowns
 _(No subcategories)_
 
+### 📢 Announcements
+_(No subcategories)_
+
+> **Note:** Products in ANNOUNCEMENTS, DATEDPROOFS, and CLIENTTOUCHDOWNS categories are **excluded from automatic user notifications** and the "All Products" view. They can only be accessed by browsing their specific category.
+
 ## Tips for Admins
 
 ### Categorizing Products

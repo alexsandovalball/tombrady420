@@ -12,7 +12,8 @@ A complete, production-ready Telegram bot that acts as a media product catalog. 
 - ✅ **Product Viewing**: View individual products with original media and captions
 - ✅ **Category & Subcategory Support**: Organized browsing with hierarchical categories
 - ✅ **Product Notifications**: Notify subscribed users about new products with anti-spam rate limiting
-- ✅ **Manual Product Addition**: Admins can manually add products with `/add_product`
+  - Note: Products in ANNOUNCEMENTS, DATEDPROOFS, and CLIENTTOUCHDOWNS categories are excluded from notifications
+- ✅ **Manual Product Addition**: Admins can manually add products with `/add_product` and notify subscribed users
 - ✅ **User Management**: Admins can control notification preferences and block users
 - ✅ **Custom Messaging**: Admins can send direct messages or broadcast to all users
 - ✅ **User Blocking**: Admins can block/unblock users from using the bot

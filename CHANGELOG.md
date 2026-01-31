@@ -2,9 +2,11 @@
 
 All notable changes to the Telegram Media Catalog Bot are documented in this file.
 
-## [Latest] - 2026-01-31
+## [Latest] - 2025-01-31
 
 ### Added
+- **Announcements Category**: Added new "📢 Announcements" category with same behavior as DATEDPROOFS and CLIENTTOUCHDOWNS (excluded from notifications and "All Products" view)
+- **DM Message Consistency**: All product views now consistently display "👆 DM TO ORDER:@FLYAWAYPEP" message
 - **View Catalog Button**: Added "📋 View Catalog" button to notification messages that remains visible after subscribe/unsubscribe actions
 - **Resubscribe Button**: Added "🔔 Resubscribe to Notifications" button for users who previously unsubscribed
 - **Admin Confirmation Prompts**: Added "Are you sure?" confirmation prompts for:
@@ -21,10 +23,11 @@ All notable changes to the Telegram Media Catalog Bot are documented in this fil
 - **Media Group Processing**: Reduced delay from 1.5s to 0.5s for better responsiveness
 
 ### Fixed
+- **DM Message**: Single media products now consistently show the DM contact message (previously only media groups showed it)
 - **Performance**: Bot no longer freezes during notification delivery (reduced from 68s to 22s for 23 users)
 - **Navigation**: Back button from notification-viewed products now redirects to correct category
 - **Unsubscribe Flow**: Buttons no longer disappear after unsubscribing, making it easier to resubscribe
-- **Notification Filtering**: Excluded categories (DATEDPROOFS, CLIENTTOUCHDOWNS) no longer trigger user notifications
+- **Notification Filtering**: Excluded categories (ANNOUNCEMENTS, DATEDPROOFS, CLIENTTOUCHDOWNS) no longer trigger user notifications
 
 ## Previous Changes
 
