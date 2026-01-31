@@ -25,7 +25,7 @@ from handlers.search import handle_search, show_search_results, handle_search_pa
 from handlers.product_view import show_product, handle_product_callback
 from handlers.admin import (
     stats_command, delete_product, nuke_command, recategorize_command, 
-    users_command, show_users_page, add_product_command,
+    users_command, show_users_page,
     block_command, unblock_command, send_command, broadcast_command
 )
 from utils.helpers import (
@@ -736,56 +736,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 show_alert=True
             )
         
-        # Handle add_product subcategory selection
-        elif parts[0] == "addprod_subcat":
-            if not is_admin(update.effective_user.id):
-                await query.answer("❌ Only admins can add products.", show_alert=True)
-                return
-            
-            # Get pending product data
-            pending_product = context.user_data.get('pending_product')
-            if not pending_product:
-                await query.answer("❌ Session expired. Please try again.", show_alert=True)
-                return
-            
-            subcategory = parts[1] if len(parts) > 1 and parts[1] else None
-            
-            # Add product with category and subcategory
-            product_id = await db.add_product(
-                file_id=pending_product['file_id'],
-                file_type=pending_product['file_type'],
-                caption=pending_product['caption'],
-                message_id=pending_product['message_id'],
-                chat_id=pending_product['chat_id'],
-                category=pending_product['category'],
-                subcategory=subcategory
-            )
-            
-            # Clear pending data
-            context.user_data.pop('pending_product', None)
-            
-            if product_id > 0:
-                category_text = get_category_display_name(pending_product['category'])
-                if subcategory:
-                    category_text += f" • {subcategory.title()}"
-                
-                await query.edit_message_text(
-                    f"✅ **Product Added Successfully!**\n\n"
-                    f"🆔 Product ID: {product_id}\n"
-                    f"📂 Category: {category_text}\n"
-                    f"📝 Description: {pending_product['caption'][:100]}...\n\n"
-                    f"Notifying subscribed users...",
-                    parse_mode="Markdown"
-                )
-                
-                # Notify users about the new product
-                notification_service = NotificationService(db)
-                await notification_service.notify_users_about_product(context, product_id)
-                
-                logger.info(f"Admin {update.effective_user.id} manually added product {product_id}")
-            else:
-                await query.edit_message_text("❌ Product could not be added.")
-        
         # Handle block user
         elif parts[0] == "block_user":
             if not is_admin(update.effective_user.id):
@@ -1018,7 +968,6 @@ def main():
     application.add_handler(CommandHandler("nuke", nuke_command))
     application.add_handler(CommandHandler("recategorize", recategorize_command))
     application.add_handler(CommandHandler("users", users_command))
-    application.add_handler(CommandHandler("add_product", add_product_command))
     application.add_handler(CommandHandler("subscribe", subscribe_command))
     application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
     application.add_handler(CommandHandler("block", block_command))
