@@ -625,7 +625,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await show_users_page(update, context, page)
                 
                 status_text = "disabled" if was_subscribed else "enabled"
-                await query.answer(f"✅ Notifications {status_text} for user", show_alert=False)
+                await query.answer(f"✅ Notifications {status_text} for user successfully", show_alert=True)
                 logger.info(f"Admin {update.effective_user.id} toggled notifications for user {target_user_id} to {not was_subscribed}")
             else:
                 await query.answer("Invalid data", show_alert=True)
@@ -686,7 +686,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 except:
                     pass  # Message may not have markup to edit
                 
-                await query.answer("🔔 You've been subscribed to notifications!", show_alert=True)
+                await query.answer("✅ You have been subscribed to notifications successfully! You will now receive updates about new products.", show_alert=True)
                 logger.info(f"User {user_id} subscribed via button")
         
         # Handle confirmation of unsubscribe
@@ -704,7 +704,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             except:
                 pass  # Message may not have markup to edit
             
-            await query.answer("🔕 You've been unsubscribed from notifications. Click 'Resubscribe to Notifications' button or use /subscribe to re-enable.", show_alert=True)
+            await query.answer("✅ You have been unsubscribed from notifications successfully. You can resubscribe anytime using the 'Resubscribe to Notifications' button or /subscribe command.", show_alert=True)
             logger.info(f"User {user_id} unsubscribed via button")
         
         # Handle cancellation of unsubscribe
@@ -809,12 +809,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 # Replace the block button with confirmation buttons
                 try:
-                    # Get user info for display
-                    from handlers.admin import show_users_page
-                    # Instead of refreshing the whole page, just show a confirmation dialog
-                    # We'll use a callback with confirm_ prefix
-                    pass  # The confirmation will be handled via answer alert
-                    
                     # Update the message to show confirmation buttons
                     confirmation_keyboard = InlineKeyboardMarkup([
                         [InlineKeyboardButton("✅ Yes, Block User", callback_data=f"confirm_block|{target_user_id}|{page}")],
@@ -847,7 +841,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Refresh the users page
                 await show_users_page(update, context, page)
                 
-                await query.answer("🚫 User blocked", show_alert=False)
+                await query.answer("✅ User has been blocked successfully", show_alert=True)
                 logger.info(f"Admin {update.effective_user.id} blocked user {target_user_id}")
             else:
                 await query.answer("Invalid data", show_alert=True)
@@ -884,7 +878,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Refresh the users page
                 await show_users_page(update, context, page)
                 
-                await query.answer("✅ User unblocked", show_alert=False)
+                await query.answer("✅ User has been unblocked successfully", show_alert=True)
                 logger.info(f"Admin {update.effective_user.id} unblocked user {target_user_id}")
             else:
                 await query.answer("Invalid data", show_alert=True)
