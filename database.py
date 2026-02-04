@@ -152,6 +152,11 @@ class Database:
             except:
                 pass
             
+            try:
+                await db.execute("ALTER TABLE bot_users ADD COLUMN language TEXT DEFAULT 'en'")
+            except:
+                pass
+            
             await db.commit()
             logger.info("Database initialized successfully")
     
