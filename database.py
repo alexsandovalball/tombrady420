@@ -368,25 +368,6 @@ class Database:
                     return dict(row)
                 return None
     
-    async def get_stats(self) -> Dict[str, Any]:
-        """Get statistics for admin."""
-        async with aiosqlite.connect(self.db_path) as db:
-            # Total products
-            async with db.execute("SELECT COUNT(*) FROM products") as cursor:
-                total = (await cursor.fetchone())[0]
-            
-            # Products added today
-            async with db.execute("""
-                SELECT COUNT(*) FROM products 
-                WHERE DATE(created_at) = DATE('now')
-            """) as cursor:
-                today = (await cursor.fetchone())[0]
-            
-            return {
-                "total": total,
-                "today": today
-            }
-    
     async def save_pagination_state(
         self,
         user_id: int,

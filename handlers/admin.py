@@ -14,35 +14,6 @@ logger = logging.getLogger(__name__)
 db = Database()
 
 
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /stats command (admin only)."""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
-    
-    try:
-        stats = await db.get_stats()
-        
-        text = (
-            "📊 **Catalog Statistics**\n\n"
-            f"📦 Total Products: {stats['total']}\n"
-            f"📅 Added Today: {stats['today']}"
-        )
-        
-        await update.message.reply_text(text, parse_mode="Markdown")
-        logger.info(f"Admin {user_id} requested stats")
-        
-    except Exception as e:
-        logger.error(f"Error getting stats: {e}")
-        await update.message.reply_text(
-            "❌ An error occurred while retrieving statistics."
-        )
-
-
 async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /nuke command - deletes ALL products (admin only) with double confirmation."""
     user_id = update.effective_user.id

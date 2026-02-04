@@ -18,7 +18,6 @@ from main import (
     language_command,
     subscribe_command,
     unsubscribe_command,
-    stats_command,
     nuke_command,
     recategorize_command,
     users_command,
@@ -75,7 +74,6 @@ async def setup_application():
     bot_app.add_handler(CommandHandler("start", start_command))
     bot_app.add_handler(CommandHandler("menu", menu_command))
     bot_app.add_handler(CommandHandler("language", language_command))
-    bot_app.add_handler(CommandHandler("stats", stats_command))
     bot_app.add_handler(CommandHandler("nuke", nuke_command))
     bot_app.add_handler(CommandHandler("recategorize", recategorize_command))
     bot_app.add_handler(CommandHandler("users", users_command))

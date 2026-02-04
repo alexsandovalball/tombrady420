@@ -90,7 +90,6 @@ def get_strings():
         "order_contact_info": f"💬 DM {Config.ORDER_CONTACT} TO ORDER",
         
         # Admin
-        "admin_stats": "📊 **Bot Statistics**\n\n{stats}",
         "product_deleted": "✅ Product deleted successfully.",
         "user_blocked": "🚫 User {user_id} has been blocked.",
         "user_unblocked": "✅ User {user_id} has been unblocked.",

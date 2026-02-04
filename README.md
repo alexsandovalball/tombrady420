@@ -25,7 +25,6 @@ A production-ready Telegram bot for managing and browsing a media product catalo
 - 🤖 **Automatic Product Detection** - Monitors channel and captures new media automatically
 - 🏷️ **Category Management** - Interactive categorization with subcategory support
 - 👥 **User Management** - View users, manage notifications, block/unblock
-- 📊 **Statistics** - Product counts, user engagement metrics
 - 💬 **Custom Messaging** - Send messages to specific users or broadcast to all
 - 🔄 **Recategorization** - Find and categorize uncategorized products
 - 🗑️ **Product Management** - Delete individual products or bulk delete (with confirmation)
@@ -133,7 +132,6 @@ See the [User Guide](docs/USER_GUIDE.md) for detailed instructions.
 
 Admin commands appear in the command menu for users with admin permissions:
 
-- `/stats` - View catalog and user statistics
 - `/users` - View and manage bot users
 - `/recategorize` - Send categorization prompts for uncategorized products
 - `/nuke` - Delete all products (double confirmation required)
