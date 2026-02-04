@@ -29,6 +29,8 @@ from handlers.admin import (
     users_command, show_users_page,
     block_command, unblock_command, send_command, broadcast_command
 )
+from translations.language_config import is_valid_language
+from translations.translator import get_translated_string
 from utils.helpers import (
     get_file_id_and_type,
     has_media,
@@ -305,12 +307,54 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     
     callback_data = query.data
     
-    # Handle language selection callbacks
+    # Handle language selection callbacks from /language command
     if callback_data.startswith("setlang|"):
         parts = callback_data.split("|")
         if len(parts) >= 2:
             lang_code = parts[1]
             await handle_language_callback(update, context, lang_code)
+            return
+    
+    # Handle language selection callbacks from /start command (new users)
+    if callback_data.startswith("setlang_start|"):
+        parts = callback_data.split("|")
+        if len(parts) >= 2:
+            lang_code = parts[1]
+            
+            # Validate and set language
+            if is_valid_language(lang_code):
+                await db.set_user_language(user_id, lang_code)
+                # Answer the callback
+                await query.answer()
+                # Delete the language selection message
+                await query.delete_message()
+                
+                # Show welcome message in selected language
+                is_subscribed = await db.is_user_subscribed(user_id)
+                
+                welcome_text = get_translated_string("welcome", lang_code, name=update.effective_user.first_name)
+                view_catalog_text = get_translated_string("view_catalog", lang_code)
+                keyboard_buttons = [
+                    [InlineKeyboardButton(view_catalog_text, callback_data="categories")]
+                ]
+                
+                if not is_subscribed:
+                    resubscribe_text = get_translated_string("resubscribe_notifications", lang_code)
+                    keyboard_buttons.append(
+                        [InlineKeyboardButton(resubscribe_text, callback_data="toggle_notifications")]
+                    )
+                
+                keyboard = InlineKeyboardMarkup(keyboard_buttons)
+                
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=welcome_text,
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
+                )
+                logger.info(f"New user {user_id} selected language: {lang_code}")
+            else:
+                await query.answer("❌ Invalid language", show_alert=True)
             return
     
     # Handle noop (page indicator button)

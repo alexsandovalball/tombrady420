@@ -624,6 +624,15 @@ class Database:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
     
+    async def user_exists(self, user_id: int) -> bool:
+        """Check if a user exists in the database."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT user_id FROM bot_users WHERE user_id = ?
+            """, (user_id,)) as cursor:
+                row = await cursor.fetchone()
+                return row is not None
+    
     async def set_user_notifications(self, user_id: int, enabled: bool):
         """Enable or disable notifications for a user."""
         async with aiosqlite.connect(self.db_path) as db:

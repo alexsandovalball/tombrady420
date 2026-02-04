@@ -6,6 +6,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import Database
 from translations.translator import get_translated_string
+from translations.language_config import LANGUAGE_DISPLAY, DEFAULT_LANGUAGE
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -15,6 +16,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     user = update.effective_user
     
+    # Check if this is a new user (doesn't exist in database)
+    is_new_user = not await db.user_exists(user.id)
+    
     # Track user
     await db.track_user(
         user_id=user.id,
@@ -22,6 +26,45 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         first_name=user.first_name,
         last_name=user.last_name
     )
+    
+    # For new users, show language selection menu
+    if is_new_user:
+        await show_language_selection(update, context)
+        return
+    
+    # For existing users, show normal welcome message
+    await show_welcome_message(update, context)
+
+
+async def show_language_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show language selection menu for new users."""
+    user = update.effective_user
+    
+    # Create language selection keyboard
+    keyboard_buttons = []
+    for lang_code, display_name in LANGUAGE_DISPLAY.items():
+        keyboard_buttons.append([
+            InlineKeyboardButton(display_name, callback_data=f"setlang_start|{lang_code}")
+        ])
+    
+    keyboard = InlineKeyboardMarkup(keyboard_buttons)
+    
+    # Use English as default for initial message
+    welcome_text = f"👋 Welcome, {user.first_name}!\n\n"
+    welcome_text += "🌐 **Select Your Language / Choisissez votre langue / Wählen Sie Ihre Sprache**\n\n"
+    welcome_text += "Please select your preferred language to continue:"
+    
+    await update.message.reply_text(
+        welcome_text,
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+    logger.info(f"New user {user.id} - showing language selection")
+
+
+async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show welcome message for existing users."""
+    user = update.effective_user
     
     # Get user's language preference
     user_lang = await db.get_user_language(user.id)

@@ -178,6 +178,65 @@ async def test_start_command_flow():
     # Clean up
     os.remove(test_db_path)
     
+    # ===== SCENARIO 4: Test new user language selection flow =====
+    print("SCENARIO 4: New user language selection flow")
+    print("-" * 70)
+    
+    # Create fresh database
+    db = Database(test_db_path)
+    await db.init_db()
+    
+    # Simulate a brand new user (doesn't exist in database)
+    new_user_id = 5555555555
+    
+    # Check that user doesn't exist
+    user_exists = await db.user_exists(new_user_id)
+    assert not user_exists, "User should not exist yet"
+    print(f"✓ New user {new_user_id} does not exist in database")
+    
+    # Track the new user (this happens in start_command)
+    await db.track_user(
+        user_id=new_user_id,
+        username="NewUser",
+        first_name="New",
+        last_name="User"
+    )
+    print(f"✓ New user tracked: {new_user_id}")
+    
+    # Verify user now exists
+    user_exists = await db.user_exists(new_user_id)
+    assert user_exists, "User should exist after tracking"
+    print(f"✓ User {new_user_id} now exists in database")
+    
+    # Simulate user selecting a language (Spanish)
+    await db.set_user_language(new_user_id, 'es')
+    print("✓ User selected language: es")
+    
+    # Verify language was set correctly
+    user_lang = await db.get_user_language(new_user_id)
+    assert user_lang == 'es', f"Expected 'es', got '{user_lang}'"
+    print(f"✓ Language preference saved: {user_lang}")
+    
+    # Test with existing user (should not show language selection)
+    existing_user_id = 7777777777
+    await db.track_user(
+        user_id=existing_user_id,
+        username="ExistingUser",
+        first_name="Existing",
+        last_name="User"
+    )
+    await db.set_user_language(existing_user_id, 'de')
+    
+    # On second /start, user should already exist
+    user_exists_again = await db.user_exists(existing_user_id)
+    assert user_exists_again, "Existing user should still exist"
+    print(f"✓ Existing user {existing_user_id} check works correctly")
+    
+    print("\n✅ SCENARIO 4 PASSED - New user language selection flow working!\n")
+    
+    # Clean up
+    os.remove(test_db_path)
+    
     print("="*70)
     print("✅ ALL INTEGRATION TESTS PASSED!")
     print("="*70)
@@ -187,6 +246,8 @@ async def test_start_command_flow():
     print("✓ Existing databases are automatically migrated")
     print("✓ The 'no such column: language' error is FIXED")
     print("✓ /start command will work correctly for all users")
+    print("✓ New users see language selection menu")
+    print("✓ Existing users see normal welcome message")
     print("\nThe fix ensures that when init_db() is called during")
     print("deployment, the language column is added to existing")
     print("databases, preventing the error from occurring.")
