@@ -27,11 +27,12 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         user_id = update.effective_user.id
         user_lang = await db.get_user_language(user_id)
         
-        # Get category counts
+        # Get all category counts in a single query (optimized)
+        category_counts = await db.get_all_category_counts()
         category_buttons = []
         
         for category in get_all_categories():
-            count = await db.count_products_by_category(category)
+            count = category_counts.get(category, 0)
             # Translate category display name
             category_key = f"category_{category.lower()}"
             display_name = get_translated_string(category_key, user_lang)
