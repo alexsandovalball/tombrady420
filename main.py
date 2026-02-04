@@ -413,6 +413,86 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     if callback_data == "noop":
         return
     
+    # Handle broadcast confirmations
+    if callback_data == "broadcast_cancel":
+        await query.edit_message_text("❌ Broadcast cancelled.")
+        context.user_data.clear()
+        return
+    
+    if callback_data.startswith("broadcast_confirm_single|"):
+        # Confirm and send single user broadcast
+        parts = callback_data.split("|")
+        if len(parts) >= 2:
+            target_user_id = int(parts[1])
+            message_text = context.user_data.get('broadcast_message')
+            
+            if not message_text:
+                await query.answer("❌ Message not found. Please start over.", show_alert=True)
+                context.user_data.clear()
+                return
+            
+            # Send the message
+            from utils.notifications import NotificationService
+            notification_service = NotificationService(db)
+            
+            success = await notification_service.send_custom_message_to_user(
+                context,
+                target_user_id,
+                message_text
+            )
+            
+            if success:
+                await query.edit_message_text(
+                    f"✅ **Message Sent Successfully!**\n\n"
+                    f"🆔 User ID: `{target_user_id}`\n"
+                    f"📝 Message: {message_text[:100]}{'...' if len(message_text) > 100 else ''}",
+                    parse_mode="Markdown"
+                )
+                logger.info(f"Admin {user_id} sent message to user {target_user_id}")
+            else:
+                await query.edit_message_text("❌ Failed to send message. Check logs for details.")
+            
+            context.user_data.clear()
+        return
+    
+    if callback_data == "broadcast_confirm_all":
+        # Confirm and send broadcast to all users
+        message_text = context.user_data.get('broadcast_message')
+        
+        if not message_text:
+            await query.answer("❌ Message not found. Please start over.", show_alert=True)
+            context.user_data.clear()
+            return
+        
+        # Send status message
+        await query.edit_message_text(
+            "📡 **Broadcasting message...**\n\n"
+            "Please wait while the message is queued for all users.",
+            parse_mode="Markdown"
+        )
+        
+        # Broadcast using notification service
+        from utils.notifications import NotificationService
+        notification_service = NotificationService(db)
+        
+        queued_count = await notification_service.broadcast_custom_message(
+            context,
+            message_text,
+            exclude_blocked=True
+        )
+        
+        await query.edit_message_text(
+            f"✅ **Broadcast Complete**\n\n"
+            f"📨 Messages queued: {queued_count}\n"
+            f"📝 Message: {message_text[:100]}{'...' if len(message_text) > 100 else ''}\n\n"
+            f"Messages will be delivered with rate-limiting intervals.",
+            parse_mode="Markdown"
+        )
+        logger.info(f"Admin {user_id} broadcast message to {queued_count} users")
+        
+        context.user_data.clear()
+        return
+    
     # Handle categories menu
     if callback_data == "categories":
         from handlers.menu import show_category_menu
@@ -995,6 +1075,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_last_message[user_id] = current_time
     
+    # Check if admin is in broadcast workflow
+    if is_admin(user_id) and 'broadcast_mode' in context.user_data:
+        from handlers.admin import handle_broadcast_workflow
+        await handle_broadcast_workflow(update, context)
+        return
+    
     # Handle as search query
     if update.message and update.message.text:
         await handle_search(update, context)
@@ -1050,22 +1136,19 @@ async def post_init(application: Application):
 async def setup_bot_commands(bot):
     """Set up bot commands that appear in the Telegram command menu."""
     # Define user commands (available to all users)
+    # Removed: language, subscribe, unsubscribe per requirements
     user_commands = [
         BotCommand("start", "Start the bot and select language"),
         BotCommand("menu", "Browse the product catalog"),
-        BotCommand("language", "Change your preferred language"),
-        BotCommand("subscribe", "Enable product notifications"),
-        BotCommand("unsubscribe", "Disable product notifications"),
     ]
     
     # Define admin commands (available to admins only)
+    # Removed: block, unblock per requirements
     admin_commands = user_commands + [
         BotCommand("stats", "View catalog statistics"),
         BotCommand("users", "View and manage bot users"),
         BotCommand("recategorize", "Categorize uncategorized products"),
         BotCommand("nuke", "Delete all products (use with caution)"),
-        BotCommand("block", "Block a user from using the bot"),
-        BotCommand("unblock", "Unblock a user"),
         BotCommand("send", "Send a message to a specific user"),
         BotCommand("broadcast", "Send a message to all users"),
     ]

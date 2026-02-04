@@ -477,10 +477,15 @@ async def unblock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /send command - send a custom message to a specific user (admin only).
+    """Handle /send command - initiate broadcast to single user (admin only).
     
-    Usage: /send <user_id> <message>
-    Example: /send 123456789 Hello! This is a custom message.
+    New workflow:
+    1. Ask for user ID
+    2. Wait for user ID input
+    3. Ask for message
+    4. Wait for message input
+    5. Show confirmation
+    6. Send message
     """
     user_id = update.effective_user.id
     
@@ -490,71 +495,26 @@ async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Check arguments
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_text(
-            "❌ **Invalid format**\n\n"
-            "**Usage:** `/send <user_id> <message>`\n\n"
-            "**Example:** `/send 123456789 Hello! This is a custom message.`\n\n"
-            "💡 Tip: Use `/users` to find user IDs\n"
-            "⚠️ Rate limit: 3 messages per user per hour",
-            parse_mode="Markdown"
-        )
-        return
+    # Start the workflow - ask for user ID
+    context.user_data['broadcast_mode'] = 'single_user'
+    context.user_data['broadcast_step'] = 'awaiting_user_id'
     
-    try:
-        target_user_id = int(context.args[0])
-        message_text = " ".join(context.args[1:])
-        
-        # Check if user is blocked
-        is_blocked = await db.is_user_blocked(target_user_id)
-        if is_blocked:
-            await update.message.reply_text(
-                f"❌ Cannot send message to blocked user `{target_user_id}`.",
-                parse_mode="Markdown"
-            )
-            return
-        
-        # Send the message using notification service
-        from utils.notifications import NotificationService
-        notification_service = NotificationService(db)
-        
-        success = await notification_service.send_custom_message_to_user(
-            context,
-            target_user_id,
-            message_text
-        )
-        
-        if success:
-            await update.message.reply_text(
-                f"✅ **Message Queued**\n\n"
-                f"🆔 User ID: `{target_user_id}`\n"
-                f"📝 Message: {message_text[:100]}{'...' if len(message_text) > 100 else ''}\n\n"
-                f"Message will be delivered shortly.",
-                parse_mode="Markdown"
-            )
-            logger.info(f"Admin {user_id} sent custom message to user {target_user_id}")
-        else:
-            await update.message.reply_text(
-                "❌ Failed to queue message. Check logs for details."
-            )
-        
-    except ValueError:
-        await update.message.reply_text(
-            "❌ Invalid user ID. Please provide a valid number."
-        )
-    except Exception as e:
-        logger.error(f"Error in send command: {e}", exc_info=True)
-        await update.message.reply_text(
-            "❌ An error occurred while sending the message."
-        )
+    await update.message.reply_text(
+        "📝 **Broadcast to Single User - Step 1 of 3**\n\n"
+        "Please enter the user ID:",
+        parse_mode="Markdown"
+    )
+    logger.info(f"Admin {user_id} started single user broadcast workflow")
 
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /broadcast command - send a message to all users (admin only).
+    """Handle /broadcast command - initiate broadcast to all users (admin only).
     
-    Usage: /broadcast <message>
-    Example: /broadcast New products added! Check them out with /menu
+    New workflow:
+    1. Ask for message
+    2. Wait for message input
+    3. Show confirmation
+    4. Send broadcast
     """
     user_id = update.effective_user.id
     
@@ -564,54 +524,113 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Check arguments
-    if not context.args or len(context.args) < 1:
-        await update.message.reply_text(
-            "❌ **Invalid format**\n\n"
-            "**Usage:** `/broadcast <message>`\n\n"
-            "**Example:** `/broadcast New products added! Check them out with /menu`\n\n"
-            "⚠️ **Important:**\n"
-            "• Rate limit: 3 messages per user per hour\n"
-            "• Blocked users are automatically excluded\n"
-            "• Admins are excluded from broadcasts\n"
-            "• Messages are queued and delivered with delays",
-            parse_mode="Markdown"
-        )
+    # Start the workflow - ask for message
+    context.user_data['broadcast_mode'] = 'all_users'
+    context.user_data['broadcast_step'] = 'awaiting_message'
+    
+    await update.message.reply_text(
+        "📝 **Broadcast to All Users - Step 1 of 2**\n\n"
+        "Please enter the message you want to broadcast:",
+        parse_mode="Markdown"
+    )
+    logger.info(f"Admin {user_id} started broadcast to all users workflow")
+
+
+async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the multi-step broadcast workflow for admins."""
+    user_id = update.effective_user.id
+    message_text = update.message.text
+    
+    if not is_admin(user_id):
         return
     
-    try:
-        message_text = " ".join(context.args)
-        
-        # Send status message
-        status_msg = await update.message.reply_text(
-            "📡 **Broadcasting message...**\n\n"
-            "Please wait while the message is queued for all users.",
-            parse_mode="Markdown"
-        )
-        
-        # Broadcast using notification service
-        from utils.notifications import NotificationService
-        notification_service = NotificationService(db)
-        
-        queued_count = await notification_service.broadcast_custom_message(
-            context,
-            message_text,
-            exclude_blocked=True
-        )
-        
-        await status_msg.edit_text(
-            f"✅ **Broadcast Complete**\n\n"
-            f"📨 Messages queued: {queued_count}\n"
-            f"📝 Message: {message_text[:100]}{'...' if len(message_text) > 100 else ''}\n\n"
-            f"Messages will be delivered with rate-limiting intervals.",
-            parse_mode="Markdown"
-        )
-        logger.info(f"Admin {user_id} broadcast message to {queued_count} users")
-        
-    except Exception as e:
-        logger.error(f"Error in broadcast command: {e}", exc_info=True)
-        await update.message.reply_text(
-            "❌ An error occurred while broadcasting the message."
-        )
+    broadcast_mode = context.user_data.get('broadcast_mode')
+    broadcast_step = context.user_data.get('broadcast_step')
+    
+    if broadcast_mode == 'single_user':
+        if broadcast_step == 'awaiting_user_id':
+            # Step 1: Received user ID, now ask for message
+            try:
+                target_user_id = int(message_text.strip())
+                
+                # Check if user exists and is not blocked
+                is_blocked = await db.is_user_blocked(target_user_id)
+                if is_blocked:
+                    await update.message.reply_text(
+                        f"❌ Cannot send message to blocked user `{target_user_id}`.\n\n"
+                        "Broadcast cancelled. Use /send to start again.",
+                        parse_mode="Markdown"
+                    )
+                    context.user_data.clear()
+                    return
+                
+                # Store user ID and move to next step
+                context.user_data['target_user_id'] = target_user_id
+                context.user_data['broadcast_step'] = 'awaiting_message'
+                
+                await update.message.reply_text(
+                    f"📝 **Broadcast to Single User - Step 2 of 3**\n\n"
+                    f"🆔 User ID: `{target_user_id}`\n\n"
+                    f"Please enter the message you want to send:",
+                    parse_mode="Markdown"
+                )
+                logger.info(f"Admin {user_id} entered user ID: {target_user_id}")
+                
+            except ValueError:
+                await update.message.reply_text(
+                    "❌ Invalid user ID. Please enter a valid number.\n\n"
+                    "Broadcast cancelled. Use /send to start again."
+                )
+                context.user_data.clear()
+                
+        elif broadcast_step == 'awaiting_message':
+            # Step 2: Received message, show confirmation
+            target_user_id = context.user_data.get('target_user_id')
+            context.user_data['broadcast_message'] = message_text
+            context.user_data['broadcast_step'] = 'awaiting_confirmation'
+            
+            # Show confirmation with inline buttons
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Confirm & Send", callback_data=f"broadcast_confirm_single|{target_user_id}")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="broadcast_cancel")]
+            ])
+            
+            await update.message.reply_text(
+                f"✅ **Broadcast to Single User - Confirmation**\n\n"
+                f"🆔 User ID: `{target_user_id}`\n"
+                f"📝 Message: {message_text[:200]}{'...' if len(message_text) > 200 else ''}\n\n"
+                f"Do you want to send this message?",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+            logger.info(f"Admin {user_id} awaiting confirmation for single user broadcast")
+            
+    elif broadcast_mode == 'all_users':
+        if broadcast_step == 'awaiting_message':
+            # Step 1: Received message, show confirmation
+            context.user_data['broadcast_message'] = message_text
+            context.user_data['broadcast_step'] = 'awaiting_confirmation'
+            
+            # Get user count
+            users = await db.get_all_users()
+            user_count = len([u for u in users if not u.get('is_blocked', 0) and not is_admin(u['user_id'])])
+            
+            # Show confirmation with inline buttons
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Confirm & Broadcast", callback_data="broadcast_confirm_all")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="broadcast_cancel")]
+            ])
+            
+            await update.message.reply_text(
+                f"✅ **Broadcast to All Users - Confirmation**\n\n"
+                f"📝 Message: {message_text[:200]}{'...' if len(message_text) > 200 else ''}\n"
+                f"📊 Recipients: {user_count} users\n\n"
+                f"Do you want to send this broadcast?",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+            logger.info(f"Admin {user_id} awaiting confirmation for broadcast to all users")
 
 

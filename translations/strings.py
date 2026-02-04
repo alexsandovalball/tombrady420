@@ -36,8 +36,11 @@ def get_strings():
         "button_previous_page": "« Previous",
         "button_back_to_categories": "« Back to Categories",
         "button_back_to_menu": "« Back to Menu",
+        "button_back_to_subcategories": "🔙 Back to Subcategories",
         "button_view_product": "👁️ View",
         "change_language": "🌐 Change Language",
+        "button_refresh": "🔄 Refresh",
+        "button_all_in_category": "📦 All {category}",
         
         # Search
         "search_results": "🔍 **Search Results**\n\nFound {count} products matching \"{query}\":",
@@ -67,6 +70,23 @@ def get_strings():
         "language_settings": "🌐 **Language Settings**\n\nSelect your preferred language:",
         "language_changed": "✅ Language changed to {language}",
         "current_language": "Current language: {language}",
+        
+        # Catalog/Menu strings
+        "showing_products": "Showing {current} of {total} products",
+        "no_products_in_category": "📭 No products in this {context}.",
+        "page_indicator": "Page {page}/{total_pages}",
+        "select_subcategory": "Select a subcategory to browse products:",
+        
+        # Broadcast strings
+        "broadcast_enter_user_id": "📝 **Broadcast to Single User - Step 1 of 3**\n\nPlease enter the user ID:",
+        "broadcast_enter_message": "📝 **Broadcast to Single User - Step 2 of 3**\n\nPlease enter the message you want to send:",
+        "broadcast_all_enter_message": "📝 **Broadcast to All Users - Step 1 of 2**\n\nPlease enter the message you want to broadcast:",
+        "broadcast_confirm_single": "✅ **Broadcast to Single User - Confirmation**\n\n🆔 User ID: {user_id}\n📝 Message: {message}\n\nDo you want to send this message?",
+        "broadcast_confirm_all": "✅ **Broadcast to All Users - Confirmation**\n\n📝 Message: {message}\n📊 Recipients: {count} users\n\nDo you want to send this broadcast?",
+        "broadcast_cancelled": "❌ Broadcast cancelled.",
+        "broadcast_sent_single": "✅ Message sent to user {user_id}!",
+        "broadcast_sent_all": "✅ Broadcast queued for {count} users!",
+        "invalid_user_id": "❌ Invalid user ID. Please enter a valid number.",
     }
 
 # Initialize strings
