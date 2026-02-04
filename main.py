@@ -30,7 +30,7 @@ from handlers.admin import (
     block_command, unblock_command, send_command, broadcast_command
 )
 from translations.language_config import is_valid_language, LANGUAGE_DISPLAY
-from translations.translator import get_translated_string
+from translations.translator import get_translated_string, translation_service
 from utils.helpers import (
     get_file_id_and_type,
     has_media,
@@ -1170,6 +1170,10 @@ async def post_init(application: Application):
     """Initialize database and start background tasks."""
     await db.init_db()
     logger.info("Database initialized")
+    
+    # Set up translation service with database
+    translation_service.set_database(db)
+    logger.info("Translation service configured with database caching")
     
     # Set bot commands for the command menu
     await setup_bot_commands(application.bot)
