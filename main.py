@@ -23,6 +23,7 @@ from handlers.start import start_command, subscribe_command, unsubscribe_command
 from handlers.menu import menu_command, show_catalog_page, handle_catalog_pagination
 from handlers.search import handle_search, show_search_results, handle_search_pagination
 from handlers.product_view import show_product, handle_product_callback
+from handlers.language import language_command, handle_language_callback
 from handlers.admin import (
     stats_command, delete_product, nuke_command, recategorize_command, 
     users_command, show_users_page,
@@ -303,6 +304,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()  # Answer callback to prevent loading spinner
     
     callback_data = query.data
+    
+    # Handle language selection callbacks
+    if callback_data.startswith("setlang|"):
+        parts = callback_data.split("|")
+        if len(parts) >= 2:
+            lang_code = parts[1]
+            await handle_language_callback(update, context, lang_code)
+            return
     
     # Handle noop (page indicator button)
     if callback_data == "noop":
@@ -964,6 +973,7 @@ def main():
     # Register handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("menu", menu_command))
+    application.add_handler(CommandHandler("language", language_command))
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("nuke", nuke_command))
     application.add_handler(CommandHandler("recategorize", recategorize_command))

@@ -95,7 +95,8 @@ class Database:
                     last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     interaction_count INTEGER DEFAULT 1,
                     notifications_enabled INTEGER DEFAULT 1,
-                    is_blocked INTEGER DEFAULT 0
+                    is_blocked INTEGER DEFAULT 0,
+                    language TEXT DEFAULT 'en'
                 )
             """)
             
@@ -755,6 +756,25 @@ class Database:
             """, (user_id, minutes)) as cursor:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
+    
+    async def get_user_language(self, user_id: int) -> str:
+        """Get user's preferred language."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT language FROM bot_users WHERE user_id = ?
+            """, (user_id,)) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else 'en'
+    
+    async def set_user_language(self, user_id: int, language: str):
+        """Set user's preferred language."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO bot_users (user_id, language, first_seen, last_seen)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET language = ?
+            """, (user_id, language, datetime.now(), datetime.now(), language))
+            await db.commit()
 
     
 
