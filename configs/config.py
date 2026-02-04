@@ -26,6 +26,7 @@ class ConfigClass:
         self.DB_PATH: str = 'catalog.db'
         self.USE_WEBHOOK: bool = False
         self.WEBHOOK_URL: Optional[str] = None
+        self.ORDER_CONTACT: str = '@FLYAWAYPEP'  # Configurable order contact
         self._load_config()
     
     def _load_config(self):
@@ -56,6 +57,7 @@ class ConfigClass:
         self.DB_PATH = config('DB_PATH', default='catalog.db')
         self.USE_WEBHOOK = config('USE_WEBHOOK', default=False, cast=bool)
         self.WEBHOOK_URL = config('WEBHOOK_URL', default=None)
+        self.ORDER_CONTACT = config('ORDER_CONTACT', default='@FLYAWAYPEP')
         
         self._loaded = True
     

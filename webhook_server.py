@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request, Response, status
 from telegram import Update
 from telegram.ext import Application
 
-from config import Config, ConfigError
+from configs.config import Config, ConfigError
 # Import the bot setup functions
 from main import (
     post_init,

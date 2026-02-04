@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 import logging
 
-from config import Config
+from configs.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +95,8 @@ class Database:
                     last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     interaction_count INTEGER DEFAULT 1,
                     notifications_enabled INTEGER DEFAULT 1,
-                    is_blocked INTEGER DEFAULT 0
+                    is_blocked INTEGER DEFAULT 0,
+                    language TEXT DEFAULT 'en'
                 )
             """)
             
@@ -755,6 +756,36 @@ class Database:
             """, (user_id, minutes)) as cursor:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
+    
+    async def get_user_language(self, user_id: int) -> str:
+        """Get user's preferred language."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT language FROM bot_users WHERE user_id = ?
+            """, (user_id,)) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else 'en'
+    
+    async def set_user_language(self, user_id: int, language: str):
+        """Set user's preferred language."""
+        async with aiosqlite.connect(self.db_path) as db:
+            # Check if user exists
+            async with db.execute("SELECT user_id FROM bot_users WHERE user_id = ?", (user_id,)) as cursor:
+                exists = await cursor.fetchone()
+            
+            if exists:
+                # User exists, update only language and last_seen
+                await db.execute("""
+                    UPDATE bot_users SET language = ?, last_seen = ? WHERE user_id = ?
+                """, (language, datetime.now(), user_id))
+            else:
+                # New user, insert with all fields
+                await db.execute("""
+                    INSERT INTO bot_users (user_id, language, first_seen, last_seen)
+                    VALUES (?, ?, ?, ?)
+                """, (user_id, language, datetime.now(), datetime.now()))
+            
+            await db.commit()
 
     
 

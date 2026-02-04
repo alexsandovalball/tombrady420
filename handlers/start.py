@@ -5,6 +5,7 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import Database
+from translations.translator import get_translated_string
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -22,25 +23,26 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_name=user.last_name
     )
     
+    # Get user's language preference
+    user_lang = await db.get_user_language(user.id)
+    
     # Check if user is subscribed to notifications
     is_subscribed = await db.is_user_subscribed(user.id)
     
-    welcome_text = (
-        f"👋 Welcome, {user.first_name}!\n\n"
-        "I'm your media product catalog bot. I help you browse and search "
-        "products from our catalog.\n\n"
-        "Use /menu to view all products or simply type what you're looking for!  DM @FLYAWAYPEP TO ORDER"
-    )
+    # Get translated welcome message
+    welcome_text = get_translated_string("welcome", user_lang, name=user.first_name)
     
     # Build keyboard based on subscription status
+    view_catalog_text = get_translated_string("view_catalog", user_lang)
     keyboard_buttons = [
-        [InlineKeyboardButton("📋 View Catalog", callback_data="categories")]
+        [InlineKeyboardButton(view_catalog_text, callback_data="categories")]
     ]
     
     # Add resubscribe button only for users who have unsubscribed
     if not is_subscribed:
+        resubscribe_text = get_translated_string("resubscribe_notifications", user_lang)
         keyboard_buttons.append(
-            [InlineKeyboardButton("🔔 Resubscribe to Notifications", callback_data="toggle_notifications")]
+            [InlineKeyboardButton(resubscribe_text, callback_data="toggle_notifications")]
         )
     
     keyboard = InlineKeyboardMarkup(keyboard_buttons)
@@ -50,7 +52,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard,
         parse_mode="Markdown"
     )
-    logger.info(f"User {user.id} started the bot")
+    logger.info(f"User {user.id} started the bot (language: {user_lang})")
 
 
 async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -65,13 +67,17 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_name=update.effective_user.last_name
     )
     
+    # Get user's language preference
+    user_lang = await db.get_user_language(user_id)
+    
     # Enable notifications
     await db.set_user_notifications(user_id, True)
     
+    # Get translated message
+    message_text = get_translated_string("notifications_enabled", user_lang)
+    
     await update.message.reply_text(
-        "🔔 **Notifications Enabled!**\n\n"
-        "You will now receive notifications when new products are added to the catalog.\n\n"
-        "Use /unsubscribe to stop receiving notifications.",
+        message_text,
         parse_mode="Markdown"
     )
     logger.info(f"User {user_id} subscribed to notifications")
@@ -81,13 +87,17 @@ async def unsubscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Handle /unsubscribe command - disable product notifications."""
     user_id = update.effective_user.id
     
+    # Get user's language preference
+    user_lang = await db.get_user_language(user_id)
+    
     # Disable notifications
     await db.set_user_notifications(user_id, False)
     
+    # Get translated message
+    message_text = get_translated_string("notifications_disabled", user_lang)
+    
     await update.message.reply_text(
-        "🔕 **Notifications Disabled**\n\n"
-        "You will no longer receive notifications about new products.\n\n"
-        "Use /subscribe to enable notifications again.",
+        message_text,
         parse_mode="Markdown"
     )
     logger.info(f"User {user_id} unsubscribed from notifications")
