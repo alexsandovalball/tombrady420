@@ -39,7 +39,7 @@ from utils.helpers import (
     get_admin_ids,
     is_admin
 )
-from utils.categories import get_all_categories, get_category_display_name, get_subcategories, CATEGORIES
+from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES
 from utils.notifications import NotificationService
 
 # Configure logging with structured format for better visibility on Render
@@ -586,24 +586,40 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Check if this is a main category or we need subcategory
                 subcategories = get_subcategories(category)
                 
+                # Get user language preference
+                user_id = update.effective_user.id
+                user_lang = await db.get_user_language(user_id)
+                
                 if subcategories:
                     # Show subcategory selection
                     keyboard_buttons = []
                     for subcat in subcategories:
+                        # Get translated subcategory name
+                        translated_subcat = get_subcategory_display_name(subcat, user_lang)
                         keyboard_buttons.append([
-                            InlineKeyboardButton(subcat.title(), callback_data=f"setsubcat|{product_id}|{category}|{subcat}")
+                            InlineKeyboardButton(translated_subcat, callback_data=f"setsubcat|{product_id}|{category}|{subcat}")
                         ])
                     
                     # Add "No Subcategory" option
+                    save_without_text = get_translated_string("save_without_subcategory", user_lang)
                     keyboard_buttons.append([
-                        InlineKeyboardButton("✅ Save without subcategory", callback_data=f"savecat|{product_id}|{category}|")
+                        InlineKeyboardButton(save_without_text, callback_data=f"savecat|{product_id}|{category}|")
                     ])
                     
                     keyboard = InlineKeyboardMarkup(keyboard_buttons)
                     
+                    # Translate category name
+                    category_key = f"category_{category.lower()}"
+                    translated_category = get_translated_string(category_key, user_lang)
+                    if translated_category == category_key:
+                        translated_category = get_category_display_name(category)
+                    
+                    category_label = get_translated_string("category_label", user_lang, category=translated_category)
+                    select_or_save = get_translated_string("select_subcategory_or_save", user_lang)
+                    
                     await query.edit_message_text(
-                        f"📂 Category: {get_category_display_name(category)}\n\n"
-                        f"Select a subcategory or save without one:",
+                        f"{category_label}\n\n"
+                        f"{select_or_save}",
                         reply_markup=keyboard
                     )
                 else:
@@ -624,6 +640,22 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 category = parts[2]
                 subcategory = parts[3]
                 
+                # Get user language preference
+                user_id = update.effective_user.id
+                user_lang = await db.get_user_language(user_id)
+                
+                # Translate category name
+                category_key = f"category_{category.lower()}"
+                translated_category = get_translated_string(category_key, user_lang)
+                if translated_category == category_key:
+                    translated_category = get_category_display_name(category)
+                
+                # Translate strings
+                translated_subcat = get_subcategory_display_name(subcategory, user_lang)
+                category_label = get_translated_string("category_label", user_lang, category=translated_category)
+                subcategory_label = get_translated_string("subcategory_label", user_lang, subcategory=translated_subcat)
+                confirm_text = get_translated_string("confirm_categorization", user_lang)
+                
                 # Confirmation message
                 keyboard = InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ Confirm", callback_data=f"savecat|{product_id}|{category}|{subcategory}")],
@@ -631,9 +663,9 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 ])
                 
                 await query.edit_message_text(
-                    f"📂 Category: {get_category_display_name(category)}\n"
-                    f"📁 Subcategory: {subcategory.title()}\n\n"
-                    f"Confirm categorization?",
+                    f"{category_label}\n"
+                    f"{subcategory_label}\n\n"
+                    f"{confirm_text}",
                     reply_markup=keyboard
                 )
             else:
@@ -646,15 +678,28 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 category = parts[2]
                 subcategory = parts[3] if len(parts) > 3 and parts[3] else None
                 
+                # Get user language preference
+                user_id = update.effective_user.id
+                user_lang = await db.get_user_language(user_id)
+                
                 # Save categorization
                 await db.update_product_category(product_id, category, subcategory)
                 
-                category_text = get_category_display_name(category)
+                # Translate category name
+                category_key = f"category_{category.lower()}"
+                translated_category = get_translated_string(category_key, user_lang)
+                if translated_category == category_key:
+                    translated_category = get_category_display_name(category)
+                
+                category_text = translated_category
                 if subcategory:
-                    category_text += f" • {subcategory.title()}"
+                    translated_subcat = get_subcategory_display_name(subcategory, user_lang)
+                    category_text += f" • {translated_subcat}"
+                
+                success_msg = get_translated_string("product_categorized_successfully", user_lang, product_id=product_id)
                 
                 await query.edit_message_text(
-                    f"✅ Product #{product_id} categorized successfully!\n\n"
+                    f"{success_msg}\n\n"
                     f"📂 {category_text}"
                 )
                 logger.info(f"Product {product_id} categorized as {category}/{subcategory} by admin {update.effective_user.id}")

@@ -30,6 +30,40 @@ def get_strings():
         "category_clienttouchdowns": "✈️ Client Touchdowns",
         "category_announcements": "📢 Announcements",
         
+        # Subcategory names - CARTRIDGES
+        "subcategory_authentics": "Authentics",
+        "subcategory_replicas": "Replicas",
+        
+        # Subcategory names - EDIBLES
+        "subcategory_flower_edibles": "Flower Edibles",
+        "subcategory_shroom_edibles": "Shroom Edibles",
+        
+        # Subcategory names - CONCENTRATES
+        "subcategory_snowcaps": "Snowcaps",
+        "subcategory_moonrocks": "Moonrocks",
+        "subcategory_hash_and_kief": "Hash and Kief",
+        "subcategory_badder": "Badder",
+        "subcategory_shatter": "Shatter",
+        "subcategory_distillate": "Distillate",
+        "subcategory_thcapowder": "THCa Powder",
+        "subcategory_rso": "RSO",
+        "subcategory_rosin": "Rosin",
+        "subcategory_sugar": "Sugar",
+        "subcategory_others": "Others",
+        
+        # Subcategory names - PREROLLS
+        "subcategory_flower_prerolls": "Flower Pre-Rolls",
+        "subcategory_infused_flower_prerolls": "Infused Flower Pre-Rolls",
+        
+        # Subcategory names - FLOWER
+        "subcategory_topshelfcandy": "Top Shelf Candy",
+        "subcategory_premiumexotics": "Premium Exotics",
+        "subcategory_exotics": "Exotics",
+        "subcategory_premiumlightdeps": "Premium Light Deps",
+        "subcategory_lightdeps": "Light Deps",
+        "subcategory_lightassist": "Light Assist",
+        "subcategory_lows": "Lows",
+        
         # Buttons
         "button_back": "« Back",
         "button_next_page": "Next »",
@@ -76,6 +110,14 @@ def get_strings():
         "no_products_in_category": "📭 No products in this {context}.",
         "page_indicator": "Page {page}/{total_pages}",
         "select_subcategory": "Select a subcategory to browse products:",
+        
+        # Admin categorization strings
+        "select_subcategory_or_save": "Select a subcategory or save without one:",
+        "save_without_subcategory": "✅ Save without subcategory",
+        "confirm_categorization": "Confirm categorization?",
+        "product_categorized_successfully": "✅ Product #{product_id} categorized successfully!",
+        "category_label": "📂 Category: {category}",
+        "subcategory_label": "📁 Subcategory: {subcategory}",
         
         # Broadcast strings
         "broadcast_enter_user_id": "📝 **Broadcast to Single User - Step 1 of 3**\n\nPlease enter the user ID:",

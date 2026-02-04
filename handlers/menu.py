@@ -8,7 +8,7 @@ from telegram.error import TelegramError
 from database import Database
 from utils.pagination import create_pagination_keyboard, paginate_items
 from utils.helpers import is_admin
-from utils.categories import get_all_categories, get_category_display_name, get_subcategories, CATEGORIES, EXCLUDED_FROM_ALL_PRODUCTS
+from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES, EXCLUDED_FROM_ALL_PRODUCTS
 from translations.translator import get_translated_string
 
 logger = logging.getLogger(__name__)
@@ -27,11 +27,12 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         user_id = update.effective_user.id
         user_lang = await db.get_user_language(user_id)
         
-        # Get category counts
+        # Get all category counts in a single query (optimized)
+        category_counts = await db.get_all_category_counts()
         category_buttons = []
         
         for category in get_all_categories():
-            count = await db.count_products_by_category(category)
+            count = category_counts.get(category, 0)
             # Translate category display name
             category_key = f"category_{category.lower()}"
             display_name = get_translated_string(category_key, user_lang)
@@ -125,7 +126,9 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
         
         for subcat in subcategories:
             count = count_dict.get(subcat, 0)
-            button_text = f"{subcat.title()} ({count})"
+            # Get translated subcategory name
+            translated_subcat = get_subcategory_display_name(subcat, user_lang)
+            button_text = f"{translated_subcat} ({count})"
             subcategory_buttons.append([
                 InlineKeyboardButton(button_text, callback_data=f"subcategory|{category}|{subcat}|1")
             ])
@@ -210,7 +213,9 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             translated_category = get_translated_string(category_key, user_lang)
             if translated_category == category_key:
                 translated_category = get_category_display_name(category)
-            title = f"📋 {translated_category} • {subcategory.title()}"
+            # Translate subcategory name
+            translated_subcategory = get_subcategory_display_name(subcategory, user_lang)
+            title = f"📋 {translated_category} • {translated_subcategory}"
         elif category:
             all_products = await db.get_products_by_category(category)
             # Translate category name

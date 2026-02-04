@@ -96,8 +96,12 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1):
     """Display a page of users with notification toggle controls."""
     try:
-        users = await db.get_all_users()
-        total_users = len(users)
+        # Pagination settings
+        per_page = 10
+        offset = (page - 1) * per_page
+        
+        # Get paginated users and total count in single query
+        total_users, page_users = await db.get_users_paginated(limit=per_page, offset=offset)
         
         if total_users == 0:
             text = "📭 No users have interacted with the bot yet."
@@ -107,19 +111,13 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
                 await update.message.reply_text(text)
             return
         
-        # Pagination settings
-        per_page = 10
         total_pages = (total_users + per_page - 1) // per_page
         page = max(1, min(page, total_pages))
-        
-        start_idx = (page - 1) * per_page
-        end_idx = min(start_idx + per_page, total_users)
-        page_users = users[start_idx:end_idx]
         
         # Build message text
         message_lines = [f"👥 **Bot Users** (Page {page}/{total_pages}, {total_users} total)\n"]
         
-        for i, user in enumerate(page_users, start=start_idx + 1):
+        for i, user in enumerate(page_users, start=offset + 1):
             # Escape Markdown characters
             username_raw = user.get('username')
             if username_raw:

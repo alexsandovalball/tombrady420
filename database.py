@@ -157,6 +157,31 @@ class Database:
             except:
                 pass
             
+            # Create performance-critical indexes
+            logger.info("Creating database indexes...")
+            
+            # Products table indexes
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_products_category ON products(category)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_products_category_subcategory ON products(category, subcategory)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_products_created_at ON products(created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_products_media_group_id ON products(media_group_id)")
+            
+            # Bot users indexes
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_notifications ON bot_users(notifications_enabled) WHERE notifications_enabled = 1")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_last_seen ON bot_users(last_seen DESC)")
+            
+            # Notification queue indexes
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_user_sent ON notification_queue(user_id, sent_at)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_created ON notification_queue(created_at)")
+            
+            # Pagination state indexes
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_pagination_state_user ON pagination_state(user_id, created_at DESC)")
+            
+            # Custom message queue indexes
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_custom_message_queue_user_sent ON custom_message_queue(user_id, sent_at)")
+            
+            logger.info("Database indexes created successfully")
+            
             await db.commit()
             logger.info("Database initialized successfully")
     
@@ -495,6 +520,18 @@ class Database:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
     
+    async def get_all_category_counts(self) -> Dict[str, int]:
+        """Get product counts for all categories in a single query (optimized)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT category, COUNT(*) as count 
+                FROM products 
+                WHERE category IS NOT NULL 
+                GROUP BY category
+            """) as cursor:
+                rows = await cursor.fetchall()
+                return {row[0]: row[1] for row in rows}
+    
     async def get_all_categories(self) -> List[str]:
         """Get list of all unique categories."""
         async with aiosqlite.connect(self.db_path) as db:
@@ -616,6 +653,30 @@ class Database:
             """) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
+    
+    async def get_users_paginated(self, limit: int = 10, offset: int = 0) -> tuple[int, List[Dict[str, Any]]]:
+        """
+        Get paginated list of bot users with total count.
+        
+        Args:
+            limit: Number of users per page
+            offset: Number of users to skip
+        
+        Returns:
+            Tuple of (total_count, users_list)
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            # Get total count
+            async with db.execute("SELECT COUNT(*) FROM bot_users") as cursor:
+                total = (await cursor.fetchone())[0]
+            
+            # Get paginated results
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM bot_users ORDER BY last_seen DESC LIMIT ? OFFSET ?
+            """, (limit, offset)) as cursor:
+                rows = await cursor.fetchall()
+                return total, [dict(row) for row in rows]
     
     async def count_users(self) -> int:
         """Get total number of users."""
