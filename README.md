@@ -2,8 +2,6 @@
 
 A complete, production-ready Telegram bot that acts as a media product catalog. The bot automatically monitors a public channel for media posts, saves them as products, and allows users to browse and search the catalog.
 
-📋 **[See recent changes in CHANGELOG.md](CHANGELOG.md)**
-
 ## Features
 
 - ✅ **Multi-Language Support**: Automatic translation to English, German, Dutch, Italian, Spanish, and French
@@ -15,7 +13,6 @@ A complete, production-ready Telegram bot that acts as a media product catalog. 
 - ✅ **Product Notifications**: Notify subscribed users about new products with anti-spam rate limiting
   - Note: DATEDPROOFS and CLIENTTOUCHDOWNS categories are excluded from notifications
   - Note: ANNOUNCEMENTS category WILL trigger notifications but is hidden from "All Products" view
-- ✅ **Manual Product Addition**: Admins can manually add products with `/add_product` and notify subscribed users
 - ✅ **User Management**: Admins can control notification preferences and block users
 - ✅ **Custom Messaging**: Admins can send direct messages or broadcast to all users
 - ✅ **User Blocking**: Admins can block/unblock users from using the bot
@@ -125,7 +122,6 @@ Users can change their preferred language using the `/language` command. All bot
 
 ### Admin Commands
 
-- `/add_product` - Manually add a product with category (send as caption to media)
 - `/users` - View and manage users (notifications, blocking)
 - `/block <user_id>` - Block a user from using the bot
 - `/unblock <user_id>` - Unblock a user

@@ -27,14 +27,6 @@ View and manage bot users (admin only)
 - Navigate pages with ⬅️ Previous / ➡️ Next buttons
 - Useful for monitoring bot engagement and controlling who gets notifications
 
-### `/add_product`
-Manually add a product to the catalog (admin only)
-- **Usage**: Send media (photo/video/document) with caption `/add_product <CATEGORY> <description>`
-- **Example**: Send a photo with caption `/add_product CARTRIDGES Premium Blue Dream Cart`
-- Bot will prompt for subcategory if applicable
-- Product is immediately added and **all subscribed users are notified**
-- Categories: CARTRIDGES, EDIBLES, CONCENTRATES, PREROLLS, SHROOMS, FLOWER, DATEDPROOFS, CLIENTTOUCHDOWNS
-
 ### `/nuke`
 Delete ALL products from catalog (admin only)
 - **Double confirmation required!**
@@ -51,7 +43,7 @@ Send categorization notifications for uncategorized products (admin only)
 
 ## New Product Workflows
 
-### Workflow 1: Automatic from Channel
+### Automatic Product Detection from Channel
 
 When a new product is posted to the monitored channel:
 
@@ -79,30 +71,6 @@ When a new product is posted to the monitored channel:
    - Confirmation message shown
    - Product now appears in category filter
    - **All subscribed users are notified automatically**
-
-### Workflow 2: Manual Addition by Admin
-
-Using the `/add_product` command:
-
-1. **Admin sends media with command**
-   - Photo, video, or document with caption
-   - Caption format: `/add_product <CATEGORY> <description>`
-   - Example: `/add_product FLOWER Premium Blue Dream`
-
-2. **Bot validates and prompts**
-   - Checks if category is valid
-   - If category has subcategories, shows selection menu
-   - Admin selects subcategory or "No Subcategory"
-
-3. **Product is added immediately**
-   - Product saved with category/subcategory
-   - Assigned unique product ID
-   - Confirmation shown to admin
-
-4. **Users are notified**
-   - **All subscribed users receive notification**
-   - Notification includes category and description
-   - Users can view product immediately
 
 ## User Notification Management
 
