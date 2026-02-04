@@ -6,10 +6,12 @@ This guide explains how to use the admin features of the bot.
 ## Accessing Admin Commands
 
 Admin commands are automatically displayed in your Telegram command menu. The bot sets up personalized command lists:
-- **User commands** - Visible to all users (start, menu, language, subscribe, unsubscribe)
+- **User commands** - Visible to all users (start, menu)
 - **Admin commands** - Additional commands visible only to admins
 
 The command menu appears below the text input bar. Tap the menu icon (☰) or type `/` to see available commands.
+
+**Note:** Some commands like `/language`, `/subscribe`, `/unsubscribe`, `/block`, and `/unblock` are not shown in the command menu but are still available by typing them directly.
 
 ## Admin Commands
 
@@ -48,6 +50,46 @@ Send categorization notifications for uncategorized products (admin only)
 - Scans for products without categories
 - Sends up to 10 categorization requests
 - Run multiple times to process all uncategorized products
+
+### `/send`
+Send a message to a specific user (admin only) - **Interactive Workflow**
+
+**New 3-Step Process:**
+1. **Start Command**: Type `/send`
+2. **Enter User ID**: Bot asks for user ID, you reply with the ID
+3. **Enter Message**: Bot asks for message, you type your message
+4. **Confirm & Send**: Bot shows confirmation with buttons - click "Confirm & Send" to complete
+
+**Features:**
+- Validates user exists and is not blocked
+- Shows clear confirmation before sending
+- Can cancel at any step
+- Rate limited to prevent spam
+
+### `/broadcast`
+Send a message to all users (admin only) - **Interactive Workflow**
+
+**New 2-Step Process:**
+1. **Start Command**: Type `/broadcast`
+2. **Enter Message**: Bot asks for message, you type your broadcast
+3. **Confirm & Send**: Bot shows confirmation with user count - click "Confirm & Broadcast" to complete
+
+**Features:**
+- Shows how many users will receive the message
+- Automatically excludes blocked users and admins
+- Rate limiting applies per user
+- Can cancel before sending
+- Messages are queued and delivered with delays
+
+### `/block` and `/unblock`
+Block/unblock users from using the bot (admin only)
+
+**Note:** These commands are not shown in the command menu but are still available.
+
+**Usage:**
+- `/block <user_id>` - Block a user (e.g., `/block 123456789`)
+- `/unblock <user_id>` - Unblock a user (e.g., `/unblock 123456789`)
+- Use `/users` to find user IDs
 
 ## New Product Workflows
 
