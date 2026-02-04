@@ -8,7 +8,6 @@ def get_strings():
     """Get translatable strings."""
     return {
         # Start command
-        "welcome": "👋 Welcome, {name}!\n\nI'm your media product catalog bot. I help you browse and search products from our catalog.\n\nUse /menu to view all products or simply type what you're looking for!",
         "welcome_with_contact": "👋 Welcome, {name}!\n\nI'm your media product catalog bot. I help you browse and search products from our catalog.\n\nUse /menu to view all products or simply type what you're looking for!\n\n💬 DM {contact} TO ORDER",
         "notifications_enabled": "🔔 **Notifications Enabled!**\n\nYou will now receive notifications when new products are added to the catalog.\n\nUse /unsubscribe to stop receiving notifications.",
         "notifications_disabled": "🔕 **Notifications Disabled**\n\nYou will no longer receive notifications about new products.\n\nUse /subscribe to enable notifications again.",
@@ -87,7 +86,6 @@ def get_strings():
         # Product view
         "product_info": "📦 **Product Details**\n\n{category}\n🆔 ID: {id}",
         "uncategorized": "Uncategorized",
-        "order_contact_info": "💬 DM {contact} TO ORDER",
         
         # Admin
         "product_deleted": "✅ Product deleted successfully.",

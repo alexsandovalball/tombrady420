@@ -11,6 +11,9 @@ from configs.config import Config
 
 logger = logging.getLogger(__name__)
 
+# Default values
+DEFAULT_ORDER_CONTACT = '@FLYAWAYPEP'
+
 
 class Database:
     """Database manager for product catalog."""
@@ -146,8 +149,8 @@ class Database:
             # Set default order contact if not exists
             await db.execute("""
                 INSERT OR IGNORE INTO bot_settings (key, value)
-                VALUES ('order_contact', '@FLYAWAYPEP')
-            """)
+                VALUES ('order_contact', ?)
+            """, (DEFAULT_ORDER_CONTACT,))
             
             # Add columns if they don't exist (for existing databases)
             try:
@@ -966,7 +969,7 @@ class Database:
                 SELECT value FROM bot_settings WHERE key = 'order_contact'
             """) as cursor:
                 row = await cursor.fetchone()
-                return row[0] if row else '@FLYAWAYPEP'
+                return row[0] if row else DEFAULT_ORDER_CONTACT
     
     async def set_order_contact(self, contact: str):
         """Set the order contact username in settings."""
