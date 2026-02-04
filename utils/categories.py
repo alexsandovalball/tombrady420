@@ -126,15 +126,21 @@ def get_subcategory_display_name(subcategory: str, user_lang: str = "en") -> str
     Get translated display name for a subcategory.
     
     Args:
-        subcategory: The subcategory name (e.g., "AUTHENTICS")
+        subcategory: The subcategory name (e.g., "AUTHENTICS", "HASH AND KIEF")
         user_lang: User's language preference
     
     Returns:
         Translated subcategory display name
+    
+    Note:
+        Converts subcategory to key format by lowercasing and replacing all
+        whitespace (including spaces in conjunctions like 'AND') with underscores.
+        Examples: "FLOWER EDIBLES" -> "flower_edibles", "HASH AND KIEF" -> "hash_and_kief"
     """
     # Convert subcategory to key format (lowercase with underscores)
-    # Examples: "FLOWER EDIBLES" -> "flower_edibles", "HASH AND KIEF" -> "hash_and_kief"
-    key = f"subcategory_{subcategory.lower().replace(' ', '_')}"
+    # Handle all whitespace variations consistently
+    import re
+    key = f"subcategory_{re.sub(r'\s+', '_', subcategory.lower())}"
     
     # Get translated string
     translated = get_translated_string(key, user_lang)

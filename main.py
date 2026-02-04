@@ -608,7 +608,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     
                     keyboard = InlineKeyboardMarkup(keyboard_buttons)
                     
-                    category_label = get_translated_string("category_label", user_lang, category=get_category_display_name(category))
+                    # Translate category name
+                    category_key = f"category_{category.lower()}"
+                    translated_category = get_translated_string(category_key, user_lang)
+                    if translated_category == category_key:
+                        translated_category = get_category_display_name(category)
+                    
+                    category_label = get_translated_string("category_label", user_lang, category=translated_category)
                     select_or_save = get_translated_string("select_subcategory_or_save", user_lang)
                     
                     await query.edit_message_text(
@@ -638,9 +644,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 user_id = update.effective_user.id
                 user_lang = await db.get_user_language(user_id)
                 
+                # Translate category name
+                category_key = f"category_{category.lower()}"
+                translated_category = get_translated_string(category_key, user_lang)
+                if translated_category == category_key:
+                    translated_category = get_category_display_name(category)
+                
                 # Translate strings
                 translated_subcat = get_subcategory_display_name(subcategory, user_lang)
-                category_label = get_translated_string("category_label", user_lang, category=get_category_display_name(category))
+                category_label = get_translated_string("category_label", user_lang, category=translated_category)
                 subcategory_label = get_translated_string("subcategory_label", user_lang, subcategory=translated_subcat)
                 confirm_text = get_translated_string("confirm_categorization", user_lang)
                 
@@ -673,7 +685,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Save categorization
                 await db.update_product_category(product_id, category, subcategory)
                 
-                category_text = get_category_display_name(category)
+                # Translate category name
+                category_key = f"category_{category.lower()}"
+                translated_category = get_translated_string(category_key, user_lang)
+                if translated_category == category_key:
+                    translated_category = get_category_display_name(category)
+                
+                category_text = translated_category
                 if subcategory:
                     translated_subcat = get_subcategory_display_name(subcategory, user_lang)
                     category_text += f" • {translated_subcat}"
