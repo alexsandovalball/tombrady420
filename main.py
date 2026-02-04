@@ -27,7 +27,8 @@ from handlers.language import language_command, handle_language_callback
 from handlers.admin import (
     delete_product, nuke_command, recategorize_command, 
     users_command, show_users_page,
-    block_command, unblock_command, send_command, broadcast_command
+    block_command, unblock_command, send_command, broadcast_command,
+    setcontact_command, handle_setcontact_input
 )
 from translations.language_config import is_valid_language, LANGUAGE_DISPLAY
 from translations.translator import get_translated_string, translation_service
@@ -1120,6 +1121,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_last_message[user_id] = current_time
     
+    # Check if admin is setting contact
+    if is_admin(user_id) and context.user_data.get('awaiting_contact'):
+        await handle_setcontact_input(update, context)
+        return
+    
     # Check if admin is in broadcast workflow
     if is_admin(user_id) and 'broadcast_mode' in context.user_data:
         from handlers.admin import handle_broadcast_workflow
@@ -1199,6 +1205,7 @@ async def setup_bot_commands(bot):
         BotCommand("nuke", "Delete all products (use with caution)"),
         BotCommand("send", "Send a message to a specific user"),
         BotCommand("broadcast", "Send a message to all users"),
+        BotCommand("setcontact", "Set order contact username"),
     ]
     
     # Set default commands for all users
@@ -1254,6 +1261,7 @@ def main():
     application.add_handler(CommandHandler("unblock", unblock_command))
     application.add_handler(CommandHandler("send", send_command))
     application.add_handler(CommandHandler("broadcast", broadcast_command))
+    application.add_handler(CommandHandler("setcontact", setcontact_command))
     
     # Channel post handler (for monitoring channel)
     channel_id = get_channel_id()

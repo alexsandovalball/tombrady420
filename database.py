@@ -135,40 +135,54 @@ class Database:
                 )
             """)
             
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS bot_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Set default order contact if not exists
+            await db.execute("""
+                INSERT OR IGNORE INTO bot_settings (key, value)
+                VALUES ('order_contact', '@FLYAWAYPEP')
+            """)
+            
             # Add columns if they don't exist (for existing databases)
             try:
                 await db.execute("ALTER TABLE products ADD COLUMN media_group_id TEXT")
-            except:
+            except aiosqlite.OperationalError:
                 pass  # Column already exists
             
             try:
                 await db.execute("ALTER TABLE products ADD COLUMN additional_file_ids TEXT")
-            except:
+            except aiosqlite.OperationalError:
                 pass
             
             try:
                 await db.execute("ALTER TABLE products ADD COLUMN category TEXT")
-            except:
+            except aiosqlite.OperationalError:
                 pass
             
             try:
                 await db.execute("ALTER TABLE products ADD COLUMN subcategory TEXT")
-            except:
+            except aiosqlite.OperationalError:
                 pass
             
             try:
                 await db.execute("ALTER TABLE bot_users ADD COLUMN notifications_enabled INTEGER DEFAULT 1")
-            except:
+            except aiosqlite.OperationalError:
                 pass
             
             try:
                 await db.execute("ALTER TABLE bot_users ADD COLUMN is_blocked INTEGER DEFAULT 0")
-            except:
+            except aiosqlite.OperationalError:
                 pass
             
             try:
                 await db.execute("ALTER TABLE bot_users ADD COLUMN language TEXT DEFAULT 'en'")
-            except:
+            except aiosqlite.OperationalError:
                 pass
             
             # Create performance-critical indexes
@@ -944,6 +958,25 @@ class Database:
             """, (days_old,))
             await db.commit()
             logger.info(f"Cleaned up translations older than {days_old} days")
+    
+    async def get_order_contact(self) -> str:
+        """Get the order contact username from settings."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT value FROM bot_settings WHERE key = 'order_contact'
+            """) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else '@FLYAWAYPEP'
+    
+    async def set_order_contact(self, contact: str):
+        """Set the order contact username in settings."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT OR REPLACE INTO bot_settings (key, value, updated_at)
+                VALUES ('order_contact', ?, ?)
+            """, (contact, datetime.now()))
+            await db.commit()
+            logger.info(f"Order contact updated to: {contact}")
 
     
 
