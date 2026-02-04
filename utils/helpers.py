@@ -6,7 +6,7 @@ from typing import List, Optional
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import Config
+from configs.config import Config
 
 logger = logging.getLogger(__name__)
 

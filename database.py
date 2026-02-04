@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 import logging
 
-from config import Config
+from configs.config import Config
 
 logger = logging.getLogger(__name__)
 

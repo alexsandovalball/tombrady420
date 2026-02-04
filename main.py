@@ -17,7 +17,7 @@ from telegram.ext import (
 )
 from telegram.error import TelegramError
 
-from config import Config, ConfigError
+from configs.config import Config, ConfigError
 from database import Database
 from handlers.start import start_command, subscribe_command, unsubscribe_command
 from handlers.menu import menu_command, show_catalog_page, handle_catalog_pagination

@@ -6,6 +6,7 @@ A complete, production-ready Telegram bot that acts as a media product catalog. 
 
 ## Features
 
+- ✅ **Multi-Language Support**: Automatic translation to English, German, Dutch, Italian, Spanish, and French
 - ✅ **Automatic Product Detection**: Monitors a public channel and automatically saves media posts as products
 - ✅ **Full Catalog Browsing**: View all products with pagination and category filtering
 - ✅ **Fuzzy Search**: Natural language search with typo tolerance
@@ -47,10 +48,10 @@ pip install -r requirements.txt
 
 The bot uses `python-decouple` for secure configuration management. **Never hardcode sensitive data like bot tokens in your source code.**
 
-Copy `.env.example` to `.env` and fill in your values:
+Copy `configs/.env.example` to `.env` and fill in your values:
 
 ```bash
-cp .env.example .env
+cp configs/.env.example .env
 ```
 
 Edit `.env` with your actual values:
@@ -107,6 +108,7 @@ The bot will:
 - `/menu` - View full catalog with pagination
 - `/subscribe` - Enable product notifications
 - `/unsubscribe` - Disable product notifications
+- `/language` - Change your preferred language (English, German, Dutch, Italian, Spanish, French)
 - Natural language search - Just type keywords like "blue tshirt", "red shoes", etc.
 
 ### Admin Commands
@@ -121,7 +123,7 @@ The bot will:
 - `/recategorize` - Send categorization prompts for uncategorized products
 - `/nuke` - Delete all products (with double confirmation)
 
-For detailed admin instructions, see [ADMIN_GUIDE.md](ADMIN_GUIDE.md).
+For detailed admin instructions, see [docs/ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md).
 
 ### How It Works
 
@@ -158,7 +160,7 @@ The bot now supports webhook mode for better performance on serverless platforms
    - `WEBHOOK_URL` - Your Render app URL (e.g., https://your-app.onrender.com)
 5. Deploy!
 
-For detailed webhook deployment instructions, see [WEBHOOK_DEPLOYMENT.md](WEBHOOK_DEPLOYMENT.md).
+For detailed webhook deployment instructions, see [docs/WEBHOOK_DEPLOYMENT.md](docs/WEBHOOK_DEPLOYMENT.md).
 
 ### PythonAnywhere
 
