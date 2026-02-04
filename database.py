@@ -654,6 +654,30 @@ class Database:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
     
+    async def get_users_paginated(self, limit: int = 10, offset: int = 0) -> tuple[int, List[Dict[str, Any]]]:
+        """
+        Get paginated list of bot users with total count.
+        
+        Args:
+            limit: Number of users per page
+            offset: Number of users to skip
+        
+        Returns:
+            Tuple of (total_count, users_list)
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            # Get total count
+            async with db.execute("SELECT COUNT(*) FROM bot_users") as cursor:
+                total = (await cursor.fetchone())[0]
+            
+            # Get paginated results
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM bot_users ORDER BY last_seen DESC LIMIT ? OFFSET ?
+            """, (limit, offset)) as cursor:
+                rows = await cursor.fetchall()
+                return total, [dict(row) for row in rows]
+    
     async def count_users(self) -> int:
         """Get total number of users."""
         async with aiosqlite.connect(self.db_path) as db:
