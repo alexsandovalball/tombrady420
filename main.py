@@ -6,7 +6,7 @@ import asyncio
 import json
 import aiosqlite
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -29,7 +29,7 @@ from handlers.admin import (
     users_command, show_users_page,
     block_command, unblock_command, send_command, broadcast_command
 )
-from translations.language_config import is_valid_language
+from translations.language_config import is_valid_language, LANGUAGE_DISPLAY
 from translations.translator import get_translated_string
 from utils.helpers import (
     get_file_id_and_type,
@@ -315,6 +315,56 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await handle_language_callback(update, context, lang_code)
             return
     
+    # Handle opening language settings from start page
+    if callback_data == "open_language_settings":
+        # Get user's current language
+        current_lang = await db.get_user_language(user_id)
+        
+        # Create language selection keyboard
+        keyboard_buttons = []
+        for lang_code, display_name in LANGUAGE_DISPLAY.items():
+            # Add checkmark for current language
+            if lang_code == current_lang:
+                display_name = f"✓ {display_name}"
+            
+            keyboard_buttons.append([
+                InlineKeyboardButton(display_name, callback_data=f"setlang|{lang_code}")
+            ])
+        
+        keyboard = InlineKeyboardMarkup(keyboard_buttons)
+        
+        # Get translated message
+        message_text = get_translated_string("language_settings", current_lang)
+        current_lang_name = LANGUAGE_DISPLAY.get(current_lang, LANGUAGE_DISPLAY["en"])
+        current_lang_text = get_translated_string(
+            "current_language", 
+            current_lang,
+            language=current_lang_name
+        )
+        
+        message_text += f"\n\n{current_lang_text}"
+        
+        # Check if we need to send new message or edit existing
+        message = query.message
+        if message.photo or message.video or message.document or message.animation or message.audio:
+            # Media message - send new text message
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=message_text,
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+        else:
+            # Text message - edit it
+            await query.edit_message_text(
+                message_text,
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+        
+        logger.info(f"User {user_id} opened language settings from start page (current: {current_lang})")
+        return
+    
     # Handle language selection callbacks from /start command (new users)
     if callback_data.startswith("setlang_start|"):
         parts = callback_data.split("|")
@@ -334,8 +384,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 welcome_text = get_translated_string("welcome", lang_code, name=update.effective_user.first_name)
                 view_catalog_text = get_translated_string("view_catalog", lang_code)
+                change_language_text = get_translated_string("change_language", lang_code)
                 keyboard_buttons = [
-                    [InlineKeyboardButton(view_catalog_text, callback_data="categories")]
+                    [InlineKeyboardButton(view_catalog_text, callback_data="categories")],
+                    [InlineKeyboardButton(change_language_text, callback_data="open_language_settings")]
                 ]
                 
                 if not is_subscribed:
@@ -988,8 +1040,52 @@ async def post_init(application: Application):
     await db.init_db()
     logger.info("Database initialized")
     
+    # Set bot commands for the command menu
+    await setup_bot_commands(application.bot)
+    
     # Start cleanup task
     asyncio.create_task(cleanup_task(application))
+
+
+async def setup_bot_commands(bot):
+    """Set up bot commands that appear in the Telegram command menu."""
+    # Define user commands (available to all users)
+    user_commands = [
+        BotCommand("start", "Start the bot and select language"),
+        BotCommand("menu", "Browse the product catalog"),
+        BotCommand("language", "Change your preferred language"),
+        BotCommand("subscribe", "Enable product notifications"),
+        BotCommand("unsubscribe", "Disable product notifications"),
+    ]
+    
+    # Define admin commands (available to admins only)
+    admin_commands = user_commands + [
+        BotCommand("stats", "View catalog statistics"),
+        BotCommand("users", "View and manage bot users"),
+        BotCommand("recategorize", "Categorize uncategorized products"),
+        BotCommand("nuke", "Delete all products (use with caution)"),
+        BotCommand("block", "Block a user from using the bot"),
+        BotCommand("unblock", "Unblock a user"),
+        BotCommand("send", "Send a message to a specific user"),
+        BotCommand("broadcast", "Send a message to all users"),
+    ]
+    
+    # Set default commands for all users
+    await bot.set_my_commands(user_commands)
+    
+    # Set admin commands for each admin
+    admin_ids = get_admin_ids()
+    for admin_id in admin_ids:
+        try:
+            await bot.set_my_commands(
+                admin_commands,
+                scope=BotCommandScopeChat(chat_id=admin_id)
+            )
+            logger.info(f"Set admin commands for user {admin_id}")
+        except Exception as e:
+            logger.warning(f"Could not set admin commands for {admin_id}: {e}")
+    
+    logger.info("Bot commands configured successfully")
 
 
 def main():

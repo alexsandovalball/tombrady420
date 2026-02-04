@@ -30,8 +30,12 @@ class TranslationService:
         Returns:
             Translated text, or original text if translation fails
         """
+        # Normalize language codes (both USA and UK English use 'en')
+        normalized_target = target_lang if target_lang != "en-US" else "en"
+        normalized_source = source_lang if source_lang != "en-US" else "en"
+        
         # No translation needed if target is same as source
-        if target_lang == source_lang:
+        if normalized_target == normalized_source:
             return text
         
         # Validate language code
@@ -40,13 +44,13 @@ class TranslationService:
             return text
         
         # Check cache
-        cache_key = f"{source_lang}:{target_lang}:{text}"
+        cache_key = f"{normalized_source}:{normalized_target}:{text}"
         if cache_key in self._cache:
             return self._cache[cache_key]
         
         try:
             # Use GoogleTranslator from deep-translator
-            translator = GoogleTranslator(source=source_lang, target=target_lang)
+            translator = GoogleTranslator(source=normalized_source, target=normalized_target)
             translated = translator.translate(text)
             
             # Cache the result
@@ -54,7 +58,7 @@ class TranslationService:
             
             return translated
         except Exception as e:
-            logger.error(f"Translation error ({source_lang} -> {target_lang}): {e}")
+            logger.error(f"Translation error ({normalized_source} -> {normalized_target}): {e}")
             return text  # Return original text if translation fails
     
     def get_string(self, key: str, lang: str = DEFAULT_LANGUAGE, **kwargs) -> str:

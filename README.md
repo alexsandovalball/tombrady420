@@ -11,13 +11,15 @@ A production-ready Telegram bot for managing and browsing a media product catalo
 ## ✨ Features
 
 ### For Users
-- 🌐 **Multi-Language Support** - 6 languages with automatic translation (English, German, Dutch, Italian, Spanish, French)
+- 🌐 **Multi-Language Support** - 7 languages with automatic translation (English UK, English USA, German, Dutch, Italian, Spanish, French)
 - 🔍 **Fuzzy Search** - Natural language search with typo tolerance
 - 📂 **Category Browsing** - Organized product categories with subcategories
 - 🔔 **Smart Notifications** - Opt-in notifications for new products with rate limiting
 - 📱 **Interactive Interface** - Button-based navigation, no typing required
 - 🎯 **Language Selection at Start** - New users choose their language immediately
+- 🌍 **Easy Language Switching** - Change language anytime from start page or /language command
 - 📄 **Pagination** - Smooth navigation through large catalogs
+- 📋 **Command Menu** - All available commands displayed below input bar
 
 ### For Admins
 - 🤖 **Automatic Product Detection** - Monitors channel and captures new media automatically
@@ -114,6 +116,8 @@ See [configs/.env.example](configs/.env.example) for complete Render.com deploym
 
 ## 📖 User Commands
 
+All commands are displayed in the Telegram command menu below the input bar for easy access:
+
 - `/start` - Welcome message and language selection (for new users)
 - `/menu` - Browse the full product catalog
 - `/language` - Change your preferred language
@@ -125,8 +129,10 @@ See the [User Guide](docs/USER_GUIDE.md) for detailed instructions.
 
 ## 🔧 Admin Commands
 
-- `/users` - View and manage bot users
+Admin commands appear only for users with admin permissions:
+
 - `/stats` - View catalog and user statistics
+- `/users` - View and manage bot users
 - `/recategorize` - Send categorization prompts for uncategorized products
 - `/nuke` - Delete all products (double confirmation required)
 - `/block <user_id>` - Block a user from using the bot
@@ -192,7 +198,8 @@ Tables: products, bot_users, pagination_state, media_groups, pending_categorizat
 
 ### Supported Languages
 
-- 🇬🇧 English (default)
+- 🇬🇧 English (UK) (default)
+- 🇺🇸 English (USA)
 - 🇩🇪 German  
 - 🇳🇱 Dutch
 - 🇮🇹 Italian
@@ -202,10 +209,12 @@ Tables: products, bot_users, pagination_state, media_groups, pending_categorizat
 ### How Translation Works
 
 1. All base strings are in English
-2. User selects preferred language via `/language` or at `/start`
-3. Bot automatically translates messages using Google Translate API
-4. Translations are cached for performance
-5. Each user sees the interface in their chosen language
+2. New users select preferred language via language menu at `/start`
+3. Existing users can change language via "Change Language" button on start page or `/language` command
+4. Bot automatically translates all messages, buttons, and navigation using Google Translate API
+5. Translations are cached for performance
+6. Each user sees the interface in their chosen language
+7. Product captions and all user-facing text are translated
 
 ## 🔔 Notification System
 

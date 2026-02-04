@@ -9,6 +9,7 @@ from database import Database
 from utils.pagination import create_pagination_keyboard, paginate_items
 from utils.helpers import is_admin
 from utils.categories import get_all_categories, get_category_display_name, get_subcategories, CATEGORIES, EXCLUDED_FROM_ALL_PRODUCTS
+from translations.translator import get_translated_string
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -22,6 +23,10 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show category selection menu."""
     try:
+        # Get user's language preference
+        user_id = update.effective_user.id
+        user_lang = await db.get_user_language(user_id)
+        
         # Get category counts
         category_buttons = []
         
@@ -46,16 +51,14 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         # Add "All Products" option
         total_count = await db.count_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
+        all_products_text = get_translated_string("all_products", user_lang)
         category_buttons.insert(0, [
-            InlineKeyboardButton(f"📦 All Products ({total_count})", callback_data="menu|1")
+            InlineKeyboardButton(f"{all_products_text} ({total_count})", callback_data="menu|1")
         ])
         
         keyboard = InlineKeyboardMarkup(category_buttons)
         
-        text = (
-            "📂 **Product Categories**\n\n"
-            "Select a category to browse products:"
-        )
+        text = get_translated_string("product_categories", user_lang)
         
         if update.callback_query:
             message = update.callback_query.message
@@ -82,7 +85,10 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
             
     except Exception as e:
         logger.error(f"Error showing category menu: {e}")
-        error_text = "❌ An error occurred. Please try again."
+        # Get user's language preference for error message
+        user_id = update.effective_user.id
+        user_lang = await db.get_user_language(user_id)
+        error_text = get_translated_string("error_occurred", user_lang)
         if update.callback_query:
             await update.callback_query.answer(error_text, show_alert=True)
         else:

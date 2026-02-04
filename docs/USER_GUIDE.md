@@ -7,8 +7,9 @@ Welcome to the Telegram Media Catalog Bot! This bot helps you browse and search 
 ### First Time Using the Bot
 
 1. **Start the bot** - Send `/start` to the bot
-2. **Select your language** - Choose from 6 supported languages:
-   - 🇬🇧 English
+2. **Select your language** - Choose from 7 supported languages:
+   - 🇬🇧 English (UK)
+   - 🇺🇸 English (USA)
    - 🇩🇪 German
    - 🇳🇱 Dutch
    - 🇮🇹 Italian
@@ -16,10 +17,19 @@ Welcome to the Telegram Media Catalog Bot! This bot helps you browse and search 
    - 🇫🇷 French
 3. **Browse or search** - Use the menu to browse categories or type keywords to search
 
+## Accessing Commands
+
+All available commands are conveniently displayed in the Telegram command menu below the text input bar. Simply tap the menu icon (☰) or type `/` to see all available commands.
+
 ## Available Commands
 
+Commands are automatically displayed in Telegram's command menu for easy access. Just tap the menu icon or type `/`.
+
 ### `/start`
-Shows the welcome message and main menu. For new users, you'll first select your preferred language.
+Shows the welcome message and main menu. For new users, you'll first select your preferred language. The start page includes:
+- **View Catalog** button - Browse products by category
+- **Change Language** button - Switch to a different language anytime
+- **Resubscribe to Notifications** button (if you've unsubscribed)
 
 ### `/menu`
 Opens the product catalog browser where you can:
@@ -28,7 +38,7 @@ Opens the product catalog browser where you can:
 - Navigate through pages
 
 ### `/language`
-Change your language preference at any time. All bot messages will automatically translate to your selected language.
+Change your language preference at any time. All bot messages, buttons, navigation, and product information will automatically translate to your selected language. You can also access language settings from the "Change Language" button on the start page.
 
 ### `/subscribe`
 Enable notifications for new products. You'll receive a message whenever new items are added to the catalog.
