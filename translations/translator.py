@@ -223,32 +223,3 @@ def translate_text(text: str, target_lang: str) -> str:
     # Return original if not in cache
     return text
 
-
-
-def get_translated_string(key: str, lang: str = DEFAULT_LANGUAGE, **kwargs) -> str:
-    """
-    Convenience function to get a translated string.
-    
-    Args:
-        key: String key from strings.py
-        lang: Target language code
-        **kwargs: Format arguments for the string
-    
-    Returns:
-        Translated and formatted string
-    """
-    return translation_service.get_string(key, lang, **kwargs)
-
-
-def translate_text(text: str, target_lang: str) -> str:
-    """
-    Convenience function to translate arbitrary text.
-    
-    Args:
-        text: Text to translate
-        target_lang: Target language code
-    
-    Returns:
-        Translated text
-    """
-    return translation_service.translate(text, target_lang)
