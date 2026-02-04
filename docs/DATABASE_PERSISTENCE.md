@@ -163,6 +163,24 @@ This script will:
 - Ensure messages have media (photos, videos, etc.)
 - Run `/recategorize` to send categorization requests
 
+## Schema Migrations
+
+### Language Column Migration (Feb 2024)
+
+If you're experiencing the error `no such column: language`, you need to run a one-time migration to fix the database schema. This issue occurred after PR #34 (multi-language translation support).
+
+**To fix**:
+```bash
+python migrate_language_column.py catalog.db
+```
+
+**To verify**:
+```bash
+python test_language_migration.py
+```
+
+See [DATABASE_MIGRATION_LANGUAGE.md](DATABASE_MIGRATION_LANGUAGE.md) for detailed information.
+
 ## Migration Guide
 
 ### From Local to Production
