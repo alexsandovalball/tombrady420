@@ -77,8 +77,10 @@ async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYP
     
     # Build keyboard based on subscription status
     view_catalog_text = get_translated_string("view_catalog", user_lang)
+    change_language_text = get_translated_string("change_language", user_lang)
     keyboard_buttons = [
-        [InlineKeyboardButton(view_catalog_text, callback_data="categories")]
+        [InlineKeyboardButton(view_catalog_text, callback_data="categories")],
+        [InlineKeyboardButton(change_language_text, callback_data="open_language_settings")]
     ]
     
     # Add resubscribe button only for users who have unsubscribed

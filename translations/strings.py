@@ -37,15 +37,20 @@ def get_strings():
         "button_back_to_categories": "« Back to Categories",
         "button_back_to_menu": "« Back to Menu",
         "button_view_product": "👁️ View",
+        "change_language": "🌐 Change Language",
         
         # Search
         "search_results": "🔍 **Search Results**\n\nFound {count} products matching \"{query}\":",
         "no_results": "No products found matching \"{query}\".",
         "search_prompt": "💬 Type what you're looking for to search the catalog!",
+        "search_min_chars": "🔍 Please enter at least 2 characters to search.",
+        "catalog_empty": "📭 The catalog is empty. No products available yet.",
+        "no_products_found": "❌ No products found for '{query}'. Try different keywords.",
         
         # Product view
         "product_info": "📦 **Product Details**\n\n{category}\n🆔 ID: {id}",
         "uncategorized": "Uncategorized",
+        "order_contact_info": f"💬 DM {Config.ORDER_CONTACT} TO ORDER",
         
         # Admin
         "admin_stats": "📊 **Bot Statistics**\n\n{stats}",

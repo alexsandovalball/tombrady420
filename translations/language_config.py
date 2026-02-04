@@ -17,7 +17,8 @@ DEFAULT_LANGUAGE = "en"
 
 # Language display names with emojis
 LANGUAGE_DISPLAY = {
-    "en": "🇬🇧 English",
+    "en": "🇬🇧 English (UK)",
+    "en-US": "🇺🇸 English (USA)",
     "de": "🇩🇪 German",
     "nl": "🇳🇱 Dutch",
     "it": "🇮🇹 Italian",
@@ -38,4 +39,4 @@ def get_all_languages() -> dict:
 
 def is_valid_language(lang_code: str) -> bool:
     """Check if language code is supported."""
-    return lang_code in SUPPORTED_LANGUAGES
+    return lang_code in SUPPORTED_LANGUAGES or lang_code in LANGUAGE_DISPLAY
