@@ -153,7 +153,7 @@ async def get_translated_string_async(key: str, lang: str = DEFAULT_LANGUAGE, **
 def get_translated_string(key: str, lang: str = DEFAULT_LANGUAGE, **kwargs) -> str:
     """
     Synchronous wrapper for getting a translated string.
-    Uses sync translation for backward compatibility.
+    Performs actual translation if not in cache using synchronous GoogleTranslator.
     
     Args:
         key: String key from strings.py
@@ -166,21 +166,37 @@ def get_translated_string(key: str, lang: str = DEFAULT_LANGUAGE, **kwargs) -> s
     # Get base string in English
     base_string = get_base_string(key, **kwargs)
     
+    # Normalize language codes (both USA and UK English use 'en')
+    normalized_target = lang if lang != "en-US" else "en"
+    
     # If language is English or default, return as is
-    if lang == DEFAULT_LANGUAGE:
+    if normalized_target == DEFAULT_LANGUAGE:
         return base_string
     
-    # For non-English, try sync cache lookup or return English
-    # This maintains compatibility but won't block
-    normalized_target = lang if lang != "en-US" else "en"
+    # Validate language code
+    if not is_valid_language(lang):
+        logger.warning(f"Invalid language code: {lang}, using default")
+        return base_string
+    
+    # Check cache first
     cache_key = f"en:{normalized_target}:{base_string}"
     cached = translation_service._cache.get(cache_key)
     
     if cached is not None:
         return cached
     
-    # Return English if not in cache (async translation will populate cache)
-    return base_string
+    # If not in cache, perform translation synchronously
+    try:
+        translator = GoogleTranslator(source="en", target=normalized_target)
+        translated = translator.translate(base_string)
+        
+        # Cache the result
+        translation_service._cache.set(cache_key, translated)
+        
+        return translated
+    except Exception as e:
+        logger.error(f"Translation error (en -> {normalized_target}): {e}")
+        return base_string
 
 
 async def translate_text_async(text: str, target_lang: str) -> str:
@@ -200,7 +216,7 @@ async def translate_text_async(text: str, target_lang: str) -> str:
 def translate_text(text: str, target_lang: str) -> str:
     """
     Synchronous wrapper to translate arbitrary text.
-    Uses cache or returns original for compatibility.
+    Performs actual translation if not in cache.
     
     Args:
         text: Text to translate
@@ -214,12 +230,27 @@ def translate_text(text: str, target_lang: str) -> str:
     if normalized_target == "en":
         return text
     
+    # Validate language code
+    if not is_valid_language(target_lang):
+        logger.warning(f"Invalid language code: {target_lang}")
+        return text
+    
     cache_key = f"en:{normalized_target}:{text}"
     cached = translation_service._cache.get(cache_key)
     
     if cached is not None:
         return cached
     
-    # Return original if not in cache
-    return text
+    # If not in cache, perform translation synchronously
+    try:
+        translator = GoogleTranslator(source="en", target=normalized_target)
+        translated = translator.translate(text)
+        
+        # Cache the result
+        translation_service._cache.set(cache_key, translated)
+        
+        return translated
+    except Exception as e:
+        logger.error(f"Translation error (en -> {normalized_target}): {e}")
+        return text
 
