@@ -7,6 +7,7 @@ import asyncio
 import sqlite3
 import os
 import sys
+import tempfile
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -16,11 +17,10 @@ from database import Database
 
 async def test_language_column_migration():
     """Test that init_db adds the language column to existing databases."""
-    test_db_path = "/tmp/test_language_fix.db"
-    
-    # Clean up any existing test database
-    if os.path.exists(test_db_path):
-        os.remove(test_db_path)
+    # Use tempfile for cross-platform compatibility
+    fd, test_db_path = tempfile.mkstemp(suffix='.db', prefix='test_language_fix_')
+    os.close(fd)  # Close the file descriptor
+    os.remove(test_db_path)  # Remove the empty file so we can create our own
     
     print("Step 1: Creating a database without the language column...")
     # Create an old-style database without the language column
