@@ -6,6 +6,7 @@ import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, InputMediaDocument
 from telegram.ext import ContextTypes
 from database import Database
+from configs.config import Config
 from utils.helpers import send_media_message, is_admin
 from utils.pagination import paginate_items
 from utils.categories import format_category_info
@@ -168,7 +169,6 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 )
                 
                 # Send keyboard in a separate message since media groups can't have keyboards
-                from configs.config import Config
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text=f"👆 DM TO ORDER:{Config.ORDER_CONTACT}",
@@ -193,7 +193,6 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         )
         
         # Send DM message with keyboard separately for consistency
-        from configs.config import Config
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=f"👆 DM TO ORDER:{Config.ORDER_CONTACT}",

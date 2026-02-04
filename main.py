@@ -29,6 +29,8 @@ from handlers.admin import (
     users_command, show_users_page,
     block_command, unblock_command, send_command, broadcast_command
 )
+from translations.language_config import is_valid_language
+from translations.translator import get_translated_string
 from utils.helpers import (
     get_file_id_and_type,
     has_media,
@@ -318,8 +320,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         parts = callback_data.split("|")
         if len(parts) >= 2:
             lang_code = parts[1]
-            from translations.language_config import is_valid_language
-            from translations.translator import get_translated_string
             
             # Validate and set language
             if is_valid_language(lang_code):
