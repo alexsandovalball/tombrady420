@@ -139,7 +139,8 @@ def get_subcategory_display_name(subcategory: str, user_lang: str = "en") -> str
     """
     # Convert subcategory to key format (lowercase with underscores)
     # Handle all whitespace variations consistently
-    key = f"subcategory_{re.sub(r'\s+', '_', subcategory.lower())}"
+    normalized_subcategory = re.sub(r'\s+', '_', subcategory.lower())
+    key = f"subcategory_{normalized_subcategory}"
     
     # Get translated string
     translated = get_translated_string(key, user_lang)
