@@ -166,16 +166,20 @@ def get_translated_string(key: str, lang: str = DEFAULT_LANGUAGE, **kwargs) -> s
     # Get base string in English
     base_string = get_base_string(key, **kwargs)
     
+    # If language is English or default, return as is
+    if lang == DEFAULT_LANGUAGE:
+        return base_string
+    
     # Normalize language codes (both USA and UK English use 'en')
     normalized_target = lang if lang != "en-US" else "en"
     
-    # If language is English or default, return as is
+    # If normalized language is default, return as is
     if normalized_target == DEFAULT_LANGUAGE:
         return base_string
     
-    # Validate language code
-    if not is_valid_language(lang):
-        logger.warning(f"Invalid language code: {lang}, using default")
+    # Validate normalized language code
+    if not is_valid_language(normalized_target):
+        logger.warning(f"Invalid language code: {normalized_target}, using default")
         return base_string
     
     # Check cache first
@@ -225,14 +229,15 @@ def translate_text(text: str, target_lang: str) -> str:
     Returns:
         Translated text
     """
+    # Normalize language codes (both USA and UK English use 'en')
     normalized_target = target_lang if target_lang != "en-US" else "en"
     
     if normalized_target == "en":
         return text
     
-    # Validate language code
-    if not is_valid_language(target_lang):
-        logger.warning(f"Invalid language code: {target_lang}")
+    # Validate normalized language code
+    if not is_valid_language(normalized_target):
+        logger.warning(f"Invalid language code: {normalized_target}")
         return text
     
     cache_key = f"en:{normalized_target}:{text}"
