@@ -318,9 +318,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         parts = callback_data.split("|")
         if len(parts) >= 2:
             lang_code = parts[1]
-            from handlers.start import show_welcome_message
-            from handlers.language import handle_language_callback
             from translations.language_config import is_valid_language
+            from translations.translator import get_translated_string
             
             # Validate and set language
             if is_valid_language(lang_code):
@@ -329,22 +328,18 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await query.answer()
                 # Delete the language selection message
                 await query.delete_message()
+                
                 # Show welcome message in selected language
-                # We need to create a fake update with the message context
-                from telegram import Message, Chat, User as TelegramUser
-                # Since we can't send message.reply_text after query, we'll send a new message
-                user_lang = lang_code
-                from translations.translator import get_translated_string
                 is_subscribed = await db.is_user_subscribed(user_id)
                 
-                welcome_text = get_translated_string("welcome", user_lang, name=update.effective_user.first_name)
-                view_catalog_text = get_translated_string("view_catalog", user_lang)
+                welcome_text = get_translated_string("welcome", lang_code, name=update.effective_user.first_name)
+                view_catalog_text = get_translated_string("view_catalog", lang_code)
                 keyboard_buttons = [
                     [InlineKeyboardButton(view_catalog_text, callback_data="categories")]
                 ]
                 
                 if not is_subscribed:
-                    resubscribe_text = get_translated_string("resubscribe_notifications", user_lang)
+                    resubscribe_text = get_translated_string("resubscribe_notifications", lang_code)
                     keyboard_buttons.append(
                         [InlineKeyboardButton(resubscribe_text, callback_data="toggle_notifications")]
                     )
