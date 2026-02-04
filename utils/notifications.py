@@ -11,7 +11,7 @@ from telegram.ext import ContextTypes
 from telegram.error import TelegramError, Forbidden
 
 from database import Database
-from utils.categories import get_category_display_name, NOTIFICATION_EXCLUDED_CATEGORIES
+from utils.categories import get_category_display_name, get_subcategory_display_name, NOTIFICATION_EXCLUDED_CATEGORIES
 from translations.translator import translate_text
 
 logger = logging.getLogger(__name__)
@@ -230,7 +230,8 @@ class NotificationService:
                 
                 category_text = get_category_display_name(category)
                 if subcategory:
-                    category_text += f" • {subcategory.title()}"
+                    translated_subcategory = get_subcategory_display_name(subcategory, user_lang)
+                    category_text += f" • {translated_subcategory}"
                 
                 caption = product.get("caption", "")
                 

@@ -3,6 +3,7 @@ Category extraction and management utilities.
 """
 import re
 from typing import Tuple, Optional, List
+from translations.translator import get_translated_string
 
 # Define category structure
 CATEGORIES = {
@@ -120,13 +121,51 @@ def get_subcategories(category: str) -> List[str]:
     return CATEGORIES.get(category, [])
 
 
-def format_category_info(category: Optional[str], subcategory: Optional[str]) -> str:
-    """Format category and subcategory for display."""
+def get_subcategory_display_name(subcategory: str, user_lang: str = "en") -> str:
+    """
+    Get translated display name for a subcategory.
+    
+    Args:
+        subcategory: The subcategory name (e.g., "AUTHENTICS")
+        user_lang: User's language preference
+    
+    Returns:
+        Translated subcategory display name
+    """
+    # Convert subcategory to key format (lowercase with underscores)
+    # Examples: "FLOWER EDIBLES" -> "flower_edibles", "HASH AND KIEF" -> "hash_and_kief"
+    key = f"subcategory_{subcategory.lower().replace(' ', '_')}"
+    
+    # Get translated string
+    translated = get_translated_string(key, user_lang)
+    
+    # If translation not found, return title-cased version
+    if translated == key:
+        return subcategory.title()
+    
+    return translated
+
+
+def format_category_info(category: Optional[str], subcategory: Optional[str], user_lang: str = "en") -> str:
+    """
+    Format category and subcategory for display with translations.
+    
+    Args:
+        category: Category name
+        subcategory: Subcategory name
+        user_lang: User's language preference
+    
+    Returns:
+        Formatted category info string
+    """
     if not category:
-        return "Uncategorized"
+        # Get translated "Uncategorized" string
+        uncategorized = get_translated_string("uncategorized", user_lang)
+        return uncategorized if uncategorized != "uncategorized" else "Uncategorized"
     
     display = get_category_display_name(category)
     if subcategory:
-        display += f" • {subcategory.title()}"
+        translated_subcat = get_subcategory_display_name(subcategory, user_lang)
+        display += f" • {translated_subcat}"
     
     return display

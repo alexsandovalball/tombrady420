@@ -130,7 +130,7 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 logger.error(f"Error translating caption: {e}")
                 # Keep original caption if translation fails
         
-        category_info = format_category_info(product.get("category"), product.get("subcategory"))
+        category_info = format_category_info(product.get("category"), product.get("subcategory"), user_lang)
         
         # Add category to caption
         full_caption = f"{caption}\n\n📂 {category_info}"
