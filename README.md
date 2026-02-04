@@ -194,7 +194,7 @@ Tables: products, bot_users, pagination_state, media_groups, pending_categorizat
 
 - 🇬🇧 English (default)
 - 🇩🇪 German  
-- 🇳�� Dutch
+- 🇳🇱 Dutch
 - 🇮🇹 Italian
 - 🇪🇸 Spanish
 - 🇫🇷 French
