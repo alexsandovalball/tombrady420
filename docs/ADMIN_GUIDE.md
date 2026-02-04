@@ -3,6 +3,14 @@
 ## Overview
 This guide explains how to use the admin features of the bot.
 
+## Accessing Admin Commands
+
+Admin commands are automatically displayed in your Telegram command menu. The bot sets up personalized command lists:
+- **User commands** - Visible to all users (start, menu, language, subscribe, unsubscribe)
+- **Admin commands** - Additional commands visible only to admins
+
+The command menu appears below the text input bar. Tap the menu icon (☰) or type `/` to see available commands.
+
 ## Admin Commands
 
 ### `/start`
