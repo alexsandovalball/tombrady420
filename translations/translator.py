@@ -116,12 +116,12 @@ class TranslationService:
         Returns:
             Translated and formatted string
         """
-        # Get base string template in English (without formatting)
-        base_string = get_base_string(key)
-        
-        # If language is English or default, format and return
+        # If language is English or default, format and return without translation
         if lang == DEFAULT_LANGUAGE:
             return get_base_string(key, **kwargs)
+        
+        # Get base string template in English (without formatting)
+        base_string = get_base_string(key)
         
         # Translate the template (with placeholders intact)
         translated = await self.translate(base_string, lang)
@@ -172,17 +172,14 @@ def get_translated_string(key: str, lang: str = DEFAULT_LANGUAGE, **kwargs) -> s
     Returns:
         Translated and formatted string
     """
-    # Get base string template in English (without formatting)
-    base_string = get_base_string(key)
-    
-    # If language is English or default, format and return
+    # If language is English or default, format and return without translation
     if lang == DEFAULT_LANGUAGE:
         return get_base_string(key, **kwargs)
     
     # Normalize language codes (both USA and UK English use 'en')
     normalized_target = lang if lang != "en-US" else "en"
     
-    # If normalized language is default, format and return
+    # If normalized language is default, format and return without translation
     if normalized_target == DEFAULT_LANGUAGE:
         return get_base_string(key, **kwargs)
     
@@ -190,6 +187,9 @@ def get_translated_string(key: str, lang: str = DEFAULT_LANGUAGE, **kwargs) -> s
     if not is_valid_language(normalized_target):
         logger.warning(f"Invalid language code: {normalized_target}, using default")
         return get_base_string(key, **kwargs)
+    
+    # Get base string template in English (without formatting)
+    base_string = get_base_string(key)
     
     # Check cache first (cache key uses the template, not the formatted string)
     cache_key = f"en:{normalized_target}:{base_string}"
