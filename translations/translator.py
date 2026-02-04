@@ -116,15 +116,24 @@ class TranslationService:
         Returns:
             Translated and formatted string
         """
-        # Get base string in English
-        base_string = get_base_string(key, **kwargs)
+        # Get base string template in English (without formatting)
+        base_string = get_base_string(key)
         
-        # If language is English or default, return as is
+        # If language is English or default, format and return
         if lang == DEFAULT_LANGUAGE:
-            return base_string
+            return get_base_string(key, **kwargs)
         
-        # Translate to target language
-        return await self.translate(base_string, lang)
+        # Translate the template (with placeholders intact)
+        translated = await self.translate(base_string, lang)
+        
+        # Format the translated string with actual values
+        if kwargs:
+            try:
+                return translated.format(**kwargs)
+            except (KeyError, ValueError):
+                # If formatting fails, return as-is
+                return translated
+        return translated
     
     def clear_cache(self):
         """Clear the translation cache."""
@@ -163,30 +172,36 @@ def get_translated_string(key: str, lang: str = DEFAULT_LANGUAGE, **kwargs) -> s
     Returns:
         Translated and formatted string
     """
-    # Get base string in English
-    base_string = get_base_string(key, **kwargs)
+    # Get base string template in English (without formatting)
+    base_string = get_base_string(key)
     
-    # If language is English or default, return as is
+    # If language is English or default, format and return
     if lang == DEFAULT_LANGUAGE:
-        return base_string
+        return get_base_string(key, **kwargs)
     
     # Normalize language codes (both USA and UK English use 'en')
     normalized_target = lang if lang != "en-US" else "en"
     
-    # If normalized language is default, return as is
+    # If normalized language is default, format and return
     if normalized_target == DEFAULT_LANGUAGE:
-        return base_string
+        return get_base_string(key, **kwargs)
     
     # Validate normalized language code
     if not is_valid_language(normalized_target):
         logger.warning(f"Invalid language code: {normalized_target}, using default")
-        return base_string
+        return get_base_string(key, **kwargs)
     
-    # Check cache first
+    # Check cache first (cache key uses the template, not the formatted string)
     cache_key = f"en:{normalized_target}:{base_string}"
     cached = translation_service._cache.get(cache_key)
     
     if cached is not None:
+        # Format the cached translation with actual values
+        if kwargs:
+            try:
+                return cached.format(**kwargs)
+            except (KeyError, ValueError):
+                return cached
         return cached
     
     # If not in cache, perform translation synchronously
@@ -194,13 +209,19 @@ def get_translated_string(key: str, lang: str = DEFAULT_LANGUAGE, **kwargs) -> s
         translator = GoogleTranslator(source="en", target=normalized_target)
         translated = translator.translate(base_string)
         
-        # Cache the result
+        # Cache the result (cache the template, not the formatted string)
         translation_service._cache.set(cache_key, translated)
         
+        # Format the translated string with actual values
+        if kwargs:
+            try:
+                return translated.format(**kwargs)
+            except (KeyError, ValueError):
+                return translated
         return translated
     except Exception as e:
         logger.error(f"Translation error (en -> {normalized_target}): {e}")
-        return base_string
+        return get_base_string(key, **kwargs)
 
 
 async def translate_text_async(text: str, target_lang: str) -> str:
