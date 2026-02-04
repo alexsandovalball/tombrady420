@@ -75,29 +75,36 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
     
     await query.answer(confirmation, show_alert=True)
     
-    # Update the keyboard to reflect the new selection
-    keyboard_buttons = []
-    for code, display_name in LANGUAGE_DISPLAY.items():
-        if code == lang_code:
-            display_name = f"✓ {display_name}"
-        keyboard_buttons.append([
-            InlineKeyboardButton(display_name, callback_data=f"setlang|{code}")
-        ])
+    # Delete the language selection message
+    try:
+        await query.delete_message()
+    except:
+        pass
+    
+    # Show welcome message in the new language (return to start page)
+    user = update.effective_user
+    is_subscribed = await db.is_user_subscribed(user_id)
+    
+    welcome_text = get_translated_string("welcome", lang_code, name=user.first_name)
+    view_catalog_text = get_translated_string("view_catalog", lang_code)
+    change_language_text = get_translated_string("change_language", lang_code)
+    
+    keyboard_buttons = [
+        [InlineKeyboardButton(view_catalog_text, callback_data="categories")],
+        [InlineKeyboardButton(change_language_text, callback_data="open_language_settings")]
+    ]
+    
+    if not is_subscribed:
+        resubscribe_text = get_translated_string("resubscribe_notifications", lang_code)
+        keyboard_buttons.append(
+            [InlineKeyboardButton(resubscribe_text, callback_data="toggle_notifications")]
+        )
     
     keyboard = InlineKeyboardMarkup(keyboard_buttons)
     
-    # Update message
-    message_text = get_translated_string("language_settings", lang_code)
-    current_lang_name = LANGUAGE_DISPLAY.get(lang_code, LANGUAGE_DISPLAY[DEFAULT_LANGUAGE])
-    current_lang_text = get_translated_string(
-        "current_language",
-        lang_code,
-        language=current_lang_name
-    )
-    message_text += f"\n\n{current_lang_text}"
-    
-    await query.edit_message_text(
-        message_text,
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=welcome_text,
         reply_markup=keyboard,
         parse_mode="Markdown"
     )

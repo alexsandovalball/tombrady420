@@ -19,7 +19,16 @@ Welcome to the Telegram Media Catalog Bot! This bot helps you browse and search 
 
 ## Accessing Commands
 
-All available commands are conveniently displayed in the Telegram command menu below the text input bar. Simply tap the menu icon (☰) or type `/` to see all available commands.
+The most commonly used commands are conveniently displayed in the Telegram command menu below the text input bar:
+- `/start` - Start the bot
+- `/menu` - Browse the catalog
+
+Additional commands are available by typing them directly (not shown in menu):
+- `/language` - Change language
+- `/subscribe` - Enable notifications
+- `/unsubscribe` - Disable notifications
+
+Simply tap the menu icon (☰) or type `/` to see available commands.
 
 ## Available Commands
 

@@ -10,6 +10,7 @@ from configs.config import Config
 from utils.helpers import send_media_message, is_admin
 from utils.pagination import paginate_items
 from utils.categories import format_category_info
+from translations.translator import translate_text
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -115,8 +116,19 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         
         keyboard = InlineKeyboardMarkup(keyboard_buttons)
         
-        # Get caption and add category info
+        # Get user's language preference
+        user_lang = await db.get_user_language(user_id)
+        
+        # Get caption and translate it
         caption = product.get("caption") or "No description"
+        
+        # Translate caption if user language is not English
+        if user_lang and user_lang not in ["en", "en-US"]:
+            try:
+                caption = translate_text(caption, user_lang)
+            except Exception as e:
+                logger.error(f"Error translating caption: {e}")
+                # Keep original caption if translation fails
         
         category_info = format_category_info(product.get("category"), product.get("subcategory"))
         

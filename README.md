@@ -116,11 +116,13 @@ See [configs/.env.example](configs/.env.example) for complete Render.com deploym
 
 ## 📖 User Commands
 
-All commands are displayed in the Telegram command menu below the input bar for easy access:
+The most commonly used commands are displayed in the Telegram command menu below the input bar for easy access:
 
 - `/start` - Welcome message and language selection (for new users)
 - `/menu` - Browse the full product catalog
-- `/language` - Change your preferred language
+
+Additional commands (not shown in menu but still available):
+- `/language` - Change your preferred language  
 - `/subscribe` - Enable notifications for new products
 - `/unsubscribe` - Disable notifications
 - **Search** - Just type keywords to search (e.g., "blue cart", "edibles")
@@ -129,16 +131,18 @@ See the [User Guide](docs/USER_GUIDE.md) for detailed instructions.
 
 ## 🔧 Admin Commands
 
-Admin commands appear only for users with admin permissions:
+Admin commands appear in the command menu for users with admin permissions:
 
 - `/stats` - View catalog and user statistics
 - `/users` - View and manage bot users
 - `/recategorize` - Send categorization prompts for uncategorized products
 - `/nuke` - Delete all products (double confirmation required)
+- `/send` - Broadcast a message to a specific user (interactive workflow)
+- `/broadcast` - Send a message to all users (interactive workflow)
+
+Additional admin commands (not shown in menu but still available):
 - `/block <user_id>` - Block a user from using the bot
 - `/unblock <user_id>` - Unblock a user
-- `/send <user_id> <message>` - Send a custom message to a specific user
-- `/broadcast <message>` - Send a message to all users
 
 See the [Admin Guide](docs/ADMIN_GUIDE.md) for detailed workflows.
 
@@ -209,12 +213,17 @@ Tables: products, bot_users, pagination_state, media_groups, pending_categorizat
 ### How Translation Works
 
 1. All base strings are in English
-2. New users select preferred language via language menu at `/start`
+2. New users select preferred language via interactive language menu at `/start`
 3. Existing users can change language via "Change Language" button on start page or `/language` command
-4. Bot automatically translates all messages, buttons, and navigation using Google Translate API
+4. Bot automatically translates:
+   - All messages and instructions
+   - Button texts and navigation labels
+   - Category and subcategory names
+   - Command descriptions
 5. Translations are cached for performance
 6. Each user sees the interface in their chosen language
 7. Product captions and all user-facing text are translated
+8. **Important**: Button callbacks use internal category codes, so correct commands are sent regardless of the displayed translation
 
 ## 🔔 Notification System
 
