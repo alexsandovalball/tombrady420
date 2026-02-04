@@ -84,7 +84,7 @@ async def show_search_results(
         
         # Use translated search results text
         text = get_translated_string("search_results", user_lang, count=len(matched_products), query=query)
-        text += f"\n{get_translated_string('button_view_product', user_lang)} {len(products_page)} on this page"
+        text += f"\nShowing {len(products_page)} on this page"
         
         if update.callback_query:
             # Check if the message is a media message (can't edit media messages)

@@ -29,7 +29,7 @@ from handlers.admin import (
     users_command, show_users_page,
     block_command, unblock_command, send_command, broadcast_command
 )
-from translations.language_config import is_valid_language
+from translations.language_config import is_valid_language, LANGUAGE_DISPLAY
 from translations.translator import get_translated_string
 from utils.helpers import (
     get_file_id_and_type,
@@ -335,8 +335,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         
         # Get translated message
         message_text = get_translated_string("language_settings", current_lang)
-        from translations.language_config import LANGUAGE_DISPLAY as LANG_DISPLAY_IMPORTED
-        current_lang_name = LANG_DISPLAY_IMPORTED.get(current_lang, LANG_DISPLAY_IMPORTED["en"])
+        current_lang_name = LANGUAGE_DISPLAY.get(current_lang, LANGUAGE_DISPLAY["en"])
         current_lang_text = get_translated_string(
             "current_language", 
             current_lang,
