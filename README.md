@@ -102,6 +102,18 @@ The bot will:
 - Start monitoring the channel
 - Begin accepting user commands
 
+### Multi-Language Support
+
+The bot now supports automatic translation to multiple languages:
+- 🇬🇧 English (default)
+- 🇩🇪 German
+- 🇳🇱 Dutch
+- 🇮🇹 Italian
+- 🇪🇸 Spanish
+- 🇫🇷 French
+
+Users can change their preferred language using the `/language` command. All bot messages, notifications, and interface elements will be automatically translated to the selected language.
+
 ### User Commands
 
 - `/start` - Welcome message and catalog button
