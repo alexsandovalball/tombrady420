@@ -35,10 +35,11 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Get translated message
     message_text = get_translated_string("language_settings", current_lang)
+    current_lang_name = LANGUAGE_DISPLAY.get(current_lang, LANGUAGE_DISPLAY[DEFAULT_LANGUAGE])
     current_lang_text = get_translated_string(
         "current_language", 
         current_lang,
-        language=LANGUAGE_DISPLAY[current_lang]
+        language=current_lang_name
     )
     
     message_text += f"\n\n{current_lang_text}"
@@ -65,10 +66,11 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
     await db.set_user_language(user_id, lang_code)
     
     # Get confirmation message in the new language
+    lang_display_name = LANGUAGE_DISPLAY.get(lang_code, LANGUAGE_DISPLAY[DEFAULT_LANGUAGE])
     confirmation = get_translated_string(
         "language_changed",
         lang_code,
-        language=LANGUAGE_DISPLAY[lang_code]
+        language=lang_display_name
     )
     
     await query.answer(confirmation, show_alert=True)
@@ -86,10 +88,11 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
     
     # Update message
     message_text = get_translated_string("language_settings", lang_code)
+    current_lang_name = LANGUAGE_DISPLAY.get(lang_code, LANGUAGE_DISPLAY[DEFAULT_LANGUAGE])
     current_lang_text = get_translated_string(
         "current_language",
         lang_code,
-        language=LANGUAGE_DISPLAY[lang_code]
+        language=current_lang_name
     )
     message_text += f"\n\n{current_lang_text}"
     

@@ -31,7 +31,7 @@ class TranslationService:
             Translated text, or original text if translation fails
         """
         # No translation needed if target is same as source
-        if target_lang == source_lang or target_lang == DEFAULT_LANGUAGE:
+        if target_lang == source_lang:
             return text
         
         # Validate language code

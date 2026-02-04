@@ -769,11 +769,22 @@ class Database:
     async def set_user_language(self, user_id: int, language: str):
         """Set user's preferred language."""
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                INSERT INTO bot_users (user_id, language, first_seen, last_seen)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET language = ?
-            """, (user_id, language, datetime.now(), datetime.now(), language))
+            # Check if user exists
+            async with db.execute("SELECT user_id FROM bot_users WHERE user_id = ?", (user_id,)) as cursor:
+                exists = await cursor.fetchone()
+            
+            if exists:
+                # User exists, update only language and last_seen
+                await db.execute("""
+                    UPDATE bot_users SET language = ?, last_seen = ? WHERE user_id = ?
+                """, (language, datetime.now(), user_id))
+            else:
+                # New user, insert with all fields
+                await db.execute("""
+                    INSERT INTO bot_users (user_id, language, first_seen, last_seen)
+                    VALUES (?, ?, ?, ?)
+                """, (user_id, language, datetime.now(), datetime.now()))
+            
             await db.commit()
 
     
