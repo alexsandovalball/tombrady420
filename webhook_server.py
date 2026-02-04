@@ -165,6 +165,7 @@ app = FastAPI(
 
 
 @app.get("/")
+@app.head("/")
 async def root():
     """Health check endpoint."""
     return {
@@ -210,6 +211,7 @@ async def webhook(request: Request):
 
 
 @app.get("/health")
+@app.head("/health")
 async def health():
     """Health check endpoint for deployment platforms."""
     return {"status": "healthy"}
