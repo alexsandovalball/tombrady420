@@ -60,12 +60,17 @@ logging.getLogger('httpx').setLevel(logging.WARNING)  # Reduce noise from HTTP l
 # Initialize database
 db = Database()
 
+# Database initialization lock for multi-bot support
+db_init_lock = asyncio.Lock()
+db_initialized = False
+
 # Rate limiting (simple in-memory store)
 user_last_message = {}
 
 # Media group collection (temporary storage for grouping messages)
 media_group_messages = {}
 media_group_timers = {}
+
 
 
 async def notify_admins_for_categorization(context: ContextTypes.DEFAULT_TYPE, product_id: int):
@@ -1112,13 +1117,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.channel_post:
         return
     
+    # Get bot_instance from context
+    bot_instance = context.bot_data.get('bot_instance', 1)
+    
     # Track user
     user = update.effective_user
     await db.track_user(
         user_id=user.id,
         username=user.username,
         first_name=user.first_name,
-        last_name=user.last_name
+        last_name=user.last_name,
+        bot_instance=bot_instance
     )
     
     # Check if user is blocked
@@ -1196,14 +1205,25 @@ async def cleanup_task(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error in cleanup task: {e}")
 
 
-async def post_init(application: Application):
+async def post_init(application: Application, bot_instance: int = 1):
     """Initialize database and start background tasks."""
-    await db.init_db()
-    logger.info("Database initialized")
+    global db_initialized
+    
+    # Log which bot instance is initializing
+    logger.info(f"Initializing bot instance {bot_instance}...")
+    
+    # Use lock to ensure database is initialized only once
+    async with db_init_lock:
+        if not db_initialized:
+            await db.init_db()
+            logger.info("Database initialized")
+            db_initialized = True
+        else:
+            logger.info(f"Database already initialized (bot instance {bot_instance})")
     
     # Set up translation service with database
     translation_service.set_database(db)
-    logger.info("Translation service configured with database caching")
+    logger.info(f"Translation service configured for bot instance {bot_instance}")
     
     # Set bot commands for the command menu
     await setup_bot_commands(application.bot)
@@ -1250,27 +1270,24 @@ async def setup_bot_commands(bot):
     logger.info("Bot commands configured successfully")
 
 
-def main():
-    """Main function to start the bot."""
-    # Validate configuration on startup
-    try:
-        Config.validate()
-    except ConfigError as e:
-        logger.error(str(e))
-        return
+def setup_bot_application(bot_token: str, bot_instance: int = 1) -> Application:
+    """
+    Setup and configure a single bot application instance.
     
-    # Check if we should use webhook mode
-    if Config.USE_WEBHOOK:
-        logger.info("Webhook mode detected. Please run webhook_server.py instead.")
-        logger.info("Example: python webhook_server.py")
-        logger.info("Or use: uvicorn webhook_server:app --host 0.0.0.0 --port 8000")
-        return
+    Args:
+        bot_token: The Telegram bot token to use
+        bot_instance: The bot instance number (1-based) for logging and database
+        
+    Returns:
+        Configured Application object
+    """
+    # Create application with post_init that includes bot_instance
+    async def post_init_wrapper(app: Application):
+        # Store bot_instance in bot_data for handlers to access
+        app.bot_data['bot_instance'] = bot_instance
+        await post_init(app, bot_instance=bot_instance)
     
-    # Get bot token from config
-    bot_token = Config.BOT_TOKEN
-    
-    # Create application
-    application = Application.builder().token(bot_token).post_init(post_init).build()
+    application = Application.builder().token(bot_token).post_init(post_init_wrapper).build()
     
     # Register handlers
     application.add_handler(CommandHandler("start", start_command))
@@ -1308,7 +1325,7 @@ def main():
                 channel_post_handler
             )
         )
-        logger.info(f"Channel monitoring enabled for: {channel_id or channel_username}")
+        logger.info(f"Channel monitoring enabled for bot instance {bot_instance}: {channel_id or channel_username}")
     
     # Callback query handler (for inline buttons)
     application.add_handler(CallbackQueryHandler(callback_query_handler))
@@ -1324,12 +1341,110 @@ def main():
     # Error handler
     application.add_error_handler(error_handler)
     
-    # Start the bot in polling mode
-    logger.info("Starting bot in polling mode...")
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
-    )
+    logger.info(f"Bot instance {bot_instance} application configured successfully")
+    return application
+
+
+def main():
+    """Main function to start the bot."""
+    # Validate configuration on startup
+    try:
+        Config.validate()
+    except ConfigError as e:
+        logger.error(str(e))
+        return
+    
+    # Check if we should use webhook mode
+    if Config.USE_WEBHOOK:
+        logger.info("Webhook mode detected. Please run webhook_server.py instead.")
+        logger.info("Example: python webhook_server.py")
+        logger.info("Or use: uvicorn webhook_server:app --host 0.0.0.0 --port 8000")
+        return
+    
+    # Get all bot tokens
+    bot_tokens = Config.BOT_TOKENS
+    
+    if not bot_tokens:
+        logger.error("No bot tokens configured. Please set BOT_TOKEN or BOT_TOKEN_1.")
+        return
+    
+    # Check if we have multiple tokens
+    if len(bot_tokens) == 1:
+        # Single bot mode - use simplified approach for backward compatibility
+        logger.info("Starting single bot instance in polling mode...")
+        token = bot_tokens[0]
+        token_suffix = token[-3:] if len(token) > 3 else "***"
+        logger.info(f"Starting bot instance 1 with token: ***{token_suffix}")
+        
+        application = setup_bot_application(token, bot_instance=1)
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+    else:
+        # Multiple bot mode - run all bots concurrently
+        logger.info(f"Starting {len(bot_tokens)} bot instances in polling mode...")
+        
+        # Log each bot instance
+        for i, token in enumerate(bot_tokens, 1):
+            token_suffix = token[-3:] if len(token) > 3 else "***"
+            logger.info(f"Starting bot instance {i} with token: ***{token_suffix}")
+        
+        # Create applications for each token
+        applications = []
+        for i, token in enumerate(bot_tokens, 1):
+            app = setup_bot_application(token, bot_instance=i)
+            applications.append(app)
+        
+        # Run all bots concurrently
+        async def run_multiple_bots():
+            """Run multiple bot instances concurrently."""
+            try:
+                # Start all applications and run them in polling mode
+                tasks = []
+                for i, app in enumerate(applications, 1):
+                    async def run_bot(application, instance_num):
+                        try:
+                            logger.info(f"Bot instance {instance_num} starting polling...")
+                            await application.initialize()
+                            await application.start()
+                            await application.updater.start_polling(
+                                allowed_updates=Update.ALL_TYPES,
+                                drop_pending_updates=True
+                            )
+                            # Keep the bot running
+                            while True:
+                                await asyncio.sleep(1)
+                        except Exception as e:
+                            logger.error(f"Bot instance {instance_num} error: {e}", exc_info=True)
+                            raise
+                        finally:
+                            logger.info(f"Bot instance {instance_num} shutting down...")
+                            try:
+                                await application.updater.stop()
+                                await application.stop()
+                                await application.shutdown()
+                            except Exception as e:
+                                logger.error(f"Error shutting down bot instance {instance_num}: {e}")
+                    
+                    task = asyncio.create_task(run_bot(app, i))
+                    tasks.append(task)
+                
+                logger.info(f"All {len(bot_tokens)} bot instances running in polling mode")
+                
+                # Wait for all tasks (they should run indefinitely unless error occurs)
+                await asyncio.gather(*tasks, return_exceptions=True)
+                
+            except KeyboardInterrupt:
+                logger.info("Received shutdown signal. Stopping all bot instances...")
+            except Exception as e:
+                logger.error(f"Error in multi-bot runner: {e}", exc_info=True)
+        
+        # Run the async function
+        try:
+            asyncio.run(run_multiple_bots())
+        except KeyboardInterrupt:
+            logger.info("Shutdown complete")
 
 
 if __name__ == "__main__":
