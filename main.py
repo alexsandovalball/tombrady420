@@ -158,9 +158,10 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
     if not caption:
         caption = f"[Album - {len(messages)} items]"
     
-    # Collect all file IDs
+    # Collect all file IDs and message IDs
     file_ids = []
     file_types = []
+    message_ids = []
     
     for msg in messages:
         # Create a temporary update object for each message
@@ -169,6 +170,7 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
         if file_id:
             file_ids.append(file_id)
             file_types.append(file_type)
+            message_ids.append(msg.message_id)
     
     if not file_ids:
         logger.warning(f"No file IDs extracted from media group {media_group_id}")
@@ -178,14 +180,16 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
     existing_product_id = await db.get_or_create_media_group_product(media_group_id, chat_id)
     
     if existing_product_id:
-        # Update existing product with new file IDs
+        # Update existing product with new file IDs and message IDs
         additional_files = json.dumps(list(zip(file_ids[1:], file_types[1:])))
-        await db.update_product_media(existing_product_id, additional_files)
+        additional_msg_ids = json.dumps(message_ids[1:]) if len(message_ids) > 1 else None
+        await db.update_product_media(existing_product_id, additional_files, additional_msg_ids)
         logger.info(f"Updated media group product {existing_product_id} with {len(file_ids)} files")
         return
     
     # Create new product with first file as primary (NO automatic categorization)
     additional_files = json.dumps(list(zip(file_ids[1:], file_types[1:]))) if len(file_ids) > 1 else None
+    additional_msg_ids = json.dumps(message_ids[1:]) if len(message_ids) > 1 else None
     
     product_id = await db.add_product(
         file_id=file_ids[0],
@@ -195,6 +199,7 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
         chat_id=chat_id,
         media_group_id=media_group_id,
         additional_file_ids=additional_files,
+        additional_message_ids=additional_msg_ids,
         category=None,  # No automatic categorization
         subcategory=None
     )
