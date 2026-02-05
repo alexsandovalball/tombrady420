@@ -4,11 +4,10 @@ Start command handler.
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from telegram.helpers import escape_markdown
 from database import Database
 from translations.translator import get_translated_string
 from translations.language_config import LANGUAGE_DISPLAY, DEFAULT_LANGUAGE
-from utils.helpers import is_admin
+from utils.helpers import is_admin, get_user_display_name, ADMIN_COMMANDS_FALLBACK
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -42,15 +41,8 @@ async def show_language_selection(update: Update, context: ContextTypes.DEFAULT_
     """Show language selection menu for new users."""
     user = update.effective_user
     
-    # Get user's full display name - escape special markdown characters
-    if user.first_name and user.last_name:
-        display_name = escape_markdown(f"{user.first_name} {user.last_name}")
-    elif user.first_name:
-        display_name = escape_markdown(user.first_name)
-    elif user.username:
-        display_name = escape_markdown(user.username)
-    else:
-        display_name = "there"
+    # Get user's full display name - escaped for markdown
+    display_name = get_user_display_name(user, escaped=True)
     
     # Create language selection keyboard
     keyboard_buttons = []
@@ -78,18 +70,8 @@ async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYP
     """Show welcome message for existing users."""
     user = update.effective_user
     
-    # Get user's full display name - will be escaped when used in translations
-    if user.first_name and user.last_name:
-        raw_display_name = f"{user.first_name} {user.last_name}"
-    elif user.first_name:
-        raw_display_name = user.first_name
-    elif user.username:
-        raw_display_name = user.username
-    else:
-        raw_display_name = "there"
-    
-    # Escape the display name for markdown
-    display_name = escape_markdown(raw_display_name)
+    # Get user's full display name - escaped for markdown
+    display_name = get_user_display_name(user, escaped=True)
     
     # Get user's language preference
     user_lang = await db.get_user_language(user.id)
@@ -109,8 +91,8 @@ async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYP
         if admin_info != "admin_commands_info":  # Only add if translation exists
             welcome_text += f"\n\n{admin_info}"
         else:
-            # Fallback if translation doesn't exist
-            welcome_text += "\n\n👨‍💼 Admin Commands:\n• /users - Manage users\n• /setcontact - Set order contact\n• /nuke - Delete all products\n• /recategorize - Recategorize products\n• /send - Send message to user\n• /broadcast - Broadcast to all users"
+            # Use fallback constant
+            welcome_text += ADMIN_COMMANDS_FALLBACK
     
     # Build keyboard based on subscription status
     view_catalog_text = get_translated_string("view_catalog", user_lang)

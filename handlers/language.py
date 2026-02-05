@@ -7,6 +7,7 @@ from telegram.ext import ContextTypes
 from database import Database
 from translations.language_config import LANGUAGE_DISPLAY, is_valid_language, DEFAULT_LANGUAGE
 from translations.translator import get_translated_string
+from utils.helpers import is_admin, get_user_display_name, ADMIN_COMMANDS_FALLBACK
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -84,19 +85,8 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
     # Show welcome message in the new language (return to start page)
     user = update.effective_user
     
-    # Get user's full display name
-    from telegram.helpers import escape_markdown
-    if user.first_name and user.last_name:
-        raw_display_name = f"{user.first_name} {user.last_name}"
-    elif user.first_name:
-        raw_display_name = user.first_name
-    elif user.username:
-        raw_display_name = user.username
-    else:
-        raw_display_name = "there"
-    
-    # Escape the display name for markdown
-    display_name = escape_markdown(raw_display_name)
+    # Get user's full display name - escaped for markdown
+    display_name = get_user_display_name(user, escaped=True)
     
     is_subscribed = await db.is_user_subscribed(user_id)
     
@@ -106,15 +96,14 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
     # Get translated welcome message with contact
     welcome_text = get_translated_string("welcome_with_contact", lang_code, name=display_name, contact=order_contact)
     
-    # Add admin command info for admins (import is_admin)
-    from utils.helpers import is_admin
+    # Add admin command info for admins
     if is_admin(user_id):
         admin_info = get_translated_string("admin_commands_info", lang_code)
         if admin_info != "admin_commands_info":  # Only add if translation exists
             welcome_text += f"\n\n{admin_info}"
         else:
-            # Fallback if translation doesn't exist
-            welcome_text += "\n\n👨‍💼 Admin Commands:\n• /users - Manage users\n• /setcontact - Set order contact\n• /nuke - Delete all products\n• /recategorize - Recategorize products\n• /send - Send message to user\n• /broadcast - Broadcast to all users"
+            # Use fallback constant
+            welcome_text += ADMIN_COMMANDS_FALLBACK
     
     view_catalog_text = get_translated_string("view_catalog", lang_code)
     change_language_text = get_translated_string("change_language", lang_code)
