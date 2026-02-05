@@ -22,6 +22,7 @@ class ConfigClass:
         self.BOT_TOKEN: Optional[str] = None
         self.BOT_TOKENS: List[str] = []  # Support for multiple bot tokens
         self.ADMIN_IDS: List[int] = []
+        self.PRIMARY_ADMIN_ID: Optional[int] = None
         self.CHANNEL_ID: Optional[int] = None
         self.CHANNEL_USERNAME: Optional[str] = None
         self.DB_PATH: str = 'catalog.db'
@@ -68,6 +69,12 @@ class ConfigClass:
             self.ADMIN_IDS = config('ADMIN_IDS', cast=Csv(int))
         except (UndefinedValueError, ValueError):
             self.ADMIN_IDS = []
+        
+        # Load PRIMARY_ADMIN_ID (optional - defaults to first admin if not set)
+        try:
+            self.PRIMARY_ADMIN_ID = config('PRIMARY_ADMIN_ID', default=None, cast=lambda x: int(x) if x else None)
+        except (ValueError, TypeError):
+            self.PRIMARY_ADMIN_ID = None
         
         # Load CHANNEL_ID
         try:

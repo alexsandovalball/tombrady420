@@ -278,11 +278,15 @@ _(No subcategories)_
 Admin IDs are configured in `.env` file:
 ```
 ADMIN_IDS=123456789,987654321
+PRIMARY_ADMIN_ID=123456789  # Optional: receives categorization requests
 ```
 
-- Comma-separated list of admin user IDs
+- **ADMIN_IDS**: Comma-separated list of admin user IDs who can use admin commands
+- **PRIMARY_ADMIN_ID**: (Optional) The admin who receives new product categorization requests
+  - If not set, the first admin in ADMIN_IDS will receive categorization requests
+  - All admins can still categorize products via `/recategorize` command
 - Get your ID from @userinfobot on Telegram
-- All listed IDs have admin privileges
+- All listed IDs in ADMIN_IDS have full admin privileges
 
 ## Translation System
 
