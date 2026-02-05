@@ -288,10 +288,12 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.info(
                 f"New product saved: ID={product_id}, "
                 f"message_id={message.message_id}, "
-                f"type={file_type}"
+                f"type={file_type}, "
+                f"bot={context.bot.username}"
             )
             
             # Notify admins for categorization
+            logger.info(f"Sending categorization request for product {product_id} (bot: {context.bot.username})")
             await notify_admins_for_categorization(context, product_id)
         else:
             logger.debug(f"Product already exists for message {message.message_id}")
@@ -722,8 +724,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 logger.info(f"Product {product_id} categorized as {category}/{subcategory} by admin {update.effective_user.id}")
                 
                 # Notify subscribed users about the new categorized product
+                logger.info(f"Triggering notifications for categorized product {product_id}")
                 notification_service = NotificationService(db)
                 await notification_service.notify_users_about_product(context, product_id)
+                logger.info(f"Notification service called for product {product_id}")
             else:
                 await query.answer("Invalid save data", show_alert=True)
         

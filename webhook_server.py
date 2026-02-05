@@ -92,27 +92,31 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     bot_app.add_handler(CommandHandler("clearcache", clearcache_command))
     
     # Channel post handler (for monitoring channel)
-    channel_id = get_channel_id()
-    channel_username = get_channel_username()
-    
-    if channel_id:
-        # Use channel ID filter
-        channel_filter = filters.Chat(chat_id=channel_id)
-    elif channel_username:
-        # Use channel username filter
-        channel_filter = filters.Chat(username=channel_username.lstrip("@"))
-    else:
-        logger.warning("No CHANNEL_ID or CHANNEL_USERNAME set. Channel monitoring disabled.")
-        channel_filter = None
-    
-    if channel_filter:
-        bot_app.add_handler(
-            MessageHandler(
-                channel_filter & filters.ChatType.CHANNEL,
-                channel_post_handler
+    # Only the primary bot (bot_index == 0) should monitor the channel and send categorization requests
+    if bot_index == 0:
+        channel_id = get_channel_id()
+        channel_username = get_channel_username()
+        
+        if channel_id:
+            # Use channel ID filter
+            channel_filter = filters.Chat(chat_id=channel_id)
+        elif channel_username:
+            # Use channel username filter
+            channel_filter = filters.Chat(username=channel_username.lstrip("@"))
+        else:
+            logger.warning("No CHANNEL_ID or CHANNEL_USERNAME set. Channel monitoring disabled.")
+            channel_filter = None
+        
+        if channel_filter:
+            bot_app.add_handler(
+                MessageHandler(
+                    channel_filter & filters.ChatType.CHANNEL,
+                    channel_post_handler
+                )
             )
-        )
-        logger.info(f"Channel monitoring enabled for bot {bot_index}: {channel_id or channel_username}")
+            logger.info(f"Channel monitoring enabled for primary bot: {channel_id or channel_username}")
+    else:
+        logger.info(f"Channel monitoring DISABLED for secondary bot {bot_index} (only primary bot monitors channel)")
     
     # Callback query handler (for inline buttons)
     bot_app.add_handler(CallbackQueryHandler(callback_query_handler))
