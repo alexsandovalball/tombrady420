@@ -266,3 +266,21 @@ ADMIN_IDS=123456789,987654321
 - Comma-separated list of admin user IDs
 - Get your ID from @userinfobot on Telegram
 - All listed IDs have admin privileges
+
+## Translation System
+
+The bot supports 7 languages with automatic translation. Key features:
+
+### User Names and Contact Information
+- **User names are never translated** - they appear exactly as in Telegram profiles
+- **Order contact usernames remain unchanged** - e.g., @FLYAWAYPEP stays the same in all languages
+- This prevents confusion and maintains proper communication channels
+
+### How It Works
+1. Message templates are translated with placeholders intact (e.g., "Welcome, {name}!")
+2. User data is inserted after translation, preserving original values
+3. Example: Spanish translation becomes "Bienvenido, {name}!" then displays as "Bienvenido, Hans!"
+4. Translations are cached for performance
+
+### Setting Order Contact
+Use `/setcontact` to update the order contact username (default: @FLYAWAYPEP). This contact appears in welcome messages and product views across all languages.

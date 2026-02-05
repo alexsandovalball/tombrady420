@@ -38,7 +38,9 @@ from utils.helpers import (
     get_channel_id,
     get_channel_username,
     get_admin_ids,
-    is_admin
+    is_admin,
+    get_user_display_name,
+    escape_markdown_v1
 )
 from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES
 from utils.notifications import NotificationService
@@ -383,7 +385,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Show welcome message in selected language
                 is_subscribed = await db.is_user_subscribed(user_id)
                 
-                welcome_text = get_translated_string("welcome", lang_code, name=update.effective_user.first_name)
+                # Get user display name and order contact
+                display_name = get_user_display_name(update.effective_user, escaped=True)
+                order_contact = await db.get_order_contact()
+                escaped_contact = escape_markdown_v1(order_contact)
+                
+                welcome_text = get_translated_string("welcome_with_contact", lang_code, name=display_name, contact=escaped_contact)
                 view_catalog_text = get_translated_string("view_catalog", lang_code)
                 change_language_text = get_translated_string("change_language", lang_code)
                 keyboard_buttons = [
