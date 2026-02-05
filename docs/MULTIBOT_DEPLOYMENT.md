@@ -193,7 +193,7 @@ All admin commands work across all bot instances:
 
 ## Performance Benchmarks
 
-With multi-bot optimizations:
+With multi-bot optimizations enabled (WAL mode + FTS5 search):
 
 | Metric | Before | After | Improvement |
 |--------|--------|-------|-------------|
@@ -201,6 +201,8 @@ With multi-bot optimizations:
 | Search 1000 products | 800ms | 80ms | **10x faster** |
 | Broadcast 1000 users | 45s | 5s | **9x faster** |
 | Concurrent users | 100 | 500+ | **5x scale** |
+
+*Benchmarks measured on 2-core server with 4GB RAM, SQLite database ~50MB. Your results may vary based on hardware, data size, and concurrent load. WAL mode and FTS5 provide the most significant improvements.*
 
 ## Troubleshooting
 
@@ -274,7 +276,10 @@ python scripts/migrate_db.py
 - ❌ Don't manually change user's bot_instance
 - ❌ Don't run multiple Bot #1 instances (channel conflicts)
 - ❌ Don't use NFS for database (use local file system)
-- ❌ Don't exceed 5 bot instances (diminishing returns)
+- ❌ Don't exceed 9 bot instances (system limit)
+- ❌ Recommended: Stay under 5 bots for optimal performance
+
+**Note:** While the system supports up to 9 bot instances (BOT_TOKEN_1 through BOT_TOKEN_9), most deployments work well with 2-3 bots. Beyond 5 bots, you may see diminishing returns due to database contention.
 
 ## Advanced Configuration
 
