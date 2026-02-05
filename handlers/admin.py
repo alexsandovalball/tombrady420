@@ -7,9 +7,8 @@ import aiosqlite
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from telegram.helpers import escape_markdown
 from database import Database
-from utils.helpers import is_admin, get_channel_id, get_channel_username
+from utils.helpers import is_admin, get_channel_id, get_channel_username, escape_markdown_v1
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -90,14 +89,14 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
         message_lines = [f"👥 **Bot Users** (Page {page}/{total_pages}, {total_users} total)\n"]
         
         for i, user in enumerate(page_users, start=offset + 1):
-            # Escape Markdown characters
+            # Escape Markdown v1 characters
             username_raw = user.get('username')
             if username_raw:
-                username = escape_markdown(f"@{str(username_raw)}")
+                username = escape_markdown_v1(f"@{str(username_raw)}")
             else:
                 username = "No username"
-            first_name = escape_markdown(str(user.get('first_name', 'N/A')))
-            last_name = escape_markdown(str(user.get('last_name', '')))
+            first_name = escape_markdown_v1(str(user.get('first_name', 'N/A')))
+            last_name = escape_markdown_v1(str(user.get('last_name', '')))
             full_name = f"{first_name} {last_name}".strip()
             
             # Notification status
@@ -616,8 +615,8 @@ async def setcontact_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Get current contact
     current_contact = await db.get_order_contact()
     
-    # Escape the current contact for markdown
-    escaped_contact = escape_markdown(current_contact) if current_contact else "Not set"
+    # Escape the current contact for markdown v1
+    escaped_contact = escape_markdown_v1(current_contact) if current_contact else "Not set"
     
     await update.message.reply_text(
         f"📝 **Set Order Contact**\n\n"
@@ -657,8 +656,8 @@ async def handle_setcontact_input(update: Update, context: ContextTypes.DEFAULT_
     # Clear state
     context.user_data['awaiting_contact'] = False
     
-    # Escape contact for markdown
-    escaped_contact = escape_markdown(contact)
+    # Escape contact for markdown v1
+    escaped_contact = escape_markdown_v1(contact)
     
     await update.message.reply_text(
         f"✅ Order contact updated successfully!\n\n"

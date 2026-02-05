@@ -5,7 +5,6 @@ import logging
 from typing import List, Optional
 from telegram import Update, User
 from telegram.ext import ContextTypes
-from telegram.helpers import escape_markdown
 
 from configs.config import Config
 
@@ -24,13 +23,37 @@ ADMIN_COMMANDS_FALLBACK = (
 )
 
 
+def escape_markdown_v1(text: str) -> str:
+    """
+    Escape special characters for Telegram's legacy Markdown (v1) format.
+    
+    In Markdown v1, only these characters need escaping:
+    - _ (underscore) for italic
+    - * (asterisk) for bold
+    - ` (backtick) for code
+    - [ (left bracket) for links
+    
+    Args:
+        text: Text to escape
+        
+    Returns:
+        Escaped text safe for Markdown v1
+    """
+    # Escape special Markdown v1 characters
+    text = text.replace('_', r'\_')
+    text = text.replace('*', r'\*')
+    text = text.replace('`', r'\`')
+    text = text.replace('[', r'\[')
+    return text
+
+
 def get_user_display_name(user: User, escaped: bool = True) -> str:
     """
     Get a user's display name with fallback logic.
     
     Args:
         user: Telegram User object
-        escaped: Whether to escape markdown characters (default: True)
+        escaped: Whether to escape markdown characters for Markdown v1 (default: True)
     
     Returns:
         User's display name (first + last name, or first name, or username, or "there")
@@ -44,7 +67,7 @@ def get_user_display_name(user: User, escaped: bool = True) -> str:
     else:
         raw_display_name = "there"
     
-    return escape_markdown(raw_display_name) if escaped else raw_display_name
+    return escape_markdown_v1(raw_display_name) if escaped else raw_display_name
 
 
 def get_admin_ids() -> List[int]:
