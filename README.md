@@ -223,6 +223,15 @@ Tables: products, bot_users, pagination_state, media_groups, pending_categorizat
 7. Product captions and all user-facing text are translated
 8. **Important**: Button callbacks use internal category codes, so correct commands are sent regardless of the displayed translation
 
+### Translation System Details
+
+The bot uses a smart translation system that:
+- **Preserves user names**: User names always appear in their original form, never translated
+- **Preserves contact information**: Order contact usernames (e.g., @FLYAWAYPEP) remain unchanged
+- **Template-based translation**: Translates message templates first, then inserts user data
+- **Example**: "Welcome, {name}!" → Translates to "Bienvenido, {name}!" → Displays as "Bienvenido, Hans!" (name preserved)
+- This ensures user names appear exactly as they do in Telegram profiles, preventing confusion
+
 ## 🔔 Notification System
 
 - Opt-in via `/subscribe` command
