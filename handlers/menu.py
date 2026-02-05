@@ -9,7 +9,7 @@ from database import Database
 from utils.pagination import create_pagination_keyboard, paginate_items
 from utils.helpers import is_admin
 from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES, EXCLUDED_FROM_ALL_PRODUCTS
-from translations.translator import get_translated_string
+from translations.translator import get_translated_string_async
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -35,7 +35,7 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
             count = category_counts.get(category, 0)
             # Translate category display name
             category_key = f"category_{category.lower()}"
-            display_name = get_translated_string(category_key, user_lang)
+            display_name = await get_translated_string_async(category_key, user_lang)
             # If translation not found, fall back to original display name
             if display_name == category_key:
                 display_name = get_category_display_name(category)
@@ -58,14 +58,14 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         # Add "All Products" option
         total_count = await db.count_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
-        all_products_text = get_translated_string("all_products", user_lang)
+        all_products_text = await get_translated_string_async("all_products", user_lang)
         category_buttons.insert(0, [
             InlineKeyboardButton(f"{all_products_text} ({total_count})", callback_data="menu|1")
         ])
         
         keyboard = InlineKeyboardMarkup(category_buttons)
         
-        text = get_translated_string("product_categories", user_lang)
+        text = await get_translated_string_async("product_categories", user_lang)
         
         if update.callback_query:
             message = update.callback_query.message
@@ -95,7 +95,7 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Get user's language preference for error message
         user_id = update.effective_user.id
         user_lang = await db.get_user_language(user_id)
-        error_text = get_translated_string("error_occurred", user_lang)
+        error_text = await get_translated_string_async("error_occurred", user_lang)
         if update.callback_query:
             await update.callback_query.answer(error_text, show_alert=True)
         else:
@@ -137,11 +137,11 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
         all_count = await db.count_products_by_category(category)
         # Translate category name
         category_key = f"category_{category.lower()}"
-        translated_category = get_translated_string(category_key, user_lang)
+        translated_category = await get_translated_string_async(category_key, user_lang)
         if translated_category == category_key:
             translated_category = get_category_display_name(category)
         
-        all_in_category_text = get_translated_string("button_all_in_category", user_lang, category=translated_category)
+        all_in_category_text = await get_translated_string_async("button_all_in_category", user_lang, category=translated_category)
         if all_in_category_text == "button_all_in_category":
             all_in_category_text = f"📦 All {translated_category} ({all_count})"
         else:
@@ -152,14 +152,14 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
         ])
         
         # Add back button
-        back_to_cats_text = get_translated_string("button_back_to_categories", user_lang)
+        back_to_cats_text = await get_translated_string_async("button_back_to_categories", user_lang)
         subcategory_buttons.append([
             InlineKeyboardButton(back_to_cats_text, callback_data="categories")
         ])
         
         keyboard = InlineKeyboardMarkup(subcategory_buttons)
         
-        select_subcat_text = get_translated_string("select_subcategory", user_lang)
+        select_subcat_text = await get_translated_string_async("select_subcategory", user_lang)
         text = (
             f"📂 **{translated_category}**\n\n"
             f"{select_subcat_text}"
@@ -191,7 +191,7 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         logger.error(f"Error showing subcategory menu: {e}")
         user_lang = await db.get_user_language(update.effective_user.id)
-        error_text = get_translated_string("error_occurred", user_lang)
+        error_text = await get_translated_string_async("error_occurred", user_lang)
         if update.callback_query:
             await update.callback_query.answer(error_text, show_alert=True)
         else:
@@ -210,7 +210,7 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             all_products = await db.get_products_by_category_and_subcategory(category, subcategory)
             # Translate category name
             category_key = f"category_{category.lower()}"
-            translated_category = get_translated_string(category_key, user_lang)
+            translated_category = await get_translated_string_async(category_key, user_lang)
             if translated_category == category_key:
                 translated_category = get_category_display_name(category)
             # Translate subcategory name
@@ -220,27 +220,27 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             all_products = await db.get_products_by_category(category)
             # Translate category name
             category_key = f"category_{category.lower()}"
-            translated_category = get_translated_string(category_key, user_lang)
+            translated_category = await get_translated_string_async(category_key, user_lang)
             if translated_category == category_key:
                 translated_category = get_category_display_name(category)
             title = f"📋 {translated_category}"
         else:
             # When showing all products, exclude specified categories
             all_products = await db.get_all_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
-            all_products_text = get_translated_string("all_products", user_lang)
+            all_products_text = await get_translated_string_async("all_products", user_lang)
             title = f"📋 {all_products_text}"
         
         if not all_products:
             context_str = 'subcategory' if subcategory else 'category' if category else 'catalog'
-            text = get_translated_string("no_products_in_category", user_lang, context=context_str)
+            text = await get_translated_string_async("no_products_in_category", user_lang, context=context_str)
             if text == "no_products_in_category":
                 text = f"📭 No products in this {context_str}."
             
             # Build back button based on context
             back_buttons = []
-            back_to_subcats_text = get_translated_string("button_back_to_subcategories", user_lang)
-            back_to_cats_text = get_translated_string("button_back_to_categories", user_lang)
-            refresh_text = get_translated_string("button_refresh", user_lang)
+            back_to_subcats_text = await get_translated_string_async("button_back_to_subcategories", user_lang)
+            back_to_cats_text = await get_translated_string_async("button_back_to_categories", user_lang)
+            refresh_text = await get_translated_string_async("button_refresh", user_lang)
             
             if subcategory and category:
                 back_buttons.append([InlineKeyboardButton(back_to_subcats_text, callback_data=f"browse_category|{category}")])
@@ -299,8 +299,8 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         if total_pages > 1:
             nav_buttons = []
             
-            previous_text = get_translated_string("button_previous_page", user_lang)
-            next_text = get_translated_string("button_next_page", user_lang)
+            previous_text = await get_translated_string_async("button_previous_page", user_lang)
+            next_text = await get_translated_string_async("button_next_page", user_lang)
             
             if page > 1:
                 if subcategory and category:
@@ -311,7 +311,7 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                     prev_data = f"page|catalog|{page - 1}"
                 nav_buttons.append(InlineKeyboardButton(previous_text, callback_data=prev_data))
             
-            page_text = get_translated_string("page_indicator", user_lang, page=page, total_pages=total_pages)
+            page_text = await get_translated_string_async("page_indicator", user_lang, page=page, total_pages=total_pages)
             if page_text == "page_indicator":
                 page_text = f"Page {page}/{total_pages}"
             nav_buttons.append(InlineKeyboardButton(page_text, callback_data="noop"))
@@ -328,8 +328,8 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             keyboard_buttons.append(nav_buttons)
         
         # Add appropriate back button
-        back_to_subcats_text = get_translated_string("button_back_to_subcategories", user_lang)
-        back_to_cats_text = get_translated_string("button_back_to_categories", user_lang)
+        back_to_subcats_text = await get_translated_string_async("button_back_to_subcategories", user_lang)
+        back_to_cats_text = await get_translated_string_async("button_back_to_categories", user_lang)
         
         if subcategory and category:
             keyboard_buttons.append([InlineKeyboardButton(back_to_subcats_text, callback_data=f"browse_category|{category}")])
@@ -338,7 +338,7 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         
         keyboard = InlineKeyboardMarkup(keyboard_buttons)
         
-        showing_text = get_translated_string("showing_products", user_lang, current=len(products_page), total=len(all_products))
+        showing_text = await get_translated_string_async("showing_products", user_lang, current=len(products_page), total=len(all_products))
         if showing_text == "showing_products":
             showing_text = f"Showing {len(products_page)} of {len(all_products)} products"
         
@@ -372,7 +372,7 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     except Exception as e:
         logger.error(f"Error showing catalog page: {e}")
         user_lang = await db.get_user_language(update.effective_user.id)
-        error_text = get_translated_string("error_occurred", user_lang)
+        error_text = await get_translated_string_async("error_occurred", user_lang)
         if update.callback_query:
             await update.callback_query.answer(error_text, show_alert=True)
         else:

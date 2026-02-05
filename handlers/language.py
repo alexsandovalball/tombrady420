@@ -6,7 +6,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import Database
 from translations.language_config import LANGUAGE_DISPLAY, is_valid_language, DEFAULT_LANGUAGE
-from translations.translator import get_translated_string
+from translations.translator import get_translated_string_async
 from utils.helpers import is_admin, get_user_display_name, ADMIN_COMMANDS_FALLBACK, escape_markdown_v1
 
 logger = logging.getLogger(__name__)
@@ -35,9 +35,9 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup(keyboard_buttons)
     
     # Get translated message
-    message_text = get_translated_string("language_settings", current_lang)
+    message_text = await get_translated_string_async("language_settings", current_lang)
     current_lang_name = LANGUAGE_DISPLAY.get(current_lang, LANGUAGE_DISPLAY[DEFAULT_LANGUAGE])
-    current_lang_text = get_translated_string(
+    current_lang_text = await get_translated_string_async(
         "current_language", 
         current_lang,
         language=current_lang_name
@@ -68,7 +68,7 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
     
     # Get confirmation message in the new language
     lang_display_name = LANGUAGE_DISPLAY.get(lang_code, LANGUAGE_DISPLAY[DEFAULT_LANGUAGE])
-    confirmation = get_translated_string(
+    confirmation = await get_translated_string_async(
         "language_changed",
         lang_code,
         language=lang_display_name
@@ -95,19 +95,19 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
     
     # Get translated welcome message with contact - name and contact are already escaped
     escaped_contact = escape_markdown_v1(order_contact)
-    welcome_text = get_translated_string("welcome_with_contact", lang_code, name=display_name, contact=escaped_contact)
+    welcome_text = await get_translated_string_async("welcome_with_contact", lang_code, name=display_name, contact=escaped_contact)
     
     # Add admin command info for admins
     if is_admin(user_id):
-        admin_info = get_translated_string("admin_commands_info", lang_code)
+        admin_info = await get_translated_string_async("admin_commands_info", lang_code)
         if admin_info != "admin_commands_info":  # Only add if translation exists
             welcome_text += f"\n\n{admin_info}"
         else:
             # Use fallback constant
             welcome_text += ADMIN_COMMANDS_FALLBACK
     
-    view_catalog_text = get_translated_string("view_catalog", lang_code)
-    change_language_text = get_translated_string("change_language", lang_code)
+    view_catalog_text = await get_translated_string_async("view_catalog", lang_code)
+    change_language_text = await get_translated_string_async("change_language", lang_code)
     
     keyboard_buttons = [
         [InlineKeyboardButton(view_catalog_text, callback_data="categories")],
@@ -115,7 +115,7 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
     ]
     
     if not is_subscribed:
-        resubscribe_text = get_translated_string("resubscribe_notifications", lang_code)
+        resubscribe_text = await get_translated_string_async("resubscribe_notifications", lang_code)
         keyboard_buttons.append(
             [InlineKeyboardButton(resubscribe_text, callback_data="toggle_notifications")]
         )

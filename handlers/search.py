@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes, MessageHandler, filters
 from database import Database
 from utils.pagination import create_pagination_keyboard, paginate_items
 from utils.fuzzy_search import fuzzy_search_products
-from translations.translator import get_translated_string
+from translations.translator import get_translated_string_async
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -22,7 +22,7 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_lang = await db.get_user_language(user_id)
     
     if not query or len(query) < 2:
-        search_min_chars_text = get_translated_string("search_min_chars", user_lang)
+        search_min_chars_text = await get_translated_string_async("search_min_chars", user_lang)
         await update.message.reply_text(search_min_chars_text)
         return
     
@@ -31,7 +31,7 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         all_products = await db.get_all_products_for_search()
         
         if not all_products:
-            catalog_empty_text = get_translated_string("catalog_empty", user_lang)
+            catalog_empty_text = await get_translated_string_async("catalog_empty", user_lang)
             await update.message.reply_text(catalog_empty_text)
             return
         
@@ -39,7 +39,7 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         matched_products = fuzzy_search_products(all_products, query, score_cutoff=75)
         
         if not matched_products:
-            no_products_found_text = get_translated_string("no_products_found", user_lang, query=query)
+            no_products_found_text = await get_translated_string_async("no_products_found", user_lang, query=query)
             await update.message.reply_text(no_products_found_text)
             return
         
@@ -48,7 +48,7 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Error handling search: {e}")
-        error_text = get_translated_string("error_occurred", user_lang)
+        error_text = await get_translated_string_async("error_occurred", user_lang)
         await update.message.reply_text(error_text)
 
 
@@ -83,7 +83,7 @@ async def show_search_results(
         )
         
         # Use translated search results text
-        text = get_translated_string("search_results", user_lang, count=len(matched_products), query=query)
+        text = await get_translated_string_async("search_results", user_lang, count=len(matched_products), query=query)
         text += f"\nShowing {len(products_page)} on this page"
         
         if update.callback_query:
@@ -116,7 +116,7 @@ async def show_search_results(
         # Get user's language preference for error message
         user_id = update.effective_user.id
         user_lang = await db.get_user_language(user_id)
-        error_text = get_translated_string("error_occurred", user_lang)
+        error_text = await get_translated_string_async("error_occurred", user_lang)
         if update.callback_query:
             await update.callback_query.answer(error_text, show_alert=True)
         else:

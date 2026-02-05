@@ -9,7 +9,7 @@ from database import Database
 from utils.helpers import send_media_message, is_admin
 from utils.pagination import paginate_items
 from utils.categories import format_category_info
-from translations.translator import translate_text, get_translated_string
+from translations.translator import translate_text_async, get_translated_string_async
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -124,7 +124,7 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         # Translate caption if user language is not English
         if user_lang and user_lang not in ["en", "en-US"]:
             try:
-                caption = translate_text(caption, user_lang)
+                caption = await translate_text_async(caption, user_lang)
             except Exception as e:
                 logger.error(f"Error translating caption: {e}")
                 # Keep original caption if translation fails
@@ -183,7 +183,7 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 order_contact = await db.get_order_contact()
                 
                 # Get translated DM to order message
-                dm_message = get_translated_string("dm_to_order", user_lang, contact=order_contact)
+                dm_message = await get_translated_string_async("dm_to_order", user_lang, contact=order_contact)
                 
                 # Send keyboard in a separate message since media groups can't have keyboards
                 await context.bot.send_message(
@@ -213,7 +213,7 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         order_contact = await db.get_order_contact()
         
         # Get translated DM to order message
-        dm_message = get_translated_string("dm_to_order", user_lang, contact=order_contact)
+        dm_message = await get_translated_string_async("dm_to_order", user_lang, contact=order_contact)
         
         # Send DM message with keyboard separately for consistency
         await context.bot.send_message(
