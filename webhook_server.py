@@ -114,7 +114,7 @@ async def setup_application(bot_token: str, bot_index: int = 0):
                     channel_post_handler
                 )
             )
-            logger.info(f"Channel monitoring enabled for PRIMARY bot (bot {bot_index}): {channel_id or channel_username}")
+            logger.info(f"Channel monitoring enabled for primary bot: {channel_id or channel_username}")
     else:
         logger.info(f"Channel monitoring DISABLED for secondary bot {bot_index} (only primary bot monitors channel)")
     
