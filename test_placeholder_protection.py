@@ -4,11 +4,13 @@ Test placeholder protection during translation.
 This test verifies that placeholders like {name} and {contact} survive translation.
 """
 import sys
+import os
 import re
 from typing import Tuple, Dict
 
-# Import the placeholder protection functions
-sys.path.insert(0, '/home/runner/work/tombrady420/tombrady420')
+# Add project root to path (portable)
+project_root = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, project_root)
 from translations.translator import protect_placeholders, restore_placeholders
 
 

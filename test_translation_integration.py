@@ -4,10 +4,12 @@ Integration test for translation with placeholder protection.
 This test verifies the complete flow from string retrieval through translation to formatting.
 """
 import sys
+import os
 import asyncio
 
-# Add project root to path
-sys.path.insert(0, '/home/runner/work/tombrady420/tombrady420')
+# Add project root to path (portable)
+project_root = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, project_root)
 
 from translations.translator import get_translated_string_async, translate_text_async, translation_service
 from translations.strings import get_string
