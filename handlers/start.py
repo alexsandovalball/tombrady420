@@ -72,8 +72,11 @@ async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYP
     # Check if user is subscribed to notifications
     is_subscribed = await db.is_user_subscribed(user.id)
     
-    # Get translated welcome message
-    welcome_text = get_translated_string("welcome", user_lang, name=user.first_name)
+    # Get order contact
+    order_contact = await db.get_order_contact()
+    
+    # Get translated welcome message with contact
+    welcome_text = get_translated_string("welcome_with_contact", user_lang, name=user.first_name, contact=order_contact)
     
     # Build keyboard based on subscription status
     view_catalog_text = get_translated_string("view_catalog", user_lang)

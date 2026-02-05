@@ -25,12 +25,13 @@ from handlers.search import handle_search, show_search_results, handle_search_pa
 from handlers.product_view import show_product, handle_product_callback
 from handlers.language import language_command, handle_language_callback
 from handlers.admin import (
-    stats_command, delete_product, nuke_command, recategorize_command, 
+    delete_product, nuke_command, recategorize_command, 
     users_command, show_users_page,
-    block_command, unblock_command, send_command, broadcast_command
+    block_command, unblock_command, send_command, broadcast_command,
+    setcontact_command, handle_setcontact_input
 )
 from translations.language_config import is_valid_language, LANGUAGE_DISPLAY
-from translations.translator import get_translated_string
+from translations.translator import get_translated_string, translation_service
 from utils.helpers import (
     get_file_id_and_type,
     has_media,
@@ -1120,6 +1121,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_last_message[user_id] = current_time
     
+    # Check if admin is setting contact
+    if is_admin(user_id) and context.user_data.get('awaiting_contact'):
+        await handle_setcontact_input(update, context)
+        return
+    
     # Check if admin is in broadcast workflow
     if is_admin(user_id) and 'broadcast_mode' in context.user_data:
         from handlers.admin import handle_broadcast_workflow
@@ -1171,6 +1177,10 @@ async def post_init(application: Application):
     await db.init_db()
     logger.info("Database initialized")
     
+    # Set up translation service with database
+    translation_service.set_database(db)
+    logger.info("Translation service configured with database caching")
+    
     # Set bot commands for the command menu
     await setup_bot_commands(application.bot)
     
@@ -1190,12 +1200,12 @@ async def setup_bot_commands(bot):
     # Define admin commands (available to admins only)
     # Removed: block, unblock per requirements
     admin_commands = user_commands + [
-        BotCommand("stats", "View catalog statistics"),
         BotCommand("users", "View and manage bot users"),
         BotCommand("recategorize", "Categorize uncategorized products"),
         BotCommand("nuke", "Delete all products (use with caution)"),
         BotCommand("send", "Send a message to a specific user"),
         BotCommand("broadcast", "Send a message to all users"),
+        BotCommand("setcontact", "Set order contact username"),
     ]
     
     # Set default commands for all users
@@ -1242,7 +1252,6 @@ def main():
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("language", language_command))
-    application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("nuke", nuke_command))
     application.add_handler(CommandHandler("recategorize", recategorize_command))
     application.add_handler(CommandHandler("users", users_command))
@@ -1252,6 +1261,7 @@ def main():
     application.add_handler(CommandHandler("unblock", unblock_command))
     application.add_handler(CommandHandler("send", send_command))
     application.add_handler(CommandHandler("broadcast", broadcast_command))
+    application.add_handler(CommandHandler("setcontact", setcontact_command))
     
     # Channel post handler (for monitoring channel)
     channel_id = get_channel_id()

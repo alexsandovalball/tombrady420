@@ -11,6 +11,9 @@ from configs.config import Config
 
 logger = logging.getLogger(__name__)
 
+# Default values
+DEFAULT_ORDER_CONTACT = '@FLYAWAYPEP'
+
 
 class Database:
     """Database manager for product catalog."""
@@ -121,40 +124,68 @@ class Database:
                 )
             """)
             
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS translation_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_text TEXT NOT NULL,
+                    source_lang TEXT NOT NULL DEFAULT 'en',
+                    target_lang TEXT NOT NULL,
+                    translated_text TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    used_count INTEGER DEFAULT 1,
+                    last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(source_text, source_lang, target_lang)
+                )
+            """)
+            
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS bot_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Set default order contact if not exists
+            await db.execute("""
+                INSERT OR IGNORE INTO bot_settings (key, value)
+                VALUES ('order_contact', ?)
+            """, (DEFAULT_ORDER_CONTACT,))
+            
             # Add columns if they don't exist (for existing databases)
             try:
                 await db.execute("ALTER TABLE products ADD COLUMN media_group_id TEXT")
-            except:
+            except aiosqlite.OperationalError:
                 pass  # Column already exists
             
             try:
                 await db.execute("ALTER TABLE products ADD COLUMN additional_file_ids TEXT")
-            except:
+            except aiosqlite.OperationalError:
                 pass
             
             try:
                 await db.execute("ALTER TABLE products ADD COLUMN category TEXT")
-            except:
+            except aiosqlite.OperationalError:
                 pass
             
             try:
                 await db.execute("ALTER TABLE products ADD COLUMN subcategory TEXT")
-            except:
+            except aiosqlite.OperationalError:
                 pass
             
             try:
                 await db.execute("ALTER TABLE bot_users ADD COLUMN notifications_enabled INTEGER DEFAULT 1")
-            except:
+            except aiosqlite.OperationalError:
                 pass
             
             try:
                 await db.execute("ALTER TABLE bot_users ADD COLUMN is_blocked INTEGER DEFAULT 0")
-            except:
+            except aiosqlite.OperationalError:
                 pass
             
             try:
                 await db.execute("ALTER TABLE bot_users ADD COLUMN language TEXT DEFAULT 'en'")
-            except:
+            except aiosqlite.OperationalError:
                 pass
             
             # Create performance-critical indexes
@@ -179,6 +210,10 @@ class Database:
             
             # Custom message queue indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_custom_message_queue_user_sent ON custom_message_queue(user_id, sent_at)")
+            
+            # Translation cache indexes
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_translation_cache_lookup ON translation_cache(source_text, source_lang, target_lang)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_translation_cache_last_used ON translation_cache(last_used DESC)")
             
             logger.info("Database indexes created successfully")
             
@@ -349,25 +384,6 @@ class Database:
                 if row:
                     return dict(row)
                 return None
-    
-    async def get_stats(self) -> Dict[str, Any]:
-        """Get statistics for admin."""
-        async with aiosqlite.connect(self.db_path) as db:
-            # Total products
-            async with db.execute("SELECT COUNT(*) FROM products") as cursor:
-                total = (await cursor.fetchone())[0]
-            
-            # Products added today
-            async with db.execute("""
-                SELECT COUNT(*) FROM products 
-                WHERE DATE(created_at) = DATE('now')
-            """) as cursor:
-                today = (await cursor.fetchone())[0]
-            
-            return {
-                "total": total,
-                "today": today
-            }
     
     async def save_pagination_state(
         self,
@@ -861,6 +877,109 @@ class Database:
                 """, (user_id, language, datetime.now(), datetime.now()))
             
             await db.commit()
+    
+    async def get_cached_translation(
+        self,
+        source_text: str,
+        source_lang: str,
+        target_lang: str
+    ) -> Optional[str]:
+        """
+        Get a cached translation from the database.
+        
+        Args:
+            source_text: Text to translate
+            source_lang: Source language code
+            target_lang: Target language code
+        
+        Returns:
+            Translated text if found in cache, None otherwise
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT translated_text FROM translation_cache
+                WHERE source_text = ? AND source_lang = ? AND target_lang = ?
+            """, (source_text, source_lang, target_lang)) as cursor:
+                row = await cursor.fetchone()
+                
+                if row:
+                    # Update usage statistics
+                    await db.execute("""
+                        UPDATE translation_cache
+                        SET used_count = used_count + 1, last_used = ?
+                        WHERE source_text = ? AND source_lang = ? AND target_lang = ?
+                    """, (datetime.now(), source_text, source_lang, target_lang))
+                    await db.commit()
+                    
+                    return row[0]
+                
+                return None
+    
+    async def cache_translation(
+        self,
+        source_text: str,
+        source_lang: str,
+        target_lang: str,
+        translated_text: str
+    ):
+        """
+        Cache a translation in the database.
+        
+        Args:
+            source_text: Original text
+            source_lang: Source language code
+            target_lang: Target language code
+            translated_text: Translated text
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            try:
+                await db.execute("""
+                    INSERT INTO translation_cache (source_text, source_lang, target_lang, translated_text)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(source_text, source_lang, target_lang) 
+                    DO UPDATE SET 
+                        translated_text = excluded.translated_text,
+                        used_count = used_count + 1,
+                        last_used = ?
+                """, (source_text, source_lang, target_lang, translated_text, datetime.now()))
+                await db.commit()
+            except Exception as e:
+                logger.error(f"Error caching translation: {e}")
+    
+    async def cleanup_old_translations(self, days_old: int = 90):
+        """
+        Clean up old, unused translations from the cache.
+        
+        Args:
+            days_old: Remove translations older than this many days that haven't been used
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                DELETE FROM translation_cache
+                WHERE last_used < datetime('now', '-' || ? || ' days')
+                AND used_count = 1
+            """, (days_old,))
+            await db.commit()
+            logger.info(f"Cleaned up translations older than {days_old} days")
+    
+    async def get_order_contact(self) -> str:
+        """Get the order contact username from settings."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT value FROM bot_settings WHERE key = 'order_contact'
+            """) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else DEFAULT_ORDER_CONTACT
+    
+    async def set_order_contact(self, contact: str):
+        """Set the order contact username in settings."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT OR REPLACE INTO bot_settings (key, value, updated_at)
+                VALUES ('order_contact', ?, ?)
+            """, (contact, datetime.now()))
+            await db.commit()
+            logger.info(f"Order contact updated to: {contact}")
 
     
 

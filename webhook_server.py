@@ -18,7 +18,6 @@ from main import (
     language_command,
     subscribe_command,
     unsubscribe_command,
-    stats_command,
     nuke_command,
     recategorize_command,
     users_command,
@@ -26,6 +25,7 @@ from main import (
     unblock_command,
     send_command,
     broadcast_command,
+    setcontact_command,
     channel_post_handler,
     callback_query_handler,
     message_handler,
@@ -75,7 +75,6 @@ async def setup_application():
     bot_app.add_handler(CommandHandler("start", start_command))
     bot_app.add_handler(CommandHandler("menu", menu_command))
     bot_app.add_handler(CommandHandler("language", language_command))
-    bot_app.add_handler(CommandHandler("stats", stats_command))
     bot_app.add_handler(CommandHandler("nuke", nuke_command))
     bot_app.add_handler(CommandHandler("recategorize", recategorize_command))
     bot_app.add_handler(CommandHandler("users", users_command))
@@ -85,6 +84,7 @@ async def setup_application():
     bot_app.add_handler(CommandHandler("unblock", unblock_command))
     bot_app.add_handler(CommandHandler("send", send_command))
     bot_app.add_handler(CommandHandler("broadcast", broadcast_command))
+    bot_app.add_handler(CommandHandler("setcontact", setcontact_command))
     
     # Channel post handler (for monitoring channel)
     channel_id = get_channel_id()

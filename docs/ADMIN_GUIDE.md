@@ -24,11 +24,6 @@ Browse products by category - available to all users
 - Each category displays product count
 - Click category to view filtered products
 
-### `/stats`
-View catalog statistics (admin only)
-- Total products
-- Products added today
-
 ### `/users`
 View and manage bot users (admin only)
 - Shows 10 users per page with pagination

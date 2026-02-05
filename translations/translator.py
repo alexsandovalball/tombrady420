@@ -14,6 +14,20 @@ from translations.strings import get_string as get_base_string
 logger = logging.getLogger(__name__)
 
 
+def normalize_language_code(lang: str) -> str:
+    """
+    Normalize language codes for consistency.
+    Both USA and UK English use 'en'.
+    
+    Args:
+        lang: Language code to normalize
+    
+    Returns:
+        Normalized language code
+    """
+    return "en" if lang == "en-US" else lang
+
+
 class BoundedCache:
     """LRU cache with maximum size limit."""
     
@@ -50,10 +64,22 @@ class BoundedCache:
 class TranslationService:
     """Service for translating bot messages to different languages."""
     
-    def __init__(self, cache_size: int = 1000, max_workers: int = 3):
-        """Initialize translation service with bounded cache."""
+    def __init__(self, cache_size: int = 1000, max_workers: int = 3, db=None):
+        """
+        Initialize translation service with bounded cache.
+        
+        Args:
+            cache_size: Maximum size of in-memory cache
+            max_workers: Maximum number of worker threads
+            db: Optional Database instance for persistent caching
+        """
         self._cache = BoundedCache(max_size=cache_size)
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        self._db = db
+    
+    def set_database(self, db):
+        """Set the database instance for persistent caching."""
+        self._db = db
     
     async def translate(self, text: str, target_lang: str, source_lang: str = "en") -> str:
         """
@@ -67,9 +93,9 @@ class TranslationService:
         Returns:
             Translated text, or original text if translation fails
         """
-        # Normalize language codes (both USA and UK English use 'en')
-        normalized_target = target_lang if target_lang != "en-US" else "en"
-        normalized_source = source_lang if source_lang != "en-US" else "en"
+        # Normalize language codes
+        normalized_target = normalize_language_code(target_lang)
+        normalized_source = normalize_language_code(source_lang)
         
         # No translation needed if target is same as source
         if normalized_target == normalized_source:
@@ -80,11 +106,22 @@ class TranslationService:
             logger.warning(f"Invalid language code: {target_lang}, using default")
             return text
         
-        # Check cache
+        # Check in-memory cache first
         cache_key = f"{normalized_source}:{normalized_target}:{text}"
         cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
+        
+        # Check database cache if available
+        if self._db:
+            try:
+                db_cached = await self._db.get_cached_translation(text, normalized_source, normalized_target)
+                if db_cached:
+                    # Also update in-memory cache
+                    self._cache.set(cache_key, db_cached)
+                    return db_cached
+            except Exception as e:
+                logger.error(f"Error checking database translation cache: {e}")
         
         try:
             # Run translation in thread pool to avoid blocking event loop
@@ -96,8 +133,15 @@ class TranslationService:
             
             translated = await loop.run_in_executor(self._executor, _translate_sync)
             
-            # Cache the result
+            # Cache the result in memory
             self._cache.set(cache_key, translated)
+            
+            # Cache the result in database if available
+            if self._db:
+                try:
+                    await self._db.cache_translation(text, normalized_source, normalized_target, translated)
+                except Exception as e:
+                    logger.error(f"Error saving translation to database: {e}")
             
             return translated
         except Exception as e:
@@ -176,8 +220,8 @@ def get_translated_string(key: str, lang: str = DEFAULT_LANGUAGE, **kwargs) -> s
     if lang == DEFAULT_LANGUAGE:
         return get_base_string(key, **kwargs)
     
-    # Normalize language codes (both USA and UK English use 'en')
-    normalized_target = lang if lang != "en-US" else "en"
+    # Normalize language codes
+    normalized_target = normalize_language_code(lang)
     
     # If normalized language is default, format and return without translation
     if normalized_target == DEFAULT_LANGUAGE:
@@ -250,8 +294,8 @@ def translate_text(text: str, target_lang: str) -> str:
     Returns:
         Translated text
     """
-    # Normalize language codes (both USA and UK English use 'en')
-    normalized_target = target_lang if target_lang != "en-US" else "en"
+    # Normalize language codes
+    normalized_target = normalize_language_code(target_lang)
     
     if normalized_target == "en":
         return text

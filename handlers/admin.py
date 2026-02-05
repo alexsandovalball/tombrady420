@@ -4,6 +4,7 @@ Admin handlers.
 import logging
 import asyncio
 import aiosqlite
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.helpers import escape_markdown
@@ -12,35 +13,6 @@ from utils.helpers import is_admin, get_channel_id, get_channel_username
 
 logger = logging.getLogger(__name__)
 db = Database()
-
-
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /stats command (admin only)."""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
-    
-    try:
-        stats = await db.get_stats()
-        
-        text = (
-            "📊 **Catalog Statistics**\n\n"
-            f"📦 Total Products: {stats['total']}\n"
-            f"📅 Added Today: {stats['today']}"
-        )
-        
-        await update.message.reply_text(text, parse_mode="Markdown")
-        logger.info(f"Admin {user_id} requested stats")
-        
-    except Exception as e:
-        logger.error(f"Error getting stats: {e}")
-        await update.message.reply_text(
-            "❌ An error occurred while retrieving statistics."
-        )
 
 
 async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -138,11 +110,10 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
             
             last_seen = user.get('last_seen', 'Unknown')
             if last_seen != 'Unknown':
-                from datetime import datetime
                 try:
                     dt = datetime.fromisoformat(last_seen)
                     last_seen = dt.strftime("%Y-%m-%d %H:%M")
-                except:
+                except (ValueError, TypeError):
                     pass
             
             user_text = (
@@ -266,7 +237,7 @@ async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE, pro
                 # Delete the media message and send a new text message
                 try:
                     await message.delete()
-                except:
+                except Exception:
                     pass  # If deletion fails, continue anyway
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
@@ -630,5 +601,66 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 parse_mode="Markdown"
             )
             logger.info(f"Admin {user_id} awaiting confirmation for broadcast to all users")
+
+
+async def setcontact_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /setcontact command - set the order contact username (admin only)."""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            "❌ This command is only available for administrators."
+        )
+        return
+    
+    # Get current contact
+    current_contact = await db.get_order_contact()
+    
+    await update.message.reply_text(
+        f"📝 **Set Order Contact**\n\n"
+        f"Current contact: {current_contact}\n\n"
+        f"Please enter the new contact username (e.g., @username):",
+        parse_mode="Markdown"
+    )
+    
+    # Store state for next message
+    context.user_data['awaiting_contact'] = True
+    logger.info(f"Admin {user_id} initiated setcontact command")
+
+
+async def handle_setcontact_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the contact username input from admin."""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    if not context.user_data.get('awaiting_contact'):
+        return
+    
+    contact = update.message.text.strip()
+    
+    # Validate format
+    if not contact.startswith('@'):
+        await update.message.reply_text(
+            "❌ Invalid format. Contact must start with '@' (e.g., @username)\n\n"
+            "Please try again or use /setcontact to restart."
+        )
+        return
+    
+    # Save to database
+    await db.set_order_contact(contact)
+    
+    # Clear state
+    context.user_data['awaiting_contact'] = False
+    
+    await update.message.reply_text(
+        f"✅ Order contact updated successfully!\n\n"
+        f"New contact: {contact}\n\n"
+        f"All users will now be directed to DM {contact} to place orders.",
+        parse_mode="Markdown"
+    )
+    logger.info(f"Admin {user_id} updated order contact to: {contact}")
+
 
 
