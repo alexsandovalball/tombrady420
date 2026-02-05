@@ -295,8 +295,8 @@ async def get_bot_specific_file_id(
             # Delete the copied message to clean up admin chat
             try:
                 await context.bot.delete_message(chat_id=admin_chat_id, message_id=copied_msg.message_id)
-            except:
-                pass  # Not critical if deletion fails
+            except Exception as del_error:
+                logger.debug(f"Could not delete copied message from admin chat: {del_error}")
             
             return new_file_id
         else:

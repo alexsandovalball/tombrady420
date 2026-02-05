@@ -253,8 +253,8 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         cached_files = await db.get_cached_file_ids(product["id"], bot_instance)
         
         if cached_files and len(cached_files) > 0:
-            # Use cached file ID
-            file_id, _ = cached_files[0]
+            # Use cached file ID (file_type is ignored since we already have it in product data)
+            file_id, cached_file_type = cached_files[0]
             logger.debug(f"Using cached file_id for product {product['id']}, bot {bot_instance}")
         else:
             # Use original file ID
