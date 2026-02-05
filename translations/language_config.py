@@ -15,10 +15,10 @@ SUPPORTED_LANGUAGES = {
 # Default language
 DEFAULT_LANGUAGE = "en"
 
-# Language display names with emojis
+# Language display names with emojis (USA first as requested)
 LANGUAGE_DISPLAY = {
-    "en": "🇬🇧 English (UK)",
     "en-US": "🇺🇸 English (USA)",
+    "en": "🇬🇧 English (UK)",
     "de": "🇩🇪 German",
     "nl": "🇳🇱 Dutch",
     "it": "🇮🇹 Italian",
