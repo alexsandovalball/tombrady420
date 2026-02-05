@@ -40,7 +40,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters
 )
-from utils.helpers import get_channel_id, get_channel_username
+from utils.helpers import get_channel_id, get_channel_username, get_file_id_cache_size
 
 # Configure logging with structured format for better visibility on Render
 logging.basicConfig(
@@ -191,6 +191,18 @@ async def lifespan(app: FastAPI):
     
     app.state.bot_apps = bot_apps
     logger.info(f"All {len(bot_apps)} bot(s) initialized successfully")
+    
+    # Log cache status for multi-bot setups
+    if len(bot_apps) > 1:
+        cache_size = get_file_id_cache_size()
+        if cache_size == 0:
+            logger.warning(
+                f"File ID cache is empty. For secondary bots (bot 1-{len(bot_apps)-1}) to display media correctly, "
+                f"admins must start a conversation with each bot by sending /start. "
+                f"This allows the bots to cache bot-specific file IDs."
+            )
+        else:
+            logger.info(f"File ID cache contains {cache_size} entries")
     
     yield
     

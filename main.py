@@ -1102,11 +1102,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Track user
     user = update.effective_user
+    bot_username = context.bot.username if hasattr(context.bot, 'username') else None
     await db.track_user(
         user_id=user.id,
         username=user.username,
         first_name=user.first_name,
-        last_name=user.last_name
+        last_name=user.last_name,
+        bot_username=bot_username
     )
     
     # Check if user is blocked

@@ -3,9 +3,11 @@ Database models and operations for the media catalog bot.
 Uses SQLite with aiosqlite for async operations.
 """
 import aiosqlite
-from datetime import datetime
-from typing import Optional, List, Dict, Any
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict, Any, Tuple
 import logging
+import asyncio
+from functools import lru_cache
 
 from configs.config import Config
 
@@ -13,6 +15,12 @@ logger = logging.getLogger(__name__)
 
 # Default values
 DEFAULT_ORDER_CONTACT = '@FLYAWAYPEP'
+
+# In-memory caches for frequently accessed data
+_user_language_cache: Dict[int, Tuple[str, datetime]] = {}
+_order_contact_cache: Optional[Tuple[str, datetime]] = None
+_cache_lock = asyncio.Lock()
+CACHE_TTL_SECONDS = 300  # 5 minutes
 
 
 class Database:
@@ -176,6 +184,11 @@ class Database:
             
             try:
                 await db.execute("ALTER TABLE bot_users ADD COLUMN notifications_enabled INTEGER DEFAULT 1")
+            except aiosqlite.OperationalError:
+                pass
+            
+            try:
+                await db.execute("ALTER TABLE bot_users ADD COLUMN bot_username TEXT")
             except aiosqlite.OperationalError:
                 pass
             
@@ -712,8 +725,16 @@ class Database:
                 return [row[0] for row in rows]
     
     async def track_user(self, user_id: int, username: Optional[str] = None, 
-                        first_name: Optional[str] = None, last_name: Optional[str] = None):
-        """Track or update a bot user."""
+                        first_name: Optional[str] = None, last_name: Optional[str] = None,
+                        bot_username: Optional[str] = None):
+        """
+        Track or update a bot user.
+        
+        Note: bot_username is only set/updated if the database value is NULL.
+        - On first interaction: bot_username is recorded
+        - On subsequent interactions: bot_username is preserved (not overwritten)
+        - This ensures analytics show which bot the user first interacted with
+        """
         async with aiosqlite.connect(self.db_path) as db:
             # Check if user exists
             async with db.execute("SELECT user_id FROM bot_users WHERE user_id = ?", (user_id,)) as cursor:
@@ -724,15 +745,16 @@ class Database:
                 await db.execute("""
                     UPDATE bot_users 
                     SET username = ?, first_name = ?, last_name = ?, 
-                        last_seen = ?, interaction_count = interaction_count + 1
+                        last_seen = ?, interaction_count = interaction_count + 1,
+                        bot_username = COALESCE(?, bot_username)
                     WHERE user_id = ?
-                """, (username, first_name, last_name, datetime.now(), user_id))
+                """, (username, first_name, last_name, datetime.now(), bot_username, user_id))
             else:
                 # Insert new user
                 await db.execute("""
-                    INSERT INTO bot_users (user_id, username, first_name, last_name, first_seen, last_seen)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (user_id, username, first_name, last_name, datetime.now(), datetime.now()))
+                    INSERT INTO bot_users (user_id, username, first_name, last_name, first_seen, last_seen, bot_username)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (user_id, username, first_name, last_name, datetime.now(), datetime.now(), bot_username))
             
             await db.commit()
     
@@ -809,13 +831,28 @@ class Database:
         from utils.helpers import get_admin_ids
         admin_ids = get_admin_ids()
         
+        if not admin_ids:
+            # No admins to filter, simple query
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute("""
+                    SELECT user_id FROM bot_users WHERE notifications_enabled = 1
+                """) as cursor:
+                    rows = await cursor.fetchall()
+                    return [row[0] for row in rows]
+        
+        # Filter admins in SQL for better performance
+        # Build placeholders safely - length is controlled by admin_ids count
+        num_admins = len(admin_ids)
+        placeholders = ','.join(['?'] * num_admins)
+        query = f"""
+            SELECT user_id FROM bot_users 
+            WHERE notifications_enabled = 1 
+            AND user_id NOT IN ({placeholders})
+        """
         async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("""
-                SELECT user_id FROM bot_users WHERE notifications_enabled = 1
-            """) as cursor:
+            async with db.execute(query, admin_ids) as cursor:
                 rows = await cursor.fetchall()
-                # Filter out admin IDs
-                return [row[0] for row in rows if row[0] not in admin_ids]
+                return [row[0] for row in rows]
     
     async def queue_notification(self, user_id: int, product_id: int):
         """Add a notification to the queue."""
@@ -925,16 +962,35 @@ class Database:
                 return row[0] if row else 0
     
     async def get_user_language(self, user_id: int) -> str:
-        """Get user's preferred language."""
+        """Get user's preferred language with caching."""
+        global _user_language_cache
+        
+        # Check cache first
+        async with _cache_lock:
+            if user_id in _user_language_cache:
+                lang, cached_at = _user_language_cache[user_id]
+                # Return cached value if not expired
+                if datetime.now() - cached_at < timedelta(seconds=CACHE_TTL_SECONDS):
+                    return lang
+        
+        # Cache miss or expired - query database
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("""
                 SELECT language FROM bot_users WHERE user_id = ?
             """, (user_id,)) as cursor:
                 row = await cursor.fetchone()
-                return row[0] if row else 'en'
+                lang = row[0] if row else 'en'
+        
+        # Update cache
+        async with _cache_lock:
+            _user_language_cache[user_id] = (lang, datetime.now())
+        
+        return lang
     
     async def set_user_language(self, user_id: int, language: str):
-        """Set user's preferred language."""
+        """Set user's preferred language and invalidate cache."""
+        global _user_language_cache
+        
         async with aiosqlite.connect(self.db_path) as db:
             # Check if user exists
             async with db.execute("SELECT user_id FROM bot_users WHERE user_id = ?", (user_id,)) as cursor:
@@ -953,6 +1009,10 @@ class Database:
                 """, (user_id, language, datetime.now(), datetime.now()))
             
             await db.commit()
+        
+        # Invalidate cache for this user
+        async with _cache_lock:
+            _user_language_cache[user_id] = (language, datetime.now())
     
     async def get_cached_translation(
         self,
@@ -1039,16 +1099,35 @@ class Database:
             logger.info(f"Cleaned up translations older than {days_old} days")
     
     async def get_order_contact(self) -> str:
-        """Get the order contact username from settings."""
+        """Get the order contact username from settings with caching."""
+        global _order_contact_cache
+        
+        # Check cache first
+        async with _cache_lock:
+            if _order_contact_cache is not None:
+                contact, cached_at = _order_contact_cache
+                # Return cached value if not expired
+                if datetime.now() - cached_at < timedelta(seconds=CACHE_TTL_SECONDS):
+                    return contact
+        
+        # Cache miss or expired - query database
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("""
                 SELECT value FROM bot_settings WHERE key = 'order_contact'
             """) as cursor:
                 row = await cursor.fetchone()
-                return row[0] if row else DEFAULT_ORDER_CONTACT
+                contact = row[0] if row else DEFAULT_ORDER_CONTACT
+        
+        # Update cache
+        async with _cache_lock:
+            _order_contact_cache = (contact, datetime.now())
+        
+        return contact
     
     async def set_order_contact(self, contact: str):
-        """Set the order contact username in settings."""
+        """Set the order contact username in settings and invalidate cache."""
+        global _order_contact_cache
+        
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 INSERT OR REPLACE INTO bot_settings (key, value, updated_at)
@@ -1056,6 +1135,23 @@ class Database:
             """, (contact, datetime.now()))
             await db.commit()
             logger.info(f"Order contact updated to: {contact}")
+        
+        # Invalidate cache
+        async with _cache_lock:
+            _order_contact_cache = (contact, datetime.now())
+
+
+async def clear_database_caches():
+    """Clear all in-memory database caches. Useful for testing or after bulk updates."""
+    global _user_language_cache, _order_contact_cache
+    
+    async with _cache_lock:
+        _user_language_cache.clear()
+        _order_contact_cache = None
+    
+    logger.info("Database caches cleared")
+
+
 
     
 

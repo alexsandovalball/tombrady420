@@ -123,6 +123,12 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
                 f"   📬 Notifications: {notif_status}"
             )
             
+            # Add bot username if available
+            bot_username = user.get('bot_username')
+            if bot_username:
+                escaped_bot_username = escape_markdown_v1(f"@{bot_username}")
+                user_text += f"\n   🤖 Bot: {escaped_bot_username}"
+            
             # Add blocked status if applicable
             if blocked_status:
                 user_text += f"\n   ⚠️ Status: {blocked_status}"
