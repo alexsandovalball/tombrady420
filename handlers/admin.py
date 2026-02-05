@@ -115,13 +115,9 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
                 except (ValueError, TypeError):
                     pass
             
-            # Get bot instance
-            bot_instance = user.get('bot_instance', 1)
-            
             user_text = (
                 f"\n{i}. **{full_name}** ({username})\n"
                 f"   🆔 ID: `{user['user_id']}`\n"
-                f"   🤖 Bot Instance: {bot_instance}\n"
                 f"   📊 Interactions: {user.get('interaction_count', 0)}\n"
                 f"   🕐 Last seen: {last_seen}\n"
                 f"   📬 Notifications: {notif_status}"
@@ -584,20 +580,9 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
             context.user_data['broadcast_message'] = message_text
             context.user_data['broadcast_step'] = 'awaiting_confirmation'
             
-            # Get user distribution across bot instances
-            users_by_bot = await db.get_users_by_bot_instance()
-            
-            # Count eligible users per bot instance
-            total_eligible = 0
-            bot_stats = []
-            for bot_instance, users in sorted(users_by_bot.items()):
-                eligible = len([u for u in users if not u.get('is_blocked', 0) and not is_admin(u['user_id'])])
-                total_eligible += eligible
-                if eligible > 0:
-                    bot_stats.append(f"  • Bot #{bot_instance}: {eligible}")
-            
-            bot_distribution = "\n".join(bot_stats) if bot_stats else "  • No users"
-            num_bots = len(users_by_bot)
+            # Get user count
+            users = await db.get_all_users()
+            user_count = len([u for u in users if not u.get('is_blocked', 0) and not is_admin(u['user_id'])])
             
             # Show confirmation with inline buttons
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -608,15 +593,13 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
             
             await update.message.reply_text(
                 f"✅ **Broadcast to All Users - Confirmation**\n\n"
-                f"📝 Message: {message_text[:200]}{'...' if len(message_text) > 200 else ''}\n\n"
-                f"📊 Total recipients: {total_eligible} users\n"
-                f"🤖 Bot instances: {num_bots}\n\n"
-                f"**Distribution:**\n{bot_distribution}\n\n"
+                f"📝 Message: {message_text[:200]}{'...' if len(message_text) > 200 else ''}\n"
+                f"📊 Recipients: {user_count} users\n\n"
                 f"Do you want to send this broadcast?",
                 reply_markup=keyboard,
                 parse_mode="Markdown"
             )
-            logger.info(f"Admin {user_id} awaiting confirmation for broadcast to {total_eligible} users across {num_bots} bot instances")
+            logger.info(f"Admin {user_id} awaiting confirmation for broadcast to all users")
 
 
 async def setcontact_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

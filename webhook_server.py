@@ -4,16 +4,40 @@ This allows the bot to receive updates via webhooks instead of polling,
 which is more suitable for serverless deployments like Render.com.
 """
 import logging
-import os
-import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, status
 from telegram import Update
 from telegram.ext import Application
 
 from configs.config import Config, ConfigError
-# Import the bot setup function
-from main import setup_bot_application
+# Import the bot setup functions
+from main import (
+    post_init,
+    start_command,
+    menu_command,
+    language_command,
+    subscribe_command,
+    unsubscribe_command,
+    nuke_command,
+    recategorize_command,
+    users_command,
+    block_command,
+    unblock_command,
+    send_command,
+    broadcast_command,
+    setcontact_command,
+    channel_post_handler,
+    callback_query_handler,
+    message_handler,
+    error_handler
+)
+from telegram.ext import (
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters
+)
+from utils.helpers import get_channel_id, get_channel_username
 
 # Configure logging with structured format for better visibility on Render
 logging.basicConfig(
@@ -29,8 +53,8 @@ logging.getLogger('httpx').setLevel(logging.WARNING)  # Reduce noise from HTTP l
 logging.getLogger('uvicorn.access').setLevel(logging.INFO)  # Keep access logs visible
 
 
-async def setup_applications():
-    """Initialize and configure all bot applications for webhook mode."""
+async def setup_application():
+    """Initialize and configure the bot application."""
     # Validate configuration on startup
     try:
         Config.validate()
@@ -38,49 +62,85 @@ async def setup_applications():
         logger.error(str(e))
         raise
     
-    # Get all bot tokens from config
-    bot_tokens = Config.BOT_TOKENS
+    # Get bot token from config
+    bot_token = Config.BOT_TOKEN
     
-    if not bot_tokens:
-        raise ConfigError("No bot tokens configured. Please set BOT_TOKEN or BOT_TOKEN_1.")
+    # Create application
+    bot_app = Application.builder().token(bot_token).build()
     
-    # Get webhook URL from config
+    # Initialize database
+    await post_init(bot_app)
+    
+    # Register handlers
+    bot_app.add_handler(CommandHandler("start", start_command))
+    bot_app.add_handler(CommandHandler("menu", menu_command))
+    bot_app.add_handler(CommandHandler("language", language_command))
+    bot_app.add_handler(CommandHandler("nuke", nuke_command))
+    bot_app.add_handler(CommandHandler("recategorize", recategorize_command))
+    bot_app.add_handler(CommandHandler("users", users_command))
+    bot_app.add_handler(CommandHandler("subscribe", subscribe_command))
+    bot_app.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
+    bot_app.add_handler(CommandHandler("block", block_command))
+    bot_app.add_handler(CommandHandler("unblock", unblock_command))
+    bot_app.add_handler(CommandHandler("send", send_command))
+    bot_app.add_handler(CommandHandler("broadcast", broadcast_command))
+    bot_app.add_handler(CommandHandler("setcontact", setcontact_command))
+    
+    # Channel post handler (for monitoring channel)
+    channel_id = get_channel_id()
+    channel_username = get_channel_username()
+    
+    if channel_id:
+        # Use channel ID filter
+        channel_filter = filters.Chat(chat_id=channel_id)
+    elif channel_username:
+        # Use channel username filter
+        channel_filter = filters.Chat(username=channel_username.lstrip("@"))
+    else:
+        logger.warning("No CHANNEL_ID or CHANNEL_USERNAME set. Channel monitoring disabled.")
+        channel_filter = None
+    
+    if channel_filter:
+        bot_app.add_handler(
+            MessageHandler(
+                channel_filter & filters.ChatType.CHANNEL,
+                channel_post_handler
+            )
+        )
+        logger.info(f"Channel monitoring enabled for: {channel_id or channel_username}")
+    
+    # Callback query handler (for inline buttons)
+    bot_app.add_handler(CallbackQueryHandler(callback_query_handler))
+    
+    # Message handler (for search queries)
+    bot_app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
+            message_handler
+        )
+    )
+    
+    # Error handler
+    bot_app.add_error_handler(error_handler)
+    
+    # Initialize the application
+    await bot_app.initialize()
+    await bot_app.start()
+    
+    # Set webhook
     webhook_url = Config.WEBHOOK_URL
-    if not webhook_url:
+    if webhook_url:
+        await bot_app.bot.set_webhook(
+            url=f"{webhook_url}/webhook",
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+        logger.info(f"Webhook set to: {webhook_url}/webhook")
+    else:
         logger.warning("WEBHOOK_URL not set. Webhook may not work properly.")
     
-    # Create applications for all tokens
-    bot_apps = []
-    for i, bot_token in enumerate(bot_tokens, 1):
-        logger.info(f"Setting up bot instance {i}...")
-        
-        # Add staggered delay for secondary bots to avoid race conditions
-        if i > 1:
-            delay = 2.5 * (i - 1)  # 2.5s, 5.0s, 7.5s, etc.
-            logger.info(f"Bot instance {i}: Adding {delay}s delay before initialization to avoid conflicts")
-            await asyncio.sleep(delay)
-        
-        # Use the setup_bot_application function from main.py
-        bot_app = setup_bot_application(bot_token, bot_instance=i)
-        
-        # Initialize the application
-        await bot_app.initialize()
-        await bot_app.start()
-        
-        # Set webhook for this bot instance
-        if webhook_url:
-            webhook_endpoint = f"{webhook_url}/webhook/{i}"
-            await bot_app.bot.set_webhook(
-                url=webhook_endpoint,
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True
-            )
-            logger.info(f"Bot instance {i} webhook: {webhook_endpoint}")
-        
-        bot_apps.append(bot_app)
-    
-    logger.info(f"All {len(bot_apps)} bot instances initialized successfully")
-    return bot_apps
+    logger.info("Bot application initialized successfully")
+    return bot_app
 
 
 @asynccontextmanager
@@ -88,18 +148,13 @@ async def lifespan(app: FastAPI):
     """Manage application lifespan - startup and shutdown."""
     # Startup
     logger.info("Starting webhook server...")
-    app.state.bot_apps = await setup_applications()
+    app.state.bot_app = await setup_application()
     yield
     # Shutdown
-    logger.info("Shutting down bot applications...")
-    for i, bot_app in enumerate(app.state.bot_apps, 1):
-        try:
-            await bot_app.stop()
-            await bot_app.shutdown()
-            logger.info(f"Bot instance {i} shut down successfully")
-        except Exception as e:
-            logger.error(f"Error shutting down bot instance {i}: {e}")
-    logger.info("All bot applications shut down successfully")
+    logger.info("Shutting down bot application...")
+    await app.state.bot_app.stop()
+    await app.state.bot_app.shutdown()
+    logger.info("Bot application shut down successfully")
 
 
 # Create FastAPI app with lifespan
@@ -120,46 +175,38 @@ async def root():
     }
 
 
-@app.post("/webhook/{bot_instance}")
-async def webhook(request: Request, bot_instance: int):
-    """Handle incoming webhook updates from Telegram for a specific bot instance."""
-    logger.info(f"Received webhook request for bot instance {bot_instance}")
+@app.post("/webhook")
+async def webhook(request: Request):
+    """Handle incoming webhook updates from Telegram."""
+    logger.info("Received webhook request")
     
-    # Check if bots are initialized
-    if not hasattr(request.app.state, "bot_apps") or request.app.state.bot_apps is None:
-        logger.error("Bot applications not initialized")
+    # Check if bot is initialized
+    if not hasattr(request.app.state, "bot_app") or request.app.state.bot_app is None:
+        logger.error("Bot application not initialized")
         return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
-    
-    # Validate bot instance number
-    if bot_instance < 1 or bot_instance > len(request.app.state.bot_apps):
-        logger.error(f"Invalid bot instance: {bot_instance}")
-        return Response(status_code=status.HTTP_404_NOT_FOUND)
-    
-    # Get the correct bot application (convert to 0-based index)
-    bot_app = request.app.state.bot_apps[bot_instance - 1]
     
     try:
         # Parse the update
         json_data = await request.json()
-        update = Update.de_json(json_data, bot_app.bot)
+        update = Update.de_json(json_data, request.app.state.bot_app.bot)
         
         # Log update details
         if update.message:
-            logger.info(f"Bot {bot_instance}: Processing message update from user {update.message.from_user.id}")
+            logger.info(f"Processing message update from user {update.message.from_user.id}")
         elif update.callback_query:
-            logger.info(f"Bot {bot_instance}: Processing callback query from user {update.callback_query.from_user.id}: {update.callback_query.data}")
+            logger.info(f"Processing callback query from user {update.callback_query.from_user.id}: {update.callback_query.data}")
         elif update.channel_post:
-            logger.info(f"Bot {bot_instance}: Processing channel post from chat {update.channel_post.chat.id}")
+            logger.info(f"Processing channel post from chat {update.channel_post.chat.id}")
         else:
-            logger.info(f"Bot {bot_instance}: Processing update type: {update.update_id}")
+            logger.info(f"Processing update type: {update.update_id}")
         
         # Process the update
-        await bot_app.process_update(update)
+        await request.app.state.bot_app.process_update(update)
         
-        logger.info(f"Bot {bot_instance}: Webhook request processed successfully")
+        logger.info("Webhook request processed successfully")
         return Response(status_code=status.HTTP_200_OK)
     except Exception as e:
-        logger.error(f"Bot {bot_instance}: Error processing webhook update: {e}", exc_info=True)
+        logger.error(f"Error processing webhook update: {e}", exc_info=True)
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 

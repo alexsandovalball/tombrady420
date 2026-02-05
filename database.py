@@ -3,7 +3,6 @@ Database models and operations for the media catalog bot.
 Uses SQLite with aiosqlite for async operations.
 """
 import aiosqlite
-import asyncio
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 import logging
@@ -35,7 +34,6 @@ class Database:
                     chat_id INTEGER NOT NULL,
                     media_group_id TEXT,
                     additional_file_ids TEXT,
-                    additional_message_ids TEXT,
                     category TEXT,
                     subcategory TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -148,30 +146,6 @@ class Database:
                 )
             """)
             
-            # Create media_file_cache table using atomic IF NOT EXISTS
-            # This prevents race conditions with multiple bot instances
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS media_file_cache (
-                    product_id INTEGER NOT NULL,
-                    bot_instance INTEGER NOT NULL,
-                    file_id TEXT NOT NULL,
-                    file_type TEXT NOT NULL,
-                    file_index INTEGER NOT NULL DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (product_id, bot_instance, file_index),
-                    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
-                )
-            """)
-            
-            # CRITICAL: Commit and force WAL checkpoint
-            await db.commit()
-            
-            # Force WAL checkpoint to ensure table is visible to all connections
-            # This flushes the WAL file to the main database, making changes visible
-            # to all existing and new connections immediately
-            await db.execute("PRAGMA wal_checkpoint(FULL)")
-            logger.info("✅ media_file_cache table created/verified and checkpointed")
-            
             # Set default order contact if not exists
             await db.execute("""
                 INSERT OR IGNORE INTO bot_settings (key, value)
@@ -200,11 +174,6 @@ class Database:
                 pass
             
             try:
-                await db.execute("ALTER TABLE products ADD COLUMN additional_message_ids TEXT")
-            except aiosqlite.OperationalError:
-                pass
-            
-            try:
                 await db.execute("ALTER TABLE bot_users ADD COLUMN notifications_enabled INTEGER DEFAULT 1")
             except aiosqlite.OperationalError:
                 pass
@@ -216,22 +185,6 @@ class Database:
             
             try:
                 await db.execute("ALTER TABLE bot_users ADD COLUMN language TEXT DEFAULT 'en'")
-            except aiosqlite.OperationalError:
-                pass
-            
-            # Add bot_instance columns for multi-bot support
-            try:
-                await db.execute("ALTER TABLE bot_users ADD COLUMN bot_instance INTEGER DEFAULT 1")
-            except aiosqlite.OperationalError:
-                pass
-            
-            try:
-                await db.execute("ALTER TABLE notification_queue ADD COLUMN bot_instance INTEGER")
-            except aiosqlite.OperationalError:
-                pass
-            
-            try:
-                await db.execute("ALTER TABLE custom_message_queue ADD COLUMN bot_instance INTEGER")
             except aiosqlite.OperationalError:
                 pass
             
@@ -247,10 +200,6 @@ class Database:
             # Bot users indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_notifications ON bot_users(notifications_enabled) WHERE notifications_enabled = 1")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_last_seen ON bot_users(last_seen DESC)")
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_instance ON bot_users(bot_instance)")
-            
-            # Media file cache indexes
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_media_file_cache_product ON media_file_cache(product_id, bot_instance)")
             
             # Notification queue indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_user_sent ON notification_queue(user_id, sent_at)")
@@ -268,32 +217,6 @@ class Database:
             
             logger.info("Database indexes created successfully")
             
-            # Verify critical tables exist with retry logic
-            critical_tables = ['products', 'bot_users', 'media_file_cache', 'bot_settings']
-            max_retries = 5
-            
-            for table_name in critical_tables:
-                table_verified = False
-                
-                for attempt in range(max_retries):
-                    cursor = await db.execute("""
-                        SELECT name FROM sqlite_master 
-                        WHERE type='table' AND name=?
-                    """, (table_name,))
-                    exists = await cursor.fetchone()
-                    
-                    if exists:
-                        logger.debug(f"✓ Verified table '{table_name}' exists (attempt {attempt + 1})")
-                        table_verified = True
-                        break
-                    else:
-                        if attempt < max_retries - 1:
-                            logger.warning(f"Table '{table_name}' not yet visible, retrying... (attempt {attempt + 1}/{max_retries})")
-                            await asyncio.sleep(0.3 * (attempt + 1))  # Progressive delay: 0.3s, 0.6s, 0.9s, 1.2s, 1.5s
-                
-                if not table_verified:
-                    logger.error(f"❌ CRITICAL: Table '{table_name}' does not exist after initialization and retries!")
-            
             await db.commit()
             logger.info("Database initialized successfully")
     
@@ -306,7 +229,6 @@ class Database:
         chat_id: int,
         media_group_id: Optional[str] = None,
         additional_file_ids: Optional[str] = None,
-        additional_message_ids: Optional[str] = None,
         category: Optional[str] = None,
         subcategory: Optional[str] = None
     ) -> int:
@@ -315,10 +237,10 @@ class Database:
             try:
                 cursor = await db.execute("""
                     INSERT INTO products (file_id, file_type, caption, message_id, chat_id, 
-                                        media_group_id, additional_file_ids, additional_message_ids, category, subcategory, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        media_group_id, additional_file_ids, category, subcategory, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (file_id, file_type, caption or "", message_id, chat_id, 
-                      media_group_id, additional_file_ids, additional_message_ids, category, subcategory, datetime.now()))
+                      media_group_id, additional_file_ids, category, subcategory, datetime.now()))
                 await db.commit()
                 product_id = cursor.lastrowid
                 logger.info(f"Product added: ID={product_id}, message_id={message_id}, category={category}")
@@ -588,12 +510,12 @@ class Database:
             """, (media_group_id, chat_id, product_id, datetime.now()))
             await db.commit()
     
-    async def update_product_media(self, product_id: int, additional_file_ids: str, additional_message_ids: str = None):
-        """Update a product's additional file IDs and message IDs for media groups."""
+    async def update_product_media(self, product_id: int, additional_file_ids: str):
+        """Update a product's additional file IDs for media groups."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
-                UPDATE products SET additional_file_ids = ?, additional_message_ids = ? WHERE id = ?
-            """, (additional_file_ids, additional_message_ids, product_id))
+                UPDATE products SET additional_file_ids = ? WHERE id = ?
+            """, (additional_file_ids, product_id))
             await db.commit()
     
     async def get_products_by_category(self, category: str, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
@@ -714,17 +636,15 @@ class Database:
                 return [row[0] for row in rows]
     
     async def track_user(self, user_id: int, username: Optional[str] = None, 
-                        first_name: Optional[str] = None, last_name: Optional[str] = None,
-                        bot_instance: int = 1):
-        """Track or update a bot user with bot instance information."""
+                        first_name: Optional[str] = None, last_name: Optional[str] = None):
+        """Track or update a bot user."""
         async with aiosqlite.connect(self.db_path) as db:
             # Check if user exists
-            async with db.execute("SELECT user_id, bot_instance FROM bot_users WHERE user_id = ?", (user_id,)) as cursor:
-                row = await cursor.fetchone()
+            async with db.execute("SELECT user_id FROM bot_users WHERE user_id = ?", (user_id,)) as cursor:
+                exists = await cursor.fetchone()
             
-            if row:
-                # User exists - update fields but DON'T change bot_instance
-                # User stays with their original bot instance
+            if exists:
+                # Update existing user
                 await db.execute("""
                     UPDATE bot_users 
                     SET username = ?, first_name = ?, last_name = ?, 
@@ -732,11 +652,11 @@ class Database:
                     WHERE user_id = ?
                 """, (username, first_name, last_name, datetime.now(), user_id))
             else:
-                # New user - assign to this bot instance
+                # Insert new user
                 await db.execute("""
-                    INSERT INTO bot_users (user_id, username, first_name, last_name, first_seen, last_seen, bot_instance)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (user_id, username, first_name, last_name, datetime.now(), datetime.now(), bot_instance))
+                    INSERT INTO bot_users (user_id, username, first_name, last_name, first_seen, last_seen)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (user_id, username, first_name, last_name, datetime.now(), datetime.now()))
             
             await db.commit()
     
@@ -887,21 +807,13 @@ class Database:
                 row = await cursor.fetchone()
                 return row[0] == 1 if row else False
     
-    async def queue_custom_message(self, user_id: int, message_text: str, bot_instance: Optional[int] = None):
-        """Queue a custom message for a user with bot instance tracking."""
+    async def queue_custom_message(self, user_id: int, message_text: str):
+        """Queue a custom message for a user."""
         async with aiosqlite.connect(self.db_path) as db:
-            # If bot_instance not provided, look it up
-            if bot_instance is None:
-                async with db.execute("""
-                    SELECT bot_instance FROM bot_users WHERE user_id = ?
-                """, (user_id,)) as cursor:
-                    row = await cursor.fetchone()
-                    bot_instance = row[0] if row else 1
-            
             await db.execute("""
-                INSERT INTO custom_message_queue (user_id, message_text, bot_instance, created_at)
-                VALUES (?, ?, ?, ?)
-            """, (user_id, message_text, bot_instance, datetime.now()))
+                INSERT INTO custom_message_queue (user_id, message_text, created_at)
+                VALUES (?, ?, ?)
+            """, (user_id, message_text, datetime.now()))
             await db.commit()
     
     async def get_pending_custom_messages(self, limit: int = 100) -> List[Dict[str, Any]]:
@@ -1069,186 +981,6 @@ class Database:
             await db.commit()
             logger.info(f"Order contact updated to: {contact}")
 
-    # Multi-bot support methods
     
-    async def get_user_bot_instance(self, user_id: int) -> Optional[int]:
-        """Get the bot instance for a specific user."""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("""
-                SELECT bot_instance FROM bot_users WHERE user_id = ?
-            """, (user_id,)) as cursor:
-                row = await cursor.fetchone()
-                return row[0] if row else None
-    
-    async def get_users_by_bot_instance(self) -> Dict[int, List[Dict[str, Any]]]:
-        """Get all users grouped by bot instance."""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("""
-                SELECT * FROM bot_users ORDER BY bot_instance, last_seen DESC
-            """) as cursor:
-                rows = await cursor.fetchall()
-                
-                # Group users by bot_instance
-                users_by_bot = {}
-                for row in rows:
-                    user_dict = dict(row)
-                    bot_instance = user_dict.get('bot_instance', 1)  # Default to 1 if not set
-                    
-                    if bot_instance not in users_by_bot:
-                        users_by_bot[bot_instance] = []
-                    
-                    users_by_bot[bot_instance].append(user_dict)
-                
-                return users_by_bot
-    
-    
-    async def search_products_fts(self, query: str, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
-        """
-        Search products using FTS5 full-text search (much faster than LIKE).
-        Falls back to LIKE search if FTS is not available.
-        """
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            
-            # Check if FTS table exists
-            async with db.execute("""
-                SELECT name FROM sqlite_master 
-                WHERE type='table' AND name='products_fts'
-            """) as cursor:
-                fts_exists = await cursor.fetchone()
-            
-            if fts_exists:
-                # Use FTS5 search (much faster)
-                fts_query = query.replace('"', '""')  # Escape quotes
-                sql = """
-                    SELECT p.* FROM products p
-                    INNER JOIN products_fts fts ON p.id = fts.rowid
-                    WHERE products_fts MATCH ?
-                    ORDER BY p.created_at DESC
-                """
-                params = [fts_query]
-            else:
-                # Fall back to LIKE search
-                sql = """
-                    SELECT * FROM products 
-                    WHERE caption LIKE ?
-                    ORDER BY created_at DESC
-                """
-                params = [f'%{query}%']
-            
-            if limit:
-                sql += " LIMIT ? OFFSET ?"
-                params.extend([limit, offset])
-            
-            async with db.execute(sql, params) as cursor:
-                rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
-    
-    async def get_cached_file_ids(self, product_id: int, bot_instance: int) -> Optional[List[tuple]]:
-        """
-        Get cached file IDs for a product on a specific bot instance.
-        Returns list of (file_id, file_type) tuples ordered by file_index, or None if not cached.
-        """
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                async with db.execute("""
-                    SELECT file_id, file_type FROM media_file_cache
-                    WHERE product_id = ? AND bot_instance = ?
-                    ORDER BY file_index ASC
-                """, (product_id, bot_instance)) as cursor:
-                    rows = await cursor.fetchall()
-                    return rows if rows else None
-        except aiosqlite.OperationalError as e:
-            if "no such table" in str(e):
-                logger.error(f"media_file_cache table does not exist - this should not happen after init_db()! Attempting recovery...")
-                
-                # Attempt to create the table on-the-fly as a recovery mechanism
-                try:
-                    async with aiosqlite.connect(self.db_path) as db:
-                        await db.execute("""
-                            CREATE TABLE IF NOT EXISTS media_file_cache (
-                                product_id INTEGER NOT NULL,
-                                bot_instance INTEGER NOT NULL,
-                                file_id TEXT NOT NULL,
-                                file_type TEXT NOT NULL,
-                                file_index INTEGER NOT NULL DEFAULT 0,
-                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                PRIMARY KEY (product_id, bot_instance, file_index),
-                                FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
-                            )
-                        """)
-                        await db.commit()
-                        await db.execute("PRAGMA wal_checkpoint(FULL)")
-                        logger.info("✅ Successfully created media_file_cache table as fallback")
-                except Exception as create_error:
-                    logger.error(f"Failed to create media_file_cache table in fallback: {create_error}")
-                
-                return None  # Return None for this request, will work on next call
-            raise
-    
-    async def cache_file_ids(self, product_id: int, bot_instance: int, file_ids: List[tuple]):
-        """
-        Cache file IDs for a product on a specific bot instance.
-        file_ids should be a list of (file_id, file_type) tuples.
-        """
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                # Delete existing cache for this product/bot combination
-                await db.execute("""
-                    DELETE FROM media_file_cache 
-                    WHERE product_id = ? AND bot_instance = ?
-                """, (product_id, bot_instance))
-                
-                # Insert new cache entries
-                for index, (file_id, file_type) in enumerate(file_ids):
-                    await db.execute("""
-                        INSERT INTO media_file_cache (product_id, bot_instance, file_id, file_type, file_index)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (product_id, bot_instance, file_id, file_type, index))
-                
-                await db.commit()
-        except aiosqlite.OperationalError as e:
-            if "no such table" in str(e):
-                logger.error(f"media_file_cache table does not exist when trying to cache - this should not happen! Attempting recovery...")
-                
-                # Attempt to create the table on-the-fly as a recovery mechanism
-                try:
-                    async with aiosqlite.connect(self.db_path) as db:
-                        await db.execute("""
-                            CREATE TABLE IF NOT EXISTS media_file_cache (
-                                product_id INTEGER NOT NULL,
-                                bot_instance INTEGER NOT NULL,
-                                file_id TEXT NOT NULL,
-                                file_type TEXT NOT NULL,
-                                file_index INTEGER NOT NULL DEFAULT 0,
-                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                PRIMARY KEY (product_id, bot_instance, file_index),
-                                FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
-                            )
-                        """)
-                        await db.commit()
-                        await db.execute("PRAGMA wal_checkpoint(FULL)")
-                        logger.info("✅ Successfully created media_file_cache table as fallback in cache_file_ids")
-                        
-                        # Retry the cache operation now that table exists
-                        await db.execute("""
-                            DELETE FROM media_file_cache 
-                            WHERE product_id = ? AND bot_instance = ?
-                        """, (product_id, bot_instance))
-                        
-                        for index, (file_id, file_type) in enumerate(file_ids):
-                            await db.execute("""
-                                INSERT INTO media_file_cache (product_id, bot_instance, file_id, file_type, file_index)
-                                VALUES (?, ?, ?, ?, ?)
-                            """, (product_id, bot_instance, file_id, file_type, index))
-                        
-                        await db.commit()
-                        logger.info(f"✅ Successfully cached file IDs after recovery for product {product_id}, bot {bot_instance}")
-                except Exception as create_error:
-                    logger.error(f"Failed to create/use media_file_cache table in fallback: {create_error}")
-                    raise
-            else:
-                raise
 
 

@@ -60,17 +60,12 @@ logging.getLogger('httpx').setLevel(logging.WARNING)  # Reduce noise from HTTP l
 # Initialize database
 db = Database()
 
-# Database initialization lock for multi-bot support
-db_init_lock = asyncio.Lock()
-db_initialized = False
-
 # Rate limiting (simple in-memory store)
 user_last_message = {}
 
 # Media group collection (temporary storage for grouping messages)
 media_group_messages = {}
 media_group_timers = {}
-
 
 
 async def notify_admins_for_categorization(context: ContextTypes.DEFAULT_TYPE, product_id: int):
@@ -163,10 +158,9 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
     if not caption:
         caption = f"[Album - {len(messages)} items]"
     
-    # Collect all file IDs and message IDs
+    # Collect all file IDs
     file_ids = []
     file_types = []
-    message_ids = []
     
     for msg in messages:
         # Create a temporary update object for each message
@@ -175,7 +169,6 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
         if file_id:
             file_ids.append(file_id)
             file_types.append(file_type)
-            message_ids.append(msg.message_id)
     
     if not file_ids:
         logger.warning(f"No file IDs extracted from media group {media_group_id}")
@@ -185,16 +178,14 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
     existing_product_id = await db.get_or_create_media_group_product(media_group_id, chat_id)
     
     if existing_product_id:
-        # Update existing product with new file IDs and message IDs
+        # Update existing product with new file IDs
         additional_files = json.dumps(list(zip(file_ids[1:], file_types[1:])))
-        additional_msg_ids = json.dumps(message_ids[1:]) if len(message_ids) > 1 else None
-        await db.update_product_media(existing_product_id, additional_files, additional_msg_ids)
+        await db.update_product_media(existing_product_id, additional_files)
         logger.info(f"Updated media group product {existing_product_id} with {len(file_ids)} files")
         return
     
     # Create new product with first file as primary (NO automatic categorization)
     additional_files = json.dumps(list(zip(file_ids[1:], file_types[1:]))) if len(file_ids) > 1 else None
-    additional_msg_ids = json.dumps(message_ids[1:]) if len(message_ids) > 1 else None
     
     product_id = await db.add_product(
         file_id=file_ids[0],
@@ -204,7 +195,6 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
         chat_id=chat_id,
         media_group_id=media_group_id,
         additional_file_ids=additional_files,
-        additional_message_ids=additional_msg_ids,
         category=None,  # No automatic categorization
         subcategory=None
     )
@@ -474,7 +464,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
     
     if callback_data == "broadcast_confirm_all":
-        # Confirm and send broadcast to all users across all bot instances
+        # Confirm and send broadcast to all users
         message_text = context.user_data.get('broadcast_message')
         
         if not message_text:
@@ -484,7 +474,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         
         # Send status message
         await query.edit_message_text(
-            "📡 **Broadcasting message across all bot instances...**\n\n"
+            "📡 **Broadcasting message...**\n\n"
             "Please wait while the message is queued for all users.",
             parse_mode="Markdown"
         )
@@ -499,31 +489,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             exclude_blocked=True
         )
         
-        # Get user distribution across bot instances for the confirmation message
-        users_by_bot = await db.get_users_by_bot_instance()
-        
-        # Count eligible users per bot instance
-        from utils.helpers import get_admin_ids
-        admin_ids = get_admin_ids()
-        bot_stats = []
-        for bot_instance, users in sorted(users_by_bot.items()):
-            eligible = len([u for u in users if not u.get('is_blocked', 0) and u['user_id'] not in admin_ids])
-            if eligible > 0:
-                bot_stats.append(f"  • Bot #{bot_instance}: {eligible} users")
-        
-        bot_distribution = "\n".join(bot_stats) if bot_stats else "  • No users"
-        num_bots = len(users_by_bot)
-        
         await query.edit_message_text(
             f"✅ **Broadcast Complete**\n\n"
-            f"📨 Total messages queued: {queued_count}\n"
-            f"🤖 Bot instances: {num_bots}\n\n"
-            f"**Distribution:**\n{bot_distribution}\n\n"
+            f"📨 Messages queued: {queued_count}\n"
             f"📝 Message: {message_text[:100]}{'...' if len(message_text) > 100 else ''}\n\n"
             f"Messages will be delivered with rate-limiting intervals.",
             parse_mode="Markdown"
         )
-        logger.info(f"Admin {user_id} broadcast message to {queued_count} users across {num_bots} bot instances")
+        logger.info(f"Admin {user_id} broadcast message to {queued_count} users")
         
         context.user_data.clear()
         return
@@ -1122,17 +1095,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.channel_post:
         return
     
-    # Get bot_instance from context
-    bot_instance = context.bot_data.get('bot_instance', 1)
-    
     # Track user
     user = update.effective_user
     await db.track_user(
         user_id=user.id,
         username=user.username,
         first_name=user.first_name,
-        last_name=user.last_name,
-        bot_instance=bot_instance
+        last_name=user.last_name
     )
     
     # Check if user is blocked
@@ -1210,130 +1179,81 @@ async def cleanup_task(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error in cleanup task: {e}")
 
 
-async def post_init(application: Application, bot_instance: int = 1):
+async def post_init(application: Application):
     """Initialize database and start background tasks."""
-    global db_initialized
-    
-    # Log which bot instance is initializing
-    logger.info(f"===== Initializing bot instance {bot_instance} =====")
-    
-    # Use lock to ensure database is initialized only once
-    async with db_init_lock:
-        if not db_initialized:
-            logger.info("First bot instance - initializing database...")
-            await db.init_db()
-            logger.info("✅ Database initialized")
-            db_initialized = True
-        else:
-            logger.info(f"Database already initialized (bot instance {bot_instance})")
+    await db.init_db()
+    logger.info("Database initialized")
     
     # Set up translation service with database
     translation_service.set_database(db)
-    logger.info(f"Translation service configured for bot instance {bot_instance}")
-    
-    # Add a small delay for secondary bots to avoid command setup conflicts
-    # This ensures commands are set sequentially rather than simultaneously
-    if bot_instance > 1:
-        delay = 2.5 * (bot_instance - 1)  # 2.5s, 5.0s, 7.5s, etc.
-        logger.info(f"Bot instance {bot_instance}: Adding {delay}s delay before command setup to avoid conflicts")
-        await asyncio.sleep(delay)
+    logger.info("Translation service configured with database caching")
     
     # Set bot commands for the command menu
-    logger.info(f"Setting up Telegram command menu for bot instance {bot_instance}...")
     await setup_bot_commands(application.bot)
-    logger.info(f"✅ Command menu setup complete for bot instance {bot_instance}")
     
     # Start cleanup task
     asyncio.create_task(cleanup_task(application))
-    logger.info(f"===== Bot instance {bot_instance} initialization complete =====")
 
 
 async def setup_bot_commands(bot):
     """Set up bot commands that appear in the Telegram command menu."""
-    logger.info("========== setup_bot_commands called ==========")
-    max_retries = 3
-    retry_delay = 2  # seconds
+    # Define user commands (available to all users)
+    # Removed: language, subscribe, unsubscribe per requirements
+    user_commands = [
+        BotCommand("start", "Start the bot and select language"),
+        BotCommand("menu", "Browse the product catalog"),
+    ]
     
-    for attempt in range(max_retries):
+    # Define admin commands (available to admins only)
+    # Removed: block, unblock per requirements
+    admin_commands = user_commands + [
+        BotCommand("users", "View and manage bot users"),
+        BotCommand("send", "Send a message to a specific user"),
+        BotCommand("broadcast", "Send a message to all users"),
+        BotCommand("setcontact", "Set order contact username"),
+        BotCommand("recategorize", "Categorize uncategorized products"),
+        BotCommand("nuke", "Delete all products (use with caution)"),
+    ]
+    
+    # Set default commands for all users
+    await bot.set_my_commands(user_commands)
+    
+    # Set admin commands for each admin
+    admin_ids = get_admin_ids()
+    for admin_id in admin_ids:
         try:
-            bot_info = await bot.get_me()
-            bot_username = bot_info.username
-            logger.info(f"Setting up commands for bot @{bot_username} (attempt {attempt + 1}/{max_retries})...")
-            
-            # Define user commands (available to all users)
-            # Removed: language, subscribe, unsubscribe per requirements
-            user_commands = [
-                BotCommand("start", "Start the bot and select language"),
-                BotCommand("menu", "Browse the product catalog"),
-            ]
-            
-            # Define admin commands (available to admins only)
-            # Removed: block, unblock per requirements
-            admin_commands = user_commands + [
-                BotCommand("users", "View and manage bot users"),
-                BotCommand("send", "Send a message to a specific user"),
-                BotCommand("broadcast", "Send a message to all users"),
-                BotCommand("setcontact", "Set order contact username"),
-                BotCommand("recategorize", "Categorize uncategorized products"),
-                BotCommand("nuke", "Delete all products (use with caution)"),
-            ]
-            
-            # Set default commands for all users
-            await bot.set_my_commands(user_commands)
-            
-            # Verify commands were set
-            set_commands = await bot.get_my_commands()
-            if len(set_commands) != len(user_commands):
-                raise Exception(f"Command count mismatch: expected {len(user_commands)}, got {len(set_commands)}")
-            
-            logger.info(f"✅ Verified user commands for bot @{bot_username}: {[cmd.command for cmd in set_commands]}")
-            
-            # Set admin commands for each admin with better error handling
-            admin_ids = get_admin_ids()
-            logger.info(f"Configuring admin commands for {len(admin_ids)} admins on bot @{bot_username}")
-            
-            for admin_id in admin_ids:
-                try:
-                    await bot.set_my_commands(
-                        admin_commands,
-                        scope=BotCommandScopeChat(chat_id=admin_id)
-                    )
-                    # Verify admin commands
-                    admin_set_commands = await bot.get_my_commands(scope=BotCommandScopeChat(chat_id=admin_id))
-                    logger.info(f"✅ Verified admin commands for user {admin_id}: {len(admin_set_commands)} commands")
-                except Exception as e:
-                    logger.warning(f"Could not set/verify admin commands for {admin_id}: {e}")
-            
-            logger.info(f"✅ Bot commands configured successfully for @{bot_username}")
-            return  # Success!
-            
+            await bot.set_my_commands(
+                admin_commands,
+                scope=BotCommandScopeChat(chat_id=admin_id)
+            )
+            logger.info(f"Set admin commands for user {admin_id}")
         except Exception as e:
-            logger.error(f"Attempt {attempt + 1}/{max_retries} failed to configure bot commands: {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay * (attempt + 1))  # Progressive backoff (2s, 4s, 6s)
-            else:
-                logger.error(f"Failed to configure bot commands after {max_retries} attempts", exc_info=True)
-                raise
+            logger.warning(f"Could not set admin commands for {admin_id}: {e}")
+    
+    logger.info("Bot commands configured successfully")
 
 
-def setup_bot_application(bot_token: str, bot_instance: int = 1) -> Application:
-    """
-    Setup and configure a single bot application instance.
+def main():
+    """Main function to start the bot."""
+    # Validate configuration on startup
+    try:
+        Config.validate()
+    except ConfigError as e:
+        logger.error(str(e))
+        return
     
-    Args:
-        bot_token: The Telegram bot token to use
-        bot_instance: The bot instance number (1-based) for logging and database
-        
-    Returns:
-        Configured Application object
-    """
-    # Create application with post_init that includes bot_instance
-    async def post_init_wrapper(app: Application):
-        # Store bot_instance in bot_data for handlers to access
-        app.bot_data['bot_instance'] = bot_instance
-        await post_init(app, bot_instance=bot_instance)
+    # Check if we should use webhook mode
+    if Config.USE_WEBHOOK:
+        logger.info("Webhook mode detected. Please run webhook_server.py instead.")
+        logger.info("Example: python webhook_server.py")
+        logger.info("Or use: uvicorn webhook_server:app --host 0.0.0.0 --port 8000")
+        return
     
-    application = Application.builder().token(bot_token).post_init(post_init_wrapper).build()
+    # Get bot token from config
+    bot_token = Config.BOT_TOKEN
+    
+    # Create application
+    application = Application.builder().token(bot_token).post_init(post_init).build()
     
     # Register handlers
     application.add_handler(CommandHandler("start", start_command))
@@ -1371,7 +1291,7 @@ def setup_bot_application(bot_token: str, bot_instance: int = 1) -> Application:
                 channel_post_handler
             )
         )
-        logger.info(f"Channel monitoring enabled for bot instance {bot_instance}: {channel_id or channel_username}")
+        logger.info(f"Channel monitoring enabled for: {channel_id or channel_username}")
     
     # Callback query handler (for inline buttons)
     application.add_handler(CallbackQueryHandler(callback_query_handler))
@@ -1387,121 +1307,12 @@ def setup_bot_application(bot_token: str, bot_instance: int = 1) -> Application:
     # Error handler
     application.add_error_handler(error_handler)
     
-    logger.info(f"Bot instance {bot_instance} application configured successfully")
-    return application
-
-
-def main():
-    """Main function to start the bot."""
-    # Validate configuration on startup
-    try:
-        Config.validate()
-    except ConfigError as e:
-        logger.error(str(e))
-        return
-    
-    # Check if we should use webhook mode
-    if Config.USE_WEBHOOK:
-        logger.info("Webhook mode detected. Please run webhook_server.py instead.")
-        logger.info("Example: python webhook_server.py")
-        logger.info("Or use: uvicorn webhook_server:app --host 0.0.0.0 --port 8000")
-        return
-    
-    # Get all bot tokens
-    bot_tokens = Config.BOT_TOKENS
-    
-    if not bot_tokens:
-        logger.error("No bot tokens configured. Please set BOT_TOKEN or BOT_TOKEN_1.")
-        return
-    
-    # Check if we have multiple tokens
-    if len(bot_tokens) == 1:
-        # Single bot mode - use simplified approach for backward compatibility
-        logger.info("Starting single bot instance in polling mode...")
-        token = bot_tokens[0]
-        token_suffix = token[-3:] if len(token) > 3 else "***"
-        logger.info(f"Starting bot instance 1 with token: ***{token_suffix}")
-        
-        application = setup_bot_application(token, bot_instance=1)
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
-        )
-    else:
-        # Multiple bot mode - run all bots concurrently
-        logger.info(f"Starting {len(bot_tokens)} bot instances in polling mode...")
-        
-        # Log each bot instance
-        for i, token in enumerate(bot_tokens, 1):
-            token_suffix = token[-3:] if len(token) > 3 else "***"
-            logger.info(f"Starting bot instance {i} with token: ***{token_suffix}")
-        
-        # Create applications for each token
-        applications = []
-        for i, token in enumerate(bot_tokens, 1):
-            app = setup_bot_application(token, bot_instance=i)
-            applications.append(app)
-        
-        # Run all bots concurrently
-        async def run_multiple_bots():
-            """Run multiple bot instances concurrently."""
-            # Create shutdown event for clean termination
-            shutdown_event = asyncio.Event()
-            
-            async def run_bot(application, instance_num):
-                """Run a single bot instance."""
-                try:
-                    logger.info(f"Bot instance {instance_num} starting polling...")
-                    await application.initialize()
-                    await application.start()
-                    await application.updater.start_polling(
-                        allowed_updates=Update.ALL_TYPES,
-                        drop_pending_updates=True
-                    )
-                    # Wait for shutdown signal
-                    await shutdown_event.wait()
-                except asyncio.CancelledError:
-                    logger.info(f"Bot instance {instance_num} received cancellation signal")
-                    raise
-                except Exception as e:
-                    logger.error(f"Bot instance {instance_num} error: {e}", exc_info=True)
-                    raise
-                finally:
-                    logger.info(f"Bot instance {instance_num} shutting down...")
-                    try:
-                        await application.updater.stop()
-                        await application.stop()
-                        await application.shutdown()
-                    except Exception as e:
-                        logger.error(f"Error shutting down bot instance {instance_num}: {e}")
-            
-            try:
-                # Start all applications
-                tasks = [
-                    asyncio.create_task(run_bot(app, i))
-                    for i, app in enumerate(applications, 1)
-                ]
-                
-                logger.info(f"All {len(bot_tokens)} bot instances running in polling mode")
-                
-                # Wait for all tasks to complete
-                await asyncio.gather(*tasks)
-                
-            except KeyboardInterrupt:
-                logger.info("Received shutdown signal. Stopping all bot instances...")
-                shutdown_event.set()
-                # Wait a bit for graceful shutdown
-                await asyncio.sleep(1)
-            except Exception as e:
-                logger.error(f"Error in multi-bot runner: {e}", exc_info=True)
-                shutdown_event.set()
-                raise
-        
-        # Run the async function
-        try:
-            asyncio.run(run_multiple_bots())
-        except KeyboardInterrupt:
-            logger.info("Shutdown complete")
+    # Start the bot in polling mode
+    logger.info("Starting bot in polling mode...")
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True
+    )
 
 
 if __name__ == "__main__":

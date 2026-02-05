@@ -17,9 +17,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     user = update.effective_user
     
-    # Get bot_instance from context
-    bot_instance = context.bot_data.get('bot_instance', 1)
-    
     # Check if this is a new user (doesn't exist in database)
     is_new_user = not await db.user_exists(user.id)
     
@@ -28,8 +25,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id=user.id,
         username=user.username,
         first_name=user.first_name,
-        last_name=user.last_name,
-        bot_instance=bot_instance
+        last_name=user.last_name
     )
     
     # For new users, show language selection menu
@@ -128,16 +124,12 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /subscribe command - enable product notifications."""
     user_id = update.effective_user.id
     
-    # Get bot_instance from context
-    bot_instance = context.bot_data.get('bot_instance', 1)
-    
     # Track user
     await db.track_user(
         user_id=user_id,
         username=update.effective_user.username,
         first_name=update.effective_user.first_name,
-        last_name=update.effective_user.last_name,
-        bot_instance=bot_instance
+        last_name=update.effective_user.last_name
     )
     
     # Get user's language preference

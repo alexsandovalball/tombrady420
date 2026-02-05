@@ -20,8 +20,6 @@ class ConfigClass:
         """Initialize and load configuration from environment variables."""
         self._loaded = False
         self.BOT_TOKEN: Optional[str] = None
-        self.BOT_TOKENS: List[str] = []  # Multiple bot tokens for multi-bot support
-        self.BOT_INSTANCE: Optional[int] = None  # Optional: specify which token to use (1-based index)
         self.ADMIN_IDS: List[int] = []
         self.CHANNEL_ID: Optional[int] = None
         self.CHANNEL_USERNAME: Optional[str] = None
@@ -29,10 +27,6 @@ class ConfigClass:
         self.USE_WEBHOOK: bool = False
         self.WEBHOOK_URL: Optional[str] = None
         self.ORDER_CONTACT: str = '@FLYAWAYPEP'  # Configurable order contact
-        self.ENABLE_WAL_MODE: bool = True
-        self.ENABLE_FTS_SEARCH: bool = True
-        self.DB_POOL_SIZE: int = 10
-        self.DB_CACHE_TTL: int = 300  # 5 minutes
         self._load_config()
     
     def _load_config(self):
@@ -40,51 +34,11 @@ class ConfigClass:
         if self._loaded:
             return
         
-        # Load BOT_TOKEN (backward compatibility)
+        # Load BOT_TOKEN
         try:
             self.BOT_TOKEN = config('BOT_TOKEN')
         except UndefinedValueError:
             self.BOT_TOKEN = None
-        
-        # Load multiple bot tokens (BOT_TOKEN_1, BOT_TOKEN_2, etc.)
-        bot_tokens = []
-        if self.BOT_TOKEN:
-            # If single BOT_TOKEN exists, use it as primary
-            bot_tokens.append(self.BOT_TOKEN)
-        else:
-            # Try loading numbered tokens
-            for i in range(1, 10):  # Support up to 9 bots
-                try:
-                    token = config(f'BOT_TOKEN_{i}')
-                    if token:
-                        bot_tokens.append(token)
-                except UndefinedValueError:
-                    break  # Stop at first missing token
-        
-        self.BOT_TOKENS = bot_tokens
-        
-        # Load BOT_INSTANCE (optional override)
-        bot_instance_str = config('BOT_INSTANCE', default=None)
-        if bot_instance_str is not None:
-            try:
-                bot_instance = int(bot_instance_str)
-                self.BOT_INSTANCE = bot_instance
-                # If BOT_INSTANCE is set, use that specific token
-                if 1 <= bot_instance <= len(bot_tokens):
-                    self.BOT_TOKEN = bot_tokens[bot_instance - 1]
-                    # When BOT_INSTANCE is set, only use that single token
-                    self.BOT_TOKENS = [self.BOT_TOKEN]
-                else:
-                    logger.warning(f"BOT_INSTANCE={bot_instance} is out of range (1-{len(bot_tokens)})")
-            except (ValueError, TypeError) as e:
-                logger.warning(f"Invalid BOT_INSTANCE value '{bot_instance_str}': must be an integer between 1 and {len(bot_tokens)}")
-                self.BOT_INSTANCE = None
-        else:
-            self.BOT_INSTANCE = None
-        
-        # Set BOT_TOKEN to first token for backward compatibility (if not already set by BOT_INSTANCE)
-        if not self.BOT_TOKEN and bot_tokens:
-            self.BOT_TOKEN = bot_tokens[0]
         
         # Load ADMIN_IDS
         try:
@@ -105,12 +59,6 @@ class ConfigClass:
         self.WEBHOOK_URL = config('WEBHOOK_URL', default=None)
         self.ORDER_CONTACT = config('ORDER_CONTACT', default='@FLYAWAYPEP')
         
-        # Performance optimization settings
-        self.ENABLE_WAL_MODE = config('ENABLE_WAL_MODE', default=True, cast=bool)
-        self.ENABLE_FTS_SEARCH = config('ENABLE_FTS_SEARCH', default=True, cast=bool)
-        self.DB_POOL_SIZE = config('DB_POOL_SIZE', default=10, cast=int)
-        self.DB_CACHE_TTL = config('DB_CACHE_TTL', default=300, cast=int)
-        
         self._loaded = True
     
     def validate(self) -> None:
@@ -120,15 +68,15 @@ class ConfigClass:
         """
         errors = []
         
-        # Validate BOT_TOKEN or BOT_TOKENS
-        if not self.BOT_TOKEN and not self.BOT_TOKENS:
-            errors.append("BOT_TOKEN or BOT_TOKEN_1 is required. Get it from @BotFather on Telegram.")
+        # Validate BOT_TOKEN
+        if not self.BOT_TOKEN:
+            errors.append("BOT_TOKEN is required. Get it from @BotFather on Telegram.")
         
         # Validate ADMIN_IDS
         if not self.ADMIN_IDS:
             errors.append("ADMIN_IDS is required. Add at least one admin user ID. Get your ID from @userinfobot.")
         
-        # Validate channel configuration (only required for primary bot)
+        # Validate channel configuration
         if not self.CHANNEL_ID and not self.CHANNEL_USERNAME:
             errors.append(
                 "Either CHANNEL_ID or CHANNEL_USERNAME must be set. "
@@ -147,16 +95,11 @@ class ConfigClass:
             raise ConfigError(error_message)
         
         logger.info("✅ Configuration validation successful")
-        logger.info(f"  - Bot instances: {len(self.BOT_TOKENS)}")
-        if self.BOT_INSTANCE:
-            logger.info(f"  - BOT_INSTANCE set to: {self.BOT_INSTANCE} (single-bot mode)")
-        logger.info(f"  - Primary bot token: {'*' * 10}{self.BOT_TOKEN[-5:]}")
+        logger.info(f"  - Bot token: {'*' * 10}{self.BOT_TOKEN[-5:]}")
         logger.info(f"  - Admin IDs: {len(self.ADMIN_IDS)} admin(s) configured")
         logger.info(f"  - Channel: {self.CHANNEL_ID or self.CHANNEL_USERNAME}")
         logger.info(f"  - Database: {self.DB_PATH}")
         logger.info(f"  - Webhook mode: {self.USE_WEBHOOK}")
-        logger.info(f"  - WAL mode: {self.ENABLE_WAL_MODE}")
-        logger.info(f"  - FTS search: {self.ENABLE_FTS_SEARCH}")
 
 
 # Create a singleton instance
