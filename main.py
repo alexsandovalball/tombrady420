@@ -1238,51 +1238,69 @@ async def post_init(application: Application, bot_instance: int = 1):
 
 async def setup_bot_commands(bot):
     """Set up bot commands that appear in the Telegram command menu."""
-    try:
-        bot_info = await bot.get_me()
-        bot_username = bot_info.username
-        logger.info(f"Setting up commands for bot @{bot_username}...")
-        
-        # Define user commands (available to all users)
-        # Removed: language, subscribe, unsubscribe per requirements
-        user_commands = [
-            BotCommand("start", "Start the bot and select language"),
-            BotCommand("menu", "Browse the product catalog"),
-        ]
-        
-        # Define admin commands (available to admins only)
-        # Removed: block, unblock per requirements
-        admin_commands = user_commands + [
-            BotCommand("users", "View and manage bot users"),
-            BotCommand("send", "Send a message to a specific user"),
-            BotCommand("broadcast", "Send a message to all users"),
-            BotCommand("setcontact", "Set order contact username"),
-            BotCommand("recategorize", "Categorize uncategorized products"),
-            BotCommand("nuke", "Delete all products (use with caution)"),
-        ]
-        
-        # Set default commands for all users
-        await bot.set_my_commands(user_commands)
-        logger.info(f"✅ Set user commands for bot @{bot_username}: {[cmd.command for cmd in user_commands]}")
-        
-        # Set admin commands for each admin
-        admin_ids = get_admin_ids()
-        logger.info(f"Configuring admin commands for {len(admin_ids)} admins on bot @{bot_username}")
-        
-        for admin_id in admin_ids:
-            try:
-                await bot.set_my_commands(
-                    admin_commands,
-                    scope=BotCommandScopeChat(chat_id=admin_id)
-                )
-                logger.info(f"✅ Set admin commands for user {admin_id} on bot @{bot_username}")
-            except Exception as e:
-                logger.warning(f"Could not set admin commands for {admin_id} on bot @{bot_username}: {e}")
-        
-        logger.info(f"✅ Bot commands configured successfully for @{bot_username}")
-    except Exception as e:
-        logger.error(f"Failed to configure bot commands: {e}", exc_info=True)
-        raise
+    max_retries = 3
+    retry_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            bot_info = await bot.get_me()
+            bot_username = bot_info.username
+            logger.info(f"Setting up commands for bot @{bot_username} (attempt {attempt + 1}/{max_retries})...")
+            
+            # Define user commands (available to all users)
+            # Removed: language, subscribe, unsubscribe per requirements
+            user_commands = [
+                BotCommand("start", "Start the bot and select language"),
+                BotCommand("menu", "Browse the product catalog"),
+            ]
+            
+            # Define admin commands (available to admins only)
+            # Removed: block, unblock per requirements
+            admin_commands = user_commands + [
+                BotCommand("users", "View and manage bot users"),
+                BotCommand("send", "Send a message to a specific user"),
+                BotCommand("broadcast", "Send a message to all users"),
+                BotCommand("setcontact", "Set order contact username"),
+                BotCommand("recategorize", "Categorize uncategorized products"),
+                BotCommand("nuke", "Delete all products (use with caution)"),
+            ]
+            
+            # Set default commands for all users
+            await bot.set_my_commands(user_commands)
+            
+            # Verify commands were set
+            set_commands = await bot.get_my_commands()
+            if len(set_commands) != len(user_commands):
+                raise Exception(f"Command count mismatch: expected {len(user_commands)}, got {len(set_commands)}")
+            
+            logger.info(f"✅ Verified user commands for bot @{bot_username}: {[cmd.command for cmd in set_commands]}")
+            
+            # Set admin commands for each admin with better error handling
+            admin_ids = get_admin_ids()
+            logger.info(f"Configuring admin commands for {len(admin_ids)} admins on bot @{bot_username}")
+            
+            for admin_id in admin_ids:
+                try:
+                    await bot.set_my_commands(
+                        admin_commands,
+                        scope=BotCommandScopeChat(chat_id=admin_id)
+                    )
+                    # Verify admin commands
+                    admin_set_commands = await bot.get_my_commands(scope=BotCommandScopeChat(chat_id=admin_id))
+                    logger.info(f"✅ Verified admin commands for user {admin_id}: {len(admin_set_commands)} commands")
+                except Exception as e:
+                    logger.warning(f"Could not set/verify admin commands for {admin_id}: {e}")
+            
+            logger.info(f"✅ Bot commands configured successfully for @{bot_username}")
+            return  # Success!
+            
+        except Exception as e:
+            logger.error(f"Attempt {attempt + 1}/{max_retries} failed to configure bot commands: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+            else:
+                logger.error(f"Failed to configure bot commands after {max_retries} attempts", exc_info=True)
+                raise
 
 
 def setup_bot_application(bot_token: str, bot_instance: int = 1) -> Application:

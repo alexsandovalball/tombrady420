@@ -146,30 +146,25 @@ class Database:
                 )
             """)
             
-            # Check if media_file_cache table exists (for existing databases)
-            cursor = await db.execute("""
-                SELECT name FROM sqlite_master 
-                WHERE type='table' AND name='media_file_cache'
+            # Create media_file_cache table using atomic IF NOT EXISTS
+            # This prevents race conditions with multiple bot instances
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS media_file_cache (
+                    product_id INTEGER NOT NULL,
+                    bot_instance INTEGER NOT NULL,
+                    file_id TEXT NOT NULL,
+                    file_type TEXT NOT NULL,
+                    file_index INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (product_id, bot_instance, file_index),
+                    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+                )
             """)
-            table_exists = await cursor.fetchone()
             
-            if not table_exists:
-                logger.info("Creating media_file_cache table for multi-bot file caching...")
-                await db.execute("""
-                    CREATE TABLE media_file_cache (
-                        product_id INTEGER NOT NULL,
-                        bot_instance INTEGER NOT NULL,
-                        file_id TEXT NOT NULL,
-                        file_type TEXT NOT NULL,
-                        file_index INTEGER NOT NULL DEFAULT 0,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        PRIMARY KEY (product_id, bot_instance, file_index),
-                        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
-                    )
-                """)
-                logger.info("✅ media_file_cache table created successfully")
-            else:
-                logger.debug("✓ media_file_cache table already exists")
+            # CRITICAL: Commit immediately after creating critical tables
+            # This ensures the table is visible to all database connections
+            await db.commit()
+            logger.info("✅ media_file_cache table created/verified")
             
             # Set default order contact if not exists
             await db.execute("""
@@ -261,6 +256,19 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_translation_cache_last_used ON translation_cache(last_used DESC)")
             
             logger.info("Database indexes created successfully")
+            
+            # Verify critical tables exist
+            critical_tables = ['products', 'bot_users', 'media_file_cache', 'bot_settings']
+            for table_name in critical_tables:
+                cursor = await db.execute("""
+                    SELECT name FROM sqlite_master 
+                    WHERE type='table' AND name=?
+                """, (table_name,))
+                exists = await cursor.fetchone()
+                if not exists:
+                    logger.error(f"❌ CRITICAL: Table '{table_name}' does not exist after initialization!")
+                else:
+                    logger.debug(f"✓ Verified table '{table_name}' exists")
             
             await db.commit()
             logger.info("Database initialized successfully")
