@@ -2,15 +2,15 @@
 
 ## Overview
 
-The Telegram Catalog Bot now supports running multiple bot instances simultaneously! This allows you to scale your bot to serve more users while maintaining a shared product catalog.
+The Telegram Catalog Bot now supports running multiple bot instances **concurrently from a single deployment**! This allows you to scale your bot to serve more users while maintaining a shared product catalog.
 
 ## Key Features
 
-### 🤖 Multi-Bot Architecture
-- **Primary Bot (Bot #1)**: Monitors channel posts, creates products, handles categorization
-- **Secondary Bots (Bot #2+)**: Serve users only (read-only catalog access)
-- **User Isolation**: Each user is automatically assigned to the bot they first interact with
-- **Shared Database**: All bots read from the same SQLite database
+### 🤖 Single-Process Multi-Bot Architecture
+- **Concurrent Execution**: All bot instances run together in one process
+- **Shared Database**: All bots use the same SQLite database with proper locking
+- **Automatic Load Distribution**: Users are assigned to the bot they first interact with
+- **Unified Management**: Start, stop, and monitor all bots together
 
 ### 📡 Cross-Bot Admin Messaging
 - Admin broadcasts reach **ALL users across ALL bot instances**
@@ -22,7 +22,7 @@ The Telegram Catalog Bot now supports running multiple bot instances simultaneou
 - **WAL Mode**: SQLite Write-Ahead Logging for better concurrent access
 - **FTS5 Search**: 10x faster product searches using full-text index
 - **Query Caching**: 5-minute cache for frequently accessed data
-- **Bulk Operations**: Efficient batch inserts for notifications
+- **Database Init Lock**: Prevents race conditions during startup
 
 ## Quick Start
 
@@ -46,32 +46,35 @@ The Telegram Catalog Bot now supports running multiple bot instances simultaneou
    python main.py
    ```
 
-### Multi-Bot Deployment
+### Multi-Bot Deployment (Concurrent Instances)
 
 #### Prerequisites
 - 2 or more bot tokens from @BotFather
-- All bots must have access to the same database file
-- Shared file system (same server or network storage)
+- All bots will share the same database file automatically
+- Single deployment process handles all instances
 
-#### Step 1: Configure Bot Tokens
+#### Step 1: Configure Multiple Bot Tokens
 
 Edit `.env`:
 ```env
-# Comment out single token
-# BOT_TOKEN=old_single_token
-
-# Configure multiple tokens
-BOT_TOKEN_1=110201543:AAH...  # Primary bot
-BOT_TOKEN_2=223412345:BBH...  # Secondary bot
-BOT_TOKEN_3=334523456:CCH...  # Tertiary bot
+# Use numbered tokens for multi-bot deployment
+BOT_TOKEN_1=110201543:AAH...  # Bot instance 1
+BOT_TOKEN_2=223412345:BBH...  # Bot instance 2
+BOT_TOKEN_3=334523456:CCH...  # Bot instance 3
 
 ADMIN_IDS=123456789
 CHANNEL_ID=-1001234567890
 DB_PATH=catalog.db
 
-# Performance settings
+# Performance settings (recommended)
 ENABLE_WAL_MODE=true
 ENABLE_FTS_SEARCH=true
+```
+
+**Optional: Single Bot Instance Override**
+```env
+# Run only a specific bot instance (useful for testing)
+BOT_INSTANCE=2  # Only runs BOT_TOKEN_2
 ```
 
 #### Step 2: Run Database Migration
@@ -86,33 +89,57 @@ This will:
 - ✅ Create FTS5 full-text search index
 - ✅ Add indexes for performance
 
-#### Step 3: Start Bot Instances
+#### Step 3: Start All Bot Instances
 
-**Option A: Manual (for testing)**
+**Polling Mode (default):**
 ```bash
-# Terminal 1 - Primary bot
-BOT_TOKEN=your_token_1 python main.py
-
-# Terminal 2 - Secondary bot  
-BOT_TOKEN=your_token_2 python main.py
-
-# Terminal 3 - Tertiary bot
-BOT_TOKEN=your_token_3 python main.py
+python main.py
 ```
 
-**Option B: Production (systemd services)**
+**Expected output:**
+```
+INFO - Starting 3 bot instances in polling mode...
+INFO - Starting bot instance 1 with token: ***ABC
+INFO - Starting bot instance 2 with token: ***DEF
+INFO - Starting bot instance 3 with token: ***GHI
+INFO - All 3 bot instances running in polling mode
+```
 
-Create `/etc/systemd/system/telegram-bot@.service`:
+**Webhook Mode:**
+```bash
+# Set webhook configuration
+export USE_WEBHOOK=true
+export WEBHOOK_URL=https://your-domain.com
+
+# Start webhook server
+python webhook_server.py
+```
+
+**Expected output:**
+```
+INFO - Bot instance 1 webhook: https://your-domain.com/webhook/1
+INFO - Bot instance 2 webhook: https://your-domain.com/webhook/2
+INFO - Bot instance 3 webhook: https://your-domain.com/webhook/3
+INFO - All 3 bot instances running in webhook mode
+```
+
+#### Deployment Options
+
+**Option A: Systemd Service (Production)**
+
+Create `/etc/systemd/system/telegram-bot.service`:
 ```ini
 [Unit]
-Description=Telegram Catalog Bot Instance %i
+Description=Telegram Catalog Bot (Multi-Instance)
 After=network.target
 
 [Service]
 Type=simple
 User=botuser
 WorkingDirectory=/path/to/bot
-Environment="BOT_INSTANCE=%i"
+Environment="BOT_TOKEN_1=your_token_1"
+Environment="BOT_TOKEN_2=your_token_2"
+Environment="BOT_TOKEN_3=your_token_3"
 ExecStart=/usr/bin/python3 main.py
 Restart=always
 RestartSec=10
@@ -121,68 +148,97 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-Enable and start services:
+Enable and start:
 ```bash
-sudo systemctl enable telegram-bot@1
-sudo systemctl enable telegram-bot@2
-sudo systemctl enable telegram-bot@3
-
-sudo systemctl start telegram-bot@1
-sudo systemctl start telegram-bot@2
-sudo systemctl start telegram-bot@3
+sudo systemctl enable telegram-bot
+sudo systemctl start telegram-bot
+sudo systemctl status telegram-bot
 ```
 
-**Option C: Docker Compose**
+**Option B: Docker Deployment**
+
+Create `Dockerfile`:
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+CMD ["python", "main.py"]
+```
+
+`docker-compose.yml`:
 ```yaml
 version: '3.8'
 services:
-  bot-primary:
-    image: telegram-bot:latest
+  telegram-bot:
+    build: .
     environment:
-      - BOT_TOKEN=${BOT_TOKEN_1}
-      - BOT_INSTANCE=1
+      - BOT_TOKEN_1=${BOT_TOKEN_1}
+      - BOT_TOKEN_2=${BOT_TOKEN_2}
+      - BOT_TOKEN_3=${BOT_TOKEN_3}
+      - ADMIN_IDS=${ADMIN_IDS}
+      - CHANNEL_ID=${CHANNEL_ID}
     volumes:
       - ./catalog.db:/app/catalog.db
-
-  bot-secondary:
-    image: telegram-bot:latest
-    environment:
-      - BOT_TOKEN=${BOT_TOKEN_2}
-      - BOT_INSTANCE=2
-    volumes:
-      - ./catalog.db:/app/catalog.db
-
-  bot-tertiary:
-    image: telegram-bot:latest
-    environment:
-      - BOT_TOKEN=${BOT_TOKEN_3}
-      - BOT_INSTANCE=3
-    volumes:
-      - ./catalog.db:/app/catalog.db
+    restart: unless-stopped
 ```
+
+Start:
+```bash
+docker-compose up -d
+```
+
+**Option C: Render.com (Webhook Mode)**
+
+1. Create `render.yaml`:
+```yaml
+services:
+  - type: web
+    name: telegram-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python webhook_server.py
+    envVars:
+      - key: BOT_TOKEN_1
+        sync: false
+      - key: BOT_TOKEN_2
+        sync: false
+      - key: BOT_TOKEN_3
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: CHANNEL_ID
+        sync: false
+      - key: USE_WEBHOOK
+        value: true
+      - key: WEBHOOK_URL
+        value: https://your-app.onrender.com
+```
+
+2. Deploy and add environment variables via Render dashboard
 
 ## How It Works
 
 ### User Assignment
 1. User opens Bot #2 for the first time
-2. Bot #2 calls `db.track_user(user_id, bot_instance=2)`
+2. Bot #2 tracks user with `bot_instance=2`
 3. User is permanently assigned to Bot #2
-4. All future messages from this user go to Bot #2
+4. All future interactions from this user go through Bot #2
 
-### Cross-Bot Broadcasting
+### Concurrent Execution
+- All bot instances run as async tasks in a single process
+- Each bot polls Telegram independently via `asyncio.gather()`
+- Database access is protected by WAL mode and async locks
+- Graceful shutdown stops all instances together
 
-When admin sends `/broadcast`:
+### Webhook Routing
+- Bot #1 receives webhooks at `/webhook/1`
+- Bot #2 receives webhooks at `/webhook/2`
+- Bot #3 receives webhooks at `/webhook/3`
+- Each endpoint routes to the correct bot application
 
-1. **Admin sends message** to Bot #1
-2. **System queries database** for all users grouped by bot instance:
-   - Bot #1: 500 users
-   - Bot #2: 300 users
-   - Bot #3: 200 users
-3. **Messages are queued** with bot instance information
-4. **Each bot delivers** to its own users
-5. **Admin sees confirmation**: "✅ Broadcast queued for 1,000 users across 3 bot instances"
-
-### Admin Commands
+## Admin Commands
 
 All admin commands work across all bot instances:
 
@@ -202,7 +258,7 @@ With multi-bot optimizations enabled (WAL mode + FTS5 search):
 | Broadcast 1000 users | 45s | 5s | **9x faster** |
 | Concurrent users | 100 | 500+ | **5x scale** |
 
-*Benchmarks measured on 2-core server with 4GB RAM, SQLite database ~50MB. Your results may vary based on hardware, data size, and concurrent load. WAL mode and FTS5 provide the most significant improvements.*
+*Benchmarks measured on 2-core server with 4GB RAM, SQLite database ~50MB.*
 
 ## Troubleshooting
 
@@ -221,10 +277,11 @@ sqlite3 catalog.db "PRAGMA journal_mode=WAL;"
 ### Issue: Users not distributed evenly
 **Solution:** This is normal! Users are assigned to the first bot they interact with.
 
-### Issue: Broadcast not reaching all users
-**Solution:** Check that all bot instances are running:
+### Issue: Bot instance won't start
+**Solution:** Check logs for token validation errors:
 ```bash
-ps aux | grep "python main.py"
+# Check configuration
+python -c "from configs.config import Config; Config.validate()"
 ```
 
 ## Monitoring
@@ -247,6 +304,12 @@ bot_instance  user_count
 3             189
 ```
 
+View bot logs:
+```bash
+# All instances log to the same output
+tail -f /var/log/telegram-bot.log
+```
+
 ## Migration from Single Bot
 
 **Step 1:** Backup your database
@@ -261,88 +324,82 @@ python scripts/migrate_db.py
 
 **Step 3:** All existing users will be assigned to bot_instance=1
 
-**Step 4:** Start additional bots - new users will be distributed
+**Step 4:** Update configuration with multiple tokens
+```env
+BOT_TOKEN_1=your_existing_token
+BOT_TOKEN_2=your_new_token_2
+BOT_TOKEN_3=your_new_token_3
+```
+
+**Step 5:** Restart the bot - all instances start automatically
 
 ## Best Practices
 
 ### Do:
-- ✅ Use Bot #1 as primary (monitors channel)
-- ✅ Use Bot #2+ for user distribution
+- ✅ Use 2-3 bot instances for most deployments
 - ✅ Run migration before adding bots
 - ✅ Monitor database file size
-- ✅ Test broadcasts with small user groups first
+- ✅ Test with single bot first, then scale
+- ✅ Use WAL mode for better concurrency
+- ✅ Keep all bots in same channel (or monitor different channels)
 
 ### Don't:
 - ❌ Don't manually change user's bot_instance
-- ❌ Don't run multiple Bot #1 instances (channel conflicts)
-- ❌ Don't use NFS for database (use local file system)
 - ❌ Don't exceed 9 bot instances (system limit)
-- ❌ Recommended: Stay under 5 bots for optimal performance
+- ❌ Don't run separate processes for each bot (use single deployment)
+- ❌ Don't use NFS for database (use local file system)
+- ❌ Don't skip database migration
 
-**Note:** While the system supports up to 9 bot instances (BOT_TOKEN_1 through BOT_TOKEN_9), most deployments work well with 2-3 bots. Beyond 5 bots, you may see diminishing returns due to database contention.
+**Recommended:** Stay under 5 bots for optimal performance. Beyond 5 bots, you may see diminishing returns.
 
-## Advanced Configuration
+## Testing
 
-### Custom Bot Instance in Code
-
-For advanced use cases, you can specify bot instance programmatically:
-
-```python
-# Track user with specific bot instance
-await db.track_user(
-    user_id=12345,
-    username="john",
-    first_name="John",
-    last_name="Doe",
-    bot_instance=2  # Assign to Bot #2
-)
-
-# Queue message for specific bot instance
-await db.queue_custom_message(
-    user_id=12345,
-    message_text="Hello!",
-    bot_instance=2
-)
+### Test Single Bot (Backward Compatibility)
+```bash
+export BOT_TOKEN=your_single_token
+export ADMIN_IDS=123456
+export CHANNEL_ID=-100123456
+python main.py
 ```
 
-### Query User Distribution
-
-```python
-# Get users grouped by bot instance
-users_by_bot = await db.get_users_by_bot_instance()
-
-for bot_instance, users in users_by_bot.items():
-    print(f"Bot #{bot_instance}: {len(users)} users")
+### Test Multiple Bots
+```bash
+export BOT_TOKEN_1=token1
+export BOT_TOKEN_2=token2
+export BOT_TOKEN_3=token3
+export ADMIN_IDS=123456
+export CHANNEL_ID=-100123456
+python main.py
 ```
 
-### FTS5 Search
-
-Use the new FTS5 search for faster queries:
-
-```python
-# Old method (slow)
-products = await db.search_products("nike shoes")
-
-# New method (10x faster)
-products = await db.search_products_fts("nike shoes")
+### Test BOT_INSTANCE Override
+```bash
+export BOT_TOKEN_1=token1
+export BOT_TOKEN_2=token2
+export BOT_INSTANCE=2  # Only run bot #2
+python main.py
 ```
 
 ## Support
 
 For issues or questions:
-1. Check this guide
-2. Review logs: `tail -f bot.log`
-3. Check database: `sqlite3 catalog.db .schema`
-4. Open an issue on GitHub
+1. Check this guide and [Admin Guide](ADMIN_GUIDE.md)
+2. Review logs for error messages
+3. Verify configuration with `.env.example`
+4. Test with single bot first
+5. Open an issue on GitHub
 
 ## Changelog
 
-### v2.0.0 - Multi-Bot Support
-- ✅ Multi-bot architecture with shared database
+### v2.0.0 - Single-Process Multi-Bot Support
+- ✅ Concurrent multi-bot execution in single process
+- ✅ Automatic webhook routing per bot instance
+- ✅ Database initialization lock for race condition prevention
+- ✅ Event-based graceful shutdown for all instances
+- ✅ BOT_INSTANCE override for testing
 - ✅ Cross-bot admin messaging
 - ✅ WAL mode for concurrent access
 - ✅ FTS5 full-text search
-- ✅ Performance optimizations
 - ✅ Backward compatible with single bot
 
 ### v1.0.0 - Initial Release

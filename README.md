@@ -11,9 +11,9 @@ A production-ready Telegram bot for managing and browsing a media product catalo
 
 ## 🆕 What's New: Multi-Bot Support
 
-Scale your bot to serve thousands of users! The catalog bot now supports running multiple bot instances simultaneously with:
+Scale your bot to serve thousands of users! The catalog bot now supports running multiple bot instances **concurrently from a single deployment**:
 
-- **🤖 Multi-Instance Architecture** - Primary bot + unlimited secondary bots
+- **🤖 Single-Process Multi-Bot** - All bot instances run together in one process
 - **📡 Cross-Bot Admin Messaging** - Broadcasts reach ALL users across ALL bots
 - **⚡ 10x Performance** - WAL mode, FTS5 search, query caching
 - **🔄 Backward Compatible** - Single bot deployments still work perfectly
@@ -45,7 +45,7 @@ See **[Multi-Bot Deployment Guide](docs/MULTIBOT_DEPLOYMENT.md)** for setup inst
 ### Technical Features
 - ⚡ **Async/Await Architecture** - High performance with asyncio and aiosqlite
 - 🔒 **Environment-based Configuration** - All settings via environment variables
-- 🤖 **Multi-Bot Scaling** - Run multiple bot instances with shared database ⭐ NEW
+- 🤖 **Multi-Bot Concurrent Execution** - Run multiple bot instances in single process ⭐ NEW
 - 🚀 **WAL Mode** - SQLite Write-Ahead Logging for better concurrent access ⭐ NEW
 - 🔍 **FTS5 Search** - Full-text search 10x faster than LIKE queries ⭐ NEW
 - 🌐 **Webhook Support** - Production-ready for Render.com and other platforms
