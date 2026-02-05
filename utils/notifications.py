@@ -13,6 +13,7 @@ from telegram.error import TelegramError, Forbidden
 from database import Database
 from utils.categories import get_category_display_name, get_subcategory_display_name, NOTIFICATION_EXCLUDED_CATEGORIES
 from translations.translator import translate_text_async
+from configs.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,37 @@ class NotificationService:
     def __init__(self, db: Database):
         self.db = db
     
+    def _is_primary_instance(self, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """
+        Check if this is the primary bot instance.
+        Only the primary bot (first token in BOT_TOKENS) should process notifications.
+        
+        Args:
+            context: Telegram context with bot information
+            
+        Returns:
+            True if this is the primary instance, False otherwise
+        """
+        if not hasattr(context, 'bot') or not hasattr(context.bot, 'token'):
+            # If we can't determine, assume it's primary to maintain backward compatibility
+            logger.warning("Unable to determine bot instance, assuming primary")
+            return True
+        
+        current_token = context.bot.token
+        bot_tokens = Config.BOT_TOKENS
+        
+        if not bot_tokens:
+            # No tokens configured, assume primary
+            return True
+        
+        # Primary bot is the first token in the list (index 0)
+        is_primary = current_token == bot_tokens[0]
+        
+        if not is_primary:
+            logger.debug(f"Skipping operation - not primary instance (bot token: ...{current_token[-5:]})")
+        
+        return is_primary
+    
     async def notify_users_about_product(
         self,
         context: ContextTypes.DEFAULT_TYPE,
@@ -46,7 +78,13 @@ class NotificationService:
         """
         Notify subscribed users about a new categorized product.
         Implements rate limiting to prevent spam.
+        Only runs on the primary bot instance to avoid duplicate notifications.
         """
+        # Check if this is the primary bot instance
+        if not self._is_primary_instance(context):
+            logger.info(f"Skipping notification for product {product_id} - not primary instance")
+            return
+        
         try:
             # Get product details
             product = await self.db.get_product(product_id)
@@ -100,7 +138,13 @@ class NotificationService:
         """
         Process pending notifications from the queue with rate limiting and staggered delivery.
         Groups users and sends notifications at staggered intervals to avoid spam flags.
+        Only runs on the primary bot instance to avoid duplicate notifications.
         """
+        # Check if this is the primary bot instance
+        if not self._is_primary_instance(context):
+            logger.debug("Skipping notification queue processing - not primary instance")
+            return
+        
         try:
             pending = await self.db.get_pending_notifications(limit=100)
             
@@ -368,7 +412,13 @@ class NotificationService:
     async def process_custom_message_queue(self, context: ContextTypes.DEFAULT_TYPE):
         """
         Process pending custom messages from the queue with rate limiting.
+        Only runs on the primary bot instance to avoid duplicate messages.
         """
+        # Check if this is the primary bot instance
+        if not self._is_primary_instance(context):
+            logger.debug("Skipping custom message queue processing - not primary instance")
+            return
+        
         try:
             pending = await self.db.get_pending_custom_messages(limit=100)
             
