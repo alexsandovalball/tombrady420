@@ -61,13 +61,41 @@ class NotificationService:
         # Validate BOT_TOKENS is a non-empty list
         if not bot_tokens or not isinstance(bot_tokens, list) or len(bot_tokens) == 0:
             # No tokens configured or invalid configuration, assume primary
+            logger.warning("BOT_TOKENS is empty or invalid, assuming primary instance")
+            return True
+        
+        # Fallback: if only one bot token configured, always return True
+        if len(bot_tokens) == 1:
+            logger.info(
+                f"Primary instance check: PASS (only one bot configured: "
+                f"...{current_token[-5:]})"
+            )
+            return True
+        
+        # Validate that current token exists in BOT_TOKENS list
+        if current_token not in bot_tokens:
+            logger.warning(
+                f"Primary instance check: Current bot token (...{current_token[-5:]}) "
+                f"not found in BOT_TOKENS list. This indicates a configuration error. "
+                f"Configured tokens: {len(bot_tokens)}. Assuming primary to maintain functionality."
+            )
             return True
         
         # Primary bot is the first token in the list (index 0)
         is_primary = current_token == bot_tokens[0]
         
-        if not is_primary:
-            logger.debug(f"Skipping operation - not primary instance (bot token: ...{current_token[-5:]})")
+        if is_primary:
+            logger.info(
+                f"Primary instance check: PASS (current: ...{current_token[-5:]}, "
+                f"primary: ...{bot_tokens[0][-5:]})"
+            )
+        else:
+            logger.warning(
+                f"Primary instance check: FAIL - Notifications will not be sent. "
+                f"Current bot token: ...{current_token[-5:]}, "
+                f"Expected primary: ...{bot_tokens[0][-5:]}, "
+                f"Total bots configured: {len(bot_tokens)}"
+            )
         
         return is_primary
     
@@ -83,7 +111,10 @@ class NotificationService:
         """
         # Check if this is the primary bot instance
         if not self._is_primary_instance(context):
-            logger.info(f"Skipping notification for product {product_id} - not primary instance")
+            logger.warning(
+                f"Skipping notification for product {product_id} - not primary instance. "
+                f"Only the primary bot (first in BOT_TOKENS) sends notifications."
+            )
             return
         
         try:
