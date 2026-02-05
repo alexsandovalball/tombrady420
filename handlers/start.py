@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes
 from database import Database
 from translations.translator import get_translated_string
 from translations.language_config import LANGUAGE_DISPLAY, DEFAULT_LANGUAGE
-from utils.helpers import is_admin, get_user_display_name, ADMIN_COMMANDS_FALLBACK
+from utils.helpers import is_admin, get_user_display_name, ADMIN_COMMANDS_FALLBACK, escape_markdown_v1
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -82,8 +82,9 @@ async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYP
     # Get order contact
     order_contact = await db.get_order_contact()
     
-    # Get translated welcome message with contact - name is already escaped
-    welcome_text = get_translated_string("welcome_with_contact", user_lang, name=display_name, contact=order_contact)
+    # Get translated welcome message with contact - name and contact are already escaped
+    escaped_contact = escape_markdown_v1(order_contact)
+    welcome_text = get_translated_string("welcome_with_contact", user_lang, name=display_name, contact=escaped_contact)
     
     # Add admin command info for admins
     if is_admin(user.id):
