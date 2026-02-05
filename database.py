@@ -180,6 +180,11 @@ class Database:
                 pass
             
             try:
+                await db.execute("ALTER TABLE bot_users ADD COLUMN bot_username TEXT")
+            except aiosqlite.OperationalError:
+                pass
+            
+            try:
                 await db.execute("ALTER TABLE bot_users ADD COLUMN is_blocked INTEGER DEFAULT 0")
             except aiosqlite.OperationalError:
                 pass
@@ -712,7 +717,8 @@ class Database:
                 return [row[0] for row in rows]
     
     async def track_user(self, user_id: int, username: Optional[str] = None, 
-                        first_name: Optional[str] = None, last_name: Optional[str] = None):
+                        first_name: Optional[str] = None, last_name: Optional[str] = None,
+                        bot_username: Optional[str] = None):
         """Track or update a bot user."""
         async with aiosqlite.connect(self.db_path) as db:
             # Check if user exists
@@ -724,15 +730,16 @@ class Database:
                 await db.execute("""
                     UPDATE bot_users 
                     SET username = ?, first_name = ?, last_name = ?, 
-                        last_seen = ?, interaction_count = interaction_count + 1
+                        last_seen = ?, interaction_count = interaction_count + 1,
+                        bot_username = COALESCE(?, bot_username)
                     WHERE user_id = ?
-                """, (username, first_name, last_name, datetime.now(), user_id))
+                """, (username, first_name, last_name, datetime.now(), bot_username, user_id))
             else:
                 # Insert new user
                 await db.execute("""
-                    INSERT INTO bot_users (user_id, username, first_name, last_name, first_seen, last_seen)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (user_id, username, first_name, last_name, datetime.now(), datetime.now()))
+                    INSERT INTO bot_users (user_id, username, first_name, last_name, first_seen, last_seen, bot_username)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (user_id, username, first_name, last_name, datetime.now(), datetime.now(), bot_username))
             
             await db.commit()
     
