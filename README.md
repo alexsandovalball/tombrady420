@@ -77,7 +77,7 @@ See **[Multi-Bot Deployment Guide](docs/MULTIBOT_DEPLOYMENT.md)** for setup inst
 
 3. **Configure environment variables**
    ```bash
-   cp configs/.env.example .env
+   cp .env.example .env
    ```
    
    Edit `.env` with your values:
@@ -88,9 +88,19 @@ See **[Multi-Bot Deployment Guide](docs/MULTIBOT_DEPLOYMENT.md)** for setup inst
    ORDER_CONTACT=@yourusername
    ```
    
-   See [configs/.env.example](configs/.env.example) for all available options.
+   See [.env.example](.env.example) for all available options including multi-bot configuration.
 
-4. **Run the bot**
+4. **Run database migration** (recommended for performance)
+   ```bash
+   python scripts/migrate_db.py
+   ```
+   
+   This enables:
+   - ✅ WAL mode for better concurrent access
+   - ✅ FTS5 full-text search (10x faster)
+   - ✅ Bot instance tracking for multi-bot support
+
+5. **Run the bot**
    ```bash
    python main.py
    ```
