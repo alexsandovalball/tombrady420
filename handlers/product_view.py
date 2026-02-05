@@ -183,8 +183,11 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 
                 # Use cached/obtained file IDs if available, otherwise use original
                 if cached_files and len(cached_files) == len(all_file_ids):
-                    # Use cached file IDs
-                    logger.debug(f"Using cached/obtained media group for product {product['id']}, bot {bot_instance}")
+                    # Use cached or freshly obtained file IDs
+                    if bot_instance > 1:
+                        logger.debug(f"Using bot-specific media group file IDs for product {product['id']}, bot {bot_instance}")
+                    else:
+                        logger.debug(f"Using cached media group for product {product['id']}, bot {bot_instance}")
                     for idx, (cached_file_id, cached_file_type) in enumerate(cached_files):
                         if idx == 0:
                             # First media with caption
@@ -317,8 +320,8 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 reply_markup=None  # Don't add keyboard to media message
             )
             
-            # Cache the file ID if this was bot instance 1 and we used the original
-            if bot_instance == 1 and not cached_files:
+            # Cache the file ID if we successfully sent and didn't have it cached already
+            if not cached_files:
                 # The file ID worked, so cache it for future use
                 await db.cache_file_ids(product["id"], bot_instance, [(file_id, product["file_type"])])
                 logger.info(f"Cached file_id for product {product['id']}, bot {bot_instance}")

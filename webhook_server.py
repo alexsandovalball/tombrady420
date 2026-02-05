@@ -56,7 +56,7 @@ async def setup_applications():
         
         # Add staggered delay for secondary bots to avoid race conditions
         if i > 1:
-            delay = 2.5 * i  # 2.5s, 5.0s, 7.5s, etc.
+            delay = 2.5 * (i - 1)  # 2.5s, 5.0s, 7.5s, etc.
             logger.info(f"Bot instance {i}: Adding {delay}s delay before initialization to avoid conflicts")
             await asyncio.sleep(delay)
         
