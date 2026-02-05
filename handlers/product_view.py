@@ -170,7 +170,8 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                                 file_type,
                                 source_chat_id,
                                 source_message_id,
-                                file_index=idx
+                                file_index=idx,
+                                temp_chat_id=update.effective_chat.id
                             )
                         
                         # Create tasks for concurrent execution
@@ -182,15 +183,20 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                         # Execute all tasks concurrently
                         bot_file_ids = await asyncio.gather(*tasks)
                         
-                        # Build the list of (file_id, file_type) tuples
-                        new_file_ids = [
-                            (bot_file_id, file_type)
-                            for bot_file_id, (_, file_type) in zip(bot_file_ids, all_file_ids)
-                        ]
-                        
-                        # Use the newly obtained bot-specific file IDs
-                        cached_files = new_file_ids
-                        logger.info(f"Successfully obtained {len(new_file_ids)} bot-specific file IDs for media group concurrently")
+                        # Check if any file_ids are None (failed to obtain)
+                        if None in bot_file_ids:
+                            logger.warning(f"Some bot-specific file IDs could not be obtained for media group, product {product['id']}")
+                            # Fall through to try with original IDs
+                        else:
+                            # Build the list of (file_id, file_type) tuples
+                            new_file_ids = [
+                                (bot_file_id, file_type)
+                                for bot_file_id, (_, file_type) in zip(bot_file_ids, all_file_ids)
+                            ]
+                            
+                            # Use the newly obtained bot-specific file IDs
+                            cached_files = new_file_ids
+                            logger.info(f"Successfully obtained {len(new_file_ids)} bot-specific file IDs for media group concurrently")
                     except Exception as get_error:
                         logger.error(f"Failed to proactively get bot-specific file IDs: {get_error}")
                         # Fall through to try with original IDs
@@ -317,9 +323,15 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                         product["file_type"],
                         source_chat_id,
                         source_message_id,
-                        file_index=0
+                        file_index=0,
+                        temp_chat_id=update.effective_chat.id
                     )
-                    logger.debug(f"Obtained bot-specific file_id for product {product['id']}, bot {bot_instance}")
+                    
+                    if file_id is None:
+                        logger.warning(f"Failed to get bot-specific file_id for product {product['id']}, bot {bot_instance}, using fallback")
+                        file_id = product["file_id"]
+                    else:
+                        logger.debug(f"Obtained bot-specific file_id for product {product['id']}, bot {bot_instance}")
                 except Exception as get_error:
                     logger.warning(f"Failed to proactively get bot-specific file_id, using original: {get_error}")
                     file_id = product["file_id"]
@@ -354,18 +366,28 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                     product["file_type"],
                     source_chat_id,
                     source_message_id,
-                    file_index=0
+                    file_index=0,
+                    temp_chat_id=update.effective_chat.id
                 )
                 
-                # Try sending again with the new file_id
-                await send_media_message(
-                    context,
-                    update.effective_chat.id,
-                    new_file_id,
-                    product["file_type"],
-                    caption=full_caption,
-                    reply_markup=None
-                )
+                if new_file_id is None:
+                    # Unable to get bot-specific file_id, send text-only fallback
+                    logger.error(f"Unable to obtain bot-specific file_id for product {product['id']}, bot {bot_instance}, sending text-only fallback")
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text=f"{full_caption}\n\n⚠️ Media temporarily unavailable. Please try again later.",
+                        reply_markup=None
+                    )
+                else:
+                    # Try sending again with the new file_id
+                    await send_media_message(
+                        context,
+                        update.effective_chat.id,
+                        new_file_id,
+                        product["file_type"],
+                        caption=full_caption,
+                        reply_markup=None
+                    )
             else:
                 # Re-raise the exception for bot instance 1
                 raise

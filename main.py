@@ -1245,6 +1245,7 @@ async def post_init(application: Application, bot_instance: int = 1):
 
 async def setup_bot_commands(bot):
     """Set up bot commands that appear in the Telegram command menu."""
+    logger.info("========== setup_bot_commands called ==========")
     max_retries = 3
     retry_delay = 2  # seconds
     

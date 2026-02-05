@@ -211,8 +211,9 @@ async def get_bot_specific_file_id(
     file_type: str,
     source_chat_id: int,
     source_message_id: int,
-    file_index: int = 0
-) -> str:
+    file_index: int = 0,
+    temp_chat_id: Optional[int] = None
+) -> Optional[str]:
     """
     Get or create a bot-specific file_id for media.
     
@@ -230,9 +231,12 @@ async def get_bot_specific_file_id(
         source_chat_id: Chat ID where the original media is located
         source_message_id: Message ID in the source chat
         file_index: Index of the file in a media group (0 for single media)
+        temp_chat_id: Optional chat ID to use for temporary forwarding (defaults to first admin)
     
     Returns:
-        A file_id valid for the current bot instance
+        A file_id valid for the current bot instance.
+        - For bot instance 1: Always returns a valid file_id (either cached or original)
+        - For secondary bots: Returns None if unable to obtain a bot-specific file_id via forwarding
     """
     from database import Database
     from configs.config import Config
@@ -259,18 +263,23 @@ async def get_bot_specific_file_id(
     # For secondary bots, we need to get a new file_id
     # Use forward_message to get a bot-specific file_id (returns actual Message object)
     try:
-        # Get the first admin to use as temporary destination
-        admin_ids = Config.ADMIN_IDS
-        if not admin_ids:
-            logger.warning(f"No admin IDs configured, falling back to original file_id")
-            return original_file_id
+        # Use temp_chat_id if provided, otherwise fall back to first admin
+        if temp_chat_id:
+            target_chat_id = temp_chat_id
+            logger.debug(f"Using temp_chat_id {temp_chat_id} for forwarding")
+        else:
+            # Get the first admin to use as temporary destination
+            admin_ids = Config.ADMIN_IDS
+            if not admin_ids:
+                logger.warning(f"No admin IDs configured and no temp_chat_id provided, cannot get bot-specific file_id for bot {bot_instance}")
+                return None
+            target_chat_id = admin_ids[0]
+            logger.debug(f"Using admin_chat_id {target_chat_id} for forwarding")
         
-        admin_chat_id = admin_ids[0]
-        
-        # Forward the message from source channel to admin chat
+        # Forward the message from source channel to target chat
         # This returns a Message object with media, giving us a new file_id valid for this bot
         forwarded_msg = await context.bot.forward_message(
-            chat_id=admin_chat_id,
+            chat_id=target_chat_id,
             from_chat_id=source_chat_id,
             message_id=source_message_id,
             disable_notification=True
@@ -298,21 +307,21 @@ async def get_bot_specific_file_id(
             await db.cache_file_ids(product_id, bot_instance, [(new_file_id, file_type)])
             logger.info(f"Cached new file_id for product {product_id}, bot {bot_instance}, index {file_index}")
             
-            # Delete the forwarded message to clean up admin chat
+            # Delete the forwarded message to clean up chat
             try:
-                await context.bot.delete_message(chat_id=admin_chat_id, message_id=forwarded_msg.message_id)
+                await context.bot.delete_message(chat_id=target_chat_id, message_id=forwarded_msg.message_id)
             except Exception as del_error:
-                logger.debug(f"Could not delete forwarded message from admin chat: {del_error}")
+                logger.debug(f"Could not delete forwarded message from chat {target_chat_id}: {del_error}")
             
             return new_file_id
         else:
-            # Fallback: return original file_id and hope it works
-            logger.warning(f"Could not extract file_id from forwarded message for product {product_id}")
-            return original_file_id
+            # Could not extract file_id from forwarded message
+            logger.warning(f"Could not extract file_id from forwarded message for product {product_id}, bot {bot_instance}")
+            return None
             
     except Exception as e:
-        logger.error(f"Error getting bot-specific file_id: {e}")
-        # Fallback: return original file_id
-        return original_file_id
+        logger.error(f"Error getting bot-specific file_id for bot {bot_instance}: {e}")
+        # For secondary bots, return None to signal failure
+        return None
 
 
