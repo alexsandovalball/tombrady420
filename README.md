@@ -69,6 +69,7 @@ A production-ready Telegram bot for managing and browsing a media product catalo
    BOT_TOKEN=your_bot_token_from_botfather
    CHANNEL_ID=-1001234567890
    ADMIN_IDS=123456789,987654321
+   PRIMARY_ADMIN_ID=123456789  # Optional: Admin who receives categorization requests
    ORDER_CONTACT=@yourusername
    ```
    

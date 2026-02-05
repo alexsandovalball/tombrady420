@@ -104,23 +104,27 @@ async def notify_admins_for_categorization(context: ContextTypes.DEFAULT_TYPE, p
             f"Please select a category:"
         )
         
-        # Send notification to each admin
-        for admin_id in admin_ids:
-            try:
-                # Send the product media with categorization keyboard
-                from utils.helpers import send_media_message
-                
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=message_text,
-                    parse_mode="Markdown",
-                    reply_markup=keyboard
-                )
-                
-                logger.info(f"Sent categorization request to admin {admin_id} for product {product_id}")
-                
-            except Exception as e:
-                logger.error(f"Failed to notify admin {admin_id}: {e}")
+        # Get primary admin ID (use PRIMARY_ADMIN_ID if configured, otherwise use first admin)
+        from configs.config import Config
+        primary_admin = Config.PRIMARY_ADMIN_ID or (admin_ids[0] if admin_ids else None)
+
+        if not primary_admin:
+            logger.warning("No primary admin configured. Product will remain uncategorized.")
+            return
+
+        # Send notification only to primary admin
+        try:
+            await context.bot.send_message(
+                chat_id=primary_admin,
+                text=message_text,
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+            
+            logger.info(f"Sent categorization request to primary admin {primary_admin} for product {product_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to notify primary admin {primary_admin}: {e}")
         
         # Mark as pending categorization
         await db.add_pending_categorization(product_id)
