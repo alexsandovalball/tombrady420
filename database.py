@@ -188,6 +188,22 @@ class Database:
             except aiosqlite.OperationalError:
                 pass
             
+            # Add bot_instance columns for multi-bot support
+            try:
+                await db.execute("ALTER TABLE bot_users ADD COLUMN bot_instance INTEGER DEFAULT 1")
+            except aiosqlite.OperationalError:
+                pass
+            
+            try:
+                await db.execute("ALTER TABLE notification_queue ADD COLUMN bot_instance INTEGER")
+            except aiosqlite.OperationalError:
+                pass
+            
+            try:
+                await db.execute("ALTER TABLE custom_message_queue ADD COLUMN bot_instance INTEGER")
+            except aiosqlite.OperationalError:
+                pass
+            
             # Create performance-critical indexes
             logger.info("Creating database indexes...")
             
@@ -200,6 +216,7 @@ class Database:
             # Bot users indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_notifications ON bot_users(notifications_enabled) WHERE notifications_enabled = 1")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_last_seen ON bot_users(last_seen DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_instance ON bot_users(bot_instance)")
             
             # Notification queue indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_user_sent ON notification_queue(user_id, sent_at)")
