@@ -91,13 +91,13 @@ This will:
 **Option A: Manual (for testing)**
 ```bash
 # Terminal 1 - Primary bot
-BOT_TOKEN_1=your_token_1 python main.py
+BOT_TOKEN=your_token_1 python main.py
 
 # Terminal 2 - Secondary bot  
-BOT_TOKEN_1=your_token_2 python main.py
+BOT_TOKEN=your_token_2 python main.py
 
 # Terminal 3 - Tertiary bot
-BOT_TOKEN_1=your_token_3 python main.py
+BOT_TOKEN=your_token_3 python main.py
 ```
 
 **Option B: Production (systemd services)**
