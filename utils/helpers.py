@@ -219,7 +219,7 @@ async def get_bot_specific_file_id(
     Since Telegram file IDs are bot-specific, this function:
     1. Checks if we have a cached file_id for this bot instance
     2. If not, tries to use the original file_id (may fail on secondary bots)
-    3. On failure, downloads and re-uploads the media to get a new file_id
+    3. On failure, uses forward_message to get a new file_id
     4. Caches the new file_id for future use
     
     Args:
@@ -257,7 +257,7 @@ async def get_bot_specific_file_id(
         return original_file_id
     
     # For secondary bots, we need to get a new file_id
-    # Try using copy_message to get a bot-specific file_id
+    # Use forward_message to get a bot-specific file_id (returns actual Message object)
     try:
         # Get the first admin to use as temporary destination
         admin_ids = Config.ADMIN_IDS
@@ -267,41 +267,47 @@ async def get_bot_specific_file_id(
         
         admin_chat_id = admin_ids[0]
         
-        # Copy the message from source channel to admin chat
-        # This gives us a new file_id valid for this bot
-        copied_msg = await context.bot.copy_message(
+        # Forward the message from source channel to admin chat
+        # This returns a Message object with media, giving us a new file_id valid for this bot
+        forwarded_msg = await context.bot.forward_message(
             chat_id=admin_chat_id,
             from_chat_id=source_chat_id,
             message_id=source_message_id,
             disable_notification=True
         )
         
-        # Extract the new file_id from the copied message
+        # Extract the new file_id from the forwarded message
         new_file_id = None
-        if hasattr(copied_msg, 'photo') and copied_msg.photo:
-            new_file_id = copied_msg.photo[-1].file_id
-        elif hasattr(copied_msg, 'video') and copied_msg.video:
-            new_file_id = copied_msg.video.file_id
-        elif hasattr(copied_msg, 'animation') and copied_msg.animation:
-            new_file_id = copied_msg.animation.file_id
-        elif hasattr(copied_msg, 'document') and copied_msg.document:
-            new_file_id = copied_msg.document.file_id
+        if forwarded_msg.photo:
+            new_file_id = forwarded_msg.photo[-1].file_id
+        elif forwarded_msg.video:
+            new_file_id = forwarded_msg.video.file_id
+        elif forwarded_msg.animation:
+            new_file_id = forwarded_msg.animation.file_id
+        elif forwarded_msg.document:
+            new_file_id = forwarded_msg.document.file_id
+        elif forwarded_msg.audio:
+            new_file_id = forwarded_msg.audio.file_id
+        elif forwarded_msg.voice:
+            new_file_id = forwarded_msg.voice.file_id
+        elif forwarded_msg.video_note:
+            new_file_id = forwarded_msg.video_note.file_id
         
         if new_file_id:
             # Cache the new file_id
             await db.cache_file_ids(product_id, bot_instance, [(new_file_id, file_type)])
-            logger.info(f"Cached new file_id for product {product_id}, bot {bot_instance}")
+            logger.info(f"Cached new file_id for product {product_id}, bot {bot_instance}, index {file_index}")
             
-            # Delete the copied message to clean up admin chat
+            # Delete the forwarded message to clean up admin chat
             try:
-                await context.bot.delete_message(chat_id=admin_chat_id, message_id=copied_msg.message_id)
+                await context.bot.delete_message(chat_id=admin_chat_id, message_id=forwarded_msg.message_id)
             except Exception as del_error:
-                logger.debug(f"Could not delete copied message from admin chat: {del_error}")
+                logger.debug(f"Could not delete forwarded message from admin chat: {del_error}")
             
             return new_file_id
         else:
             # Fallback: return original file_id and hope it works
-            logger.warning(f"Could not extract file_id from copied message for product {product_id}")
+            logger.warning(f"Could not extract file_id from forwarded message for product {product_id}")
             return original_file_id
             
     except Exception as e:

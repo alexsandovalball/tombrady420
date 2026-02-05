@@ -1229,7 +1229,7 @@ async def post_init(application: Application, bot_instance: int = 1):
     # Add a small delay for secondary bots to avoid command setup conflicts
     # This ensures commands are set sequentially rather than simultaneously
     if bot_instance > 1:
-        delay = 0.5 * bot_instance  # 0.5s, 1.0s, 1.5s, etc.
+        delay = 2.5 * bot_instance  # 2.5s, 5.0s, 7.5s, etc.
         logger.info(f"Bot instance {bot_instance}: Adding {delay}s delay before command setup to avoid conflicts")
         await asyncio.sleep(delay)
     

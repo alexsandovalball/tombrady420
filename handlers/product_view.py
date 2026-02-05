@@ -156,10 +156,35 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 # Build list of all file IDs (first + additional)
                 all_file_ids = [(product["file_id"], product["file_type"])] + file_data
                 
-                # Use cached file IDs if available, otherwise use original
+                # For secondary bots without cache, proactively get bot-specific file IDs
+                if bot_instance > 1 and (not cached_files or len(cached_files) != len(all_file_ids)):
+                    logger.info(f"Proactively getting bot-specific file IDs for media group, product {product['id']}, bot {bot_instance}")
+                    try:
+                        # Get bot-specific file IDs for all media BEFORE attempting to send
+                        new_file_ids = []
+                        for idx, (file_id, file_type) in enumerate(all_file_ids):
+                            bot_file_id = await get_bot_specific_file_id(
+                                context,
+                                product["id"],
+                                file_id,
+                                file_type,
+                                source_chat_id,
+                                source_message_id,
+                                file_index=idx
+                            )
+                            new_file_ids.append((bot_file_id, file_type))
+                        
+                        # Use the newly obtained bot-specific file IDs
+                        cached_files = new_file_ids
+                        logger.info(f"Successfully obtained {len(new_file_ids)} bot-specific file IDs for media group")
+                    except Exception as get_error:
+                        logger.error(f"Failed to proactively get bot-specific file IDs: {get_error}")
+                        # Fall through to try with original IDs
+                
+                # Use cached/obtained file IDs if available, otherwise use original
                 if cached_files and len(cached_files) == len(all_file_ids):
                     # Use cached file IDs
-                    logger.debug(f"Using cached media group for product {product['id']}, bot {bot_instance}")
+                    logger.debug(f"Using cached/obtained media group for product {product['id']}, bot {bot_instance}")
                     for idx, (cached_file_id, cached_file_type) in enumerate(cached_files):
                         if idx == 0:
                             # First media with caption
@@ -253,13 +278,34 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         cached_files = await db.get_cached_file_ids(product["id"], bot_instance)
         
         if cached_files and len(cached_files) > 0:
-            # Use cached file ID (file_type is ignored since we already have it in product data)
+            # Use cached file ID
             file_id, cached_file_type = cached_files[0]
             logger.debug(f"Using cached file_id for product {product['id']}, bot {bot_instance}")
         else:
-            # Use original file ID
-            file_id = product["file_id"]
-            logger.debug(f"Using original file_id for product {product['id']}, bot {bot_instance}")
+            # Use original file ID for bot 1, or proactively get bot-specific file ID for secondary bots
+            if bot_instance == 1:
+                file_id = product["file_id"]
+                logger.debug(f"Using original file_id for product {product['id']}, bot {bot_instance}")
+            else:
+                # Proactively get bot-specific file ID for secondary bots
+                logger.info(f"Proactively getting bot-specific file_id for product {product['id']}, bot {bot_instance}")
+                try:
+                    source_chat_id = product.get("chat_id")
+                    source_message_id = product.get("message_id")
+                    
+                    file_id = await get_bot_specific_file_id(
+                        context,
+                        product["id"],
+                        product["file_id"],
+                        product["file_type"],
+                        source_chat_id,
+                        source_message_id,
+                        file_index=0
+                    )
+                    logger.debug(f"Obtained bot-specific file_id for product {product['id']}, bot {bot_instance}")
+                except Exception as get_error:
+                    logger.warning(f"Failed to proactively get bot-specific file_id, using original: {get_error}")
+                    file_id = product["file_id"]
         
         try:
             await send_media_message(
@@ -271,16 +317,16 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 reply_markup=None  # Don't add keyboard to media message
             )
             
-            # Cache the file ID if this is a secondary bot and we used the original
-            if bot_instance > 1 and not cached_files:
+            # Cache the file ID if this was bot instance 1 and we used the original
+            if bot_instance == 1 and not cached_files:
                 # The file ID worked, so cache it for future use
                 await db.cache_file_ids(product["id"], bot_instance, [(file_id, product["file_type"])])
                 logger.info(f"Cached file_id for product {product['id']}, bot {bot_instance}")
                 
         except Exception as e:
-            # If sending failed and we're on a secondary bot, try to get a new file_id
+            # If sending failed and we're on a secondary bot, try to get a new file_id as final fallback
             if bot_instance > 1:
-                logger.warning(f"Failed to send with original file_id, attempting to get bot-specific file_id: {e}")
+                logger.warning(f"Failed to send media, attempting final fallback to get bot-specific file_id: {e}")
                 source_chat_id = product.get("chat_id")
                 source_message_id = product.get("message_id")
                 

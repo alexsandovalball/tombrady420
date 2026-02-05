@@ -5,6 +5,7 @@ which is more suitable for serverless deployments like Render.com.
 """
 import logging
 import os
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, status
 from telegram import Update
@@ -52,6 +53,12 @@ async def setup_applications():
     bot_apps = []
     for i, bot_token in enumerate(bot_tokens, 1):
         logger.info(f"Setting up bot instance {i}...")
+        
+        # Add staggered delay for secondary bots to avoid race conditions
+        if i > 1:
+            delay = 2.5 * i  # 2.5s, 5.0s, 7.5s, etc.
+            logger.info(f"Bot instance {i}: Adding {delay}s delay before initialization to avoid conflicts")
+            await asyncio.sleep(delay)
         
         # Use the setup_bot_application function from main.py
         bot_app = setup_bot_application(bot_token, bot_instance=i)
