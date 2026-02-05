@@ -218,8 +218,9 @@ async def get_bot_specific_file_id(
     
     Since Telegram file IDs are bot-specific, this function:
     1. Checks if we have a cached file_id for this bot instance
-    2. If not, copies the message from the source channel to get a new file_id
-    3. Caches the new file_id for future use
+    2. If not, tries to use the original file_id (may fail on secondary bots)
+    3. On failure, downloads and re-uploads the media to get a new file_id
+    4. Caches the new file_id for future use
     
     Args:
         context: The bot context
@@ -234,6 +235,7 @@ async def get_bot_specific_file_id(
         A file_id valid for the current bot instance
     """
     from database import Database
+    from configs.config import Config
     db = Database()
     
     # Get the current bot instance from context
@@ -247,16 +249,28 @@ async def get_bot_specific_file_id(
         logger.debug(f"Using cached file_id for product {product_id}, bot {bot_instance}, index {file_index}")
         return cached_file_id
     
-    # No cache - need to get a new file_id by copying the message
+    # No cache - for bot instance 1, the original file_id should work
+    if bot_instance == 1:
+        # Cache it for future use
+        if not cached_files:
+            await db.cache_file_ids(product_id, bot_instance, [(original_file_id, file_type)])
+        return original_file_id
+    
+    # For secondary bots, we need to get a new file_id
+    # Try using copy_message to get a bot-specific file_id
     try:
-        # Use copy_message to get media with a new file_id for this bot
-        # We'll copy to the bot's own chat temporarily, then extract the file_id
-        # Actually, we'll use getFile to download and re-upload
+        # Get the first admin to use as temporary destination
+        admin_ids = Config.ADMIN_IDS
+        if not admin_ids:
+            logger.warning(f"No admin IDs configured, falling back to original file_id")
+            return original_file_id
         
-        # Try to copy the message from the source channel
-        # This is more efficient than downloading and re-uploading
+        admin_chat_id = admin_ids[0]
+        
+        # Copy the message from source channel to admin chat
+        # This gives us a new file_id valid for this bot
         copied_msg = await context.bot.copy_message(
-            chat_id=context.bot.id,  # Copy to bot's own chat (Saved Messages)
+            chat_id=admin_chat_id,
             from_chat_id=source_chat_id,
             message_id=source_message_id,
             disable_notification=True
@@ -278,9 +292,9 @@ async def get_bot_specific_file_id(
             await db.cache_file_ids(product_id, bot_instance, [(new_file_id, file_type)])
             logger.info(f"Cached new file_id for product {product_id}, bot {bot_instance}")
             
-            # Delete the copied message to clean up
+            # Delete the copied message to clean up admin chat
             try:
-                await context.bot.delete_message(chat_id=context.bot.id, message_id=copied_msg.message_id)
+                await context.bot.delete_message(chat_id=admin_chat_id, message_id=copied_msg.message_id)
             except:
                 pass  # Not critical if deletion fails
             
