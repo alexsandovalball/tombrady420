@@ -981,6 +981,128 @@ class Database:
             await db.commit()
             logger.info(f"Order contact updated to: {contact}")
 
+    # Multi-bot support methods
     
+    async def track_user_with_bot_instance(
+        self, 
+        user_id: int, 
+        bot_instance: int = 1,
+        username: Optional[str] = None, 
+        first_name: Optional[str] = None, 
+        last_name: Optional[str] = None
+    ):
+        """Track or update a bot user with bot instance information."""
+        async with aiosqlite.connect(self.db_path) as db:
+            # Check if user exists
+            async with db.execute("SELECT user_id, bot_instance FROM bot_users WHERE user_id = ?", (user_id,)) as cursor:
+                row = await cursor.fetchone()
+            
+            if row:
+                # User exists - update fields but DON'T change bot_instance
+                # User stays with their original bot instance
+                await db.execute("""
+                    UPDATE bot_users 
+                    SET username = ?, first_name = ?, last_name = ?, 
+                        last_seen = ?, interaction_count = interaction_count + 1
+                    WHERE user_id = ?
+                """, (username, first_name, last_name, datetime.now(), user_id))
+            else:
+                # New user - assign to this bot instance
+                await db.execute("""
+                    INSERT INTO bot_users (user_id, username, first_name, last_name, first_seen, last_seen, bot_instance)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (user_id, username, first_name, last_name, datetime.now(), datetime.now(), bot_instance))
+            
+            await db.commit()
+    
+    async def get_user_bot_instance(self, user_id: int) -> Optional[int]:
+        """Get the bot instance for a specific user."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT bot_instance FROM bot_users WHERE user_id = ?
+            """, (user_id,)) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else None
+    
+    async def get_users_by_bot_instance(self) -> Dict[int, List[Dict[str, Any]]]:
+        """Get all users grouped by bot instance."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM bot_users ORDER BY bot_instance, last_seen DESC
+            """) as cursor:
+                rows = await cursor.fetchall()
+                
+                # Group users by bot_instance
+                users_by_bot = {}
+                for row in rows:
+                    user_dict = dict(row)
+                    bot_instance = user_dict.get('bot_instance', 1)  # Default to 1 if not set
+                    
+                    if bot_instance not in users_by_bot:
+                        users_by_bot[bot_instance] = []
+                    
+                    users_by_bot[bot_instance].append(user_dict)
+                
+                return users_by_bot
+    
+    async def queue_custom_message_with_bot_instance(self, user_id: int, message_text: str, bot_instance: Optional[int] = None):
+        """Queue a custom message for a user with bot instance tracking."""
+        async with aiosqlite.connect(self.db_path) as db:
+            # If bot_instance not provided, look it up
+            if bot_instance is None:
+                async with db.execute("""
+                    SELECT bot_instance FROM bot_users WHERE user_id = ?
+                """, (user_id,)) as cursor:
+                    row = await cursor.fetchone()
+                    bot_instance = row[0] if row else 1
+            
+            await db.execute("""
+                INSERT INTO custom_message_queue (user_id, message_text, bot_instance, created_at)
+                VALUES (?, ?, ?, ?)
+            """, (user_id, message_text, bot_instance, datetime.now()))
+            await db.commit()
+    
+    async def search_products_fts(self, query: str, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
+        """
+        Search products using FTS5 full-text search (much faster than LIKE).
+        Falls back to LIKE search if FTS is not available.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            
+            # Check if FTS table exists
+            async with db.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='products_fts'
+            """) as cursor:
+                fts_exists = await cursor.fetchone()
+            
+            if fts_exists:
+                # Use FTS5 search (much faster)
+                fts_query = query.replace('"', '""')  # Escape quotes
+                sql = """
+                    SELECT p.* FROM products p
+                    INNER JOIN products_fts fts ON p.id = fts.rowid
+                    WHERE products_fts MATCH ?
+                    ORDER BY p.created_at DESC
+                """
+                params = [fts_query]
+            else:
+                # Fall back to LIKE search
+                sql = """
+                    SELECT * FROM products 
+                    WHERE caption LIKE ?
+                    ORDER BY created_at DESC
+                """
+                params = [f'%{query}%']
+            
+            if limit:
+                sql += " LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+            
+            async with db.execute(sql, params) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
 
 
