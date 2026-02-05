@@ -14,6 +14,7 @@ from configs.config import Config, ConfigError
 # Import the bot setup functions
 from main import (
     post_init,
+    setup_bot_commands,
     start_command,
     menu_command,
     language_command,
@@ -27,6 +28,7 @@ from main import (
     send_command,
     broadcast_command,
     setcontact_command,
+    clearcache_command,
     channel_post_handler,
     callback_query_handler,
     message_handler,
@@ -69,6 +71,9 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     # Initialize database (only once for the primary bot)
     if bot_index == 0:
         await post_init(bot_app)
+    else:
+        # For secondary bots, set commands
+        await setup_bot_commands(bot_app.bot)
     
     # Register handlers
     bot_app.add_handler(CommandHandler("start", start_command))
@@ -84,6 +89,7 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     bot_app.add_handler(CommandHandler("send", send_command))
     bot_app.add_handler(CommandHandler("broadcast", broadcast_command))
     bot_app.add_handler(CommandHandler("setcontact", setcontact_command))
+    bot_app.add_handler(CommandHandler("clearcache", clearcache_command))
     
     # Channel post handler (for monitoring channel)
     channel_id = get_channel_id()

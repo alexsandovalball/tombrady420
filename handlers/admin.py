@@ -668,4 +668,35 @@ async def handle_setcontact_input(update: Update, context: ContextTypes.DEFAULT_
     logger.info(f"Admin {user_id} updated order contact to: {contact}")
 
 
+async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /clearcache command - clear the file ID cache (admin only)."""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            "❌ This command is only available for administrators."
+        )
+        return
+    
+    try:
+        # Import the cache clearing function
+        from utils.helpers import clear_file_id_cache
+        
+        # Clear the cache
+        await clear_file_id_cache()
+        
+        await update.message.reply_text(
+            "✅ **File ID cache cleared successfully!**\n\n"
+            "Old product entries will now refresh their media on next view.\n"
+            "This is useful after adding secondary bots as channel admins.",
+            parse_mode="Markdown"
+        )
+        logger.info(f"Admin {user_id} cleared the file ID cache")
+        
+    except Exception as e:
+        logger.error(f"Error in clearcache command: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ An error occurred while clearing the cache."
+        )
+
 
