@@ -31,7 +31,7 @@ from handlers.admin import (
     setcontact_command, handle_setcontact_input
 )
 from translations.language_config import is_valid_language, LANGUAGE_DISPLAY
-from translations.translator import get_translated_string, translation_service
+from translations.translator import get_translated_string_async, translation_service
 from utils.helpers import (
     get_file_id_and_type,
     has_media,
@@ -337,9 +337,9 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         keyboard = InlineKeyboardMarkup(keyboard_buttons)
         
         # Get translated message
-        message_text = get_translated_string("language_settings", current_lang)
+        message_text = await get_translated_string_async("language_settings", current_lang)
         current_lang_name = LANGUAGE_DISPLAY.get(current_lang, LANGUAGE_DISPLAY["en"])
-        current_lang_text = get_translated_string(
+        current_lang_text = await get_translated_string_async(
             "current_language", 
             current_lang,
             language=current_lang_name
@@ -390,16 +390,16 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 order_contact = await db.get_order_contact()
                 escaped_contact = escape_markdown_v1(order_contact)
                 
-                welcome_text = get_translated_string("welcome_with_contact", lang_code, name=display_name, contact=escaped_contact)
-                view_catalog_text = get_translated_string("view_catalog", lang_code)
-                change_language_text = get_translated_string("change_language", lang_code)
+                welcome_text = await get_translated_string_async("welcome_with_contact", lang_code, name=display_name, contact=escaped_contact)
+                view_catalog_text = await get_translated_string_async("view_catalog", lang_code)
+                change_language_text = await get_translated_string_async("change_language", lang_code)
                 keyboard_buttons = [
                     [InlineKeyboardButton(view_catalog_text, callback_data="categories")],
                     [InlineKeyboardButton(change_language_text, callback_data="open_language_settings")]
                 ]
                 
                 if not is_subscribed:
-                    resubscribe_text = get_translated_string("resubscribe_notifications", lang_code)
+                    resubscribe_text = await get_translated_string_async("resubscribe_notifications", lang_code)
                     keyboard_buttons.append(
                         [InlineKeyboardButton(resubscribe_text, callback_data="toggle_notifications")]
                     )
@@ -609,7 +609,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         ])
                     
                     # Add "No Subcategory" option
-                    save_without_text = get_translated_string("save_without_subcategory", user_lang)
+                    save_without_text = await get_translated_string_async("save_without_subcategory", user_lang)
                     keyboard_buttons.append([
                         InlineKeyboardButton(save_without_text, callback_data=f"savecat|{product_id}|{category}|")
                     ])
@@ -618,12 +618,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     
                     # Translate category name
                     category_key = f"category_{category.lower()}"
-                    translated_category = get_translated_string(category_key, user_lang)
+                    translated_category = await get_translated_string_async(category_key, user_lang)
                     if translated_category == category_key:
                         translated_category = get_category_display_name(category)
                     
-                    category_label = get_translated_string("category_label", user_lang, category=translated_category)
-                    select_or_save = get_translated_string("select_subcategory_or_save", user_lang)
+                    category_label = await get_translated_string_async("category_label", user_lang, category=translated_category)
+                    select_or_save = await get_translated_string_async("select_subcategory_or_save", user_lang)
                     
                     await query.edit_message_text(
                         f"{category_label}\n\n"
@@ -654,15 +654,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 # Translate category name
                 category_key = f"category_{category.lower()}"
-                translated_category = get_translated_string(category_key, user_lang)
+                translated_category = await get_translated_string_async(category_key, user_lang)
                 if translated_category == category_key:
                     translated_category = get_category_display_name(category)
                 
                 # Translate strings
                 translated_subcat = get_subcategory_display_name(subcategory, user_lang)
-                category_label = get_translated_string("category_label", user_lang, category=translated_category)
-                subcategory_label = get_translated_string("subcategory_label", user_lang, subcategory=translated_subcat)
-                confirm_text = get_translated_string("confirm_categorization", user_lang)
+                category_label = await get_translated_string_async("category_label", user_lang, category=translated_category)
+                subcategory_label = await get_translated_string_async("subcategory_label", user_lang, subcategory=translated_subcat)
+                confirm_text = await get_translated_string_async("confirm_categorization", user_lang)
                 
                 # Confirmation message
                 keyboard = InlineKeyboardMarkup([
@@ -695,7 +695,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 # Translate category name
                 category_key = f"category_{category.lower()}"
-                translated_category = get_translated_string(category_key, user_lang)
+                translated_category = await get_translated_string_async(category_key, user_lang)
                 if translated_category == category_key:
                     translated_category = get_category_display_name(category)
                 
@@ -704,7 +704,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     translated_subcat = get_subcategory_display_name(subcategory, user_lang)
                     category_text += f" • {translated_subcat}"
                 
-                success_msg = get_translated_string("product_categorized_successfully", user_lang, product_id=product_id)
+                success_msg = await get_translated_string_async("product_categorized_successfully", user_lang, product_id=product_id)
                 
                 await query.edit_message_text(
                     f"{success_msg}\n\n"
