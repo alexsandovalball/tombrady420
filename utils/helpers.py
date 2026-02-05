@@ -203,3 +203,96 @@ async def send_media_message(
             reply_markup=reply_markup
         )
 
+
+async def get_bot_specific_file_id(
+    context: ContextTypes.DEFAULT_TYPE,
+    product_id: int,
+    original_file_id: str,
+    file_type: str,
+    source_chat_id: int,
+    source_message_id: int,
+    file_index: int = 0
+) -> str:
+    """
+    Get or create a bot-specific file_id for media.
+    
+    Since Telegram file IDs are bot-specific, this function:
+    1. Checks if we have a cached file_id for this bot instance
+    2. If not, copies the message from the source channel to get a new file_id
+    3. Caches the new file_id for future use
+    
+    Args:
+        context: The bot context
+        product_id: Product database ID
+        original_file_id: The original file_id (from bot 1 or channel)
+        file_type: Type of media (photo, video, etc.)
+        source_chat_id: Chat ID where the original media is located
+        source_message_id: Message ID in the source chat
+        file_index: Index of the file in a media group (0 for single media)
+    
+    Returns:
+        A file_id valid for the current bot instance
+    """
+    from database import Database
+    db = Database()
+    
+    # Get the current bot instance from context
+    bot_instance = context.bot_data.get('bot_instance', 1)
+    
+    # Check if we have a cached file_id for this bot instance
+    cached_files = await db.get_cached_file_ids(product_id, bot_instance)
+    
+    if cached_files and len(cached_files) > file_index:
+        cached_file_id, cached_file_type = cached_files[file_index]
+        logger.debug(f"Using cached file_id for product {product_id}, bot {bot_instance}, index {file_index}")
+        return cached_file_id
+    
+    # No cache - need to get a new file_id by copying the message
+    try:
+        # Use copy_message to get media with a new file_id for this bot
+        # We'll copy to the bot's own chat temporarily, then extract the file_id
+        # Actually, we'll use getFile to download and re-upload
+        
+        # Try to copy the message from the source channel
+        # This is more efficient than downloading and re-uploading
+        copied_msg = await context.bot.copy_message(
+            chat_id=context.bot.id,  # Copy to bot's own chat (Saved Messages)
+            from_chat_id=source_chat_id,
+            message_id=source_message_id,
+            disable_notification=True
+        )
+        
+        # Extract the new file_id from the copied message
+        new_file_id = None
+        if hasattr(copied_msg, 'photo') and copied_msg.photo:
+            new_file_id = copied_msg.photo[-1].file_id
+        elif hasattr(copied_msg, 'video') and copied_msg.video:
+            new_file_id = copied_msg.video.file_id
+        elif hasattr(copied_msg, 'animation') and copied_msg.animation:
+            new_file_id = copied_msg.animation.file_id
+        elif hasattr(copied_msg, 'document') and copied_msg.document:
+            new_file_id = copied_msg.document.file_id
+        
+        if new_file_id:
+            # Cache the new file_id
+            await db.cache_file_ids(product_id, bot_instance, [(new_file_id, file_type)])
+            logger.info(f"Cached new file_id for product {product_id}, bot {bot_instance}")
+            
+            # Delete the copied message to clean up
+            try:
+                await context.bot.delete_message(chat_id=context.bot.id, message_id=copied_msg.message_id)
+            except:
+                pass  # Not critical if deletion fails
+            
+            return new_file_id
+        else:
+            # Fallback: return original file_id and hope it works
+            logger.warning(f"Could not extract file_id from copied message for product {product_id}")
+            return original_file_id
+            
+    except Exception as e:
+        logger.error(f"Error getting bot-specific file_id: {e}")
+        # Fallback: return original file_id
+        return original_file_id
+
+

@@ -84,6 +84,38 @@ async def migrate_database():
             else:
                 logger.info("✓ bot_instance column already exists in custom_message_queue")
             
+            # Create media_file_cache table for bot-specific file IDs
+            cursor = await db.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='media_file_cache'
+            """)
+            table_exists = await cursor.fetchone()
+            
+            if not table_exists:
+                logger.info("Creating media_file_cache table...")
+                await db.execute("""
+                    CREATE TABLE media_file_cache (
+                        product_id INTEGER NOT NULL,
+                        bot_instance INTEGER NOT NULL,
+                        file_id TEXT NOT NULL,
+                        file_type TEXT NOT NULL,
+                        file_index INTEGER NOT NULL DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (product_id, bot_instance, file_index),
+                        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+                    )
+                """)
+                
+                # Create index
+                await db.execute("""
+                    CREATE INDEX idx_media_file_cache_product 
+                    ON media_file_cache(product_id, bot_instance)
+                """)
+                
+                logger.info("✅ Created media_file_cache table and index")
+            else:
+                logger.info("✓ media_file_cache table already exists")
+            
             # Check if FTS5 table exists
             cursor = await db.execute("""
                 SELECT name FROM sqlite_master 

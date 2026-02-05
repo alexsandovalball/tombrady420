@@ -6,7 +6,7 @@ import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, InputMediaDocument
 from telegram.ext import ContextTypes
 from database import Database
-from utils.helpers import send_media_message, is_admin
+from utils.helpers import send_media_message, is_admin, get_bot_specific_file_id
 from utils.pagination import paginate_items
 from utils.categories import format_category_info
 from translations.translator import translate_text_async, get_translated_string_async
@@ -142,12 +142,27 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
             try:
                 file_data = json.loads(additional_file_ids)
                 
+                # Get bot-specific file IDs for all media in the group
+                source_chat_id = product.get("chat_id")
+                source_message_id = product.get("message_id")
+                
                 # Prepare media list
                 media_list = []
                 
-                # Add first media (with caption)
+                # Add first media (with caption) - get bot-specific file_id
                 first_type = product["file_type"]
-                first_id = product["file_id"]
+                first_id_original = product["file_id"]
+                
+                # Get bot-specific file_id for the first media
+                first_id = await get_bot_specific_file_id(
+                    context,
+                    product["id"],
+                    first_id_original,
+                    first_type,
+                    source_chat_id,
+                    source_message_id,
+                    file_index=0
+                )
                 
                 if first_type == "photo":
                     media_list.append(InputMediaPhoto(media=first_id, caption=full_caption))
@@ -166,12 +181,23 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                     await update.callback_query.answer()
                     return
                 
-                # Add additional media
-                for file_id, file_type in file_data:
+                # Add additional media with bot-specific file IDs
+                for idx, (file_id, file_type) in enumerate(file_data, start=1):
+                    # Get bot-specific file_id for each additional media
+                    bot_file_id = await get_bot_specific_file_id(
+                        context,
+                        product["id"],
+                        file_id,
+                        file_type,
+                        source_chat_id,
+                        source_message_id,
+                        file_index=idx
+                    )
+                    
                     if file_type == "photo":
-                        media_list.append(InputMediaPhoto(media=file_id))
+                        media_list.append(InputMediaPhoto(media=bot_file_id))
                     elif file_type == "video":
-                        media_list.append(InputMediaVideo(media=file_id))
+                        media_list.append(InputMediaVideo(media=bot_file_id))
                 
                 # Send media group
                 await context.bot.send_media_group(
@@ -200,10 +226,23 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 # Fall back to single media
         
         # Send single media with caption
+        # Get bot-specific file_id for single media
+        source_chat_id = product.get("chat_id")
+        source_message_id = product.get("message_id")
+        file_id = await get_bot_specific_file_id(
+            context,
+            product["id"],
+            product["file_id"],
+            product["file_type"],
+            source_chat_id,
+            source_message_id,
+            file_index=0
+        )
+        
         await send_media_message(
             context,
             update.effective_chat.id,
-            product["file_id"],
+            file_id,
             product["file_type"],
             caption=full_caption,
             reply_markup=None  # Don't add keyboard to media message

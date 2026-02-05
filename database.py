@@ -146,6 +146,19 @@ class Database:
                 )
             """)
             
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS media_file_cache (
+                    product_id INTEGER NOT NULL,
+                    bot_instance INTEGER NOT NULL,
+                    file_id TEXT NOT NULL,
+                    file_type TEXT NOT NULL,
+                    file_index INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (product_id, bot_instance, file_index),
+                    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+                )
+            """)
+            
             # Set default order contact if not exists
             await db.execute("""
                 INSERT OR IGNORE INTO bot_settings (key, value)
@@ -217,6 +230,9 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_notifications ON bot_users(notifications_enabled) WHERE notifications_enabled = 1")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_last_seen ON bot_users(last_seen DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_instance ON bot_users(bot_instance)")
+            
+            # Media file cache indexes
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_media_file_cache_product ON media_file_cache(product_id, bot_instance)")
             
             # Notification queue indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_user_sent ON notification_queue(user_id, sent_at)")
@@ -1083,5 +1099,40 @@ class Database:
             async with db.execute(sql, params) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
+    
+    async def get_cached_file_ids(self, product_id: int, bot_instance: int) -> Optional[List[tuple]]:
+        """
+        Get cached file IDs for a product on a specific bot instance.
+        Returns list of (file_id, file_type) tuples ordered by file_index, or None if not cached.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT file_id, file_type FROM media_file_cache
+                WHERE product_id = ? AND bot_instance = ?
+                ORDER BY file_index ASC
+            """, (product_id, bot_instance)) as cursor:
+                rows = await cursor.fetchall()
+                return rows if rows else None
+    
+    async def cache_file_ids(self, product_id: int, bot_instance: int, file_ids: List[tuple]):
+        """
+        Cache file IDs for a product on a specific bot instance.
+        file_ids should be a list of (file_id, file_type) tuples.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            # Delete existing cache for this product/bot combination
+            await db.execute("""
+                DELETE FROM media_file_cache 
+                WHERE product_id = ? AND bot_instance = ?
+            """, (product_id, bot_instance))
+            
+            # Insert new cache entries
+            for index, (file_id, file_type) in enumerate(file_ids):
+                await db.execute("""
+                    INSERT INTO media_file_cache (product_id, bot_instance, file_id, file_type, file_index)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (product_id, bot_instance, file_id, file_type, index))
+            
+            await db.commit()
 
 

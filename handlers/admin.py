@@ -115,9 +115,13 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
                 except (ValueError, TypeError):
                     pass
             
+            # Get bot instance
+            bot_instance = user.get('bot_instance', 1)
+            
             user_text = (
                 f"\n{i}. **{full_name}** ({username})\n"
                 f"   🆔 ID: `{user['user_id']}`\n"
+                f"   🤖 Bot Instance: {bot_instance}\n"
                 f"   📊 Interactions: {user.get('interaction_count', 0)}\n"
                 f"   🕐 Last seen: {last_seen}\n"
                 f"   📬 Notifications: {notif_status}"
