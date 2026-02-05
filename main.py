@@ -158,9 +158,10 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
     if not caption:
         caption = f"[Album - {len(messages)} items]"
     
-    # Collect all file IDs
+    # Collect all file IDs and message IDs
     file_ids = []
     file_types = []
+    message_ids = []
     
     for msg in messages:
         # Create a temporary update object for each message
@@ -169,6 +170,7 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
         if file_id:
             file_ids.append(file_id)
             file_types.append(file_type)
+            message_ids.append(msg.message_id)
     
     if not file_ids:
         logger.warning(f"No file IDs extracted from media group {media_group_id}")
@@ -178,14 +180,16 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
     existing_product_id = await db.get_or_create_media_group_product(media_group_id, chat_id)
     
     if existing_product_id:
-        # Update existing product with new file IDs
+        # Update existing product with new file IDs and message IDs
         additional_files = json.dumps(list(zip(file_ids[1:], file_types[1:])))
-        await db.update_product_media(existing_product_id, additional_files)
+        additional_msg_ids = json.dumps(message_ids[1:]) if len(message_ids) > 1 else None
+        await db.update_product_media(existing_product_id, additional_files, additional_msg_ids)
         logger.info(f"Updated media group product {existing_product_id} with {len(file_ids)} files")
         return
     
     # Create new product with first file as primary (NO automatic categorization)
     additional_files = json.dumps(list(zip(file_ids[1:], file_types[1:]))) if len(file_ids) > 1 else None
+    additional_msg_ids = json.dumps(message_ids[1:]) if len(message_ids) > 1 else None
     
     product_id = await db.add_product(
         file_id=file_ids[0],
@@ -195,6 +199,7 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
         chat_id=chat_id,
         media_group_id=media_group_id,
         additional_file_ids=additional_files,
+        additional_message_ids=additional_msg_ids,
         category=None,  # No automatic categorization
         subcategory=None
     )
@@ -1196,16 +1201,30 @@ async def post_init(application: Application):
 
 
 async def setup_bot_commands(bot):
-    """Set up bot commands that appear in the Telegram command menu."""
+    """
+    Set up bot commands that appear in the Telegram command menu.
+    
+    This function configures the command menu that users see when they click the menu
+    button next to the message input field in Telegram. It sets different commands for
+    regular users vs admins.
+    
+    **IMPORTANT**: This function is called automatically during bot initialization in
+    both polling mode (main.py) and webhook mode (webhook_server.py) via post_init().
+    This ensures that ALL bot instances (primary and secondary) have consistent command
+    menus regardless of which bot token is used.
+    
+    Args:
+        bot: The Telegram bot instance
+    """
     # Define user commands (available to all users)
-    # Removed: language, subscribe, unsubscribe per requirements
+    # These appear in the command menu for all users
     user_commands = [
         BotCommand("start", "Start the bot and select language"),
         BotCommand("menu", "Browse the product catalog"),
     ]
     
     # Define admin commands (available to admins only)
-    # Removed: block, unblock per requirements
+    # These appear in the command menu ONLY for admin users
     admin_commands = user_commands + [
         BotCommand("users", "View and manage bot users"),
         BotCommand("send", "Send a message to a specific user"),
@@ -1216,21 +1235,28 @@ async def setup_bot_commands(bot):
     ]
     
     # Set default commands for all users
+    # This updates the global command menu seen by regular users
     await bot.set_my_commands(user_commands)
+    logger.info(f"Set user commands globally: {[cmd.command for cmd in user_commands]}")
     
-    # Set admin commands for each admin
+    # Set admin-specific commands for each admin user
+    # This overrides the global commands for admin chat scopes
     admin_ids = get_admin_ids()
+    if not admin_ids:
+        logger.warning("No admin IDs configured - admin commands will not be set")
+    
     for admin_id in admin_ids:
         try:
             await bot.set_my_commands(
                 admin_commands,
                 scope=BotCommandScopeChat(chat_id=admin_id)
             )
-            logger.info(f"Set admin commands for user {admin_id}")
+            logger.info(f"Set admin commands for user {admin_id}: {[cmd.command for cmd in admin_commands]}")
         except Exception as e:
             logger.warning(f"Could not set admin commands for {admin_id}: {e}")
     
-    logger.info("Bot commands configured successfully")
+    logger.info("Bot commands configured successfully - menu will be consistent across all bot instances")
+
 
 
 def main():
