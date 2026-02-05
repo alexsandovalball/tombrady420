@@ -616,9 +616,12 @@ async def setcontact_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Get current contact
     current_contact = await db.get_order_contact()
     
+    # Escape the current contact for markdown
+    escaped_contact = escape_markdown(current_contact) if current_contact else "Not set"
+    
     await update.message.reply_text(
         f"📝 **Set Order Contact**\n\n"
-        f"Current contact: {current_contact}\n\n"
+        f"Current contact: {escaped_contact}\n\n"
         f"Please enter the new contact username (e.g., @username):",
         parse_mode="Markdown"
     )
@@ -654,10 +657,13 @@ async def handle_setcontact_input(update: Update, context: ContextTypes.DEFAULT_
     # Clear state
     context.user_data['awaiting_contact'] = False
     
+    # Escape contact for markdown
+    escaped_contact = escape_markdown(contact)
+    
     await update.message.reply_text(
         f"✅ Order contact updated successfully!\n\n"
-        f"New contact: {contact}\n\n"
-        f"All users will now be directed to DM {contact} to place orders.",
+        f"New contact: {escaped_contact}\n\n"
+        f"All users will now be directed to DM {escaped_contact} to place orders.",
         parse_mode="Markdown"
     )
     logger.info(f"Admin {user_id} updated order contact to: {contact}")

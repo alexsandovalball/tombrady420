@@ -9,6 +9,7 @@ def get_strings():
     return {
         # Start command
         "welcome_with_contact": "👋 Welcome, {name}!\n\nI'm your media product catalog bot. I help you browse and search products from our catalog.\n\nUse /menu to view all products or simply type what you're looking for!\n\n💬 DM {contact} TO ORDER",
+        "admin_commands_info": "👨‍💼 Admin Commands:\n• /menu - View catalog\n• /users - Manage users\n• /send - Send message to user\n• /broadcast - Broadcast to all users\n• /setcontact - Set order contact\n• /recategorize - Recategorize products\n• /nuke - Delete all products",
         "notifications_enabled": "🔔 **Notifications Enabled!**\n\nYou will now receive notifications when new products are added to the catalog.\n\nUse /unsubscribe to stop receiving notifications.",
         "notifications_disabled": "🔕 **Notifications Disabled**\n\nYou will no longer receive notifications about new products.\n\nUse /subscribe to enable notifications again.",
         

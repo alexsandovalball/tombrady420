@@ -7,6 +7,7 @@ from telegram.ext import ContextTypes
 from database import Database
 from translations.language_config import LANGUAGE_DISPLAY, is_valid_language, DEFAULT_LANGUAGE
 from translations.translator import get_translated_string
+from utils.helpers import is_admin, get_user_display_name, ADMIN_COMMANDS_FALLBACK
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -83,9 +84,27 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
     
     # Show welcome message in the new language (return to start page)
     user = update.effective_user
+    
+    # Get user's full display name - escaped for markdown
+    display_name = get_user_display_name(user, escaped=True)
+    
     is_subscribed = await db.is_user_subscribed(user_id)
     
-    welcome_text = get_translated_string("welcome", lang_code, name=user.first_name)
+    # Get order contact
+    order_contact = await db.get_order_contact()
+    
+    # Get translated welcome message with contact
+    welcome_text = get_translated_string("welcome_with_contact", lang_code, name=display_name, contact=order_contact)
+    
+    # Add admin command info for admins
+    if is_admin(user_id):
+        admin_info = get_translated_string("admin_commands_info", lang_code)
+        if admin_info != "admin_commands_info":  # Only add if translation exists
+            welcome_text += f"\n\n{admin_info}"
+        else:
+            # Use fallback constant
+            welcome_text += ADMIN_COMMANDS_FALLBACK
+    
     view_catalog_text = get_translated_string("view_catalog", lang_code)
     change_language_text = get_translated_string("change_language", lang_code)
     
