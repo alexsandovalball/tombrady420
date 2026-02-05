@@ -1226,6 +1226,13 @@ async def post_init(application: Application, bot_instance: int = 1):
     translation_service.set_database(db)
     logger.info(f"Translation service configured for bot instance {bot_instance}")
     
+    # Add a small delay for secondary bots to avoid command setup conflicts
+    # This ensures commands are set sequentially rather than simultaneously
+    if bot_instance > 1:
+        delay = 0.5 * bot_instance  # 0.5s, 1.0s, 1.5s, etc.
+        logger.info(f"Bot instance {bot_instance}: Adding {delay}s delay before command setup to avoid conflicts")
+        await asyncio.sleep(delay)
+    
     # Set bot commands for the command menu
     logger.info(f"Setting up Telegram command menu for bot instance {bot_instance}...")
     await setup_bot_commands(application.bot)
