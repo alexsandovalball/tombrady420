@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 # Admin commands fallback text constant
 ADMIN_COMMANDS_FALLBACK = (
     "\n\n👨‍💼 Admin Commands:\n"
+    "• /start - Welcome message\n"
     "• /menu - View catalog\n"
     "• /users - Manage users\n"
     "• /send - Send message to user\n"
