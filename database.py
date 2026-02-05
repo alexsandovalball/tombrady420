@@ -202,6 +202,11 @@ class Database:
                 else:
                     logger.warning(f"Could not add 'additional_message_ids' column to products: {e}")
             
+            # Migrate existing media groups to populate additional_message_ids
+            # For media groups created before this fix, infer message IDs from sequential ordering
+            logger.info("Checking for media groups needing message ID migration...")
+            await self._migrate_existing_media_groups(db)
+            
             # Create performance-critical indexes
             logger.info("Creating database indexes...")
             
@@ -233,6 +238,62 @@ class Database:
             
             await db.commit()
             logger.info("Database initialized successfully")
+    
+    async def _migrate_existing_media_groups(self, db):
+        """
+        Migrate existing media groups to populate additional_message_ids.
+        For media groups created before this fix, we infer message IDs based on
+        the assumption that media group messages are sent sequentially.
+        """
+        try:
+            # Find all products with additional_file_ids but no additional_message_ids
+            cursor = await db.execute("""
+                SELECT id, message_id, additional_file_ids
+                FROM products
+                WHERE additional_file_ids IS NOT NULL 
+                  AND additional_file_ids != ''
+                  AND (additional_message_ids IS NULL OR additional_message_ids = '')
+            """)
+            products_to_migrate = await cursor.fetchall()
+            
+            if not products_to_migrate:
+                logger.info("No media groups need message ID migration")
+                return
+            
+            logger.info(f"Found {len(products_to_migrate)} media groups needing message ID migration")
+            
+            migrated_count = 0
+            for product_id, first_message_id, additional_file_ids_json in products_to_migrate:
+                try:
+                    # Parse the additional file IDs to get the count
+                    import json
+                    file_data = json.loads(additional_file_ids_json)
+                    num_additional_files = len(file_data)
+                    
+                    # Infer sequential message IDs starting from first_message_id + 1
+                    # This assumes Telegram sends media group messages sequentially
+                    additional_msg_ids = [first_message_id + i + 1 for i in range(num_additional_files)]
+                    additional_msg_ids_json = json.dumps(additional_msg_ids)
+                    
+                    # Update the product
+                    await db.execute("""
+                        UPDATE products 
+                        SET additional_message_ids = ?
+                        WHERE id = ?
+                    """, (additional_msg_ids_json, product_id))
+                    
+                    migrated_count += 1
+                    logger.debug(f"Migrated product {product_id}: inferred {num_additional_files} message IDs")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to migrate product {product_id}: {e}")
+                    continue
+            
+            await db.commit()
+            logger.info(f"Successfully migrated {migrated_count} media groups with inferred message IDs")
+            
+        except Exception as e:
+            logger.error(f"Error during media group migration: {e}")
     
     async def add_product(
         self,
