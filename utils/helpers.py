@@ -234,7 +234,9 @@ async def get_bot_specific_file_id(
         temp_chat_id: Optional chat ID to use for temporary forwarding (defaults to first admin)
     
     Returns:
-        A file_id valid for the current bot instance, or None if unable to obtain one for secondary bots
+        A file_id valid for the current bot instance.
+        - For bot instance 1: Always returns a valid file_id (either cached or original)
+        - For secondary bots: Returns None if unable to obtain a bot-specific file_id via forwarding
     """
     from database import Database
     from configs.config import Config

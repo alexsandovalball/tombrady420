@@ -375,7 +375,7 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                     logger.error(f"Unable to obtain bot-specific file_id for product {product['id']}, bot {bot_instance}, sending text-only fallback")
                     await context.bot.send_message(
                         chat_id=update.effective_chat.id,
-                        text=f"{full_caption}\n\n⚠️ Media unavailable for this bot instance.",
+                        text=f"{full_caption}\n\n⚠️ Media temporarily unavailable. Please try again later.",
                         reply_markup=None
                     )
                 else:
