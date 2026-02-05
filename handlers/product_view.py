@@ -9,7 +9,7 @@ from database import Database
 from utils.helpers import send_media_message, is_admin
 from utils.pagination import paginate_items
 from utils.categories import format_category_info
-from translations.translator import translate_text
+from translations.translator import translate_text, get_translated_string
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -182,10 +182,13 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 # Get order contact
                 order_contact = await db.get_order_contact()
                 
+                # Get translated DM to order message
+                dm_message = get_translated_string("dm_to_order", user_lang, contact=order_contact)
+                
                 # Send keyboard in a separate message since media groups can't have keyboards
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text=f"👆 DM TO ORDER: {order_contact}",
+                    text=dm_message,
                     reply_markup=keyboard
                 )
                 
@@ -209,10 +212,13 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         # Get order contact
         order_contact = await db.get_order_contact()
         
+        # Get translated DM to order message
+        dm_message = get_translated_string("dm_to_order", user_lang, contact=order_contact)
+        
         # Send DM message with keyboard separately for consistency
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"👆 DM TO ORDER: {order_contact}",
+            text=dm_message,
             reply_markup=keyboard
         )
         

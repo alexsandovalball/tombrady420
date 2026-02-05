@@ -87,6 +87,7 @@ def get_strings():
         # Product view
         "product_info": "📦 **Product Details**\n\n{category}\n🆔 ID: {id}",
         "uncategorized": "Uncategorized",
+        "dm_to_order": "👆 DM TO ORDER: {contact}",
         
         # Admin
         "product_deleted": "✅ Product deleted successfully.",
