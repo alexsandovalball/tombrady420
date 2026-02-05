@@ -3,6 +3,7 @@ Product view handler.
 """
 import logging
 import json
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, InputMediaDocument
 from telegram.ext import ContextTypes
 from database import Database
@@ -156,10 +157,51 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 # Build list of all file IDs (first + additional)
                 all_file_ids = [(product["file_id"], product["file_type"])] + file_data
                 
-                # Use cached file IDs if available, otherwise use original
+                # For secondary bots without cache, proactively get bot-specific file IDs
+                if bot_instance > 1 and (not cached_files or len(cached_files) != len(all_file_ids)):
+                    logger.info(f"Proactively getting bot-specific file IDs for media group, product {product['id']}, bot {bot_instance}")
+                    try:
+                        # Get bot-specific file IDs for all media concurrently for better performance
+                        async def get_file_id_task(idx, file_id, file_type):
+                            return await get_bot_specific_file_id(
+                                context,
+                                product["id"],
+                                file_id,
+                                file_type,
+                                source_chat_id,
+                                source_message_id,
+                                file_index=idx
+                            )
+                        
+                        # Create tasks for concurrent execution
+                        tasks = [
+                            get_file_id_task(idx, file_id, file_type)
+                            for idx, (file_id, file_type) in enumerate(all_file_ids)
+                        ]
+                        
+                        # Execute all tasks concurrently
+                        bot_file_ids = await asyncio.gather(*tasks)
+                        
+                        # Build the list of (file_id, file_type) tuples
+                        new_file_ids = [
+                            (bot_file_id, file_type)
+                            for bot_file_id, (_, file_type) in zip(bot_file_ids, all_file_ids)
+                        ]
+                        
+                        # Use the newly obtained bot-specific file IDs
+                        cached_files = new_file_ids
+                        logger.info(f"Successfully obtained {len(new_file_ids)} bot-specific file IDs for media group concurrently")
+                    except Exception as get_error:
+                        logger.error(f"Failed to proactively get bot-specific file IDs: {get_error}")
+                        # Fall through to try with original IDs
+                
+                # Use cached/obtained file IDs if available, otherwise use original
                 if cached_files and len(cached_files) == len(all_file_ids):
-                    # Use cached file IDs
-                    logger.debug(f"Using cached media group for product {product['id']}, bot {bot_instance}")
+                    # Use cached or freshly obtained file IDs
+                    if bot_instance > 1:
+                        logger.debug(f"Using bot-specific media group file IDs for product {product['id']}, bot {bot_instance}")
+                    else:
+                        logger.debug(f"Using cached media group for product {product['id']}, bot {bot_instance}")
                     for idx, (cached_file_id, cached_file_type) in enumerate(cached_files):
                         if idx == 0:
                             # First media with caption
@@ -253,13 +295,34 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         cached_files = await db.get_cached_file_ids(product["id"], bot_instance)
         
         if cached_files and len(cached_files) > 0:
-            # Use cached file ID (file_type is ignored since we already have it in product data)
+            # Use cached file ID
             file_id, cached_file_type = cached_files[0]
             logger.debug(f"Using cached file_id for product {product['id']}, bot {bot_instance}")
         else:
-            # Use original file ID
-            file_id = product["file_id"]
-            logger.debug(f"Using original file_id for product {product['id']}, bot {bot_instance}")
+            # Use original file ID for bot 1, or proactively get bot-specific file ID for secondary bots
+            if bot_instance == 1:
+                file_id = product["file_id"]
+                logger.debug(f"Using original file_id for product {product['id']}, bot {bot_instance}")
+            else:
+                # Proactively get bot-specific file ID for secondary bots
+                logger.info(f"Proactively getting bot-specific file_id for product {product['id']}, bot {bot_instance}")
+                try:
+                    source_chat_id = product.get("chat_id")
+                    source_message_id = product.get("message_id")
+                    
+                    file_id = await get_bot_specific_file_id(
+                        context,
+                        product["id"],
+                        product["file_id"],
+                        product["file_type"],
+                        source_chat_id,
+                        source_message_id,
+                        file_index=0
+                    )
+                    logger.debug(f"Obtained bot-specific file_id for product {product['id']}, bot {bot_instance}")
+                except Exception as get_error:
+                    logger.warning(f"Failed to proactively get bot-specific file_id, using original: {get_error}")
+                    file_id = product["file_id"]
         
         try:
             await send_media_message(
@@ -271,16 +334,16 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 reply_markup=None  # Don't add keyboard to media message
             )
             
-            # Cache the file ID if this is a secondary bot and we used the original
-            if bot_instance > 1 and not cached_files:
+            # Cache the file ID if we successfully sent and didn't have it cached already
+            if not cached_files:
                 # The file ID worked, so cache it for future use
                 await db.cache_file_ids(product["id"], bot_instance, [(file_id, product["file_type"])])
                 logger.info(f"Cached file_id for product {product['id']}, bot {bot_instance}")
                 
         except Exception as e:
-            # If sending failed and we're on a secondary bot, try to get a new file_id
+            # If sending failed and we're on a secondary bot, try to get a new file_id as final fallback
             if bot_instance > 1:
-                logger.warning(f"Failed to send with original file_id, attempting to get bot-specific file_id: {e}")
+                logger.warning(f"Failed to send media, attempting final fallback to get bot-specific file_id: {e}")
                 source_chat_id = product.get("chat_id")
                 source_message_id = product.get("message_id")
                 
