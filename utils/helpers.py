@@ -19,6 +19,7 @@ ADMIN_COMMANDS_FALLBACK = (
     "• /send - Send message to user\n"
     "• /broadcast - Broadcast to all users\n"
     "• /setcontact - Set order contact\n"
+    "• /recategorize - Recategorize products\n"
     "• /nuke - Delete all products"
 )
 
