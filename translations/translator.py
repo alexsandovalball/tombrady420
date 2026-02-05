@@ -5,13 +5,59 @@ Provides automatic translation of bot messages based on user language preference
 import logging
 import asyncio
 import concurrent.futures
-from typing import Optional
+import re
+from typing import Optional, Tuple, Dict
 from collections import OrderedDict
 from deep_translator import GoogleTranslator
 from translations.language_config import DEFAULT_LANGUAGE, is_valid_language
 from translations.strings import get_string as get_base_string
 
 logger = logging.getLogger(__name__)
+
+
+def protect_placeholders(text: str) -> Tuple[str, Dict[str, str]]:
+    """
+    Replace formatting placeholders with protected markers that won't be translated.
+    
+    Args:
+        text: Text containing placeholders like {name}, {contact}, etc.
+    
+    Returns:
+        Tuple of (protected_text, placeholder_map) where placeholder_map can be used to restore
+    """
+    # Find all placeholders like {name}, {contact}, {category}, etc.
+    placeholder_pattern = r'\{([^}]+)\}'
+    placeholders = re.findall(placeholder_pattern, text)
+    
+    # Create a mapping of placeholders to protected markers
+    placeholder_map = {}
+    protected_text = text
+    
+    for i, placeholder in enumerate(placeholders):
+        # Use markers unlikely to be translated: XPLACEHOLDERX0X, XPLACEHOLDERX1X, etc.
+        marker = f"XPLACEHOLDERX{i}X"
+        original = f"{{{placeholder}}}"
+        placeholder_map[marker] = original
+        protected_text = protected_text.replace(original, marker, 1)
+    
+    return protected_text, placeholder_map
+
+
+def restore_placeholders(text: str, placeholder_map: Dict[str, str]) -> str:
+    """
+    Restore original placeholders from protected markers.
+    
+    Args:
+        text: Text with protected markers
+        placeholder_map: Mapping from markers to original placeholders
+    
+    Returns:
+        Text with original placeholders restored
+    """
+    restored_text = text
+    for marker, original in placeholder_map.items():
+        restored_text = restored_text.replace(marker, original)
+    return restored_text
 
 
 def normalize_language_code(lang: str) -> str:
@@ -124,14 +170,20 @@ class TranslationService:
                 logger.error(f"Error checking database translation cache: {e}")
         
         try:
+            # Protect placeholders before translation
+            protected_text, placeholder_map = protect_placeholders(text)
+            
             # Run translation in thread pool to avoid blocking event loop
             loop = asyncio.get_event_loop()
             
             def _translate_sync():
                 translator = GoogleTranslator(source=normalized_source, target=normalized_target)
-                return translator.translate(text)
+                return translator.translate(protected_text)
             
             translated = await loop.run_in_executor(self._executor, _translate_sync)
+            
+            # Restore placeholders after translation
+            translated = restore_placeholders(translated, placeholder_map)
             
             # Cache the result in memory
             self._cache.set(cache_key, translated)
@@ -250,8 +302,14 @@ def get_translated_string(key: str, lang: str = DEFAULT_LANGUAGE, **kwargs) -> s
     
     # If not in cache, perform translation synchronously
     try:
+        # Protect placeholders before translation
+        protected_text, placeholder_map = protect_placeholders(base_string)
+        
         translator = GoogleTranslator(source="en", target=normalized_target)
-        translated = translator.translate(base_string)
+        translated = translator.translate(protected_text)
+        
+        # Restore placeholders after translation
+        translated = restore_placeholders(translated, placeholder_map)
         
         # Cache the result (cache the template, not the formatted string)
         translation_service._cache.set(cache_key, translated)
@@ -313,8 +371,14 @@ def translate_text(text: str, target_lang: str) -> str:
     
     # If not in cache, perform translation synchronously
     try:
+        # Protect placeholders before translation
+        protected_text, placeholder_map = protect_placeholders(text)
+        
         translator = GoogleTranslator(source="en", target=normalized_target)
-        translated = translator.translate(text)
+        translated = translator.translate(protected_text)
+        
+        # Restore placeholders after translation
+        translated = restore_placeholders(translated, placeholder_map)
         
         # Cache the result
         translation_service._cache.set(cache_key, translated)

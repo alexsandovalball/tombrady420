@@ -5,7 +5,7 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import Database
-from translations.translator import get_translated_string
+from translations.translator import get_translated_string_async
 from translations.language_config import LANGUAGE_DISPLAY, DEFAULT_LANGUAGE
 from utils.helpers import is_admin, get_user_display_name, ADMIN_COMMANDS_FALLBACK, escape_markdown_v1
 
@@ -84,11 +84,11 @@ async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYP
     
     # Get translated welcome message with contact - name and contact are already escaped
     escaped_contact = escape_markdown_v1(order_contact)
-    welcome_text = get_translated_string("welcome_with_contact", user_lang, name=display_name, contact=escaped_contact)
+    welcome_text = await get_translated_string_async("welcome_with_contact", user_lang, name=display_name, contact=escaped_contact)
     
     # Add admin command info for admins
     if is_admin(user.id):
-        admin_info = get_translated_string("admin_commands_info", user_lang)
+        admin_info = await get_translated_string_async("admin_commands_info", user_lang)
         if admin_info != "admin_commands_info":  # Only add if translation exists
             welcome_text += f"\n\n{admin_info}"
         else:
@@ -96,8 +96,8 @@ async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYP
             welcome_text += ADMIN_COMMANDS_FALLBACK
     
     # Build keyboard based on subscription status
-    view_catalog_text = get_translated_string("view_catalog", user_lang)
-    change_language_text = get_translated_string("change_language", user_lang)
+    view_catalog_text = await get_translated_string_async("view_catalog", user_lang)
+    change_language_text = await get_translated_string_async("change_language", user_lang)
     keyboard_buttons = [
         [InlineKeyboardButton(view_catalog_text, callback_data="categories")],
         [InlineKeyboardButton(change_language_text, callback_data="open_language_settings")]
@@ -105,7 +105,7 @@ async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYP
     
     # Add resubscribe button only for users who have unsubscribed
     if not is_subscribed:
-        resubscribe_text = get_translated_string("resubscribe_notifications", user_lang)
+        resubscribe_text = await get_translated_string_async("resubscribe_notifications", user_lang)
         keyboard_buttons.append(
             [InlineKeyboardButton(resubscribe_text, callback_data="toggle_notifications")]
         )
@@ -139,7 +139,7 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await db.set_user_notifications(user_id, True)
     
     # Get translated message
-    message_text = get_translated_string("notifications_enabled", user_lang)
+    message_text = await get_translated_string_async("notifications_enabled", user_lang)
     
     await update.message.reply_text(
         message_text,
@@ -159,7 +159,7 @@ async def unsubscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await db.set_user_notifications(user_id, False)
     
     # Get translated message
-    message_text = get_translated_string("notifications_disabled", user_lang)
+    message_text = await get_translated_string_async("notifications_disabled", user_lang)
     
     await update.message.reply_text(
         message_text,

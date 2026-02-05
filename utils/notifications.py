@@ -12,7 +12,7 @@ from telegram.error import TelegramError, Forbidden
 
 from database import Database
 from utils.categories import get_category_display_name, get_subcategory_display_name, NOTIFICATION_EXCLUDED_CATEGORIES
-from translations.translator import translate_text
+from translations.translator import translate_text_async
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +238,7 @@ class NotificationService:
                 # Translate caption if user language is not English
                 if user_lang and user_lang not in ["en", "en-US"] and caption:
                     try:
-                        caption = translate_text(caption, user_lang)
+                        caption = await translate_text_async(caption, user_lang)
                     except Exception as e:
                         logger.error(f"Error translating caption for notification: {e}")
                         # Keep original caption if translation fails
