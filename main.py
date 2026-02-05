@@ -1201,16 +1201,30 @@ async def post_init(application: Application):
 
 
 async def setup_bot_commands(bot):
-    """Set up bot commands that appear in the Telegram command menu."""
+    """
+    Set up bot commands that appear in the Telegram command menu.
+    
+    This function configures the command menu that users see when they click the menu
+    button next to the message input field in Telegram. It sets different commands for
+    regular users vs admins.
+    
+    **IMPORTANT**: This function is called automatically during bot initialization in
+    both polling mode (main.py) and webhook mode (webhook_server.py) via post_init().
+    This ensures that ALL bot instances (primary and secondary) have consistent command
+    menus regardless of which bot token is used.
+    
+    Args:
+        bot: The Telegram bot instance
+    """
     # Define user commands (available to all users)
-    # Removed: language, subscribe, unsubscribe per requirements
+    # These appear in the command menu for all users
     user_commands = [
         BotCommand("start", "Start the bot and select language"),
         BotCommand("menu", "Browse the product catalog"),
     ]
     
     # Define admin commands (available to admins only)
-    # Removed: block, unblock per requirements
+    # These appear in the command menu ONLY for admin users
     admin_commands = user_commands + [
         BotCommand("users", "View and manage bot users"),
         BotCommand("send", "Send a message to a specific user"),
@@ -1221,21 +1235,28 @@ async def setup_bot_commands(bot):
     ]
     
     # Set default commands for all users
+    # This updates the global command menu seen by regular users
     await bot.set_my_commands(user_commands)
+    logger.info(f"Set user commands globally: {[cmd.command for cmd in user_commands]}")
     
-    # Set admin commands for each admin
+    # Set admin-specific commands for each admin user
+    # This overrides the global commands for admin chat scopes
     admin_ids = get_admin_ids()
+    if not admin_ids:
+        logger.warning("No admin IDs configured - admin commands will not be set")
+    
     for admin_id in admin_ids:
         try:
             await bot.set_my_commands(
                 admin_commands,
                 scope=BotCommandScopeChat(chat_id=admin_id)
             )
-            logger.info(f"Set admin commands for user {admin_id}")
+            logger.info(f"Set admin commands for user {admin_id}: {[cmd.command for cmd in admin_commands]}")
         except Exception as e:
             logger.warning(f"Could not set admin commands for {admin_id}: {e}")
     
-    logger.info("Bot commands configured successfully")
+    logger.info("Bot commands configured successfully - menu will be consistent across all bot instances")
+
 
 
 def main():
