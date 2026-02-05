@@ -6,7 +6,7 @@ import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, InputMediaDocument
 from telegram.ext import ContextTypes
 from database import Database
-from utils.helpers import send_media_message, is_admin
+from utils.helpers import send_media_message, is_admin, escape_markdown_v1
 from utils.pagination import paginate_items
 from utils.categories import format_category_info
 from translations.translator import translate_text
@@ -181,7 +181,6 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 
                 # Get order contact
                 order_contact = await db.get_order_contact()
-                from utils.helpers import escape_markdown_v1
                 escaped_contact = escape_markdown_v1(order_contact)
                 
                 # Send keyboard in a separate message since media groups can't have keyboards
@@ -210,7 +209,6 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         
         # Get order contact
         order_contact = await db.get_order_contact()
-        from utils.helpers import escape_markdown_v1
         escaped_contact = escape_markdown_v1(order_contact)
         
         # Send DM message with keyboard separately for consistency
