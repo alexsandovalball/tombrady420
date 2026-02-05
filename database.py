@@ -1128,7 +1128,7 @@ class Database:
                     return rows if rows else None
         except aiosqlite.OperationalError as e:
             if "no such table" in str(e):
-                logger.warning(f"media_file_cache table does not exist - cache unavailable. Table will be created on next app restart.")
+                logger.warning(f"media_file_cache table does not exist - cache unavailable. Table will be created during next database initialization.")
                 return None
             raise
     
@@ -1155,7 +1155,7 @@ class Database:
                 await db.commit()
         except aiosqlite.OperationalError as e:
             if "no such table" in str(e):
-                logger.warning(f"media_file_cache table does not exist - cannot cache file IDs. Table will be created on next app restart.")
+                logger.warning(f"media_file_cache table does not exist - cannot cache file IDs. Table will be created during next database initialization.")
             else:
                 raise
 
