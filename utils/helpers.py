@@ -16,11 +16,11 @@ ADMIN_COMMANDS_FALLBACK = (
     "• /start - Welcome message\n"
     "• /menu - View catalog\n"
     "• /users - Manage users\n"
+    "• /recategorize - Recategorize products\n"
+    "• /nuke - Delete all products\n"
     "• /send - Send message to user\n"
     "• /broadcast - Broadcast to all users\n"
-    "• /setcontact - Set order contact\n"
-    "• /recategorize - Recategorize products\n"
-    "• /nuke - Delete all products"
+    "• /setcontact - Set order contact"
 )
 
 
