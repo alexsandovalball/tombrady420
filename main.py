@@ -1399,46 +1399,57 @@ def main():
         # Run all bots concurrently
         async def run_multiple_bots():
             """Run multiple bot instances concurrently."""
+            # Create shutdown event for clean termination
+            shutdown_event = asyncio.Event()
+            
+            async def run_bot(application, instance_num):
+                """Run a single bot instance."""
+                try:
+                    logger.info(f"Bot instance {instance_num} starting polling...")
+                    await application.initialize()
+                    await application.start()
+                    await application.updater.start_polling(
+                        allowed_updates=Update.ALL_TYPES,
+                        drop_pending_updates=True
+                    )
+                    # Wait for shutdown signal
+                    await shutdown_event.wait()
+                except asyncio.CancelledError:
+                    logger.info(f"Bot instance {instance_num} received cancellation signal")
+                    raise
+                except Exception as e:
+                    logger.error(f"Bot instance {instance_num} error: {e}", exc_info=True)
+                    raise
+                finally:
+                    logger.info(f"Bot instance {instance_num} shutting down...")
+                    try:
+                        await application.updater.stop()
+                        await application.stop()
+                        await application.shutdown()
+                    except Exception as e:
+                        logger.error(f"Error shutting down bot instance {instance_num}: {e}")
+            
             try:
-                # Start all applications and run them in polling mode
-                tasks = []
-                for i, app in enumerate(applications, 1):
-                    async def run_bot(application, instance_num):
-                        try:
-                            logger.info(f"Bot instance {instance_num} starting polling...")
-                            await application.initialize()
-                            await application.start()
-                            await application.updater.start_polling(
-                                allowed_updates=Update.ALL_TYPES,
-                                drop_pending_updates=True
-                            )
-                            # Keep the bot running
-                            while True:
-                                await asyncio.sleep(1)
-                        except Exception as e:
-                            logger.error(f"Bot instance {instance_num} error: {e}", exc_info=True)
-                            raise
-                        finally:
-                            logger.info(f"Bot instance {instance_num} shutting down...")
-                            try:
-                                await application.updater.stop()
-                                await application.stop()
-                                await application.shutdown()
-                            except Exception as e:
-                                logger.error(f"Error shutting down bot instance {instance_num}: {e}")
-                    
-                    task = asyncio.create_task(run_bot(app, i))
-                    tasks.append(task)
+                # Start all applications
+                tasks = [
+                    asyncio.create_task(run_bot(app, i))
+                    for i, app in enumerate(applications, 1)
+                ]
                 
                 logger.info(f"All {len(bot_tokens)} bot instances running in polling mode")
                 
-                # Wait for all tasks (they should run indefinitely unless error occurs)
-                await asyncio.gather(*tasks, return_exceptions=True)
+                # Wait for all tasks to complete
+                await asyncio.gather(*tasks)
                 
             except KeyboardInterrupt:
                 logger.info("Received shutdown signal. Stopping all bot instances...")
+                shutdown_event.set()
+                # Wait a bit for graceful shutdown
+                await asyncio.sleep(1)
             except Exception as e:
                 logger.error(f"Error in multi-bot runner: {e}", exc_info=True)
+                shutdown_event.set()
+                raise
         
         # Run the async function
         try:

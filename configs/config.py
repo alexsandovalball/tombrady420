@@ -64,9 +64,10 @@ class ConfigClass:
         self.BOT_TOKENS = bot_tokens
         
         # Load BOT_INSTANCE (optional override)
-        try:
-            bot_instance = config('BOT_INSTANCE', default=None, cast=int)
-            if bot_instance is not None:
+        bot_instance_str = config('BOT_INSTANCE', default=None)
+        if bot_instance_str is not None:
+            try:
+                bot_instance = int(bot_instance_str)
                 self.BOT_INSTANCE = bot_instance
                 # If BOT_INSTANCE is set, use that specific token
                 if 1 <= bot_instance <= len(bot_tokens):
@@ -75,7 +76,10 @@ class ConfigClass:
                     self.BOT_TOKENS = [self.BOT_TOKEN]
                 else:
                     logger.warning(f"BOT_INSTANCE={bot_instance} is out of range (1-{len(bot_tokens)})")
-        except (UndefinedValueError, ValueError):
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid BOT_INSTANCE value '{bot_instance_str}': must be an integer between 1 and {len(bot_tokens)}")
+                self.BOT_INSTANCE = None
+        else:
             self.BOT_INSTANCE = None
         
         # Set BOT_TOKEN to first token for backward compatibility (if not already set by BOT_INSTANCE)
