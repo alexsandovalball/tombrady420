@@ -3,6 +3,7 @@ Database models and operations for the media catalog bot.
 Uses SQLite with aiosqlite for async operations.
 """
 import aiosqlite
+import asyncio
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 import logging
@@ -161,10 +162,14 @@ class Database:
                 )
             """)
             
-            # CRITICAL: Commit immediately after creating critical tables
-            # This ensures the table is visible to all database connections
+            # CRITICAL: Commit and force WAL checkpoint
             await db.commit()
-            logger.info("✅ media_file_cache table created/verified")
+            
+            # Force WAL checkpoint to ensure table is visible to all connections
+            # This flushes the WAL file to the main database, making changes visible
+            # to all existing and new connections immediately
+            await db.execute("PRAGMA wal_checkpoint(FULL)")
+            logger.info("✅ media_file_cache table created/verified and checkpointed")
             
             # Set default order contact if not exists
             await db.execute("""
@@ -257,18 +262,31 @@ class Database:
             
             logger.info("Database indexes created successfully")
             
-            # Verify critical tables exist
+            # Verify critical tables exist with retry logic
             critical_tables = ['products', 'bot_users', 'media_file_cache', 'bot_settings']
+            max_retries = 5
+            
             for table_name in critical_tables:
-                cursor = await db.execute("""
-                    SELECT name FROM sqlite_master 
-                    WHERE type='table' AND name=?
-                """, (table_name,))
-                exists = await cursor.fetchone()
-                if not exists:
-                    logger.error(f"❌ CRITICAL: Table '{table_name}' does not exist after initialization!")
-                else:
-                    logger.debug(f"✓ Verified table '{table_name}' exists")
+                table_verified = False
+                
+                for attempt in range(max_retries):
+                    cursor = await db.execute("""
+                        SELECT name FROM sqlite_master 
+                        WHERE type='table' AND name=?
+                    """, (table_name,))
+                    exists = await cursor.fetchone()
+                    
+                    if exists:
+                        logger.debug(f"✓ Verified table '{table_name}' exists (attempt {attempt + 1})")
+                        table_verified = True
+                        break
+                    else:
+                        if attempt < max_retries - 1:
+                            logger.warning(f"Table '{table_name}' not yet visible, retrying... (attempt {attempt + 1}/{max_retries})")
+                            await asyncio.sleep(0.3 * (attempt + 1))  # Progressive delay: 0.3s, 0.6s, 0.9s, 1.2s, 1.5s
+                
+                if not table_verified:
+                    logger.error(f"❌ CRITICAL: Table '{table_name}' does not exist after initialization and retries!")
             
             await db.commit()
             logger.info("Database initialized successfully")
@@ -1136,8 +1154,30 @@ class Database:
                     return rows if rows else None
         except aiosqlite.OperationalError as e:
             if "no such table" in str(e):
-                logger.warning(f"media_file_cache table does not exist - cache unavailable. Table will be created during next database initialization.")
-                return None
+                logger.error(f"media_file_cache table does not exist - this should not happen after init_db()! Attempting recovery...")
+                
+                # Attempt to create the table on-the-fly as a recovery mechanism
+                try:
+                    async with aiosqlite.connect(self.db_path) as db:
+                        await db.execute("""
+                            CREATE TABLE IF NOT EXISTS media_file_cache (
+                                product_id INTEGER NOT NULL,
+                                bot_instance INTEGER NOT NULL,
+                                file_id TEXT NOT NULL,
+                                file_type TEXT NOT NULL,
+                                file_index INTEGER NOT NULL DEFAULT 0,
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                PRIMARY KEY (product_id, bot_instance, file_index),
+                                FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+                            )
+                        """)
+                        await db.commit()
+                        await db.execute("PRAGMA wal_checkpoint(FULL)")
+                        logger.info("✅ Successfully created media_file_cache table as fallback")
+                except Exception as create_error:
+                    logger.error(f"Failed to create media_file_cache table in fallback: {create_error}")
+                
+                return None  # Return None for this request, will work on next call
             raise
     
     async def cache_file_ids(self, product_id: int, bot_instance: int, file_ids: List[tuple]):
@@ -1163,7 +1203,44 @@ class Database:
                 await db.commit()
         except aiosqlite.OperationalError as e:
             if "no such table" in str(e):
-                logger.warning(f"media_file_cache table does not exist - cannot cache file IDs. Table will be created during next database initialization.")
+                logger.error(f"media_file_cache table does not exist when trying to cache - this should not happen! Attempting recovery...")
+                
+                # Attempt to create the table on-the-fly as a recovery mechanism
+                try:
+                    async with aiosqlite.connect(self.db_path) as db:
+                        await db.execute("""
+                            CREATE TABLE IF NOT EXISTS media_file_cache (
+                                product_id INTEGER NOT NULL,
+                                bot_instance INTEGER NOT NULL,
+                                file_id TEXT NOT NULL,
+                                file_type TEXT NOT NULL,
+                                file_index INTEGER NOT NULL DEFAULT 0,
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                PRIMARY KEY (product_id, bot_instance, file_index),
+                                FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+                            )
+                        """)
+                        await db.commit()
+                        await db.execute("PRAGMA wal_checkpoint(FULL)")
+                        logger.info("✅ Successfully created media_file_cache table as fallback in cache_file_ids")
+                        
+                        # Retry the cache operation now that table exists
+                        await db.execute("""
+                            DELETE FROM media_file_cache 
+                            WHERE product_id = ? AND bot_instance = ?
+                        """, (product_id, bot_instance))
+                        
+                        for index, (file_id, file_type) in enumerate(file_ids):
+                            await db.execute("""
+                                INSERT INTO media_file_cache (product_id, bot_instance, file_id, file_type, file_index)
+                                VALUES (?, ?, ?, ?, ?)
+                            """, (product_id, bot_instance, file_id, file_type, index))
+                        
+                        await db.commit()
+                        logger.info(f"✅ Successfully cached file IDs after recovery for product {product_id}, bot {bot_instance}")
+                except Exception as create_error:
+                    logger.error(f"Failed to create/use media_file_cache table in fallback: {create_error}")
+                    raise
             else:
                 raise
 
