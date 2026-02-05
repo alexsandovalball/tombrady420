@@ -58,8 +58,9 @@ class NotificationService:
         current_token = context.bot.token
         bot_tokens = Config.BOT_TOKENS
         
-        if not bot_tokens:
-            # No tokens configured, assume primary
+        # Validate BOT_TOKENS is a non-empty list
+        if not bot_tokens or not isinstance(bot_tokens, list) or len(bot_tokens) == 0:
+            # No tokens configured or invalid configuration, assume primary
             return True
         
         # Primary bot is the first token in the list (index 0)
