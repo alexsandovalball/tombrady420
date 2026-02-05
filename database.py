@@ -146,18 +146,30 @@ class Database:
                 )
             """)
             
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS media_file_cache (
-                    product_id INTEGER NOT NULL,
-                    bot_instance INTEGER NOT NULL,
-                    file_id TEXT NOT NULL,
-                    file_type TEXT NOT NULL,
-                    file_index INTEGER NOT NULL DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (product_id, bot_instance, file_index),
-                    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
-                )
+            # Check if media_file_cache table exists (for existing databases)
+            cursor = await db.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='media_file_cache'
             """)
+            table_exists = await cursor.fetchone()
+            
+            if not table_exists:
+                logger.info("Creating media_file_cache table for multi-bot file caching...")
+                await db.execute("""
+                    CREATE TABLE media_file_cache (
+                        product_id INTEGER NOT NULL,
+                        bot_instance INTEGER NOT NULL,
+                        file_id TEXT NOT NULL,
+                        file_type TEXT NOT NULL,
+                        file_index INTEGER NOT NULL DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (product_id, bot_instance, file_index),
+                        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+                    )
+                """)
+                logger.info("✅ media_file_cache table created successfully")
+            else:
+                logger.debug("✓ media_file_cache table already exists")
             
             # Set default order contact if not exists
             await db.execute("""
@@ -1105,34 +1117,46 @@ class Database:
         Get cached file IDs for a product on a specific bot instance.
         Returns list of (file_id, file_type) tuples ordered by file_index, or None if not cached.
         """
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("""
-                SELECT file_id, file_type FROM media_file_cache
-                WHERE product_id = ? AND bot_instance = ?
-                ORDER BY file_index ASC
-            """, (product_id, bot_instance)) as cursor:
-                rows = await cursor.fetchall()
-                return rows if rows else None
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute("""
+                    SELECT file_id, file_type FROM media_file_cache
+                    WHERE product_id = ? AND bot_instance = ?
+                    ORDER BY file_index ASC
+                """, (product_id, bot_instance)) as cursor:
+                    rows = await cursor.fetchall()
+                    return rows if rows else None
+        except aiosqlite.OperationalError as e:
+            if "no such table" in str(e):
+                logger.warning(f"media_file_cache table does not exist - cache unavailable. Run database migration.")
+                return None
+            raise
     
     async def cache_file_ids(self, product_id: int, bot_instance: int, file_ids: List[tuple]):
         """
         Cache file IDs for a product on a specific bot instance.
         file_ids should be a list of (file_id, file_type) tuples.
         """
-        async with aiosqlite.connect(self.db_path) as db:
-            # Delete existing cache for this product/bot combination
-            await db.execute("""
-                DELETE FROM media_file_cache 
-                WHERE product_id = ? AND bot_instance = ?
-            """, (product_id, bot_instance))
-            
-            # Insert new cache entries
-            for index, (file_id, file_type) in enumerate(file_ids):
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                # Delete existing cache for this product/bot combination
                 await db.execute("""
-                    INSERT INTO media_file_cache (product_id, bot_instance, file_id, file_type, file_index)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (product_id, bot_instance, file_id, file_type, index))
-            
-            await db.commit()
+                    DELETE FROM media_file_cache 
+                    WHERE product_id = ? AND bot_instance = ?
+                """, (product_id, bot_instance))
+                
+                # Insert new cache entries
+                for index, (file_id, file_type) in enumerate(file_ids):
+                    await db.execute("""
+                        INSERT INTO media_file_cache (product_id, bot_instance, file_id, file_type, file_index)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (product_id, bot_instance, file_id, file_type, index))
+                
+                await db.commit()
+        except aiosqlite.OperationalError as e:
+            if "no such table" in str(e):
+                logger.warning(f"media_file_cache table does not exist - cannot cache file IDs. Run database migration.")
+            else:
+                raise
 
 
