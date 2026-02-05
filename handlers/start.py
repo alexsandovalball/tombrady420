@@ -42,13 +42,13 @@ async def show_language_selection(update: Update, context: ContextTypes.DEFAULT_
     """Show language selection menu for new users."""
     user = update.effective_user
     
-    # Get user's full display name
+    # Get user's full display name - escape special markdown characters
     if user.first_name and user.last_name:
-        display_name = escape_markdown(f"{user.first_name} {user.last_name}", version=2)
+        display_name = escape_markdown(f"{user.first_name} {user.last_name}")
     elif user.first_name:
-        display_name = escape_markdown(user.first_name, version=2)
+        display_name = escape_markdown(user.first_name)
     elif user.username:
-        display_name = escape_markdown(user.username, version=2)
+        display_name = escape_markdown(user.username)
     else:
         display_name = "there"
     
@@ -62,14 +62,14 @@ async def show_language_selection(update: Update, context: ContextTypes.DEFAULT_
     keyboard = InlineKeyboardMarkup(keyboard_buttons)
     
     # Use English as default for initial message
-    welcome_text = f"👋 Welcome, {display_name}\\!\n\n"
+    welcome_text = f"👋 Welcome, {display_name}!\n\n"
     welcome_text += "🌐 **Select Your Language / Choisissez votre langue / Wählen Sie Ihre Sprache**\n\n"
     welcome_text += "Please select your preferred language to continue:"
     
     await update.message.reply_text(
         welcome_text,
         reply_markup=keyboard,
-        parse_mode="MarkdownV2"
+        parse_mode="Markdown"
     )
     logger.info(f"New user {user.id} - showing language selection")
 
@@ -78,15 +78,18 @@ async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYP
     """Show welcome message for existing users."""
     user = update.effective_user
     
-    # Get user's full display name
+    # Get user's full display name - will be escaped when used in translations
     if user.first_name and user.last_name:
-        display_name = f"{user.first_name} {user.last_name}"
+        raw_display_name = f"{user.first_name} {user.last_name}"
     elif user.first_name:
-        display_name = user.first_name
+        raw_display_name = user.first_name
     elif user.username:
-        display_name = user.username
+        raw_display_name = user.username
     else:
-        display_name = "there"
+        raw_display_name = "there"
+    
+    # Escape the display name for markdown
+    display_name = escape_markdown(raw_display_name)
     
     # Get user's language preference
     user_lang = await db.get_user_language(user.id)
@@ -97,7 +100,7 @@ async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYP
     # Get order contact
     order_contact = await db.get_order_contact()
     
-    # Get translated welcome message with contact - escape for MarkdownV2
+    # Get translated welcome message with contact - name is already escaped
     welcome_text = get_translated_string("welcome_with_contact", user_lang, name=display_name, contact=order_contact)
     
     # Add admin command info for admins
@@ -107,7 +110,7 @@ async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYP
             welcome_text += f"\n\n{admin_info}"
         else:
             # Fallback if translation doesn't exist
-            welcome_text += "\n\n👨‍💼 **Admin Commands:**\n/users - Manage users\n/setcontact - Set order contact\n/nuke - Delete all products\n/recategorize - Recategorize products\n/send - Send message to user\n/broadcast - Broadcast to all users"
+            welcome_text += "\n\n👨‍💼 Admin Commands:\n• /users - Manage users\n• /setcontact - Set order contact\n• /nuke - Delete all products\n• /recategorize - Recategorize products\n• /send - Send message to user\n• /broadcast - Broadcast to all users"
     
     # Build keyboard based on subscription status
     view_catalog_text = get_translated_string("view_catalog", user_lang)
