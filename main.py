@@ -1297,7 +1297,7 @@ async def setup_bot_commands(bot):
         except Exception as e:
             logger.error(f"Attempt {attempt + 1}/{max_retries} failed to configure bot commands: {e}")
             if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                await asyncio.sleep(retry_delay * (attempt + 1))  # Progressive backoff (2s, 4s, 6s)
             else:
                 logger.error(f"Failed to configure bot commands after {max_retries} attempts", exc_info=True)
                 raise
