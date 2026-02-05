@@ -464,7 +464,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
     
     if callback_data == "broadcast_confirm_all":
-        # Confirm and send broadcast to all users
+        # Confirm and send broadcast to all users across all bot instances
         message_text = context.user_data.get('broadcast_message')
         
         if not message_text:
@@ -474,7 +474,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         
         # Send status message
         await query.edit_message_text(
-            "📡 **Broadcasting message...**\n\n"
+            "📡 **Broadcasting message across all bot instances...**\n\n"
             "Please wait while the message is queued for all users.",
             parse_mode="Markdown"
         )
@@ -489,14 +489,31 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             exclude_blocked=True
         )
         
+        # Get user distribution across bot instances for the confirmation message
+        users_by_bot = await db.get_users_by_bot_instance()
+        
+        # Count eligible users per bot instance
+        from utils.helpers import get_admin_ids
+        admin_ids = get_admin_ids()
+        bot_stats = []
+        for bot_instance, users in sorted(users_by_bot.items()):
+            eligible = len([u for u in users if not u.get('is_blocked', 0) and u['user_id'] not in admin_ids])
+            if eligible > 0:
+                bot_stats.append(f"  • Bot #{bot_instance}: {eligible} users")
+        
+        bot_distribution = "\n".join(bot_stats) if bot_stats else "  • No users"
+        num_bots = len(users_by_bot)
+        
         await query.edit_message_text(
             f"✅ **Broadcast Complete**\n\n"
-            f"📨 Messages queued: {queued_count}\n"
+            f"📨 Total messages queued: {queued_count}\n"
+            f"🤖 Bot instances: {num_bots}\n\n"
+            f"**Distribution:**\n{bot_distribution}\n\n"
             f"📝 Message: {message_text[:100]}{'...' if len(message_text) > 100 else ''}\n\n"
             f"Messages will be delivered with rate-limiting intervals.",
             parse_mode="Markdown"
         )
-        logger.info(f"Admin {user_id} broadcast message to {queued_count} users")
+        logger.info(f"Admin {user_id} broadcast message to {queued_count} users across {num_bots} bot instances")
         
         context.user_data.clear()
         return

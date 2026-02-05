@@ -636,15 +636,17 @@ class Database:
                 return [row[0] for row in rows]
     
     async def track_user(self, user_id: int, username: Optional[str] = None, 
-                        first_name: Optional[str] = None, last_name: Optional[str] = None):
-        """Track or update a bot user."""
+                        first_name: Optional[str] = None, last_name: Optional[str] = None,
+                        bot_instance: int = 1):
+        """Track or update a bot user with bot instance information."""
         async with aiosqlite.connect(self.db_path) as db:
             # Check if user exists
-            async with db.execute("SELECT user_id FROM bot_users WHERE user_id = ?", (user_id,)) as cursor:
-                exists = await cursor.fetchone()
+            async with db.execute("SELECT user_id, bot_instance FROM bot_users WHERE user_id = ?", (user_id,)) as cursor:
+                row = await cursor.fetchone()
             
-            if exists:
-                # Update existing user
+            if row:
+                # User exists - update fields but DON'T change bot_instance
+                # User stays with their original bot instance
                 await db.execute("""
                     UPDATE bot_users 
                     SET username = ?, first_name = ?, last_name = ?, 
@@ -652,11 +654,11 @@ class Database:
                     WHERE user_id = ?
                 """, (username, first_name, last_name, datetime.now(), user_id))
             else:
-                # Insert new user
+                # New user - assign to this bot instance
                 await db.execute("""
-                    INSERT INTO bot_users (user_id, username, first_name, last_name, first_seen, last_seen)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (user_id, username, first_name, last_name, datetime.now(), datetime.now()))
+                    INSERT INTO bot_users (user_id, username, first_name, last_name, first_seen, last_seen, bot_instance)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (user_id, username, first_name, last_name, datetime.now(), datetime.now(), bot_instance))
             
             await db.commit()
     
@@ -807,13 +809,21 @@ class Database:
                 row = await cursor.fetchone()
                 return row[0] == 1 if row else False
     
-    async def queue_custom_message(self, user_id: int, message_text: str):
-        """Queue a custom message for a user."""
+    async def queue_custom_message(self, user_id: int, message_text: str, bot_instance: Optional[int] = None):
+        """Queue a custom message for a user with bot instance tracking."""
         async with aiosqlite.connect(self.db_path) as db:
+            # If bot_instance not provided, look it up
+            if bot_instance is None:
+                async with db.execute("""
+                    SELECT bot_instance FROM bot_users WHERE user_id = ?
+                """, (user_id,)) as cursor:
+                    row = await cursor.fetchone()
+                    bot_instance = row[0] if row else 1
+            
             await db.execute("""
-                INSERT INTO custom_message_queue (user_id, message_text, created_at)
-                VALUES (?, ?, ?)
-            """, (user_id, message_text, datetime.now()))
+                INSERT INTO custom_message_queue (user_id, message_text, bot_instance, created_at)
+                VALUES (?, ?, ?, ?)
+            """, (user_id, message_text, bot_instance, datetime.now()))
             await db.commit()
     
     async def get_pending_custom_messages(self, limit: int = 100) -> List[Dict[str, Any]]:
@@ -983,38 +993,6 @@ class Database:
 
     # Multi-bot support methods
     
-    async def track_user_with_bot_instance(
-        self, 
-        user_id: int, 
-        bot_instance: int = 1,
-        username: Optional[str] = None, 
-        first_name: Optional[str] = None, 
-        last_name: Optional[str] = None
-    ):
-        """Track or update a bot user with bot instance information."""
-        async with aiosqlite.connect(self.db_path) as db:
-            # Check if user exists
-            async with db.execute("SELECT user_id, bot_instance FROM bot_users WHERE user_id = ?", (user_id,)) as cursor:
-                row = await cursor.fetchone()
-            
-            if row:
-                # User exists - update fields but DON'T change bot_instance
-                # User stays with their original bot instance
-                await db.execute("""
-                    UPDATE bot_users 
-                    SET username = ?, first_name = ?, last_name = ?, 
-                        last_seen = ?, interaction_count = interaction_count + 1
-                    WHERE user_id = ?
-                """, (username, first_name, last_name, datetime.now(), user_id))
-            else:
-                # New user - assign to this bot instance
-                await db.execute("""
-                    INSERT INTO bot_users (user_id, username, first_name, last_name, first_seen, last_seen, bot_instance)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (user_id, username, first_name, last_name, datetime.now(), datetime.now(), bot_instance))
-            
-            await db.commit()
-    
     async def get_user_bot_instance(self, user_id: int) -> Optional[int]:
         """Get the bot instance for a specific user."""
         async with aiosqlite.connect(self.db_path) as db:
@@ -1046,22 +1024,6 @@ class Database:
                 
                 return users_by_bot
     
-    async def queue_custom_message_with_bot_instance(self, user_id: int, message_text: str, bot_instance: Optional[int] = None):
-        """Queue a custom message for a user with bot instance tracking."""
-        async with aiosqlite.connect(self.db_path) as db:
-            # If bot_instance not provided, look it up
-            if bot_instance is None:
-                async with db.execute("""
-                    SELECT bot_instance FROM bot_users WHERE user_id = ?
-                """, (user_id,)) as cursor:
-                    row = await cursor.fetchone()
-                    bot_instance = row[0] if row else 1
-            
-            await db.execute("""
-                INSERT INTO custom_message_queue (user_id, message_text, bot_instance, created_at)
-                VALUES (?, ?, ?, ?)
-            """, (user_id, message_text, bot_instance, datetime.now()))
-            await db.commit()
     
     async def search_products_fts(self, query: str, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
         """
