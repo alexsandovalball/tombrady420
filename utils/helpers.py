@@ -276,9 +276,29 @@ async def get_bot_specific_file_id(
             # Cache the result
             _file_id_cache[cache_key] = file_id
             logger.debug(f"Cached bot-specific file ID for message {source_message_id}, index {file_index}")
+            
+            # Delete the forwarded message to avoid cluttering admin chat
+            try:
+                await context.bot.delete_message(
+                    chat_id=target_chat_id,
+                    message_id=forwarded.message_id
+                )
+            except Exception as e:
+                logger.warning(f"Could not delete forwarded message: {e}")
+            
             return file_id
         else:
             logger.warning(f"Could not extract file ID from forwarded message {source_message_id}")
+            
+            # Still try to delete the forwarded message
+            try:
+                await context.bot.delete_message(
+                    chat_id=target_chat_id,
+                    message_id=forwarded.message_id
+                )
+            except Exception as e:
+                logger.warning(f"Could not delete forwarded message: {e}")
+            
             return None
             
     except Exception as e:
