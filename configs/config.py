@@ -124,12 +124,26 @@ class ConfigClass:
             error_message += "\n📖 See .env.example for reference."
             raise ConfigError(error_message)
         
+        # Validation warnings for notification configuration
+        if len(self.BOT_TOKENS) > 1:
+            logger.warning(
+                f"⚠️  Multiple bot tokens configured ({len(self.BOT_TOKENS)} bots). "
+                f"Only the primary bot (first token: ...{self.BOT_TOKENS[0][-5:]}) will send notifications."
+            )
+            if self.BOT_TOKEN and self.BOT_TOKEN != self.BOT_TOKENS[0]:
+                logger.warning(
+                    f"⚠️  BOT_TOKEN (...{self.BOT_TOKEN[-5:]}) is set but is not the first in BOT_TOKENS. "
+                    f"Primary bot is: ...{self.BOT_TOKENS[0][-5:]}. "
+                    f"This may cause notification issues."
+                )
+        
         logger.info("✅ Configuration validation successful")
         if self.BOT_TOKEN:
             logger.info(f"  - Primary bot token: {'*' * 10}{self.BOT_TOKEN[-5:]}")
         logger.info(f"  - Total bot instances: {len(self.BOT_TOKENS)}")
         for idx, token in enumerate(self.BOT_TOKENS):
-            logger.info(f"    - Bot {idx}: {'*' * 10}{token[-5:]}")
+            is_primary = " (PRIMARY - sends notifications)" if idx == 0 else " (secondary - no notifications)"
+            logger.info(f"    - Bot {idx}: {'*' * 10}{token[-5:]}{is_primary}")
         logger.info(f"  - Admin IDs: {len(self.ADMIN_IDS)} admin(s) configured")
         logger.info(f"  - Channel: {self.CHANNEL_ID or self.CHANNEL_USERNAME}")
         logger.info(f"  - Database: {self.DB_PATH}")
