@@ -229,8 +229,8 @@ async def get_bot_specific_file_id(
         original_file_id: The original file_id (from bot 1 or channel)
         file_type: Type of media (photo, video, etc.)
         source_chat_id: Chat ID where the original media is located
-        source_message_id: Message ID in the source chat
-        file_index: Index of the file in a media group (0 for single media)
+        source_message_id: Message ID in the source chat for THIS specific media item
+        file_index: Index of the file in a media group (0 for single media or first in group)
         temp_chat_id: Optional chat ID to use for temporary forwarding (defaults to first admin)
     
     Returns:
