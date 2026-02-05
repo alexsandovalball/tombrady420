@@ -4,7 +4,7 @@ Uses SQLite with aiosqlite for async operations.
 """
 import aiosqlite
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import logging
 import asyncio
 from functools import lru_cache
@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_ORDER_CONTACT = '@FLYAWAYPEP'
 
 # In-memory caches for frequently accessed data
-_user_language_cache: Dict[int, tuple[str, datetime]] = {}
-_order_contact_cache: Optional[tuple[str, datetime]] = None
+_user_language_cache: Dict[int, Tuple[str, datetime]] = {}
+_order_contact_cache: Optional[Tuple[str, datetime]] = None
 _cache_lock = asyncio.Lock()
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
@@ -730,9 +730,10 @@ class Database:
         """
         Track or update a bot user.
         
-        Note: bot_username is only set on first interaction (when user record is created).
-        For existing users, bot_username is preserved from first interaction and not updated.
-        This ensures analytics show which bot the user first interacted with.
+        Note: bot_username is only set/updated if the database value is NULL.
+        - On first interaction: bot_username is recorded
+        - On subsequent interactions: bot_username is preserved (not overwritten)
+        - This ensures analytics show which bot the user first interacted with
         """
         async with aiosqlite.connect(self.db_path) as db:
             # Check if user exists
@@ -840,13 +841,16 @@ class Database:
                     return [row[0] for row in rows]
         
         # Filter admins in SQL for better performance
-        placeholders = ','.join('?' * len(admin_ids))
+        # Build placeholders safely - length is controlled by admin_ids count
+        num_admins = len(admin_ids)
+        placeholders = ','.join(['?'] * num_admins)
+        query = f"""
+            SELECT user_id FROM bot_users 
+            WHERE notifications_enabled = 1 
+            AND user_id NOT IN ({placeholders})
+        """
         async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(f"""
-                SELECT user_id FROM bot_users 
-                WHERE notifications_enabled = 1 
-                AND user_id NOT IN ({placeholders})
-            """, admin_ids) as cursor:
+            async with db.execute(query, admin_ids) as cursor:
                 rows = await cursor.fetchall()
                 return [row[0] for row in rows]
     
