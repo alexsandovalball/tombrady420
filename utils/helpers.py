@@ -3,6 +3,7 @@ Helper utilities for the bot.
 """
 import logging
 import json
+import asyncio
 from typing import List, Optional, Dict, Tuple
 from telegram import Update, User
 from telegram.ext import ContextTypes
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 # Cache for bot-specific file IDs to avoid redundant forwarding
 # Format: {(source_chat_id, source_message_id, file_index): file_id}
 _file_id_cache: Dict[Tuple[int, int, int], str] = {}
+_file_id_cache_lock = asyncio.Lock()
 
 # Admin commands fallback text constant
 ADMIN_COMMANDS_FALLBACK = (
@@ -231,11 +233,12 @@ async def get_bot_specific_file_id(
     Returns:
         Bot-specific file ID or None if forwarding fails
     """
-    # Check cache first
+    # Check cache first (with lock for thread safety)
     cache_key = (source_chat_id, source_message_id, file_index)
-    if cache_key in _file_id_cache:
-        logger.debug(f"Using cached file ID for message {source_message_id}, index {file_index}")
-        return _file_id_cache[cache_key]
+    async with _file_id_cache_lock:
+        if cache_key in _file_id_cache:
+            logger.debug(f"Using cached file ID for message {source_message_id}, index {file_index}")
+            return _file_id_cache[cache_key]
     
     try:
         # Forward the message to get the bot-specific file ID
@@ -273,8 +276,9 @@ async def get_bot_specific_file_id(
             file_id = forwarded.voice.file_id
         
         if file_id:
-            # Cache the result
-            _file_id_cache[cache_key] = file_id
+            # Cache the result (with lock for thread safety)
+            async with _file_id_cache_lock:
+                _file_id_cache[cache_key] = file_id
             logger.debug(f"Cached bot-specific file ID for message {source_message_id}, index {file_index}")
             
             # Delete the forwarded message to avoid cluttering admin chat

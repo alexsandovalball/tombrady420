@@ -186,13 +186,21 @@ class Database:
             
             try:
                 await db.execute("ALTER TABLE bot_users ADD COLUMN language TEXT DEFAULT 'en'")
-            except aiosqlite.OperationalError:
-                pass
+                logger.info("Added 'language' column to bot_users table")
+            except aiosqlite.OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    logger.debug("Column 'language' already exists in bot_users table")
+                else:
+                    logger.warning(f"Could not add 'language' column to bot_users: {e}")
             
             try:
                 await db.execute("ALTER TABLE products ADD COLUMN additional_message_ids TEXT")
-            except aiosqlite.OperationalError:
-                pass
+                logger.info("Added 'additional_message_ids' column to products table")
+            except aiosqlite.OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    logger.debug("Column 'additional_message_ids' already exists in products table")
+                else:
+                    logger.warning(f"Could not add 'additional_message_ids' column to products: {e}")
             
             # Create performance-critical indexes
             logger.info("Creating database indexes...")
