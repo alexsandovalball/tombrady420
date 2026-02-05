@@ -719,7 +719,13 @@ class Database:
     async def track_user(self, user_id: int, username: Optional[str] = None, 
                         first_name: Optional[str] = None, last_name: Optional[str] = None,
                         bot_username: Optional[str] = None):
-        """Track or update a bot user."""
+        """
+        Track or update a bot user.
+        
+        Note: bot_username is only set on first interaction (when user record is created).
+        For existing users, bot_username is preserved from first interaction and not updated.
+        This ensures analytics show which bot the user first interacted with.
+        """
         async with aiosqlite.connect(self.db_path) as db:
             # Check if user exists
             async with db.execute("SELECT user_id FROM bot_users WHERE user_id = ?", (user_id,)) as cursor:

@@ -345,5 +345,3 @@ async def clear_file_id_cache():
 def get_file_id_cache_size() -> int:
     """Get the current size of the file ID cache."""
     return len(_file_id_cache)
-
-
