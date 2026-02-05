@@ -148,6 +148,16 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 source_message_id = product.get("message_id")
                 bot_instance = context.bot_data.get('bot_instance', 1)
                 
+                # Get additional message IDs if they exist
+                additional_message_ids = product.get("additional_message_ids")
+                if additional_message_ids:
+                    additional_msg_ids = json.loads(additional_message_ids)
+                else:
+                    additional_msg_ids = []
+                
+                # Build list of all message IDs (first + additional)
+                all_message_ids = [source_message_id] + additional_msg_ids
+                
                 # Check if we have cached file IDs for this bot instance
                 cached_files = await db.get_cached_file_ids(product["id"], bot_instance)
                 
@@ -162,21 +172,27 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                     logger.info(f"Proactively getting bot-specific file IDs for media group, product {product['id']}, bot {bot_instance}")
                     try:
                         # Get bot-specific file IDs for all media concurrently for better performance
-                        async def get_file_id_task(idx, file_id, file_type):
+                        async def get_file_id_task(idx, file_id, file_type, msg_id):
                             return await get_bot_specific_file_id(
                                 context,
                                 product["id"],
                                 file_id,
                                 file_type,
                                 source_chat_id,
-                                source_message_id,
+                                msg_id,  # Use the correct message_id for this specific media
                                 file_index=idx,
                                 temp_chat_id=update.effective_chat.id
                             )
                         
                         # Create tasks for concurrent execution
+                        # Use all_message_ids[idx] if available, otherwise fall back to source_message_id
                         tasks = [
-                            get_file_id_task(idx, file_id, file_type)
+                            get_file_id_task(
+                                idx, 
+                                file_id, 
+                                file_type,
+                                all_message_ids[idx] if idx < len(all_message_ids) else source_message_id
+                            )
                             for idx, (file_id, file_type) in enumerate(all_file_ids)
                         ]
                         

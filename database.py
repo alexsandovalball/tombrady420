@@ -35,6 +35,7 @@ class Database:
                     chat_id INTEGER NOT NULL,
                     media_group_id TEXT,
                     additional_file_ids TEXT,
+                    additional_message_ids TEXT,
                     category TEXT,
                     subcategory TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -199,6 +200,11 @@ class Database:
                 pass
             
             try:
+                await db.execute("ALTER TABLE products ADD COLUMN additional_message_ids TEXT")
+            except aiosqlite.OperationalError:
+                pass
+            
+            try:
                 await db.execute("ALTER TABLE bot_users ADD COLUMN notifications_enabled INTEGER DEFAULT 1")
             except aiosqlite.OperationalError:
                 pass
@@ -300,6 +306,7 @@ class Database:
         chat_id: int,
         media_group_id: Optional[str] = None,
         additional_file_ids: Optional[str] = None,
+        additional_message_ids: Optional[str] = None,
         category: Optional[str] = None,
         subcategory: Optional[str] = None
     ) -> int:
@@ -308,10 +315,10 @@ class Database:
             try:
                 cursor = await db.execute("""
                     INSERT INTO products (file_id, file_type, caption, message_id, chat_id, 
-                                        media_group_id, additional_file_ids, category, subcategory, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        media_group_id, additional_file_ids, additional_message_ids, category, subcategory, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (file_id, file_type, caption or "", message_id, chat_id, 
-                      media_group_id, additional_file_ids, category, subcategory, datetime.now()))
+                      media_group_id, additional_file_ids, additional_message_ids, category, subcategory, datetime.now()))
                 await db.commit()
                 product_id = cursor.lastrowid
                 logger.info(f"Product added: ID={product_id}, message_id={message_id}, category={category}")
@@ -581,12 +588,12 @@ class Database:
             """, (media_group_id, chat_id, product_id, datetime.now()))
             await db.commit()
     
-    async def update_product_media(self, product_id: int, additional_file_ids: str):
-        """Update a product's additional file IDs for media groups."""
+    async def update_product_media(self, product_id: int, additional_file_ids: str, additional_message_ids: str = None):
+        """Update a product's additional file IDs and message IDs for media groups."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
-                UPDATE products SET additional_file_ids = ? WHERE id = ?
-            """, (additional_file_ids, product_id))
+                UPDATE products SET additional_file_ids = ?, additional_message_ids = ? WHERE id = ?
+            """, (additional_file_ids, additional_message_ids, product_id))
             await db.commit()
     
     async def get_products_by_category(self, category: str, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
