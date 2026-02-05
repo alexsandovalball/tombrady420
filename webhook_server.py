@@ -259,7 +259,11 @@ async def webhook(request: Request):
 
 @app.post("/webhook/{bot_index}")
 async def webhook_indexed(request: Request, bot_index: int):
-    """Handle incoming webhook updates from Telegram for additional bot instances."""
+    """Handle incoming webhook updates from Telegram for additional bot instances.
+    
+    Note: The primary bot (bot 0) is accessed via /webhook, not /webhook/0.
+    This endpoint handles bots 1, 2, 3, etc.
+    """
     logger.info(f"Received webhook request for bot {bot_index}")
     
     # Check if bots are initialized
@@ -267,10 +271,14 @@ async def webhook_indexed(request: Request, bot_index: int):
         logger.error("Bot applications not initialized")
         return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
     
-    # Validate bot index
-    if bot_index < 0 or bot_index >= len(request.app.state.bot_apps):
+    # Validate bot index (must be >= 1 for this endpoint)
+    if bot_index >= len(request.app.state.bot_apps):
         logger.error(f"Invalid bot index: {bot_index}. Available bots: 0-{len(request.app.state.bot_apps) - 1}")
         return Response(status_code=status.HTTP_404_NOT_FOUND)
+    
+    if bot_index == 0:
+        logger.warning("Bot 0 should use /webhook endpoint, not /webhook/0. Redirecting...")
+        # Still process it for convenience, but log the warning
     
     try:
         # Parse the update

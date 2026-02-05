@@ -54,9 +54,11 @@ class ConfigClass:
                 if token:
                     bot_tokens.append(token)
             except UndefinedValueError:
-                # If we don't find a token at this index, stop looking
-                # (assumes tokens are numbered sequentially)
-                if i > 1:  # Allow gap after primary BOT_TOKEN
+                # Stop searching if we hit a missing token index >= 2
+                # This assumes tokens are numbered sequentially starting from 1
+                # We allow BOT_TOKEN to exist without BOT_TOKEN_1, but if BOT_TOKEN_2
+                # is missing, we assume there are no more tokens
+                if i >= 2:
                     break
         
         self.BOT_TOKENS = bot_tokens

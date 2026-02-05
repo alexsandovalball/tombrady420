@@ -7,8 +7,9 @@ import os
 import sys
 import requests
 
-# Add project to path
-sys.path.insert(0, '/home/runner/work/tombrady420/tombrady420')
+# Dynamically add project to path
+project_root = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, project_root)
 
 def setup_webhooks():
     """Configure webhooks for all bot tokens"""
