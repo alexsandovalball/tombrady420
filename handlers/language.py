@@ -93,8 +93,10 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
     # Get order contact
     order_contact = await db.get_order_contact()
     
-    # Get translated welcome message with contact
-    welcome_text = get_translated_string("welcome_with_contact", lang_code, name=display_name, contact=order_contact)
+    # Get translated welcome message with contact - name and contact are already escaped
+    from utils.helpers import escape_markdown_v1
+    escaped_contact = escape_markdown_v1(order_contact)
+    welcome_text = get_translated_string("welcome_with_contact", lang_code, name=display_name, contact=escaped_contact)
     
     # Add admin command info for admins
     if is_admin(user_id):

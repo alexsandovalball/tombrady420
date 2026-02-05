@@ -181,11 +181,13 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 
                 # Get order contact
                 order_contact = await db.get_order_contact()
+                from utils.helpers import escape_markdown_v1
+                escaped_contact = escape_markdown_v1(order_contact)
                 
                 # Send keyboard in a separate message since media groups can't have keyboards
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text=f"👆 DM TO ORDER: {order_contact}",
+                    text=f"👆 DM TO ORDER: {escaped_contact}",
                     reply_markup=keyboard
                 )
                 
@@ -208,11 +210,13 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         
         # Get order contact
         order_contact = await db.get_order_contact()
+        from utils.helpers import escape_markdown_v1
+        escaped_contact = escape_markdown_v1(order_contact)
         
         # Send DM message with keyboard separately for consistency
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"👆 DM TO ORDER: {order_contact}",
+            text=f"👆 DM TO ORDER: {escaped_contact}",
             reply_markup=keyboard
         )
         
