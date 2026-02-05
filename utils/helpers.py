@@ -309,3 +309,10 @@ async def get_bot_specific_file_id(
         logger.error(f"Error getting bot-specific file ID: {e}")
         return None
 
+
+async def clear_file_id_cache():
+    """Clear the bot-specific file ID cache (useful for forcing refresh of old entries)."""
+    async with _file_id_cache_lock:
+        _file_id_cache.clear()
+    logger.info("File ID cache cleared")
+
