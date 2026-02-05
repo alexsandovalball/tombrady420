@@ -7,6 +7,7 @@ import asyncio
 from typing import List, Optional, Dict, Tuple
 from telegram import Update, User
 from telegram.ext import ContextTypes
+from telegram.error import Forbidden
 
 from configs.config import Config
 
@@ -202,11 +203,23 @@ async def send_media_message(
                 reply_markup=reply_markup
             )
     except Exception as e:
+        error_msg = str(e)
         logger.error(f"Error sending media message: {e}")
+        
+        # Provide helpful error messages based on the error type
+        fallback_text = caption or 'Media'
+        if "Wrong file identifier" in error_msg or "file_id" in error_msg.lower():
+            fallback_text += (
+                "\n\n⚠️ Media temporarily unavailable (file ID issue).\n"
+                "If this persists, please report this product to an admin."
+            )
+        else:
+            fallback_text += f"\n\n⚠️ Error displaying media."
+        
         # Fallback to text message
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"{caption or 'Media'}\n\n⚠️ Error displaying media. File ID: {file_id}",
+            text=fallback_text,
             reply_markup=reply_markup
         )
 
@@ -305,6 +318,18 @@ async def get_bot_specific_file_id(
             
             return None
             
+    except Forbidden as e:
+        # Handle "bot can't initiate conversation with a user" error
+        error_msg = str(e)
+        if "can't initiate conversation" in error_msg.lower() or "bot was blocked" in error_msg.lower():
+            logger.warning(
+                f"Unable to forward message to admin {target_chat_id} for bot-specific file ID: {e}\n"
+                f"SOLUTION: Admin with ID {target_chat_id} needs to start a conversation with this bot "
+                f"by sending /start to it. This is required for secondary bots to cache media file IDs."
+            )
+        else:
+            logger.error(f"Forbidden error getting bot-specific file ID: {e}")
+        return None
     except Exception as e:
         logger.error(f"Error getting bot-specific file ID: {e}")
         return None
@@ -315,4 +340,10 @@ async def clear_file_id_cache():
     async with _file_id_cache_lock:
         _file_id_cache.clear()
     logger.info("File ID cache cleared")
+
+
+def get_file_id_cache_size() -> int:
+    """Get the current size of the file ID cache."""
+    return len(_file_id_cache)
+
 
