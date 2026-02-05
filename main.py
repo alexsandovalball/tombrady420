@@ -1201,11 +1201,11 @@ async def setup_bot_commands(bot):
     # Removed: block, unblock per requirements
     admin_commands = user_commands + [
         BotCommand("users", "View and manage bot users"),
-        BotCommand("recategorize", "Categorize uncategorized products"),
-        BotCommand("nuke", "Delete all products (use with caution)"),
         BotCommand("send", "Send a message to a specific user"),
         BotCommand("broadcast", "Send a message to all users"),
         BotCommand("setcontact", "Set order contact username"),
+        BotCommand("recategorize", "Categorize uncategorized products"),
+        BotCommand("nuke", "Delete all products (use with caution)"),
     ]
     
     # Set default commands for all users
