@@ -3,6 +3,7 @@ Product view handler.
 """
 import logging
 import json
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, InputMediaDocument
 from telegram.ext import ContextTypes
 from database import Database
@@ -160,10 +161,9 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 if bot_instance > 1 and (not cached_files or len(cached_files) != len(all_file_ids)):
                     logger.info(f"Proactively getting bot-specific file IDs for media group, product {product['id']}, bot {bot_instance}")
                     try:
-                        # Get bot-specific file IDs for all media BEFORE attempting to send
-                        new_file_ids = []
-                        for idx, (file_id, file_type) in enumerate(all_file_ids):
-                            bot_file_id = await get_bot_specific_file_id(
+                        # Get bot-specific file IDs for all media concurrently for better performance
+                        async def get_file_id_task(idx, file_id, file_type):
+                            return await get_bot_specific_file_id(
                                 context,
                                 product["id"],
                                 file_id,
@@ -172,11 +172,25 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                                 source_message_id,
                                 file_index=idx
                             )
-                            new_file_ids.append((bot_file_id, file_type))
+                        
+                        # Create tasks for concurrent execution
+                        tasks = [
+                            get_file_id_task(idx, file_id, file_type)
+                            for idx, (file_id, file_type) in enumerate(all_file_ids)
+                        ]
+                        
+                        # Execute all tasks concurrently
+                        bot_file_ids = await asyncio.gather(*tasks)
+                        
+                        # Build the list of (file_id, file_type) tuples
+                        new_file_ids = [
+                            (bot_file_id, file_type)
+                            for bot_file_id, (_, file_type) in zip(bot_file_ids, all_file_ids)
+                        ]
                         
                         # Use the newly obtained bot-specific file IDs
                         cached_files = new_file_ids
-                        logger.info(f"Successfully obtained {len(new_file_ids)} bot-specific file IDs for media group")
+                        logger.info(f"Successfully obtained {len(new_file_ids)} bot-specific file IDs for media group concurrently")
                     except Exception as get_error:
                         logger.error(f"Failed to proactively get bot-specific file IDs: {get_error}")
                         # Fall through to try with original IDs

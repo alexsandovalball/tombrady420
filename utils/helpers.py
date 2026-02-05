@@ -278,19 +278,19 @@ async def get_bot_specific_file_id(
         
         # Extract the new file_id from the forwarded message
         new_file_id = None
-        if forwarded_msg.photo:
+        if hasattr(forwarded_msg, 'photo') and forwarded_msg.photo:
             new_file_id = forwarded_msg.photo[-1].file_id
-        elif forwarded_msg.video:
+        elif hasattr(forwarded_msg, 'video') and forwarded_msg.video:
             new_file_id = forwarded_msg.video.file_id
-        elif forwarded_msg.animation:
+        elif hasattr(forwarded_msg, 'animation') and forwarded_msg.animation:
             new_file_id = forwarded_msg.animation.file_id
-        elif forwarded_msg.document:
+        elif hasattr(forwarded_msg, 'document') and forwarded_msg.document:
             new_file_id = forwarded_msg.document.file_id
-        elif forwarded_msg.audio:
+        elif hasattr(forwarded_msg, 'audio') and forwarded_msg.audio:
             new_file_id = forwarded_msg.audio.file_id
-        elif forwarded_msg.voice:
+        elif hasattr(forwarded_msg, 'voice') and forwarded_msg.voice:
             new_file_id = forwarded_msg.voice.file_id
-        elif forwarded_msg.video_note:
+        elif hasattr(forwarded_msg, 'video_note') and forwarded_msg.video_note:
             new_file_id = forwarded_msg.video_note.file_id
         
         if new_file_id:
