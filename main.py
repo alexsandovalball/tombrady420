@@ -13,7 +13,8 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     filters,
-    ContextTypes
+    ContextTypes,
+    PicklePersistence
 )
 from telegram.error import TelegramError
 
@@ -44,7 +45,7 @@ from utils.helpers import (
     escape_markdown_v1
 )
 from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES
-from utils.notifications import NotificationService
+from utils.notifications import NotificationService, MESSAGE_PREVIEW_LENGTH
 
 # Configure logging with structured format for better visibility on Render
 logging.basicConfig(
@@ -493,15 +494,16 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         media_type = context.user_data.get('broadcast_media_type')
         media_file_id = context.user_data.get('broadcast_media_file_id')
         
-        # Send status message
-        await query.edit_message_text(
-            "📡 **Broadcasting message...**\n\n"
-            "Please wait while the message is queued for all users.",
-            parse_mode="Markdown"
-        )
+        # Show "queued" message immediately
+        if message_text and len(message_text) > MESSAGE_PREVIEW_LENGTH:
+            message_preview = message_text[:MESSAGE_PREVIEW_LENGTH] + "..."
+        elif message_text:
+            message_preview = message_text
+        else:
+            message_preview = "(no caption)"
+        media_indicator = f" ({media_type})" if media_type else ""
         
         # Broadcast using notification service
-        from utils.notifications import NotificationService
         notification_service = NotificationService(db)
         
         queued_count = await notification_service.broadcast_custom_message(
@@ -509,15 +511,16 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             message_text,
             media_type=media_type,
             media_file_id=media_file_id,
-            exclude_blocked=True
+            exclude_blocked=True,
+            admin_user_id=user_id  # Pass admin user ID for completion notification
         )
         
-        media_indicator = f" ({media_type})" if media_type else ""
+        # Show "queued" confirmation
         await query.edit_message_text(
-            f"✅ **Broadcast Complete**\n\n"
+            f"✅ **Broadcast Queued Successfully!**\n\n"
             f"📨 Messages queued: {queued_count}\n"
-            f"📝 Message{media_indicator}: {message_text[:100] if message_text else '(no caption)'}{'...' if len(message_text) > 100 else ''}\n\n"
-            f"Messages will be delivered with rate-limiting intervals.",
+            f"📝 Message{media_indicator}: {message_preview}\n\n"
+            f"🚀 Messages are being delivered now with rate-limiting...",
             parse_mode="Markdown"
         )
         logger.info(f"Admin {user_id} broadcast message to {queued_count} users")
@@ -1302,8 +1305,12 @@ def main():
     # Get bot token from config
     bot_token = Config.BOT_TOKEN
     
-    # Create application
-    application = Application.builder().token(bot_token).post_init(post_init).build()
+    # Create persistence instance
+    persistence = PicklePersistence(filepath="bot_persistence.pkl")
+    logger.info("Persistence enabled: bot_persistence.pkl")
+    
+    # Create application with persistence
+    application = Application.builder().token(bot_token).persistence(persistence).post_init(post_init).build()
     
     # Register handlers
     application.add_handler(CommandHandler("start", start_command))
