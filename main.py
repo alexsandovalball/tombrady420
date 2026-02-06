@@ -69,7 +69,19 @@ media_group_timers = {}
 
 
 async def notify_admins_for_categorization(context: ContextTypes.DEFAULT_TYPE, product_id: int):
-    """Send categorization request to all admins for a new product."""
+    """
+    Send categorization request to primary admin for a new product.
+    Only runs on the primary bot instance to avoid duplicate categorization prompts.
+    """
+    # Check if this is the primary bot instance
+    from utils.helpers import is_primary_bot_instance
+    if not is_primary_bot_instance(context):
+        bot_username = context.bot.username if hasattr(context.bot, 'username') else 'unknown'
+        logger.debug(
+            f"[Bot @{bot_username}] Skipping categorization prompt for product {product_id} - not primary instance"
+        )
+        return
+    
     try:
         product = await db.get_product(product_id)
         if not product:
