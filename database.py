@@ -260,12 +260,16 @@ class Database:
             # Notification queue indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_user_sent ON notification_queue(user_id, sent_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_created ON notification_queue(created_at)")
+            # Composite index for pending notifications query (sent_at IS NULL, ORDER BY created_at)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_pending ON notification_queue(sent_at, created_at) WHERE sent_at IS NULL")
             
             # Pagination state indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_pagination_state_user ON pagination_state(user_id, created_at DESC)")
             
             # Custom message queue indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_custom_message_queue_user_sent ON custom_message_queue(user_id, sent_at)")
+            # Composite index for pending custom messages query
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_custom_message_queue_pending ON custom_message_queue(sent_at, created_at) WHERE sent_at IS NULL")
             
             # Translation cache indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_translation_cache_lookup ON translation_cache(source_text, source_lang, target_lang)")
@@ -759,6 +763,8 @@ class Database:
         to its own users.
         """
         async with aiosqlite.connect(self.db_path) as db:
+            current_time = datetime.now()
+            
             # Check if user exists
             async with db.execute("SELECT user_id FROM bot_users WHERE user_id = ?", (user_id,)) as cursor:
                 exists = await cursor.fetchone()
@@ -771,13 +777,13 @@ class Database:
                         last_seen = ?, interaction_count = interaction_count + 1,
                         bot_username = ?
                     WHERE user_id = ?
-                """, (username, first_name, last_name, datetime.now(), bot_username, user_id))
+                """, (username, first_name, last_name, current_time, bot_username, user_id))
             else:
                 # Insert new user
                 await db.execute("""
                     INSERT INTO bot_users (user_id, username, first_name, last_name, first_seen, last_seen, bot_username)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (user_id, username, first_name, last_name, datetime.now(), datetime.now(), bot_username))
+                """, (user_id, username, first_name, last_name, current_time, current_time, bot_username))
             
             await db.commit()
     
@@ -920,6 +926,54 @@ class Database:
             """, (user_id, product_id, datetime.now()))
             await db.commit()
     
+    async def queue_notifications_batch(self, user_ids: List[int], product_id: int) -> int:
+        """
+        Queue notifications for multiple users in a single batch operation.
+        Includes deduplication check to prevent duplicate notifications.
+        
+        Args:
+            user_ids: List of user IDs to notify
+            product_id: Product ID for the notification
+            
+        Returns:
+            Number of notifications actually queued (after deduplication)
+        """
+        if not user_ids:
+            return 0
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            current_time = datetime.now()
+            queued = 0
+            
+            # For batch insert with deduplication, we need to check existing notifications
+            # Build a query to find which users already have this notification
+            placeholders = ','.join(['?'] * len(user_ids))
+            async with db.execute(f"""
+                SELECT DISTINCT user_id FROM notification_queue 
+                WHERE product_id = ? 
+                AND user_id IN ({placeholders})
+                AND (sent_at IS NULL OR datetime(sent_at) > datetime('now', '-' || ? || ' hours'))
+            """, (product_id, *user_ids, NOTIFICATION_DEDUP_WINDOW_HOURS)) as cursor:
+                existing_user_ids = {row[0] for row in await cursor.fetchall()}
+            
+            # Filter out users who already have this notification
+            users_to_queue = [uid for uid in user_ids if uid not in existing_user_ids]
+            
+            if users_to_queue:
+                # Batch insert notifications for users who don't have them
+                values = [(uid, product_id, current_time) for uid in users_to_queue]
+                await db.executemany("""
+                    INSERT INTO notification_queue (user_id, product_id, created_at)
+                    VALUES (?, ?, ?)
+                """, values)
+                await db.commit()
+                queued = len(users_to_queue)
+                
+                if existing_user_ids:
+                    logger.debug(f"Skipped {len(existing_user_ids)} duplicate notifications for product {product_id}")
+            
+            return queued
+    
     async def mark_notification_sent(self, notification_id: int):
         """Mark a notification as sent."""
         async with aiosqlite.connect(self.db_path) as db:
@@ -1002,6 +1056,47 @@ class Database:
                 VALUES (?, ?, ?, ?, ?)
             """, (user_id, text_to_store, media_type, media_file_id, datetime.now()))
             await db.commit()
+    
+    async def queue_custom_messages_batch(
+        self,
+        user_ids: List[int],
+        message_text: str = None,
+        media_type: str = None,
+        media_file_id: str = None
+    ) -> int:
+        """
+        Queue custom messages for multiple users in a single batch operation.
+        Much more efficient than calling queue_custom_message in a loop.
+        
+        Args:
+            user_ids: List of user IDs to send the message to
+            message_text: Text message or caption (optional if media is provided)
+            media_type: Type of media (photo, video, document, animation, audio)
+            media_file_id: File ID of the media
+            
+        Returns:
+            Number of messages queued
+        """
+        if not user_ids:
+            return 0
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            # Store empty string if message_text is None for database compatibility
+            text_to_store = message_text if message_text is not None else ''
+            current_time = datetime.now()
+            
+            # Build batch insert with VALUES clause
+            # This is much faster than individual inserts
+            values = [(uid, text_to_store, media_type, media_file_id, current_time) for uid in user_ids]
+            
+            await db.executemany("""
+                INSERT INTO custom_message_queue 
+                (user_id, message_text, media_type, media_file_id, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, values)
+            await db.commit()
+            
+            return len(user_ids)
     
     async def get_pending_custom_messages(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Get pending custom messages from queue."""

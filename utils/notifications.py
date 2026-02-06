@@ -139,10 +139,9 @@ class NotificationService:
             bot_username = context.bot.username if hasattr(context.bot, 'username') else 'unknown'
             logger.info(f"[Bot @{bot_username}] Queueing notifications for {len(subscribed_users)} users about product {product_id}")
             
-            # Queue notifications for all subscribed users
+            # Queue notifications for all subscribed users in batch
             # Database-level deduplication prevents duplicate notifications
-            for user_id in subscribed_users:
-                await self.db.queue_notification(user_id, product_id)
+            await self.db.queue_notifications_batch(subscribed_users, product_id)
             
             # Process the notification queue asynchronously (non-blocking)
             # Schedule as a background task so it doesn't block other operations
@@ -420,6 +419,7 @@ class NotificationService:
         """
         Broadcast a custom message to all users with rate limiting.
         Supports text and media messages.
+        Optimized with batch insert for better performance.
         """
         try:
             # Get all users
@@ -431,8 +431,12 @@ class NotificationService:
             
             logger.info(f"Broadcasting custom message to {len(all_users)} users")
             
-            # Queue messages for all non-blocked users
-            queued = 0
+            # Pre-fetch admin IDs once (optimization: avoid repeated function calls)
+            from utils.helpers import get_admin_ids
+            admin_ids_set = set(get_admin_ids())
+            
+            # Collect eligible user IDs (filter in memory before DB operations)
+            eligible_users = []
             for user in all_users:
                 user_id = user["user_id"]
                 
@@ -441,17 +445,22 @@ class NotificationService:
                     continue
                 
                 # Skip admin users
-                from utils.helpers import get_admin_ids
-                if user_id in get_admin_ids():
+                if user_id in admin_ids_set:
                     continue
                 
-                await self.db.queue_custom_message(
-                    user_id, 
-                    message_text,
-                    media_type=media_type,
-                    media_file_id=media_file_id
-                )
-                queued += 1
+                eligible_users.append(user_id)
+            
+            if not eligible_users:
+                logger.debug("No eligible users after filtering")
+                return 0
+            
+            # Batch queue all messages in a single database operation
+            queued = await self.db.queue_custom_messages_batch(
+                eligible_users,
+                message_text,
+                media_type=media_type,
+                media_file_id=media_file_id
+            )
             
             logger.info(f"Queued {queued} custom messages")
             
