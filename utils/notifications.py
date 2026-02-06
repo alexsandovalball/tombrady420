@@ -537,7 +537,7 @@ class NotificationService:
                     if exc:
                         logger.error(
                             f"Error in background broadcast completion task: {exc}",
-                            exc_info=True
+                            exc_info=(type(exc), exc, exc.__traceback__)
                         )
                 
                 task.add_done_callback(_log_task_exception)
