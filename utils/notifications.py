@@ -443,14 +443,28 @@ class NotificationService:
         message_text: str = None,
         media_type: str = None,
         media_file_id: str = None,
-        exclude_blocked: bool = True
+        exclude_blocked: bool = True,
+        admin_user_id: int = None
     ):
         """
         Broadcast a custom message to all users with rate limiting.
         Supports text and media messages.
         Optimized with batch insert for better performance.
+        
+        Args:
+            context: Telegram context
+            message_text: Text message to broadcast
+            media_type: Type of media (photo, video, etc.)
+            media_file_id: File ID of the media
+            exclude_blocked: Whether to exclude blocked users
+            admin_user_id: Admin user ID to send completion notification to
+        
+        Returns:
+            Number of messages queued
         """
         try:
+            start_time = datetime.now()
+            
             # Get all users
             all_users = await self.db.get_all_users()
             
@@ -502,14 +516,76 @@ class NotificationService:
             
             logger.info(f"[Notifications] Queued {queued} custom messages for broadcast")
             
-            # Process the queue
-            await self.process_custom_message_queue(context)
+            # Process the queue and send completion notification
+            if admin_user_id:
+                asyncio.create_task(
+                    self._process_and_notify_completion(
+                        context, admin_user_id, queued, start_time, message_text, media_type
+                    )
+                )
+            else:
+                # Process the queue without completion notification
+                await self.process_custom_message_queue(context)
             
             return queued
             
         except Exception as e:
             logger.error(f"Error broadcasting custom message: {e}", exc_info=True)
             return 0
+    
+    async def _process_and_notify_completion(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        admin_user_id: int,
+        queued_count: int,
+        start_time: datetime,
+        message_text: str,
+        media_type: str
+    ):
+        """
+        Process custom message queue and send completion notification to admin.
+        
+        Args:
+            context: Telegram context
+            admin_user_id: Admin user ID to notify
+            queued_count: Number of messages queued
+            start_time: Start time of the broadcast
+            message_text: Message text for reference
+            media_type: Media type if applicable
+        """
+        try:
+            # Process the queue
+            await self.process_custom_message_queue(context)
+            
+            # Calculate duration
+            end_time = datetime.now()
+            duration = end_time - start_time
+            minutes = int(duration.total_seconds() // 60)
+            seconds = int(duration.total_seconds() % 60)
+            
+            if minutes > 0:
+                time_str = f"{minutes}m {seconds}s"
+            else:
+                time_str = f"{seconds}s"
+            
+            # Send completion notification
+            completion_message = (
+                f"✅ **Broadcast Completed!**\n\n"
+                f"📊 Total delivered: {queued_count}\n"
+                f"⏱️ Time taken: {time_str}\n"
+                f"✅ All messages have been sent."
+            )
+            
+            await context.bot.send_message(
+                chat_id=admin_user_id,
+                text=completion_message,
+                parse_mode="Markdown"
+            )
+            
+            logger.info(f"Broadcast completion notification sent to admin {admin_user_id}")
+            
+        except Exception as e:
+            logger.error(f"Error in _process_and_notify_completion: {e}", exc_info=True)
     
     async def process_custom_message_queue(self, context: ContextTypes.DEFAULT_TYPE):
         """

@@ -39,7 +39,8 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
-    filters
+    filters,
+    PicklePersistence
 )
 from utils.helpers import get_channel_id, get_channel_username, get_file_id_cache_size
 
@@ -66,8 +67,13 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     """
     logger.info(f"Setting up bot application {bot_index}...")
     
-    # Create application
-    bot_app = Application.builder().token(bot_token).build()
+    # Create persistence instance
+    persistence_file = f"bot_persistence_{bot_index}.pkl"
+    persistence = PicklePersistence(filepath=persistence_file)
+    logger.info(f"Persistence enabled for bot {bot_index}: {persistence_file}")
+    
+    # Create application with persistence
+    bot_app = Application.builder().token(bot_token).persistence(persistence).build()
     
     # Initialize database (only once for the primary bot)
     if bot_index == 0:
