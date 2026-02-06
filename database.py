@@ -944,8 +944,6 @@ class Database:
         Returns:
             List of user IDs
         """
-        from configs.config import Config
-        
         async with aiosqlite.connect(self.db_path) as db:
             # Check if this is the primary bot (or if PRIMARY_BOT_USERNAME is not configured)
             # If PRIMARY_BOT_USERNAME is not set, include NULL users for all bots to maintain 
