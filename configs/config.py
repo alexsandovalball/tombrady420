@@ -89,6 +89,11 @@ class ConfigClass:
         self.WEBHOOK_URL = config('WEBHOOK_URL', default=None)
         self.ORDER_CONTACT = config('ORDER_CONTACT', default='@FLYAWAYPEP')
         
+        # Load PRIMARY_BOT_USERNAME for multi-bot setups
+        # This is used to assign legacy users (with NULL bot_username) to the primary bot
+        # If not set, we'll try to determine it at runtime or fall back to None
+        self.PRIMARY_BOT_USERNAME = config('PRIMARY_BOT_USERNAME', default=None)
+        
         self._loaded = True
     
     def validate(self) -> None:

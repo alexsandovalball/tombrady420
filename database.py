@@ -244,6 +244,11 @@ class Database:
             logger.info("Checking for media groups needing message ID migration...")
             await self._migrate_existing_media_groups(db)
             
+            # Migrate legacy users with NULL bot_username to primary bot
+            # This fixes the issue where users created before multi-bot support don't receive notifications
+            logger.info("Checking for legacy users needing bot_username migration...")
+            await self._migrate_legacy_users_bot_username(db)
+            
             # Create performance-critical indexes
             logger.info("Creating database indexes...")
             
@@ -335,6 +340,47 @@ class Database:
             
         except Exception as e:
             logger.error(f"Error during media group migration: {e}")
+    
+    async def _migrate_legacy_users_bot_username(self, db):
+        """
+        Migrate legacy users with NULL bot_username to the primary bot.
+        
+        This is a one-time migration for users created before multi-bot support was added.
+        If PRIMARY_BOT_USERNAME is configured, assigns NULL users to that bot.
+        Otherwise, migration is skipped and NULL users are handled dynamically by get_users_by_bot().
+        """
+        try:
+            # Check if PRIMARY_BOT_USERNAME is configured
+            primary_bot_username = Config.PRIMARY_BOT_USERNAME
+            
+            if not primary_bot_username:
+                logger.info("PRIMARY_BOT_USERNAME not configured - skipping bot_username migration")
+                logger.info("Legacy users with NULL bot_username will be handled dynamically")
+                return
+            
+            # Count users with NULL bot_username
+            cursor = await db.execute("SELECT COUNT(*) FROM bot_users WHERE bot_username IS NULL")
+            null_count = (await cursor.fetchone())[0]
+            
+            if null_count == 0:
+                logger.info("No legacy users with NULL bot_username found")
+                return
+            
+            logger.info(f"Found {null_count} legacy users with NULL bot_username")
+            logger.info(f"Migrating to primary bot: @{primary_bot_username}")
+            
+            # Update all NULL bot_username users to primary bot
+            await db.execute("""
+                UPDATE bot_users 
+                SET bot_username = ? 
+                WHERE bot_username IS NULL
+            """, (primary_bot_username,))
+            
+            await db.commit()
+            logger.info(f"✅ Successfully migrated {null_count} legacy users to primary bot @{primary_bot_username}")
+            
+        except Exception as e:
+            logger.error(f"Error during bot_username migration: {e}")
     
     async def add_product(
         self,
@@ -888,6 +934,10 @@ class Database:
         Get list of user IDs who most recently interacted with a specific bot.
         Used for multi-bot setups to ensure each bot sends to its own users.
         
+        For legacy users who have bot_username = NULL (created before multi-bot support),
+        they are included ONLY for the primary bot to ensure backwards compatibility
+        and prevent duplicate notifications in multi-bot setups.
+        
         Args:
             bot_username: Username of the bot (e.g., 'mybot')
         
@@ -895,11 +945,27 @@ class Database:
             List of user IDs
         """
         async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("""
-                SELECT user_id FROM bot_users WHERE bot_username = ?
-            """, (bot_username,)) as cursor:
-                rows = await cursor.fetchall()
-                return [row[0] for row in rows]
+            # Check if this is the primary bot (or if PRIMARY_BOT_USERNAME is not configured)
+            # If PRIMARY_BOT_USERNAME is not set, include NULL users for all bots to maintain 
+            # backwards compatibility (better to have duplicates than no notifications)
+            is_primary_bot = (Config.PRIMARY_BOT_USERNAME is None or 
+                            bot_username == Config.PRIMARY_BOT_USERNAME)
+            
+            if is_primary_bot:
+                # Primary bot gets both assigned users AND legacy NULL users
+                async with db.execute("""
+                    SELECT user_id FROM bot_users 
+                    WHERE bot_username = ? OR bot_username IS NULL
+                """, (bot_username,)) as cursor:
+                    rows = await cursor.fetchall()
+                    return [row[0] for row in rows]
+            else:
+                # Secondary bots only get their explicitly assigned users
+                async with db.execute("""
+                    SELECT user_id FROM bot_users WHERE bot_username = ?
+                """, (bot_username,)) as cursor:
+                    rows = await cursor.fetchall()
+                    return [row[0] for row in rows]
     
     async def queue_notification(self, user_id: int, product_id: int):
         """
