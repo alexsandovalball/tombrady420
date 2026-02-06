@@ -486,7 +486,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     New workflow:
     1. Ask for message
-    2. Wait for message input
+    2. Wait for message input (text or media)
     3. Show confirmation
     4. Send broadcast
     """
@@ -504,22 +504,35 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         "📝 **Broadcast to All Users - Step 1 of 2**\n\n"
-        "Please enter the message you want to broadcast:",
+        "Please send the message you want to broadcast.\n"
+        "You can send:\n"
+        "• Text message\n"
+        "• Photo with caption\n"
+        "• Video with caption\n"
+        "• Document with caption\n"
+        "• Animation (GIF) with caption",
         parse_mode="Markdown"
     )
     logger.info(f"Admin {user_id} started broadcast to all users workflow")
 
 
 async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle the multi-step broadcast workflow for admins."""
+    """Handle the multi-step broadcast workflow for admins (text or media)."""
     user_id = update.effective_user.id
-    message_text = update.message.text
     
     if not is_admin(user_id):
         return
     
     broadcast_mode = context.user_data.get('broadcast_mode')
     broadcast_step = context.user_data.get('broadcast_step')
+    
+    # Get message content (text or media)
+    message = update.message
+    message_text = message.text or message.caption or ""
+    
+    # Check if message has media
+    from utils.helpers import get_file_id_and_type
+    file_id, file_type = get_file_id_and_type(update)
     
     if broadcast_mode == 'single_user':
         if broadcast_step == 'awaiting_user_id':
@@ -545,7 +558,7 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 await update.message.reply_text(
                     f"📝 **Broadcast to Single User - Step 2 of 3**\n\n"
                     f"🆔 User ID: `{target_user_id}`\n\n"
-                    f"Please enter the message you want to send:",
+                    f"Please send the message (text or media with caption):",
                     parse_mode="Markdown"
                 )
                 logger.info(f"Admin {user_id} entered user ID: {target_user_id}")
@@ -558,9 +571,11 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 context.user_data.clear()
                 
         elif broadcast_step == 'awaiting_message':
-            # Step 2: Received message, show confirmation
+            # Step 2: Received message (text or media), show confirmation
             target_user_id = context.user_data.get('target_user_id')
             context.user_data['broadcast_message'] = message_text
+            context.user_data['broadcast_media_type'] = file_type
+            context.user_data['broadcast_media_file_id'] = file_id
             context.user_data['broadcast_step'] = 'awaiting_confirmation'
             
             # Show confirmation with inline buttons
@@ -570,10 +585,18 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 [InlineKeyboardButton("❌ Cancel", callback_data="broadcast_cancel")]
             ])
             
+            # Build confirmation message
+            media_indicator = ""
+            if file_type:
+                media_indicator = f"🎬 Media Type: {file_type.upper()}\n"
+            
+            text_preview = message_text[:200] + '...' if len(message_text) > 200 else message_text
+            
             await update.message.reply_text(
                 f"✅ **Broadcast to Single User - Confirmation**\n\n"
                 f"🆔 User ID: `{target_user_id}`\n"
-                f"📝 Message: {message_text[:200]}{'...' if len(message_text) > 200 else ''}\n\n"
+                f"{media_indicator}"
+                f"📝 Message: {text_preview if text_preview else '(no caption)'}\n\n"
                 f"Do you want to send this message?",
                 reply_markup=keyboard,
                 parse_mode="Markdown"
@@ -582,8 +605,10 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
             
     elif broadcast_mode == 'all_users':
         if broadcast_step == 'awaiting_message':
-            # Step 1: Received message, show confirmation
+            # Step 1: Received message (text or media), show confirmation
             context.user_data['broadcast_message'] = message_text
+            context.user_data['broadcast_media_type'] = file_type
+            context.user_data['broadcast_media_file_id'] = file_id
             context.user_data['broadcast_step'] = 'awaiting_confirmation'
             
             # Get user count
@@ -597,15 +622,24 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 [InlineKeyboardButton("❌ Cancel", callback_data="broadcast_cancel")]
             ])
             
+            # Build confirmation message
+            media_indicator = ""
+            if file_type:
+                media_indicator = f"🎬 Media Type: {file_type.upper()}\n"
+            
+            text_preview = message_text[:200] + '...' if len(message_text) > 200 else message_text
+            
             await update.message.reply_text(
                 f"✅ **Broadcast to All Users - Confirmation**\n\n"
-                f"📝 Message: {message_text[:200]}{'...' if len(message_text) > 200 else ''}\n"
+                f"{media_indicator}"
+                f"📝 Message: {text_preview if text_preview else '(no caption)'}\n"
                 f"📊 Recipients: {user_count} users\n\n"
                 f"Do you want to send this broadcast?",
                 reply_markup=keyboard,
                 parse_mode="Markdown"
             )
             logger.info(f"Admin {user_id} awaiting confirmation for broadcast to all users")
+
 
 
 async def setcontact_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

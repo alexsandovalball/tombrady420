@@ -382,10 +382,13 @@ class NotificationService:
         self,
         context: ContextTypes.DEFAULT_TYPE,
         user_id: int,
-        message_text: str
+        message_text: str = None,
+        media_type: str = None,
+        media_file_id: str = None
     ):
         """
         Send a custom message to a specific user with rate limiting.
+        Supports text and media messages.
         """
         try:
             # Check if user is blocked
@@ -395,7 +398,12 @@ class NotificationService:
                 return False
             
             # Queue the message
-            await self.db.queue_custom_message(user_id, message_text)
+            await self.db.queue_custom_message(
+                user_id, 
+                message_text,
+                media_type=media_type,
+                media_file_id=media_file_id
+            )
             
             # Process the queue
             await self.process_custom_message_queue(context)
@@ -409,11 +417,14 @@ class NotificationService:
     async def broadcast_custom_message(
         self,
         context: ContextTypes.DEFAULT_TYPE,
-        message_text: str,
+        message_text: str = None,
+        media_type: str = None,
+        media_file_id: str = None,
         exclude_blocked: bool = True
     ):
         """
         Broadcast a custom message to all users with rate limiting.
+        Supports text and media messages.
         """
         try:
             # Get all users
@@ -439,7 +450,12 @@ class NotificationService:
                 if user_id in get_admin_ids():
                     continue
                 
-                await self.db.queue_custom_message(user_id, message_text)
+                await self.db.queue_custom_message(
+                    user_id, 
+                    message_text,
+                    media_type=media_type,
+                    media_file_id=media_file_id
+                )
                 queued += 1
             
             logger.info(f"Queued {queued} custom messages")
@@ -541,7 +557,7 @@ class NotificationService:
         messages: List[dict]
     ) -> int:
         """
-        Send a batch of custom messages.
+        Send a batch of custom messages (text or media).
         Returns the number of successfully sent messages.
         """
         sent_count = 0
@@ -549,8 +565,10 @@ class NotificationService:
         for message in messages:
             try:
                 user_id = message["user_id"]
-                message_text = message["message_text"]
+                message_text = message.get("message_text", "")
                 message_id = message["id"]
+                media_type = message.get("media_type")
+                media_file_id = message.get("media_file_id")
                 
                 # Check if user is blocked
                 is_blocked = await self.db.is_user_blocked(user_id)
@@ -559,12 +577,23 @@ class NotificationService:
                     await self.db.mark_custom_message_sent(message_id)
                     continue
                 
-                # Send custom message
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=message_text,
-                    parse_mode="Markdown"
-                )
+                # Send media message if media is present
+                if media_type and media_file_id:
+                    from utils.helpers import send_media_message
+                    await send_media_message(
+                        context=context,
+                        chat_id=user_id,
+                        file_id=media_file_id,
+                        file_type=media_type,
+                        caption=message_text if message_text else None
+                    )
+                else:
+                    # Send text-only message
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=message_text,
+                        parse_mode="Markdown"
+                    )
                 
                 # Mark as sent
                 await self.db.mark_custom_message_sent(message_id)

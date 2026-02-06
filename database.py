@@ -215,6 +215,25 @@ class Database:
                 else:
                     logger.warning(f"Could not add 'additional_message_ids' column to products: {e}")
             
+            # Add media support columns to custom_message_queue
+            try:
+                await db.execute("ALTER TABLE custom_message_queue ADD COLUMN media_type TEXT")
+                logger.info("Added 'media_type' column to custom_message_queue table")
+            except aiosqlite.OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    logger.debug("Column 'media_type' already exists in custom_message_queue table")
+                else:
+                    logger.warning(f"Could not add 'media_type' column to custom_message_queue: {e}")
+            
+            try:
+                await db.execute("ALTER TABLE custom_message_queue ADD COLUMN media_file_id TEXT")
+                logger.info("Added 'media_file_id' column to custom_message_queue table")
+            except aiosqlite.OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    logger.debug("Column 'media_file_id' already exists in custom_message_queue table")
+                else:
+                    logger.warning(f"Could not add 'media_file_id' column to custom_message_queue: {e}")
+            
             # Migrate existing media groups to populate additional_message_ids
             # For media groups created before this fix, infer message IDs from sequential ordering
             logger.info("Checking for media groups needing message ID migration...")
@@ -937,13 +956,28 @@ class Database:
                 row = await cursor.fetchone()
                 return row[0] == 1 if row else False
     
-    async def queue_custom_message(self, user_id: int, message_text: str):
-        """Queue a custom message for a user."""
+    async def queue_custom_message(
+        self, 
+        user_id: int, 
+        message_text: str = None,
+        media_type: str = None,
+        media_file_id: str = None
+    ):
+        """
+        Queue a custom message for a user.
+        
+        Args:
+            user_id: User ID to send the message to
+            message_text: Text message or caption (optional if media is provided)
+            media_type: Type of media (photo, video, document, animation, audio)
+            media_file_id: File ID of the media
+        """
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
-                INSERT INTO custom_message_queue (user_id, message_text, created_at)
-                VALUES (?, ?, ?)
-            """, (user_id, message_text, datetime.now()))
+                INSERT INTO custom_message_queue 
+                (user_id, message_text, media_type, media_file_id, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (user_id, message_text or '', media_type, media_file_id, datetime.now()))
             await db.commit()
     
     async def get_pending_custom_messages(self, limit: int = 100) -> List[Dict[str, Any]]:

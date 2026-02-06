@@ -439,16 +439,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
     
     if callback_data.startswith("broadcast_confirm_single|"):
-        # Confirm and send single user broadcast
+        # Confirm and send single user broadcast (text or media)
         parts = callback_data.split("|")
         if len(parts) >= 2:
             target_user_id = int(parts[1])
-            message_text = context.user_data.get('broadcast_message')
-            
-            if not message_text:
-                await query.answer("❌ Message not found. Please start over.", show_alert=True)
-                context.user_data.clear()
-                return
+            message_text = context.user_data.get('broadcast_message', '')
+            media_type = context.user_data.get('broadcast_media_type')
+            media_file_id = context.user_data.get('broadcast_media_file_id')
             
             # Send the message
             from utils.notifications import NotificationService
@@ -457,14 +454,17 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             success = await notification_service.send_custom_message_to_user(
                 context,
                 target_user_id,
-                message_text
+                message_text,
+                media_type=media_type,
+                media_file_id=media_file_id
             )
             
             if success:
+                media_indicator = f" ({media_type})" if media_type else ""
                 await query.edit_message_text(
                     f"✅ **Message Sent Successfully!**\n\n"
                     f"🆔 User ID: `{target_user_id}`\n"
-                    f"📝 Message: {message_text[:100]}{'...' if len(message_text) > 100 else ''}",
+                    f"📝 Message{media_indicator}: {message_text[:100] if message_text else '(no caption)'}{'...' if len(message_text) > 100 else ''}",
                     parse_mode="Markdown"
                 )
                 logger.info(f"Admin {user_id} sent message to user {target_user_id}")
@@ -475,13 +475,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
     
     if callback_data == "broadcast_confirm_all":
-        # Confirm and send broadcast to all users
-        message_text = context.user_data.get('broadcast_message')
-        
-        if not message_text:
-            await query.answer("❌ Message not found. Please start over.", show_alert=True)
-            context.user_data.clear()
-            return
+        # Confirm and send broadcast to all users (text or media)
+        message_text = context.user_data.get('broadcast_message', '')
+        media_type = context.user_data.get('broadcast_media_type')
+        media_file_id = context.user_data.get('broadcast_media_file_id')
         
         # Send status message
         await query.edit_message_text(
@@ -497,13 +494,16 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         queued_count = await notification_service.broadcast_custom_message(
             context,
             message_text,
+            media_type=media_type,
+            media_file_id=media_file_id,
             exclude_blocked=True
         )
         
+        media_indicator = f" ({media_type})" if media_type else ""
         await query.edit_message_text(
             f"✅ **Broadcast Complete**\n\n"
             f"📨 Messages queued: {queued_count}\n"
-            f"📝 Message: {message_text[:100]}{'...' if len(message_text) > 100 else ''}\n\n"
+            f"📝 Message{media_indicator}: {message_text[:100] if message_text else '(no caption)'}{'...' if len(message_text) > 100 else ''}\n\n"
             f"Messages will be delivered with rate-limiting intervals.",
             parse_mode="Markdown"
         )
