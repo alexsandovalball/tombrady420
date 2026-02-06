@@ -110,38 +110,42 @@ class NotificationService:
         Can be called from any bot instance - database-level deduplication prevents duplicates.
         """
         try:
+            # Get bot username for logging
+            bot_username = context.bot.username if hasattr(context.bot, 'username') else 'unknown'
+            logger.info(f"[Notifications] notify_users_about_product: Bot @{bot_username} processing product {product_id}")
+            
             # Get product details
             product = await self.db.get_product(product_id)
             if not product:
-                logger.warning(f"Product {product_id} not found for notification")
+                logger.warning(f"[Notifications] Product {product_id} not found for notification")
                 return
             
             # Only notify if product is categorized
             if not product.get("category"):
-                logger.debug(f"Product {product_id} not categorized, skipping notification")
+                logger.debug(f"[Notifications] Product {product_id} not categorized, skipping notification")
                 return
             
             # Skip notifications for excluded categories (DATEDPROOFS, CLIENTTOUCHDOWNS)
             # Note: ANNOUNCEMENTS is NOT excluded from notifications
             category = product.get("category")
             if category in NOTIFICATION_EXCLUDED_CATEGORIES:
-                logger.info(f"Product {product_id} is in excluded category '{category}', skipping notification")
+                logger.info(f"[Notifications] Product {product_id} is in excluded category '{category}', skipping notification")
                 return
             
             # Get all subscribed users
             subscribed_users = await self.db.get_subscribed_users()
             
             if not subscribed_users:
-                logger.debug("No subscribed users to notify")
+                logger.info(f"[Notifications] No subscribed users to notify about product {product_id}")
                 return
             
-            
-            bot_username = context.bot.username if hasattr(context.bot, 'username') else 'unknown'
-            logger.info(f"[Bot @{bot_username}] Queueing notifications for {len(subscribed_users)} users about product {product_id}")
+            logger.info(f"[Notifications] Found {len(subscribed_users)} subscribed users for product {product_id}")
             
             # Queue notifications for all subscribed users in batch
             # Database-level deduplication prevents duplicate notifications
-            await self.db.queue_notifications_batch(subscribed_users, product_id)
+            queued_count = await self.db.queue_notifications_batch(subscribed_users, product_id)
+            
+            logger.info(f"[Notifications] Queued {queued_count} notifications for product {product_id} (bot @{bot_username})")
             
             # Process the notification queue asynchronously (non-blocking)
             # Schedule as a background task so it doesn't block other operations
@@ -173,23 +177,33 @@ class NotificationService:
         try:
             # Get bot username for filtering (skip primary check for processing)
             bot_username = context.bot.username if hasattr(context.bot, 'username') else None
+            logger.info(f"[Notifications] process_notification_queue: Starting for bot @{bot_username}")
             
             pending = await self.db.get_pending_notifications(limit=100)
             
+            logger.info(f"[Notifications] Found {len(pending)} total pending notifications before filtering")
+            
             if not pending:
+                logger.debug(f"[Notifications] No pending notifications to process")
                 return
             
             # Filter notifications for users of this bot only
             if bot_username:
                 bot_users = await self.db.get_users_by_bot(bot_username)
                 bot_user_set = set(bot_users)
+                logger.info(f"[Notifications] Bot @{bot_username} has {len(bot_user_set)} users")
+                logger.debug(f"[Notifications] Bot user IDs: {bot_user_set}")
+                
+                original_count = len(pending)
                 pending = [n for n in pending if n["user_id"] in bot_user_set]
+                filtered_out = original_count - len(pending)
+                logger.info(f"[Notifications] Filtered out {filtered_out} notifications not for this bot, {len(pending)} remaining")
             
             if not pending:
-                logger.debug(f"No pending notifications for bot @{bot_username}")
+                logger.debug(f"[Notifications] No pending notifications for bot @{bot_username} after filtering")
                 return
             
-            logger.info(f"[Bot @{bot_username}] Processing {len(pending)} pending notifications")
+            logger.info(f"[Notifications] Processing {len(pending)} pending notifications for bot @{bot_username}")
             
             # Group notifications by user for rate limiting
             user_notifications = {}
@@ -206,7 +220,7 @@ class NotificationService:
                 recent_count = await self.db.get_recent_notifications_count(user_id, minutes=60)
                 
                 if recent_count >= MAX_NOTIFICATIONS_PER_HOUR:
-                    logger.debug(f"User {user_id} reached rate limit, skipping")
+                    logger.debug(f"[Notifications] User {user_id} reached rate limit ({recent_count}/{MAX_NOTIFICATIONS_PER_HOUR}), skipping")
                     continue
                 
                 # Calculate how many more notifications we can send to this user
@@ -216,23 +230,28 @@ class NotificationService:
                 eligible_users.append((user_id, notifications[:remaining]))
             
             if not eligible_users:
-                logger.info("No eligible users after rate limiting")
+                logger.info(f"[Notifications] No eligible users after rate limiting")
                 return
+            
+            logger.info(f"[Notifications] {len(eligible_users)} users eligible after rate limiting")
             
             # Implement staggered delivery by groups
             sent_count = 0
+            failed_count = 0
             
             if ENABLE_STAGGERED_DELIVERY and len(eligible_users) >= STAGGER_GROUP_SIZE:
-                logger.info(f"Using staggered delivery: {len(eligible_users)} users in groups of {STAGGER_GROUP_SIZE}")
+                logger.info(f"[Notifications] Using staggered delivery: {len(eligible_users)} users in groups of {STAGGER_GROUP_SIZE}")
                 
                 # Split users into groups
                 user_groups = []
                 for i in range(0, len(eligible_users), STAGGER_GROUP_SIZE):
                     user_groups.append(eligible_users[i:i + STAGGER_GROUP_SIZE])
                 
+                logger.info(f"[Notifications] Created {len(user_groups)} groups for staggered delivery")
+                
                 # Process each group with staggered delay
                 for group_idx, user_group in enumerate(user_groups):
-                    logger.info(f"Processing group {group_idx + 1}/{len(user_groups)} with {len(user_group)} users")
+                    logger.info(f"[Notifications] Processing group {group_idx + 1}/{len(user_groups)} with {len(user_group)} users")
                     
                     # Collect all notifications for this group
                     group_batch = []
@@ -244,6 +263,7 @@ class NotificationService:
                         batch = group_batch[i:i + NOTIFICATION_BATCH_SIZE]
                         sent = await self._send_notification_batch(context, batch)
                         sent_count += sent
+                        failed_count += len(batch) - sent
                         
                         # Small delay between batches within a group
                         if i + NOTIFICATION_BATCH_SIZE < len(group_batch):
@@ -251,11 +271,11 @@ class NotificationService:
                     
                     # Stagger delay before next group (except for last group)
                     if group_idx < len(user_groups) - 1:
-                        logger.info(f"Waiting {STAGGER_INTERVAL_SECONDS}s before next group...")
+                        logger.info(f"[Notifications] Waiting {STAGGER_INTERVAL_SECONDS}s before next group...")
                         await asyncio.sleep(STAGGER_INTERVAL_SECONDS)
             else:
                 # Standard batch processing without staggering
-                logger.info("Using standard batch processing (staggering disabled or small user count)")
+                logger.info(f"[Notifications] Using standard batch processing (staggering disabled or small user count)")
                 batch = []
                 
                 for user_id, notifications in eligible_users:
@@ -265,6 +285,7 @@ class NotificationService:
                     if len(batch) >= NOTIFICATION_BATCH_SIZE:
                         sent = await self._send_notification_batch(context, batch)
                         sent_count += sent
+                        failed_count += len(batch) - sent
                         batch = []
                         await asyncio.sleep(BATCH_DELAY_SECONDS)
                 
@@ -272,8 +293,9 @@ class NotificationService:
                 if batch:
                     sent = await self._send_notification_batch(context, batch)
                     sent_count += sent
+                    failed_count += len(batch) - sent
             
-            logger.info(f"[Bot @{bot_username}] Sent {sent_count} notifications successfully")
+            logger.info(f"[Notifications] Completed: {sent_count} sent successfully, {failed_count} failed (bot @{bot_username})")
             
         except Exception as e:
             logger.error(f"Error processing notification queue: {e}", exc_info=True)
@@ -426,32 +448,41 @@ class NotificationService:
             all_users = await self.db.get_all_users()
             
             if not all_users:
-                logger.debug("No users to broadcast to")
+                logger.info(f"[Notifications] broadcast_custom_message: No users to broadcast to")
                 return 0
             
-            logger.info(f"Broadcasting custom message to {len(all_users)} users")
+            logger.info(f"[Notifications] broadcast_custom_message: Found {len(all_users)} total users")
             
             # Pre-fetch admin IDs once (optimization: avoid repeated function calls)
             from utils.helpers import get_admin_ids
             admin_ids_set = set(get_admin_ids())
             
+            logger.info(f"[Notifications] Filtering broadcast: exclude_blocked={exclude_blocked}, admin_count={len(admin_ids_set)}")
+            
             # Collect eligible user IDs (filter in memory before DB operations)
             eligible_users = []
+            blocked_count = 0
+            admin_count = 0
+            
             for user in all_users:
                 user_id = user["user_id"]
                 
                 # Skip blocked users if requested
                 if exclude_blocked and user.get("is_blocked", 0) == 1:
+                    blocked_count += 1
                     continue
                 
                 # Skip admin users
                 if user_id in admin_ids_set:
+                    admin_count += 1
                     continue
                 
                 eligible_users.append(user_id)
             
+            logger.info(f"[Notifications] Eligible users: {len(eligible_users)} (filtered {blocked_count} blocked, {admin_count} admins)")
+            
             if not eligible_users:
-                logger.debug("No eligible users after filtering")
+                logger.info(f"[Notifications] No eligible users after filtering")
                 return 0
             
             # Batch queue all messages in a single database operation
@@ -462,7 +493,7 @@ class NotificationService:
                 media_file_id=media_file_id
             )
             
-            logger.info(f"Queued {queued} custom messages")
+            logger.info(f"[Notifications] Queued {queued} custom messages for broadcast")
             
             # Process the queue
             await self.process_custom_message_queue(context)

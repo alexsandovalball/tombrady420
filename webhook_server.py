@@ -29,6 +29,7 @@ from main import (
     broadcast_command,
     setcontact_command,
     clearcache_command,
+    diagnostic_notifications_command,
     channel_post_handler,
     callback_query_handler,
     message_handler,
@@ -90,6 +91,7 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     bot_app.add_handler(CommandHandler("broadcast", broadcast_command))
     bot_app.add_handler(CommandHandler("setcontact", setcontact_command))
     bot_app.add_handler(CommandHandler("clearcache", clearcache_command))
+    bot_app.add_handler(CommandHandler("diagnostic_notifications", diagnostic_notifications_command))
     
     # Channel post handler (for monitoring channel)
     # Only the primary bot (bot_index == 0) should monitor the channel and send categorization requests

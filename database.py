@@ -249,6 +249,54 @@ class Database:
             logger.info("Checking for legacy users needing bot_username migration...")
             await self._migrate_legacy_users_bot_username(db)
             
+            # Log startup diagnostics after migration
+            logger.info("=" * 60)
+            logger.info("STARTUP DIAGNOSTICS - Database State")
+            logger.info("=" * 60)
+            
+            # Count users by bot_username status
+            cursor = await db.execute("SELECT COUNT(*) FROM bot_users WHERE bot_username IS NULL")
+            null_count = (await cursor.fetchone())[0]
+            
+            cursor = await db.execute("SELECT COUNT(*) FROM bot_users WHERE bot_username IS NOT NULL")
+            assigned_count = (await cursor.fetchone())[0]
+            
+            cursor = await db.execute("SELECT COUNT(*) FROM bot_users")
+            total_users = (await cursor.fetchone())[0]
+            
+            logger.info(f"Bot Users State:")
+            logger.info(f"  • Total users: {total_users}")
+            logger.info(f"  • Users with NULL bot_username: {null_count}")
+            logger.info(f"  • Users with assigned bot_username: {assigned_count}")
+            
+            # Show breakdown by bot
+            if assigned_count > 0:
+                cursor = await db.execute("""
+                    SELECT bot_username, COUNT(*) as count 
+                    FROM bot_users 
+                    WHERE bot_username IS NOT NULL 
+                    GROUP BY bot_username
+                """)
+                bot_counts = await cursor.fetchall()
+                logger.info(f"  • Users per bot:")
+                for bot_username, count in bot_counts:
+                    logger.info(f"    - @{bot_username}: {count} users")
+            
+            # Configuration state
+            logger.info(f"Configuration:")
+            logger.info(f"  • PRIMARY_BOT_USERNAME: {Config.PRIMARY_BOT_USERNAME or 'NOT SET'}")
+            if Config.BOT_TOKENS:
+                logger.info(f"  • Total bots configured: {len(Config.BOT_TOKENS)}")
+                logger.info(f"  • Primary bot token: ...{Config.BOT_TOKENS[0][-5:]} (first in list)")
+            
+            # Notification queue stats
+            cursor = await db.execute("SELECT COUNT(*) FROM notification_queue WHERE sent_at IS NULL")
+            pending_notifications = (await cursor.fetchone())[0]
+            logger.info(f"Notification Queue:")
+            logger.info(f"  • Pending notifications: {pending_notifications}")
+            
+            logger.info("=" * 60)
+            
             # Create performance-critical indexes
             logger.info("Creating database indexes...")
             
@@ -913,7 +961,9 @@ class Database:
                     SELECT user_id FROM bot_users WHERE notifications_enabled = 1
                 """) as cursor:
                     rows = await cursor.fetchall()
-                    return [row[0] for row in rows]
+                    user_ids = [row[0] for row in rows]
+                    logger.info(f"[Database] get_subscribed_users: Found {len(user_ids)} subscribed users (no admin filtering)")
+                    return user_ids
         
         # Filter admins in SQL for better performance
         # Build placeholders safely - length is controlled by admin_ids count
@@ -927,7 +977,9 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(query, admin_ids) as cursor:
                 rows = await cursor.fetchall()
-                return [row[0] for row in rows]
+                user_ids = [row[0] for row in rows]
+                logger.info(f"[Database] get_subscribed_users: Found {len(user_ids)} subscribed users (filtered {len(admin_ids)} admins)")
+                return user_ids
     
     async def get_users_by_bot(self, bot_username: str) -> List[int]:
         """
@@ -944,6 +996,9 @@ class Database:
         Returns:
             List of user IDs
         """
+        logger.info(f"[Database] get_users_by_bot called with bot_username: @{bot_username}")
+        logger.debug(f"[Database] PRIMARY_BOT_USERNAME from Config: {Config.PRIMARY_BOT_USERNAME}")
+        
         async with aiosqlite.connect(self.db_path) as db:
             # Check if this is the primary bot (or if PRIMARY_BOT_USERNAME is not configured)
             # If PRIMARY_BOT_USERNAME is not set, include NULL users for all bots to maintain 
@@ -951,21 +1006,31 @@ class Database:
             is_primary_bot = (Config.PRIMARY_BOT_USERNAME is None or 
                             bot_username == Config.PRIMARY_BOT_USERNAME)
             
+            logger.info(f"[Database] Is primary bot: {is_primary_bot} (PRIMARY_BOT_USERNAME={Config.PRIMARY_BOT_USERNAME})")
+            
             if is_primary_bot:
                 # Primary bot gets both assigned users AND legacy NULL users
-                async with db.execute("""
+                query = """
                     SELECT user_id FROM bot_users 
                     WHERE bot_username = ? OR bot_username IS NULL
-                """, (bot_username,)) as cursor:
+                """
+                logger.debug(f"[Database] Executing SQL (primary): {query} with params: ({bot_username},)")
+                async with db.execute(query, (bot_username,)) as cursor:
                     rows = await cursor.fetchall()
-                    return [row[0] for row in rows]
+                    user_ids = [row[0] for row in rows]
+                    logger.info(f"[Database] get_users_by_bot: Returned {len(user_ids)} user IDs for primary bot @{bot_username}")
+                    logger.debug(f"[Database] User IDs: {user_ids}")
+                    return user_ids
             else:
                 # Secondary bots only get their explicitly assigned users
-                async with db.execute("""
-                    SELECT user_id FROM bot_users WHERE bot_username = ?
-                """, (bot_username,)) as cursor:
+                query = "SELECT user_id FROM bot_users WHERE bot_username = ?"
+                logger.debug(f"[Database] Executing SQL (secondary): {query} with params: ({bot_username},)")
+                async with db.execute(query, (bot_username,)) as cursor:
                     rows = await cursor.fetchall()
-                    return [row[0] for row in rows]
+                    user_ids = [row[0] for row in rows]
+                    logger.info(f"[Database] get_users_by_bot: Returned {len(user_ids)} user IDs for secondary bot @{bot_username}")
+                    logger.debug(f"[Database] User IDs: {user_ids}")
+                    return user_ids
     
     async def queue_notification(self, user_id: int, product_id: int):
         """
@@ -1008,7 +1073,10 @@ class Database:
             Number of notifications actually queued (after deduplication)
         """
         if not user_ids:
+            logger.debug(f"[Database] queue_notifications_batch: No users provided")
             return 0
+        
+        logger.info(f"[Database] queue_notifications_batch: Processing {len(user_ids)} users for product {product_id}")
         
         async with aiosqlite.connect(self.db_path) as db:
             current_time = datetime.now()
@@ -1030,6 +1098,8 @@ class Database:
             # Filter out users who already have this notification
             users_to_queue = [uid for uid in user_ids if uid not in existing_user_ids]
             
+            logger.info(f"[Database] queue_notifications_batch: Filtered out {len(existing_user_ids)} duplicates, queueing {len(users_to_queue)} notifications")
+            
             if users_to_queue:
                 # Batch insert notifications for users who don't have them
                 values = [(uid, product_id, current_time) for uid in users_to_queue]
@@ -1039,9 +1109,10 @@ class Database:
                 """, values)
                 await db.commit()
                 queued = len(users_to_queue)
+                logger.info(f"[Database] queue_notifications_batch: Successfully queued {queued} notifications")
                 
                 if existing_user_ids:
-                    logger.debug(f"Skipped {len(existing_user_ids)} duplicate notifications for product {product_id}")
+                    logger.debug(f"[Database] Skipped {len(existing_user_ids)} duplicate notifications for product {product_id}")
             
             return queued
     
