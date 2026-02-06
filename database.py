@@ -1098,6 +1098,10 @@ class Database:
             # Filter out users who already have this notification
             users_to_queue = [uid for uid in user_ids if uid not in existing_user_ids]
             
+            # Log duplicate filtering regardless of whether we queue new notifications
+            if existing_user_ids:
+                logger.debug(f"[Database] Skipped {len(existing_user_ids)} duplicate notifications for product {product_id}")
+            
             logger.info(f"[Database] queue_notifications_batch: Filtered out {len(existing_user_ids)} duplicates, queueing {len(users_to_queue)} notifications")
             
             if users_to_queue:
@@ -1110,9 +1114,6 @@ class Database:
                 await db.commit()
                 queued = len(users_to_queue)
                 logger.info(f"[Database] queue_notifications_batch: Successfully queued {queued} notifications")
-                
-                if existing_user_ids:
-                    logger.debug(f"[Database] Skipped {len(existing_user_ids)} duplicate notifications for product {product_id}")
             
             return queued
     

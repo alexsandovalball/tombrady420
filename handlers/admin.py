@@ -827,9 +827,9 @@ async def diagnostic_notifications_command(update: Update, context: ContextTypes
         if bot_user_counts:
             for bot_username, count in bot_user_counts:
                 lines.append(f"• Users assigned to @{bot_username}: {count}")
-        else:
-            if null_bot_users > 0:
-                lines.append(f"• Users assigned to specific bots: 0")
+        elif null_bot_users == 0 and total_users > 0:
+            # No NULL users and no assigned users means something unusual
+            lines.append(f"• No users assigned to specific bots")
         
         lines.extend([
             "",
@@ -892,7 +892,7 @@ async def diagnostic_notifications_command(update: Update, context: ContextTypes
         # Check for common issues
         if null_bot_users > 0 and Config.PRIMARY_BOT_USERNAME is None:
             lines.append("⚠️ WARNING: NULL bot_username users exist but PRIMARY_BOT_USERNAME is not set")
-        elif null_bot_users > 0:
+        elif null_bot_users > 0 and Config.PRIMARY_BOT_USERNAME:
             lines.append(f"ℹ️ NULL users will be handled by primary bot (@{Config.PRIMARY_BOT_USERNAME})")
         
         if pending_notifications > 0 and sent_last_hour == 0:

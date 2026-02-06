@@ -147,6 +147,13 @@ class NotificationService:
             
             logger.info(f"[Notifications] Queued {queued_count} notifications for product {product_id} (bot @{bot_username})")
             
+            # Warn if significantly fewer notifications were queued than expected
+            if queued_count < len(subscribed_users) * 0.5:  # Less than 50% queued
+                logger.warning(
+                    f"[Notifications] Only {queued_count}/{len(subscribed_users)} notifications queued "
+                    f"for product {product_id} - possible duplicate filtering or recent notifications"
+                )
+            
             # Process the notification queue asynchronously (non-blocking)
             # Schedule as a background task so it doesn't block other operations
             # Store task reference to prevent it from being garbage collected
