@@ -751,3 +751,172 @@ async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 
+async def diagnostic_notifications_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /diagnostic_notifications command - show notification system diagnostics (admin only)."""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            "❌ This command is only available for administrators."
+        )
+        return
+    
+    try:
+        from configs.config import Config
+        from datetime import datetime, timedelta
+        
+        # Send initial message
+        status_msg = await update.message.reply_text(
+            "🔍 Gathering notification diagnostics...\n"
+            "This may take a moment."
+        )
+        
+        # Get database stats
+        async with aiosqlite.connect(db.db_path) as conn:
+            # Total users
+            cursor = await conn.execute("SELECT COUNT(*) FROM bot_users")
+            total_users = (await cursor.fetchone())[0]
+            
+            # Users with NULL bot_username
+            cursor = await conn.execute("SELECT COUNT(*) FROM bot_users WHERE bot_username IS NULL")
+            null_bot_users = (await cursor.fetchone())[0]
+            
+            # Users grouped by bot_username
+            cursor = await conn.execute("""
+                SELECT bot_username, COUNT(*) as count 
+                FROM bot_users 
+                WHERE bot_username IS NOT NULL 
+                GROUP BY bot_username
+            """)
+            bot_user_counts = await cursor.fetchall()
+            
+            # Pending notifications
+            cursor = await conn.execute("SELECT COUNT(*) FROM notification_queue WHERE sent_at IS NULL")
+            pending_notifications = (await cursor.fetchone())[0]
+            
+            # Sent notifications in last hour
+            cursor = await conn.execute("""
+                SELECT COUNT(*) FROM notification_queue 
+                WHERE sent_at IS NOT NULL 
+                AND datetime(sent_at) > datetime('now', '-60 minutes')
+            """)
+            sent_last_hour = (await cursor.fetchone())[0]
+            
+            # Last 5 pending notifications with details
+            cursor = await conn.execute("""
+                SELECT nq.id, nq.user_id, nq.product_id, nq.created_at
+                FROM notification_queue nq
+                WHERE nq.sent_at IS NULL
+                ORDER BY nq.created_at DESC
+                LIMIT 5
+            """)
+            last_pending = await cursor.fetchall()
+        
+        # Get current bot username
+        current_bot_username = context.bot.username if hasattr(context.bot, 'username') else 'unknown'
+        
+        # Build diagnostic message
+        lines = [
+            "📊 **Notification Diagnostics**\n",
+            "**Database Stats:**",
+            f"• Total users: {total_users}",
+            f"• Users with NULL bot_username: {null_bot_users}",
+        ]
+        
+        # Add bot-specific user counts
+        if bot_user_counts:
+            for bot_username, count in bot_user_counts:
+                lines.append(f"• Users assigned to @{bot_username}: {count}")
+        elif null_bot_users == 0 and total_users > 0:
+            # No NULL users and no assigned users means something unusual
+            lines.append(f"• No users assigned to specific bots")
+        
+        lines.extend([
+            "",
+            "**Notification Queue:**",
+            f"• Pending notifications: {pending_notifications}",
+            f"• Sent in last hour: {sent_last_hour}",
+            "",
+            "**Configuration:**",
+        ])
+        
+        # Add configuration details
+        primary_bot = Config.PRIMARY_BOT_USERNAME or "NOT SET"
+        lines.append(f"• PRIMARY_BOT_USERNAME: {primary_bot}")
+        
+        if Config.BOT_TOKENS:
+            lines.append(f"• Total bots configured: {len(Config.BOT_TOKENS)}")
+            primary_token_suffix = Config.BOT_TOKENS[0][-5:] if Config.BOT_TOKENS else "N/A"
+            lines.append(f"• Primary bot token: ...{primary_token_suffix}")
+        else:
+            lines.append(f"• Total bots configured: 0")
+        
+        lines.append(f"• Current bot: @{current_bot_username}")
+        
+        # Add last pending notifications
+        if last_pending:
+            lines.extend([
+                "",
+                "**Last 5 Pending Notifications:**",
+            ])
+            for nq_id, uid, pid, created_at in last_pending:
+                # Calculate time ago
+                try:
+                    created_dt = datetime.fromisoformat(created_at)
+                    # Handle both timezone-aware and timezone-naive datetimes
+                    if created_dt.tzinfo is not None:
+                        now = datetime.now(created_dt.tzinfo)
+                    else:
+                        now = datetime.now()
+                    delta = now - created_dt
+                    
+                    if delta.total_seconds() < 60:
+                        time_ago = f"{int(delta.total_seconds())} sec ago"
+                    elif delta.total_seconds() < 3600:
+                        time_ago = f"{int(delta.total_seconds() / 60)} min ago"
+                    else:
+                        time_ago = f"{int(delta.total_seconds() / 3600)} hr ago"
+                except Exception:
+                    time_ago = "unknown"
+                
+                lines.append(f"• User {uid} → Product {pid} (queued {time_ago})")
+        else:
+            lines.extend([
+                "",
+                "**Last 5 Pending Notifications:**",
+                "• No pending notifications",
+            ])
+        
+        # Add diagnostic summary
+        lines.extend([
+            "",
+            "**Diagnostic Summary:**",
+        ])
+        
+        # Check for common issues
+        if null_bot_users > 0 and Config.PRIMARY_BOT_USERNAME is None:
+            lines.append("⚠️ WARNING: NULL bot_username users exist but PRIMARY_BOT_USERNAME is not set")
+        elif null_bot_users > 0 and Config.PRIMARY_BOT_USERNAME:
+            lines.append(f"ℹ️ NULL users will be handled by primary bot (@{Config.PRIMARY_BOT_USERNAME})")
+        
+        if pending_notifications > 0 and sent_last_hour == 0:
+            lines.append("⚠️ WARNING: Pending notifications exist but none sent in last hour")
+        
+        if total_users > 0 and pending_notifications == 0 and sent_last_hour == 0:
+            lines.append("ℹ️ No recent notification activity")
+        
+        if pending_notifications > 0:
+            lines.append(f"✅ Notifications are being queued ({pending_notifications} pending)")
+        
+        message_text = "\n".join(lines)
+        
+        await status_msg.edit_text(message_text, parse_mode="Markdown")
+        logger.info(f"Admin {user_id} ran notification diagnostics")
+        
+    except Exception as e:
+        logger.error(f"Error in diagnostic_notifications command: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ An error occurred while gathering diagnostics."
+        )
+
+
