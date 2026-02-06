@@ -908,11 +908,14 @@ class Database:
         """
         async with aiosqlite.connect(self.db_path) as db:
             # Check if notification already exists (pending or recently sent)
+            # Note: SQLite datetime modifiers don't support parameter substitution in the modifier string
+            # so we construct the full datetime comparison dynamically
+            dedup_minutes = NOTIFICATION_DEDUP_WINDOW_HOURS * 60
             async with db.execute("""
                 SELECT id FROM notification_queue 
                 WHERE user_id = ? AND product_id = ? 
-                AND (sent_at IS NULL OR datetime(sent_at) > datetime('now', '-' || ? || ' hours'))
-            """, (user_id, product_id, NOTIFICATION_DEDUP_WINDOW_HOURS)) as cursor:
+                AND (sent_at IS NULL OR datetime(sent_at) > datetime('now', ? || ' minutes'))
+            """, (user_id, product_id, f'-{dedup_minutes}')) as cursor:
                 exists = await cursor.fetchone()
             
             if exists:
@@ -947,13 +950,15 @@ class Database:
             
             # For batch insert with deduplication, we need to check existing notifications
             # Build a query to find which users already have this notification
+            # Note: SQLite datetime modifiers require the full string, not parameter substitution
+            dedup_minutes = NOTIFICATION_DEDUP_WINDOW_HOURS * 60
             placeholders = ','.join(['?'] * len(user_ids))
             async with db.execute(f"""
                 SELECT DISTINCT user_id FROM notification_queue 
                 WHERE product_id = ? 
                 AND user_id IN ({placeholders})
-                AND (sent_at IS NULL OR datetime(sent_at) > datetime('now', '-' || ? || ' hours'))
-            """, (product_id, *user_ids, NOTIFICATION_DEDUP_WINDOW_HOURS)) as cursor:
+                AND (sent_at IS NULL OR datetime(sent_at) > datetime('now', ? || ' minutes'))
+            """, (product_id, *user_ids, f'-{dedup_minutes}')) as cursor:
                 existing_user_ids = {row[0] for row in await cursor.fetchall()}
             
             # Filter out users who already have this notification
