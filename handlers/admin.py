@@ -14,6 +14,27 @@ logger = logging.getLogger(__name__)
 db = Database()
 
 
+def _format_message_preview(message_text: str, media_type: str = None) -> str:
+    """
+    Format a message preview with media indicator and text truncation.
+    
+    Args:
+        message_text: The message text or caption
+        media_type: Optional media type (photo, video, etc.)
+    
+    Returns:
+        Formatted preview string
+    """
+    media_indicator = ""
+    if media_type:
+        media_indicator = f"🎬 Media Type: {media_type.upper()}\n"
+    
+    text_preview = message_text[:200] + '...' if len(message_text) > 200 else message_text
+    text_line = f"📝 Message: {text_preview if text_preview else '(no caption)'}\n"
+    
+    return media_indicator + text_line
+
+
 async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /nuke command - deletes ALL products (admin only) with double confirmation."""
     user_id = update.effective_user.id
@@ -585,18 +606,13 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 [InlineKeyboardButton("❌ Cancel", callback_data="broadcast_cancel")]
             ])
             
-            # Build confirmation message
-            media_indicator = ""
-            if file_type:
-                media_indicator = f"🎬 Media Type: {file_type.upper()}\n"
-            
-            text_preview = message_text[:200] + '...' if len(message_text) > 200 else message_text
+            # Build confirmation message using helper
+            message_preview = _format_message_preview(message_text, file_type)
             
             await update.message.reply_text(
                 f"✅ **Broadcast to Single User - Confirmation**\n\n"
                 f"🆔 User ID: `{target_user_id}`\n"
-                f"{media_indicator}"
-                f"📝 Message: {text_preview if text_preview else '(no caption)'}\n\n"
+                f"{message_preview}\n"
                 f"Do you want to send this message?",
                 reply_markup=keyboard,
                 parse_mode="Markdown"
@@ -622,17 +638,12 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 [InlineKeyboardButton("❌ Cancel", callback_data="broadcast_cancel")]
             ])
             
-            # Build confirmation message
-            media_indicator = ""
-            if file_type:
-                media_indicator = f"🎬 Media Type: {file_type.upper()}\n"
-            
-            text_preview = message_text[:200] + '...' if len(message_text) > 200 else message_text
+            # Build confirmation message using helper
+            message_preview = _format_message_preview(message_text, file_type)
             
             await update.message.reply_text(
                 f"✅ **Broadcast to All Users - Confirmation**\n\n"
-                f"{media_indicator}"
-                f"📝 Message: {text_preview if text_preview else '(no caption)'}\n"
+                f"{message_preview}"
                 f"📊 Recipients: {user_count} users\n\n"
                 f"Do you want to send this broadcast?",
                 reply_markup=keyboard,

@@ -973,11 +973,13 @@ class Database:
             media_file_id: File ID of the media
         """
         async with aiosqlite.connect(self.db_path) as db:
+            # Store empty string if message_text is None for database compatibility
+            text_to_store = message_text if message_text is not None else ''
             await db.execute("""
                 INSERT INTO custom_message_queue 
                 (user_id, message_text, media_type, media_file_id, created_at)
                 VALUES (?, ?, ?, ?, ?)
-            """, (user_id, message_text or '', media_type, media_file_id, datetime.now()))
+            """, (user_id, text_to_store, media_type, media_file_id, datetime.now()))
             await db.commit()
     
     async def get_pending_custom_messages(self, limit: int = 100) -> List[Dict[str, Any]]:

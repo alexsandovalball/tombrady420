@@ -585,7 +585,7 @@ class NotificationService:
                         chat_id=user_id,
                         file_id=media_file_id,
                         file_type=media_type,
-                        caption=message_text if message_text else None
+                        caption=message_text or None
                     )
                 else:
                     # Send text-only message
