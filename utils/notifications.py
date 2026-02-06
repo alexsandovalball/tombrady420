@@ -170,20 +170,32 @@ class NotificationService:
         """
         Process pending notifications from the queue with rate limiting and staggered delivery.
         Groups users and sends notifications at staggered intervals to avoid spam flags.
-        Only runs on the primary bot instance to avoid duplicate notifications.
-        """
-        # Check if this is the primary bot instance
-        if not self._is_primary_instance(context):
-            logger.debug("Skipping notification queue processing - not primary instance")
-            return
         
+        In multi-bot setups:
+        - Primary bot queues notifications (to avoid duplicates)
+        - ALL bots process their own users' notifications from the queue
+        - Each bot filters by bot_username to only send to its own users
+        """
         try:
+            # Get bot username for filtering (skip primary check for processing)
+            bot_username = context.bot.username if hasattr(context.bot, 'username') else None
+            
             pending = await self.db.get_pending_notifications(limit=100)
             
             if not pending:
                 return
             
-            logger.info(f"Processing {len(pending)} pending notifications")
+            # Filter notifications for users of this bot only
+            if bot_username:
+                bot_users = await self.db.get_users_by_bot(bot_username)
+                bot_user_set = set(bot_users)
+                pending = [n for n in pending if n["user_id"] in bot_user_set]
+            
+            if not pending:
+                logger.debug(f"No pending notifications for bot @{bot_username}")
+                return
+            
+            logger.info(f"[Bot @{bot_username}] Processing {len(pending)} pending notifications")
             
             # Group notifications by user for rate limiting
             user_notifications = {}
@@ -267,7 +279,7 @@ class NotificationService:
                     sent = await self._send_notification_batch(context, batch)
                     sent_count += sent
             
-            logger.info(f"Sent {sent_count} notifications successfully")
+            logger.info(f"[Bot @{bot_username}] Sent {sent_count} notifications successfully")
             
         except Exception as e:
             logger.error(f"Error processing notification queue: {e}", exc_info=True)
@@ -444,20 +456,32 @@ class NotificationService:
     async def process_custom_message_queue(self, context: ContextTypes.DEFAULT_TYPE):
         """
         Process pending custom messages from the queue with rate limiting.
-        Only runs on the primary bot instance to avoid duplicate messages.
-        """
-        # Check if this is the primary bot instance
-        if not self._is_primary_instance(context):
-            logger.debug("Skipping custom message queue processing - not primary instance")
-            return
         
+        In multi-bot setups:
+        - Primary bot queues custom messages (to avoid duplicates)
+        - ALL bots process their own users' messages from the queue
+        - Each bot filters by bot_username to only send to its own users
+        """
         try:
+            # Get bot username for filtering (skip primary check for processing)
+            bot_username = context.bot.username if hasattr(context.bot, 'username') else None
+            
             pending = await self.db.get_pending_custom_messages(limit=100)
             
             if not pending:
                 return
             
-            logger.info(f"Processing {len(pending)} pending custom messages")
+            # Filter messages for users of this bot only
+            if bot_username:
+                bot_users = await self.db.get_users_by_bot(bot_username)
+                bot_user_set = set(bot_users)
+                pending = [m for m in pending if m["user_id"] in bot_user_set]
+            
+            if not pending:
+                logger.debug(f"No pending custom messages for bot @{bot_username}")
+                return
+            
+            logger.info(f"[Bot @{bot_username}] Processing {len(pending)} pending custom messages")
             
             # Group messages by user for rate limiting
             user_messages = {}
@@ -506,7 +530,7 @@ class NotificationService:
                 sent = await self._send_custom_message_batch(context, batch)
                 sent_count += sent
             
-            logger.info(f"Sent {sent_count} custom messages successfully")
+            logger.info(f"[Bot @{bot_username}] Sent {sent_count} custom messages successfully")
             
         except Exception as e:
             logger.error(f"Error processing custom message queue: {e}", exc_info=True)

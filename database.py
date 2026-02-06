@@ -730,10 +730,9 @@ class Database:
         """
         Track or update a bot user.
         
-        Note: bot_username is only set/updated if the database value is NULL.
-        - On first interaction: bot_username is recorded
-        - On subsequent interactions: bot_username is preserved (not overwritten)
-        - This ensures analytics show which bot the user first interacted with
+        Updates bot_username on every interaction to track which bot the user most recently used.
+        This is essential for multi-bot setups where each bot needs to deliver notifications
+        to its own users.
         """
         async with aiosqlite.connect(self.db_path) as db:
             # Check if user exists
@@ -741,12 +740,12 @@ class Database:
                 exists = await cursor.fetchone()
             
             if exists:
-                # Update existing user
+                # Update existing user - always update bot_username to track most recent interaction
                 await db.execute("""
                     UPDATE bot_users 
                     SET username = ?, first_name = ?, last_name = ?, 
                         last_seen = ?, interaction_count = interaction_count + 1,
-                        bot_username = COALESCE(?, bot_username)
+                        bot_username = ?
                     WHERE user_id = ?
                 """, (username, first_name, last_name, datetime.now(), bot_username, user_id))
             else:
@@ -851,6 +850,24 @@ class Database:
         """
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(query, admin_ids) as cursor:
+                rows = await cursor.fetchall()
+                return [row[0] for row in rows]
+    
+    async def get_users_by_bot(self, bot_username: str) -> List[int]:
+        """
+        Get list of user IDs who most recently interacted with a specific bot.
+        Used for multi-bot setups to ensure each bot sends to its own users.
+        
+        Args:
+            bot_username: Username of the bot (e.g., 'mybot')
+        
+        Returns:
+            List of user IDs
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT user_id FROM bot_users WHERE bot_username = ?
+            """, (bot_username,)) as cursor:
                 rows = await cursor.fetchall()
                 return [row[0] for row in rows]
     
