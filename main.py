@@ -496,7 +496,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         
         # Show "queued" message immediately
         from utils.notifications import NotificationService, MESSAGE_PREVIEW_LENGTH
-        message_preview = message_text[:MESSAGE_PREVIEW_LENGTH] + "..." if len(message_text) > MESSAGE_PREVIEW_LENGTH else message_text
+        if message_text and len(message_text) > MESSAGE_PREVIEW_LENGTH:
+            message_preview = message_text[:MESSAGE_PREVIEW_LENGTH] + "..."
+        else:
+            message_preview = message_text or "(no caption)"
         media_indicator = f" ({media_type})" if media_type else ""
         
         # Broadcast using notification service

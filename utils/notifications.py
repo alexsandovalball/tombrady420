@@ -466,7 +466,8 @@ class NotificationService:
             Number of messages queued
         """
         try:
-            # Record start time for duration calculation
+            # Record start time for total duration calculation
+            # This includes filtering, queuing, and delivery time to give admin full picture
             start_time = datetime.now()
             
             # Get all users
@@ -531,13 +532,12 @@ class NotificationService:
                     )
                 )
                 # Add exception handling callback to log any errors
-                def log_task_exception(task_obj):
-                    try:
-                        task_obj.result()
-                    except Exception as e:
-                        logger.error(f"Error in background broadcast completion task: {e}", exc_info=True)
-                
-                task.add_done_callback(log_task_exception)
+                task.add_done_callback(
+                    lambda t: logger.error(
+                        f"Error in background broadcast completion task: {t.exception()}",
+                        exc_info=True
+                    ) if t.exception() else None
+                )
             else:
                 # Process the queue without completion notification
                 await self.process_custom_message_queue(context)
