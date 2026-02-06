@@ -463,8 +463,6 @@ class NotificationService:
             Number of messages queued
         """
         try:
-            start_time = datetime.now()
-            
             # Get all users
             all_users = await self.db.get_all_users()
             
@@ -518,11 +516,20 @@ class NotificationService:
             
             # Process the queue and send completion notification
             if admin_user_id:
-                asyncio.create_task(
+                start_time = datetime.now()
+                task = asyncio.create_task(
                     self._process_and_notify_completion(
                         context, admin_user_id, queued, start_time, message_text, media_type
                     )
                 )
+                # Add exception handling callback to log any errors
+                def log_task_exception(task_obj):
+                    try:
+                        task_obj.result()
+                    except Exception as e:
+                        logger.error(f"Error in background broadcast completion task: {e}", exc_info=True)
+                
+                task.add_done_callback(log_task_exception)
             else:
                 # Process the queue without completion notification
                 await self.process_custom_message_queue(context)
