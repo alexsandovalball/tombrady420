@@ -132,6 +132,8 @@ class NotificationService:
                 logger.info(f"[Notifications] Product {product_id} is in excluded category '{category}', skipping notification")
                 return
             
+            logger.info(f"[NOTIFY] START: Processing product {product_id}, category={category}")
+            
             # Get all subscribed users
             subscribed_users = await self.db.get_subscribed_users()
             
@@ -140,12 +142,14 @@ class NotificationService:
                 return
             
             logger.info(f"[Notifications] Found {len(subscribed_users)} subscribed users for product {product_id}")
+            logger.info(f"[NOTIFY] Subscribed users: {len(subscribed_users)}")
             
             # Queue notifications for all subscribed users in batch
             # Database-level deduplication prevents duplicate notifications
             queued_count = await self.db.queue_notifications_batch(subscribed_users, product_id)
             
             logger.info(f"[Notifications] Queued {queued_count} notifications for product {product_id} (bot @{bot_username})")
+            logger.info(f"[NOTIFY] Queued: {queued_count} notifications")
             
             # Warn if significantly fewer notifications were queued than expected
             if queued_count < len(subscribed_users) * 0.5:  # Less than 50% queued
@@ -155,18 +159,29 @@ class NotificationService:
                 )
             
             # Process the notification queue asynchronously (non-blocking)
-            # Schedule as a background task so it doesn't block other operations
-            # Store task reference to prevent it from being garbage collected
+            # CRITICAL: Store task reference in context to prevent garbage collection
+            if not hasattr(context, 'notification_tasks'):
+                context.notification_tasks = []
+            
             task = asyncio.create_task(self.process_notification_queue(context))
             
-            # Add exception handling callback to log any errors
+            # Add exception handling callback
             def log_task_exception(task_obj):
                 try:
                     task_obj.result()
+                    logger.info(f"[Notifications] Background task completed successfully")
                 except Exception as e:
-                    logger.error(f"Error in background notification task: {e}", exc_info=True)
+                    logger.error(f"[Notifications] Error in background notification task: {e}", exc_info=True)
+                finally:
+                    # Clean up completed task
+                    if hasattr(context, 'notification_tasks') and task_obj in context.notification_tasks:
+                        context.notification_tasks.remove(task_obj)
             
             task.add_done_callback(log_task_exception)
+            context.notification_tasks.append(task)
+            
+            logger.info(f"[Notifications] Background task created and stored in context for product {product_id}")
+            logger.info(f"[NOTIFY] Background task started for product {product_id}")
             
         except Exception as e:
             logger.error(f"Error notifying users about product {product_id}: {e}", exc_info=True)

@@ -13,7 +13,8 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     filters,
-    ContextTypes
+    ContextTypes,
+    PicklePersistence
 )
 from telegram.error import TelegramError
 
@@ -493,10 +494,9 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         media_type = context.user_data.get('broadcast_media_type')
         media_file_id = context.user_data.get('broadcast_media_file_id')
         
-        # Send status message
+        # Show initial queuing message
         await query.edit_message_text(
-            "📡 **Broadcasting message...**\n\n"
-            "Please wait while the message is queued for all users.",
+            "⏳ **Queueing broadcast...**\n\nPlease wait...",
             parse_mode="Markdown"
         )
         
@@ -504,6 +504,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         from utils.notifications import NotificationService
         notification_service = NotificationService(db)
         
+        start_time = datetime.now()
         queued_count = await notification_service.broadcast_custom_message(
             context,
             message_text,
@@ -512,15 +513,39 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             exclude_blocked=True
         )
         
+        # Show queued confirmation
         media_indicator = f" ({media_type})" if media_type else ""
         await query.edit_message_text(
-            f"✅ **Broadcast Complete**\n\n"
+            f"✅ **Broadcast Queued Successfully!**\n\n"
             f"📨 Messages queued: {queued_count}\n"
             f"📝 Message{media_indicator}: {message_text[:100] if message_text else '(no caption)'}{'...' if len(message_text) > 100 else ''}\n\n"
-            f"Messages will be delivered with rate-limiting intervals.",
+            f"🚀 Messages are being delivered now with rate-limiting...",
             parse_mode="Markdown"
         )
         logger.info(f"Admin {user_id} broadcast message to {queued_count} users")
+        
+        # Wait for completion and send final status
+        # Schedule a background task to notify admin when complete
+        async def notify_completion():
+            # Wait for all notifications to be sent (check queue every 5 seconds)
+            while True:
+                pending = await db.get_pending_custom_messages(limit=1)
+                if not pending:
+                    break
+                await asyncio.sleep(5)
+            
+            # Send completion message
+            duration = datetime.now() - start_time
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"✅ **Broadcast Completed!**\n\n"
+                     f"📊 Total delivered: {queued_count}\n"
+                     f"⏱️ Time taken: {int(duration.total_seconds())} seconds\n"
+                     f"✅ All messages have been sent.",
+                parse_mode="Markdown"
+            )
+        
+        asyncio.create_task(notify_completion())
         
         context.user_data.clear()
         return
@@ -735,12 +760,19 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     f"📂 {category_text}"
                 )
                 logger.info(f"Product {product_id} categorized as {category}/{subcategory} by admin {update.effective_user.id}")
+                logger.info(f"[CATEGORIZATION] Product {product_id} saved with category {category}/{subcategory}")
+                logger.info(f"[CATEGORIZATION] About to trigger notifications...")
                 
                 # Notify subscribed users about the new categorized product
                 logger.info(f"Triggering notifications for categorized product {product_id}")
                 notification_service = NotificationService(db)
-                await notification_service.notify_users_about_product(context, product_id)
-                logger.info(f"Notification service called for product {product_id}")
+                
+                # IMPORTANT: Await the notification properly and keep task reference
+                try:
+                    await notification_service.notify_users_about_product(context, product_id)
+                    logger.info(f"Notification service completed for product {product_id}")
+                except Exception as e:
+                    logger.error(f"Error sending notifications for product {product_id}: {e}", exc_info=True)
             else:
                 await query.answer("Invalid save data", show_alert=True)
         
@@ -1302,8 +1334,11 @@ def main():
     # Get bot token from config
     bot_token = Config.BOT_TOKEN
     
-    # Create application
-    application = Application.builder().token(bot_token).post_init(post_init).build()
+    # Create persistence instance
+    persistence = PicklePersistence(filepath='bot_persistence.pkl')
+    
+    # Create application with persistence
+    application = Application.builder().token(bot_token).persistence(persistence).post_init(post_init).build()
     
     # Register handlers
     application.add_handler(CommandHandler("start", start_command))

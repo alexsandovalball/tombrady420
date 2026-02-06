@@ -7,3 +7,5 @@ venv/
 env/
 *.log
 .DS_Store
+*.pkl
+bot_persistence*.pkl
