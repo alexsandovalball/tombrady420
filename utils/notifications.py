@@ -532,12 +532,15 @@ class NotificationService:
                     )
                 )
                 # Add exception handling callback to log any errors
-                task.add_done_callback(
-                    lambda t: logger.error(
-                        f"Error in background broadcast completion task: {t.exception()}",
-                        exc_info=True
-                    ) if t.exception() else None
-                )
+                def _log_task_exception(task_obj):
+                    exc = task_obj.exception()
+                    if exc:
+                        logger.error(
+                            f"Error in background broadcast completion task: {exc}",
+                            exc_info=True
+                        )
+                
+                task.add_done_callback(_log_task_exception)
             else:
                 # Process the queue without completion notification
                 await self.process_custom_message_queue(context)

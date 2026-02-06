@@ -45,7 +45,7 @@ from utils.helpers import (
     escape_markdown_v1
 )
 from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES
-from utils.notifications import NotificationService
+from utils.notifications import NotificationService, MESSAGE_PREVIEW_LENGTH
 
 # Configure logging with structured format for better visibility on Render
 logging.basicConfig(
@@ -495,11 +495,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         media_file_id = context.user_data.get('broadcast_media_file_id')
         
         # Show "queued" message immediately
-        from utils.notifications import NotificationService, MESSAGE_PREVIEW_LENGTH
         if message_text and len(message_text) > MESSAGE_PREVIEW_LENGTH:
             message_preview = message_text[:MESSAGE_PREVIEW_LENGTH] + "..."
+        elif message_text:
+            message_preview = message_text
         else:
-            message_preview = message_text or "(no caption)"
+            message_preview = "(no caption)"
         media_indicator = f" ({media_type})" if media_type else ""
         
         # Broadcast using notification service
