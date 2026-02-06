@@ -891,8 +891,24 @@ class Database:
                 return [row[0] for row in rows]
     
     async def queue_notification(self, user_id: int, product_id: int):
-        """Add a notification to the queue."""
+        """
+        Add a notification to the queue.
+        Prevents duplicate notifications for the same user-product combination.
+        """
         async with aiosqlite.connect(self.db_path) as db:
+            # Check if notification already exists (pending or recently sent)
+            async with db.execute("""
+                SELECT id FROM notification_queue 
+                WHERE user_id = ? AND product_id = ? 
+                AND (sent_at IS NULL OR datetime(sent_at) > datetime('now', '-1 hour'))
+            """, (user_id, product_id)) as cursor:
+                exists = await cursor.fetchone()
+            
+            if exists:
+                logger.debug(f"Notification already queued for user {user_id}, product {product_id}")
+                return
+            
+            # Queue the notification
             await db.execute("""
                 INSERT INTO notification_queue (user_id, product_id, created_at)
                 VALUES (?, ?, ?)

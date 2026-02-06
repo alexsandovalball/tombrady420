@@ -107,16 +107,8 @@ class NotificationService:
         """
         Notify subscribed users about a new categorized product.
         Implements rate limiting to prevent spam.
-        Only runs on the primary bot instance to avoid duplicate notifications.
+        Can be called from any bot instance - database-level deduplication prevents duplicates.
         """
-        # Check if this is the primary bot instance
-        if not self._is_primary_instance(context):
-            logger.warning(
-                f"Skipping notification for product {product_id} - not primary instance. "
-                f"Only the primary bot (first in BOT_TOKENS) sends notifications."
-            )
-            return
-        
         try:
             # Get product details
             product = await self.db.get_product(product_id)
@@ -143,9 +135,12 @@ class NotificationService:
                 logger.debug("No subscribed users to notify")
                 return
             
-            logger.info(f"Notifying {len(subscribed_users)} users about product {product_id}")
+            
+            bot_username = context.bot.username if hasattr(context.bot, 'username') else 'unknown'
+            logger.info(f"[Bot @{bot_username}] Queueing notifications for {len(subscribed_users)} users about product {product_id}")
             
             # Queue notifications for all subscribed users
+            # Database-level deduplication prevents duplicate notifications
             for user_id in subscribed_users:
                 await self.db.queue_notification(user_id, product_id)
             
