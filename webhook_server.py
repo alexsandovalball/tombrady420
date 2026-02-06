@@ -8,7 +8,7 @@ import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, status
 from telegram import Update
-from telegram.ext import Application
+from telegram.ext import Application, PicklePersistence
 
 from configs.config import Config, ConfigError
 # Import the bot setup functions
@@ -66,8 +66,11 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     """
     logger.info(f"Setting up bot application {bot_index}...")
     
-    # Create application
-    bot_app = Application.builder().token(bot_token).build()
+    # Create persistence instance
+    persistence = PicklePersistence(filepath=f'bot_persistence_{bot_index}.pkl')
+    
+    # Create application with persistence
+    bot_app = Application.builder().token(bot_token).persistence(persistence).build()
     
     # Initialize database (only once for the primary bot)
     if bot_index == 0:
