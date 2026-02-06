@@ -863,7 +863,11 @@ async def diagnostic_notifications_command(update: Update, context: ContextTypes
                 # Calculate time ago
                 try:
                     created_dt = datetime.fromisoformat(created_at)
-                    now = datetime.now()
+                    # Handle both timezone-aware and timezone-naive datetimes
+                    if created_dt.tzinfo is not None:
+                        now = datetime.now(created_dt.tzinfo)
+                    else:
+                        now = datetime.now()
                     delta = now - created_dt
                     
                     if delta.total_seconds() < 60:
@@ -872,7 +876,7 @@ async def diagnostic_notifications_command(update: Update, context: ContextTypes
                         time_ago = f"{int(delta.total_seconds() / 60)} min ago"
                     else:
                         time_ago = f"{int(delta.total_seconds() / 3600)} hr ago"
-                except:
+                except Exception:
                     time_ago = "unknown"
                 
                 lines.append(f"• User {uid} → Product {pid} (queued {time_ago})")
