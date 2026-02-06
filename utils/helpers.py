@@ -13,6 +13,59 @@ from configs.config import Config
 
 logger = logging.getLogger(__name__)
 
+
+def is_primary_bot_instance(context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Check if this is the primary bot instance.
+    The primary bot is the first token in BOT_TOKENS list.
+    
+    Used for operations that should only happen once across all bot instances,
+    such as sending categorization prompts to admins.
+    
+    Args:
+        context: Telegram context with bot information
+        
+    Returns:
+        True if this is the primary instance, False otherwise
+    """
+    if not hasattr(context, 'bot') or not hasattr(context.bot, 'token'):
+        # If we can't determine, assume it's primary to maintain backward compatibility
+        logger.warning("Unable to determine bot instance, assuming primary")
+        return True
+    
+    current_token = context.bot.token
+    bot_tokens = Config.BOT_TOKENS
+    
+    # Validate BOT_TOKENS is a non-empty list
+    if not bot_tokens or not isinstance(bot_tokens, list) or len(bot_tokens) == 0:
+        logger.warning("BOT_TOKENS is empty or invalid, assuming primary instance")
+        return True
+    
+    # If only one bot token configured, always return True
+    if len(bot_tokens) == 1:
+        return True
+    
+    # Validate that current token exists in BOT_TOKENS list
+    if current_token not in bot_tokens:
+        logger.warning(
+            f"Current bot token (...{current_token[-5:]}) not found in BOT_TOKENS list. "
+            f"Assuming primary to maintain functionality."
+        )
+        return True
+    
+    # Primary bot is the first token in the list (index 0)
+    is_primary = current_token == bot_tokens[0]
+    
+    bot_username = context.bot.username if hasattr(context.bot, 'username') else 'unknown'
+    
+    if is_primary:
+        logger.debug(f"[Bot @{bot_username}] Primary instance check: PASS")
+    else:
+        logger.debug(f"[Bot @{bot_username}] Primary instance check: FAIL (secondary bot)")
+    
+    return is_primary
+
+
 # Cache for bot-specific file IDs to avoid redundant forwarding
 # Format: {(source_chat_id, source_message_id, file_index): file_id}
 _file_id_cache: Dict[Tuple[int, int, int], str] = {}

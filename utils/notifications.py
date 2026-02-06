@@ -107,16 +107,8 @@ class NotificationService:
         """
         Notify subscribed users about a new categorized product.
         Implements rate limiting to prevent spam.
-        Only runs on the primary bot instance to avoid duplicate notifications.
+        Can be called from any bot instance - database-level deduplication prevents duplicates.
         """
-        # Check if this is the primary bot instance
-        if not self._is_primary_instance(context):
-            logger.warning(
-                f"Skipping notification for product {product_id} - not primary instance. "
-                f"Only the primary bot (first in BOT_TOKENS) sends notifications."
-            )
-            return
-        
         try:
             # Get product details
             product = await self.db.get_product(product_id)
@@ -143,11 +135,13 @@ class NotificationService:
                 logger.debug("No subscribed users to notify")
                 return
             
-            logger.info(f"Notifying {len(subscribed_users)} users about product {product_id}")
             
-            # Queue notifications for all subscribed users
-            for user_id in subscribed_users:
-                await self.db.queue_notification(user_id, product_id)
+            bot_username = context.bot.username if hasattr(context.bot, 'username') else 'unknown'
+            logger.info(f"[Bot @{bot_username}] Queueing notifications for {len(subscribed_users)} users about product {product_id}")
+            
+            # Queue notifications for all subscribed users in batch
+            # Database-level deduplication prevents duplicate notifications
+            await self.db.queue_notifications_batch(subscribed_users, product_id)
             
             # Process the notification queue asynchronously (non-blocking)
             # Schedule as a background task so it doesn't block other operations
@@ -170,20 +164,32 @@ class NotificationService:
         """
         Process pending notifications from the queue with rate limiting and staggered delivery.
         Groups users and sends notifications at staggered intervals to avoid spam flags.
-        Only runs on the primary bot instance to avoid duplicate notifications.
-        """
-        # Check if this is the primary bot instance
-        if not self._is_primary_instance(context):
-            logger.debug("Skipping notification queue processing - not primary instance")
-            return
         
+        In multi-bot setups:
+        - Primary bot queues notifications (to avoid duplicates)
+        - ALL bots process their own users' notifications from the queue
+        - Each bot filters by bot_username to only send to its own users
+        """
         try:
+            # Get bot username for filtering (skip primary check for processing)
+            bot_username = context.bot.username if hasattr(context.bot, 'username') else None
+            
             pending = await self.db.get_pending_notifications(limit=100)
             
             if not pending:
                 return
             
-            logger.info(f"Processing {len(pending)} pending notifications")
+            # Filter notifications for users of this bot only
+            if bot_username:
+                bot_users = await self.db.get_users_by_bot(bot_username)
+                bot_user_set = set(bot_users)
+                pending = [n for n in pending if n["user_id"] in bot_user_set]
+            
+            if not pending:
+                logger.debug(f"No pending notifications for bot @{bot_username}")
+                return
+            
+            logger.info(f"[Bot @{bot_username}] Processing {len(pending)} pending notifications")
             
             # Group notifications by user for rate limiting
             user_notifications = {}
@@ -267,7 +273,7 @@ class NotificationService:
                     sent = await self._send_notification_batch(context, batch)
                     sent_count += sent
             
-            logger.info(f"Sent {sent_count} notifications successfully")
+            logger.info(f"[Bot @{bot_username}] Sent {sent_count} notifications successfully")
             
         except Exception as e:
             logger.error(f"Error processing notification queue: {e}", exc_info=True)
@@ -370,10 +376,13 @@ class NotificationService:
         self,
         context: ContextTypes.DEFAULT_TYPE,
         user_id: int,
-        message_text: str
+        message_text: str = None,
+        media_type: str = None,
+        media_file_id: str = None
     ):
         """
         Send a custom message to a specific user with rate limiting.
+        Supports text and media messages.
         """
         try:
             # Check if user is blocked
@@ -383,7 +392,12 @@ class NotificationService:
                 return False
             
             # Queue the message
-            await self.db.queue_custom_message(user_id, message_text)
+            await self.db.queue_custom_message(
+                user_id, 
+                message_text,
+                media_type=media_type,
+                media_file_id=media_file_id
+            )
             
             # Process the queue
             await self.process_custom_message_queue(context)
@@ -397,11 +411,15 @@ class NotificationService:
     async def broadcast_custom_message(
         self,
         context: ContextTypes.DEFAULT_TYPE,
-        message_text: str,
+        message_text: str = None,
+        media_type: str = None,
+        media_file_id: str = None,
         exclude_blocked: bool = True
     ):
         """
         Broadcast a custom message to all users with rate limiting.
+        Supports text and media messages.
+        Optimized with batch insert for better performance.
         """
         try:
             # Get all users
@@ -413,8 +431,12 @@ class NotificationService:
             
             logger.info(f"Broadcasting custom message to {len(all_users)} users")
             
-            # Queue messages for all non-blocked users
-            queued = 0
+            # Pre-fetch admin IDs once (optimization: avoid repeated function calls)
+            from utils.helpers import get_admin_ids
+            admin_ids_set = set(get_admin_ids())
+            
+            # Collect eligible user IDs (filter in memory before DB operations)
+            eligible_users = []
             for user in all_users:
                 user_id = user["user_id"]
                 
@@ -423,12 +445,22 @@ class NotificationService:
                     continue
                 
                 # Skip admin users
-                from utils.helpers import get_admin_ids
-                if user_id in get_admin_ids():
+                if user_id in admin_ids_set:
                     continue
                 
-                await self.db.queue_custom_message(user_id, message_text)
-                queued += 1
+                eligible_users.append(user_id)
+            
+            if not eligible_users:
+                logger.debug("No eligible users after filtering")
+                return 0
+            
+            # Batch queue all messages in a single database operation
+            queued = await self.db.queue_custom_messages_batch(
+                eligible_users,
+                message_text,
+                media_type=media_type,
+                media_file_id=media_file_id
+            )
             
             logger.info(f"Queued {queued} custom messages")
             
@@ -444,20 +476,32 @@ class NotificationService:
     async def process_custom_message_queue(self, context: ContextTypes.DEFAULT_TYPE):
         """
         Process pending custom messages from the queue with rate limiting.
-        Only runs on the primary bot instance to avoid duplicate messages.
-        """
-        # Check if this is the primary bot instance
-        if not self._is_primary_instance(context):
-            logger.debug("Skipping custom message queue processing - not primary instance")
-            return
         
+        In multi-bot setups:
+        - Primary bot queues custom messages (to avoid duplicates)
+        - ALL bots process their own users' messages from the queue
+        - Each bot filters by bot_username to only send to its own users
+        """
         try:
+            # Get bot username for filtering (skip primary check for processing)
+            bot_username = context.bot.username if hasattr(context.bot, 'username') else None
+            
             pending = await self.db.get_pending_custom_messages(limit=100)
             
             if not pending:
                 return
             
-            logger.info(f"Processing {len(pending)} pending custom messages")
+            # Filter messages for users of this bot only
+            if bot_username:
+                bot_users = await self.db.get_users_by_bot(bot_username)
+                bot_user_set = set(bot_users)
+                pending = [m for m in pending if m["user_id"] in bot_user_set]
+            
+            if not pending:
+                logger.debug(f"No pending custom messages for bot @{bot_username}")
+                return
+            
+            logger.info(f"[Bot @{bot_username}] Processing {len(pending)} pending custom messages")
             
             # Group messages by user for rate limiting
             user_messages = {}
@@ -506,7 +550,7 @@ class NotificationService:
                 sent = await self._send_custom_message_batch(context, batch)
                 sent_count += sent
             
-            logger.info(f"Sent {sent_count} custom messages successfully")
+            logger.info(f"[Bot @{bot_username}] Sent {sent_count} custom messages successfully")
             
         except Exception as e:
             logger.error(f"Error processing custom message queue: {e}", exc_info=True)
@@ -517,7 +561,7 @@ class NotificationService:
         messages: List[dict]
     ) -> int:
         """
-        Send a batch of custom messages.
+        Send a batch of custom messages (text or media).
         Returns the number of successfully sent messages.
         """
         sent_count = 0
@@ -525,8 +569,10 @@ class NotificationService:
         for message in messages:
             try:
                 user_id = message["user_id"]
-                message_text = message["message_text"]
+                message_text = message.get("message_text", "")
                 message_id = message["id"]
+                media_type = message.get("media_type")
+                media_file_id = message.get("media_file_id")
                 
                 # Check if user is blocked
                 is_blocked = await self.db.is_user_blocked(user_id)
@@ -535,12 +581,23 @@ class NotificationService:
                     await self.db.mark_custom_message_sent(message_id)
                     continue
                 
-                # Send custom message
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=message_text,
-                    parse_mode="Markdown"
-                )
+                # Send media message if media is present
+                if media_type and media_file_id:
+                    from utils.helpers import send_media_message
+                    await send_media_message(
+                        context=context,
+                        chat_id=user_id,
+                        file_id=media_file_id,
+                        file_type=media_type,
+                        caption=message_text or None
+                    )
+                else:
+                    # Send text-only message
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=message_text,
+                        parse_mode="Markdown"
+                    )
                 
                 # Mark as sent
                 await self.db.mark_custom_message_sent(message_id)
