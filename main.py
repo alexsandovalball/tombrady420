@@ -545,7 +545,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 parse_mode="Markdown"
             )
         
-        asyncio.create_task(notify_completion())
+        # Store task reference to prevent garbage collection
+        if not hasattr(context, 'notification_tasks'):
+            context.notification_tasks = []
+        
+        task = asyncio.create_task(notify_completion())
+        context.notification_tasks.append(task)
         
         context.user_data.clear()
         return
