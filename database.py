@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 # Default values
 DEFAULT_ORDER_CONTACT = '@FLYAWAYPEP'
 
+# Notification deduplication window (in hours)
+# Prevents re-queueing notifications for the same user-product within this timeframe
+NOTIFICATION_DEDUP_WINDOW_HOURS = 1
+
 # In-memory caches for frequently accessed data
 _user_language_cache: Dict[int, Tuple[str, datetime]] = {}
 _order_contact_cache: Optional[Tuple[str, datetime]] = None
@@ -900,8 +904,8 @@ class Database:
             async with db.execute("""
                 SELECT id FROM notification_queue 
                 WHERE user_id = ? AND product_id = ? 
-                AND (sent_at IS NULL OR datetime(sent_at) > datetime('now', '-1 hour'))
-            """, (user_id, product_id)) as cursor:
+                AND (sent_at IS NULL OR datetime(sent_at) > datetime('now', '-' || ? || ' hour'))
+            """, (user_id, product_id, NOTIFICATION_DEDUP_WINDOW_HOURS)) as cursor:
                 exists = await cursor.fetchone()
             
             if exists:
