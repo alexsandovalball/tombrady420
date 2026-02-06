@@ -18,6 +18,7 @@ DEFAULT_ORDER_CONTACT = '@FLYAWAYPEP'
 
 # Notification deduplication window (in hours)
 # Prevents re-queueing notifications for the same user-product within this timeframe
+# Default is 1 hour, but can be adjusted as needed
 NOTIFICATION_DEDUP_WINDOW_HOURS = 1
 
 # In-memory caches for frequently accessed data
@@ -904,7 +905,7 @@ class Database:
             async with db.execute("""
                 SELECT id FROM notification_queue 
                 WHERE user_id = ? AND product_id = ? 
-                AND (sent_at IS NULL OR datetime(sent_at) > datetime('now', '-' || ? || ' hour'))
+                AND (sent_at IS NULL OR datetime(sent_at) > datetime('now', '-' || ? || ' hours'))
             """, (user_id, product_id, NOTIFICATION_DEDUP_WINDOW_HOURS)) as cursor:
                 exists = await cursor.fetchone()
             
