@@ -32,6 +32,9 @@ MAX_CUSTOM_MESSAGES_PER_HOUR = 3  # Maximum custom messages per user per hour
 CUSTOM_MESSAGE_BATCH_SIZE = 5  # Send custom messages in smaller batches
 CUSTOM_MESSAGE_DELAY_SECONDS = 5  # Longer delay for custom messages
 
+# Broadcast UI configuration
+MESSAGE_PREVIEW_LENGTH = 50  # Maximum length for message preview in confirmations
+
 
 class NotificationService:
     """Service for managing and sending product notifications."""
@@ -463,6 +466,9 @@ class NotificationService:
             Number of messages queued
         """
         try:
+            # Record start time for duration calculation
+            start_time = datetime.now()
+            
             # Get all users
             all_users = await self.db.get_all_users()
             
@@ -516,7 +522,9 @@ class NotificationService:
             
             # Process the queue and send completion notification
             if admin_user_id:
-                start_time = datetime.now()
+                # Fire-and-forget: Create background task to process queue and send completion notification
+                # This allows the function to return immediately while messages are being delivered
+                # The task runs independently and will complete even if the calling context ends
                 task = asyncio.create_task(
                     self._process_and_notify_completion(
                         context, admin_user_id, queued, start_time, message_text, media_type

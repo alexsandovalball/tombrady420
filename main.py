@@ -495,11 +495,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         media_file_id = context.user_data.get('broadcast_media_file_id')
         
         # Show "queued" message immediately
-        message_preview = message_text[:50] + "..." if len(message_text) > 50 else message_text
+        from utils.notifications import NotificationService, MESSAGE_PREVIEW_LENGTH
+        message_preview = message_text[:MESSAGE_PREVIEW_LENGTH] + "..." if len(message_text) > MESSAGE_PREVIEW_LENGTH else message_text
         media_indicator = f" ({media_type})" if media_type else ""
         
         # Broadcast using notification service
-        from utils.notifications import NotificationService
         notification_service = NotificationService(db)
         
         queued_count = await notification_service.broadcast_custom_message(
