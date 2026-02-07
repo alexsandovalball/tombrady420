@@ -885,12 +885,8 @@ class NotificationService:
                 f"👉 Use /menu to view the catalog"
             )
             
-            # Create inline keyboard
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("👁️ View Product", callback_data=f"product|{product_id}")],
-                [InlineKeyboardButton("📚 View Catalog", callback_data="categories")],
-                [InlineKeyboardButton("🔕 Unsubscribe", callback_data="toggle_notifications")]
-            ])
+            # Note: Inline keyboards would require database schema changes to store in custom_message_queue
+            # For now, using text-based call to action (/menu command)
             
             # Get subscribed users
             subscribed_users = await self.db.get_subscribed_users()
