@@ -920,3 +920,106 @@ async def diagnostic_notifications_command(update: Update, context: ContextTypes
         )
 
 
+async def debug_queues_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /debug_queues command - show queue counts and samples (admin only)."""
+    user_id = update.effective_user.id
+    
+    # Check admin permission
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            "❌ This command is only available for administrators."
+        )
+        return
+    
+    logger.info(f"[AdminCommand] debug_queues invoked by admin user {user_id}")
+    
+    try:
+        # Send initial message
+        status_msg = await update.message.reply_text(
+            "🔍 Inspecting notification queues..."
+        )
+        
+        # Get queue counts and samples
+        async with aiosqlite.connect(db.db_path) as conn:
+            # notification_queue stats
+            cursor = await conn.execute("SELECT COUNT(*) FROM notification_queue WHERE sent_at IS NULL")
+            nq_pending = (await cursor.fetchone())[0]
+            
+            cursor = await conn.execute("SELECT COUNT(*) FROM notification_queue WHERE sent_at IS NOT NULL")
+            nq_sent = (await cursor.fetchone())[0]
+            
+            # custom_message_queue stats
+            cursor = await conn.execute("SELECT COUNT(*) FROM custom_message_queue WHERE sent_at IS NULL")
+            cmq_pending = (await cursor.fetchone())[0]
+            
+            cursor = await conn.execute("SELECT COUNT(*) FROM custom_message_queue WHERE sent_at IS NOT NULL")
+            cmq_sent = (await cursor.fetchone())[0]
+            
+            # Sample pending notification_queue rows
+            cursor = await conn.execute("""
+                SELECT id, user_id, product_id, created_at
+                FROM notification_queue
+                WHERE sent_at IS NULL
+                ORDER BY created_at DESC
+                LIMIT 5
+            """)
+            nq_samples = await cursor.fetchall()
+            
+            # Sample pending custom_message_queue rows
+            cursor = await conn.execute("""
+                SELECT id, user_id, message_text, media_type, created_at
+                FROM custom_message_queue
+                WHERE sent_at IS NULL
+                ORDER BY created_at DESC
+                LIMIT 5
+            """)
+            cmq_samples = await cursor.fetchall()
+        
+        # Build response message
+        lines = [
+            "📊 **Queue Diagnostics**\n",
+            "**notification_queue:**",
+            f"• Pending: {nq_pending}",
+            f"• Sent: {nq_sent}",
+            f"• Total: {nq_pending + nq_sent}",
+        ]
+        
+        if nq_samples:
+            lines.append("\n**Sample pending notifications (up to 5):**")
+            for row in nq_samples:
+                nq_id, uid, pid, created = row
+                lines.append(f"• ID {nq_id}: user={uid}, product={pid}, created={created[:19] if created else 'N/A'}")
+        else:
+            lines.append("\n• No pending notifications")
+        
+        lines.extend([
+            "",
+            "**custom_message_queue:**",
+            f"• Pending: {cmq_pending}",
+            f"• Sent: {cmq_sent}",
+            f"• Total: {cmq_pending + cmq_sent}",
+        ])
+        
+        if cmq_samples:
+            lines.append("\n**Sample pending custom messages (up to 5):**")
+            for row in cmq_samples:
+                cmq_id, uid, msg_text, media_type, created = row
+                msg_preview = (msg_text[:40] + '...') if msg_text and len(msg_text) > 40 else (msg_text or '(no text)')
+                media_info = f", media={media_type}" if media_type else ""
+                lines.append(f"• ID {cmq_id}: user={uid}{media_info}, msg=\"{msg_preview}\", created={created[:19] if created else 'N/A'}")
+        else:
+            lines.append("\n• No pending custom messages")
+        
+        message_text = "\n".join(lines)
+        
+        await status_msg.edit_text(message_text, parse_mode="Markdown")
+        logger.info(f"[AdminCommand] debug_queues completed for admin {user_id}")
+        
+    except Exception as e:
+        logger.error(f"Error in debug_queues command: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ An error occurred while inspecting queues."
+        )
+
+
+
