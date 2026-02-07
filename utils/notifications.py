@@ -828,7 +828,7 @@ class NotificationService:
                 
             except Forbidden as e:
                 # User blocked the bot, block them in our system
-                logger.info(f"User {user_id} blocked the bot: {e}")
+                logger.exception(f"User {user_id} blocked the bot, marking as blocked")
                 await self.db.block_user(user_id)
                 await self.db.mark_custom_message_sent(message_id)
                 failed_count += 1
