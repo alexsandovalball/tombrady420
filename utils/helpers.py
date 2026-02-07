@@ -258,12 +258,13 @@ async def send_media_message(
     except Exception as e:
         error_msg = str(e)
         # Log detailed context for debugging
-        file_id_preview = file_id[:50] if file_id else "None"
+        file_id_preview = file_id[:50] if file_id and len(file_id) > 50 else file_id or "None"
+        file_id_suffix = "..." if file_id and len(file_id) > 50 else ""
         reply_markup_preview = str(reply_markup)[:100] if reply_markup else "None"
         logger.exception(
             f"Error sending media message:\n"
             f"  chat_id: {chat_id}\n"
-            f"  file_id: {file_id_preview}...\n"
+            f"  file_id: {file_id_preview}{file_id_suffix}\n"
             f"  file_type: {file_type}\n"
             f"  reply_markup: {reply_markup_preview}\n"
             f"  error: {error_msg}"
