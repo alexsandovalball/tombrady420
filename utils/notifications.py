@@ -330,8 +330,40 @@ class NotificationService:
         """
         Send a batch of notifications.
         Returns the number of successfully sent notifications.
+        Optimized to prefetch product and user data to reduce DB calls.
         """
         sent_count = 0
+        
+        # Extract unique product IDs and user IDs in a single pass
+        product_ids = set()
+        user_ids = set()
+        for n in notifications:
+            product_ids.add(n["product_id"])
+            user_ids.add(n["user_id"])
+        
+        # Prefetch product details concurrently using asyncio.gather
+        products_cache = {}
+        if product_ids:
+            product_results = await asyncio.gather(
+                *[self.db.get_product(pid) for pid in product_ids],
+                return_exceptions=True
+            )
+            for pid, product in zip(product_ids, product_results):
+                if not isinstance(product, Exception) and product:
+                    products_cache[pid] = product
+        
+        # Prefetch user languages concurrently using asyncio.gather
+        user_langs_cache = {}
+        if user_ids:
+            lang_results = await asyncio.gather(
+                *[self.db.get_user_language(uid) for uid in user_ids],
+                return_exceptions=True
+            )
+            for uid, lang in zip(user_ids, lang_results):
+                if not isinstance(lang, Exception):
+                    user_langs_cache[uid] = lang if lang else "en"
+        
+        logger.debug(f"[Notifications] Prefetched {len(products_cache)} products and {len(user_langs_cache)} user languages for batch")
         
         for notification in notifications:
             try:
@@ -339,16 +371,16 @@ class NotificationService:
                 product_id = notification["product_id"]
                 notification_id = notification["id"]
                 
-                # Get product details
-                product = await self.db.get_product(product_id)
+                # Get product from cache
+                product = products_cache.get(product_id)
                 
                 if not product:
                     # Product deleted, mark notification as sent
                     await self.db.mark_notification_sent(notification_id)
                     continue
                 
-                # Get user's language preference
-                user_lang = await self.db.get_user_language(user_id)
+                # Get user's language preference from cache
+                user_lang = user_langs_cache.get(user_id, "en")
                 
                 # Prepare notification message
                 category = product.get("category", "Unknown")
@@ -423,10 +455,14 @@ class NotificationService:
         message_text: str = None,
         media_type: str = None,
         media_file_id: str = None
-    ):
+    ) -> bool:
         """
         Send a custom message to a specific user with rate limiting.
         Supports text and media messages.
+        Queues the message and spawns background processing task.
+        
+        Returns:
+            bool: True if message was queued successfully, False otherwise
         """
         try:
             # Check if user is blocked
@@ -443,14 +479,44 @@ class NotificationService:
                 media_file_id=media_file_id
             )
             
-            # Process the queue
-            await self.process_custom_message_queue(context)
+            # CRITICAL: Store task reference in context to prevent garbage collection
+            if not hasattr(context, 'notification_tasks'):
+                context.notification_tasks = []
+            
+            # Spawn background task to process the queue
+            task = asyncio.create_task(self.process_custom_message_queue(context))
+            
+            # Add exception handling callback
+            def log_task_exception(task_obj):
+                try:
+                    task_obj.result()
+                    logger.info(f"[Notifications] Single-user custom message task completed successfully")
+                except Exception as e:
+                    logger.error(f"[Notifications] Error in single-user custom message task: {e}", exc_info=True)
+                finally:
+                    # Clean up completed task
+                    if hasattr(context, 'notification_tasks') and task_obj in context.notification_tasks:
+                        context.notification_tasks.remove(task_obj)
+            
+            task.add_done_callback(log_task_exception)
+            context.notification_tasks.append(task)
+            
+            logger.info(f"[Notifications] Queued custom message for user {user_id}, background task spawned")
             
             return True
             
         except Exception as e:
             logger.error(f"Error sending custom message to user {user_id}: {e}", exc_info=True)
             return False
+    
+    def _create_empty_result_task(self) -> asyncio.Task:
+        """
+        Create an asyncio task that returns an empty result.
+        Helper to avoid code duplication.
+        """
+        async def empty_task():
+            return {"sent_count": 0, "failed_count": 0}
+        return asyncio.create_task(empty_task())
     
     async def broadcast_custom_message(
         self,
@@ -459,11 +525,14 @@ class NotificationService:
         media_type: str = None,
         media_file_id: str = None,
         exclude_blocked: bool = True
-    ):
+    ) -> tuple:
         """
         Broadcast a custom message to all users with rate limiting.
         Supports text and media messages.
         Optimized with batch insert for better performance.
+        
+        Returns:
+            tuple: (queued_count: int, processing_task: asyncio.Task)
         """
         try:
             # Get all users
@@ -471,7 +540,8 @@ class NotificationService:
             
             if not all_users:
                 logger.info(f"[Notifications] broadcast_custom_message: No users to broadcast to")
-                return 0
+                # Return empty task that completes immediately
+                return (0, self._create_empty_result_task())
             
             logger.info(f"[Notifications] broadcast_custom_message: Found {len(all_users)} total users")
             
@@ -505,7 +575,8 @@ class NotificationService:
             
             if not eligible_users:
                 logger.info(f"[Notifications] No eligible users after filtering")
-                return 0
+                # Return empty task that completes immediately
+                return (0, self._create_empty_result_task())
             
             # Batch queue all messages in a single database operation
             queued = await self.db.queue_custom_messages_batch(
@@ -540,13 +611,14 @@ class NotificationService:
             
             logger.info(f"[Notifications] Custom message queue background task created and stored")
             
-            return queued
+            return (queued, task)
             
         except Exception as e:
             logger.error(f"Error broadcasting custom message: {e}", exc_info=True)
-            return 0
+            # Return error immediately - don't wrap in a task that will fail
+            raise
     
-    async def process_custom_message_queue(self, context: ContextTypes.DEFAULT_TYPE):
+    async def process_custom_message_queue(self, context: ContextTypes.DEFAULT_TYPE) -> dict:
         """
         Process pending custom messages from the queue with rate limiting.
         
@@ -554,7 +626,13 @@ class NotificationService:
         - Primary bot queues custom messages (to avoid duplicates)
         - ALL bots process their own users' messages from the queue
         - Each bot filters by bot_username to only send to its own users
+        
+        Returns:
+            dict: Summary with {"sent_count": int, "failed_count": int}
         """
+        sent_count = 0
+        failed_count = 0
+        
         try:
             # Get bot username for filtering (skip primary check for processing)
             bot_username = context.bot.username if hasattr(context.bot, 'username') else None
@@ -562,7 +640,7 @@ class NotificationService:
             pending = await self.db.get_pending_custom_messages(limit=100)
             
             if not pending:
-                return
+                return {"sent_count": 0, "failed_count": 0}
             
             # Filter messages for users of this bot only
             if bot_username:
@@ -572,7 +650,7 @@ class NotificationService:
             
             if not pending:
                 logger.debug(f"No pending custom messages for bot @{bot_username}")
-                return
+                return {"sent_count": 0, "failed_count": 0}
             
             logger.info(f"[Bot @{bot_username}] Processing {len(pending)} pending custom messages")
             
@@ -585,7 +663,6 @@ class NotificationService:
                 user_messages[user_id].append(message)
             
             # Process messages in batches
-            sent_count = 0
             batch = []
             
             for user_id, messages in user_messages.items():
@@ -595,6 +672,7 @@ class NotificationService:
                     # Mark as sent to remove from queue
                     for msg in messages:
                         await self.db.mark_custom_message_sent(msg["id"])
+                    failed_count += len(messages)
                     continue
                 
                 # Check rate limit for this user
@@ -602,6 +680,7 @@ class NotificationService:
                 
                 if recent_count >= MAX_CUSTOM_MESSAGES_PER_HOUR:
                     logger.debug(f"User {user_id} reached custom message rate limit, skipping")
+                    failed_count += len(messages)
                     continue
                 
                 # Calculate how many more messages we can send to this user
@@ -613,31 +692,46 @@ class NotificationService:
                     
                     # Send in batches to avoid overwhelming Telegram
                     if len(batch) >= CUSTOM_MESSAGE_BATCH_SIZE:
-                        sent = await self._send_custom_message_batch(context, batch)
-                        sent_count += sent
+                        result = await self._send_custom_message_batch(context, batch)
+                        sent_count += result["sent"]
+                        failed_count += result["failed"]
                         batch = []
                         await asyncio.sleep(CUSTOM_MESSAGE_DELAY_SECONDS)
+                
+                # Mark messages that exceeded quota as sent (failed due to rate limit)
+                if len(messages) > remaining:
+                    excess_messages = messages[remaining:]
+                    for msg in excess_messages:
+                        await self.db.mark_custom_message_sent(msg["id"])
+                    failed_count += len(excess_messages)
+                    logger.debug(f"User {user_id}: {len(excess_messages)} messages skipped due to rate limit")
             
             # Send remaining batch
             if batch:
-                sent = await self._send_custom_message_batch(context, batch)
-                sent_count += sent
+                result = await self._send_custom_message_batch(context, batch)
+                sent_count += result["sent"]
+                failed_count += result["failed"]
             
-            logger.info(f"[Bot @{bot_username}] Sent {sent_count} custom messages successfully")
+            logger.info(f"[Bot @{bot_username}] Sent {sent_count} custom messages successfully, {failed_count} failed")
+            
+            return {"sent_count": sent_count, "failed_count": failed_count}
             
         except Exception as e:
             logger.error(f"Error processing custom message queue: {e}", exc_info=True)
+            # Re-raise to allow caller to detect failure
+            raise
     
     async def _send_custom_message_batch(
         self,
         context: ContextTypes.DEFAULT_TYPE,
         messages: List[dict]
-    ) -> int:
+    ) -> dict:
         """
         Send a batch of custom messages (text or media).
-        Returns the number of successfully sent messages.
+        Returns dict with {"sent": int, "failed": int} counts.
         """
         sent_count = 0
+        failed_count = 0
         
         for message in messages:
             try:
@@ -652,6 +746,7 @@ class NotificationService:
                 if is_blocked:
                     # Mark as sent to remove from queue
                     await self.db.mark_custom_message_sent(message_id)
+                    failed_count += 1
                     continue
                 
                 # Send media message if media is present
@@ -683,15 +778,18 @@ class NotificationService:
                 logger.info(f"User {user_id} blocked the bot, marking as blocked")
                 await self.db.block_user(user_id)
                 await self.db.mark_custom_message_sent(message_id)
+                failed_count += 1
                 
             except TelegramError as e:
                 logger.error(f"Telegram error sending custom message to {user_id}: {e}")
                 # Don't mark as sent, will retry later
+                failed_count += 1
                 
             except Exception as e:
                 logger.error(f"Error sending custom message to {user_id}: {e}")
                 # Mark as sent to avoid infinite retries
                 await self.db.mark_custom_message_sent(message_id)
+                failed_count += 1
         
-        return sent_count
+        return {"sent": sent_count, "failed": failed_count}
 

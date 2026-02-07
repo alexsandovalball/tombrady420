@@ -70,6 +70,26 @@ media_group_messages = {}
 media_group_timers = {}
 
 
+def format_message_preview(message_text: str, max_length: int = 100) -> str:
+    """
+    Format a message preview for display, handling None values safely.
+    
+    Args:
+        message_text: The message text to preview (can be None)
+        max_length: Maximum length of preview before truncation
+        
+    Returns:
+        Formatted message preview string
+    """
+    if not message_text:
+        return "(no caption)"
+    
+    preview = message_text[:max_length]
+    if len(message_text) > max_length:
+        preview += '...'
+    return preview
+
+
 async def notify_admins_for_categorization(context: ContextTypes.DEFAULT_TYPE, product_id: int):
     """
     Send categorization request to primary admin for a new product.
@@ -461,8 +481,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             media_type = context.user_data.get('broadcast_media_type')
             media_file_id = context.user_data.get('broadcast_media_file_id')
             
-            # Send the message
-            from utils.notifications import NotificationService
+            # Send the message using NotificationService (imported at module level)
             notification_service = NotificationService(db)
             
             success = await notification_service.send_custom_message_to_user(
@@ -475,15 +494,17 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             
             if success:
                 media_indicator = f" ({media_type})" if media_type else ""
+                message_preview = format_message_preview(message_text)
                 await query.edit_message_text(
-                    f"✅ **Message Sent Successfully!**\n\n"
+                    f"✅ **Message Queued Successfully!**\n\n"
                     f"🆔 User ID: `{target_user_id}`\n"
-                    f"📝 Message{media_indicator}: {message_text[:100] if message_text else '(no caption)'}{'...' if len(message_text) > 100 else ''}",
+                    f"📝 Message{media_indicator}: {message_preview}\n\n"
+                    f"🚀 Message is being delivered in the background...",
                     parse_mode="Markdown"
                 )
-                logger.info(f"Admin {user_id} sent message to user {target_user_id}")
+                logger.info(f"Admin {user_id} queued message for user {target_user_id}")
             else:
-                await query.edit_message_text("❌ Failed to send message. Check logs for details.")
+                await query.edit_message_text("❌ Failed to queue message. Check logs for details.")
             
             context.user_data.clear()
         return
@@ -500,12 +521,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode="Markdown"
         )
         
-        # Broadcast using notification service
-        from utils.notifications import NotificationService
+        # Broadcast using notification service (imported at module level)
         notification_service = NotificationService(db)
         
         start_time = datetime.now()
-        queued_count = await notification_service.broadcast_custom_message(
+        queued_count, processing_task = await notification_service.broadcast_custom_message(
             context,
             message_text,
             media_type=media_type,
@@ -515,41 +535,65 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         
         # Show queued confirmation
         media_indicator = f" ({media_type})" if media_type else ""
+        message_preview = format_message_preview(message_text)
         await query.edit_message_text(
             f"✅ **Broadcast Queued Successfully!**\n\n"
             f"📨 Messages queued: {queued_count}\n"
-            f"📝 Message{media_indicator}: {message_text[:100] if message_text else '(no caption)'}{'...' if len(message_text) > 100 else ''}\n\n"
+            f"📝 Message{media_indicator}: {message_preview}\n\n"
             f"🚀 Messages are being delivered now with rate-limiting...",
             parse_mode="Markdown"
         )
         logger.info(f"Admin {user_id} broadcast message to {queued_count} users")
         
-        # Wait for completion and send final status
-        # Schedule a background task to notify admin when complete
+        # Schedule a background task to notify admin when processing completes
         async def notify_completion():
-            # Wait for all notifications to be sent (check queue every 5 seconds)
-            while True:
-                pending = await db.get_pending_custom_messages(limit=1)
-                if not pending:
-                    break
-                await asyncio.sleep(5)
-            
-            # Send completion message
-            duration = datetime.now() - start_time
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=f"✅ **Broadcast Completed!**\n\n"
-                     f"📊 Total delivered: {queued_count}\n"
-                     f"⏱️ Time taken: {int(duration.total_seconds())} seconds\n"
-                     f"✅ All messages have been sent.",
-                parse_mode="Markdown"
-            )
+            try:
+                # Wait for the processing task to complete
+                result = await processing_task
+                
+                # Send completion message with final counts
+                duration = datetime.now() - start_time
+                sent_count = result.get("sent_count", 0)
+                failed_count = result.get("failed_count", 0)
+                
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"✅ **Broadcast Completed!**\n\n"
+                         f"📊 Successfully delivered: {sent_count}\n"
+                         f"❌ Failed: {failed_count}\n"
+                         f"📨 Total queued: {queued_count}\n"
+                         f"⏱️ Time taken: {int(duration.total_seconds())} seconds",
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                # Send error message to admin
+                logger.error(f"Error in broadcast completion notification: {e}", exc_info=True)
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"❌ **Broadcast Processing Error!**\n\n"
+                         f"An error occurred while processing the broadcast.\n"
+                         f"Check the logs for details.",
+                    parse_mode="Markdown"
+                )
         
         # Store task reference to prevent garbage collection
         if not hasattr(context, 'notification_tasks'):
             context.notification_tasks = []
         
         task = asyncio.create_task(notify_completion())
+        
+        # Add exception handler to the task
+        def log_completion_task_exception(task_obj):
+            try:
+                task_obj.result()
+            except Exception as e:
+                logger.error(f"Error in notify_completion task: {e}", exc_info=True)
+            finally:
+                # Clean up completed task
+                if hasattr(context, 'notification_tasks') and task_obj in context.notification_tasks:
+                    context.notification_tasks.remove(task_obj)
+        
+        task.add_done_callback(log_completion_task_exception)
         context.notification_tasks.append(task)
         
         context.user_data.clear()
