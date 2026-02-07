@@ -39,6 +39,70 @@ class NotificationService:
     def __init__(self, db: Database):
         self.db = db
     
+    def _get_task_storage(self, context: ContextTypes.DEFAULT_TYPE) -> list:
+        """
+        Get the task storage list from application.bot_data for resilient task tracking.
+        Falls back to context.notification_tasks for backwards compatibility.
+        
+        In webhook deployments, context is ephemeral and tasks stored in it can be
+        garbage-collected. Using application.bot_data ensures tasks persist.
+        
+        Args:
+            context: Telegram context
+            
+        Returns:
+            List for storing background task references
+        """
+        try:
+            # Try to use application.bot_data (preferred - persists in webhook mode)
+            if hasattr(context, 'application') and context.application is not None:
+                bot_data = context.application.bot_data
+                if 'notification_tasks' not in bot_data:
+                    bot_data['notification_tasks'] = []
+                logger.debug("[TaskStorage] Using application.bot_data for task storage (resilient)")
+                return bot_data['notification_tasks']
+        except Exception as e:
+            logger.warning(f"[TaskStorage] Could not access application.bot_data: {e}")
+        
+        # Fallback to context.notification_tasks (less resilient but backwards compatible)
+        if not hasattr(context, 'notification_tasks'):
+            context.notification_tasks = []
+        logger.warning("[TaskStorage] Falling back to context.notification_tasks (ephemeral - may be lost in webhook mode)")
+        return context.notification_tasks
+    
+    def _store_task(self, context: ContextTypes.DEFAULT_TYPE, task: asyncio.Task, task_name: str = "notification"):
+        """
+        Store a background task reference to prevent garbage collection.
+        Adds exception handling callback and stores in application.bot_data.
+        
+        Args:
+            context: Telegram context
+            task: The async task to store
+            task_name: Human-readable task name for logging
+        """
+        task_storage = self._get_task_storage(context)
+        
+        # Add exception handling callback
+        def log_task_exception(task_obj):
+            try:
+                task_obj.result()
+                logger.info(f"[TaskStorage] {task_name} task completed successfully (id={id(task_obj)})")
+            except Exception as e:
+                logger.error(f"[TaskStorage] Error in {task_name} task (id={id(task_obj)}): {e}", exc_info=True)
+            finally:
+                # Clean up completed task from storage
+                try:
+                    if task_obj in task_storage:
+                        task_storage.remove(task_obj)
+                        logger.debug(f"[TaskStorage] Removed completed task from storage (id={id(task_obj)})")
+                except Exception as cleanup_error:
+                    logger.warning(f"[TaskStorage] Error removing task from storage: {cleanup_error}")
+        
+        task.add_done_callback(log_task_exception)
+        task_storage.append(task)
+        
+        logger.info(f"[TaskStorage] Stored {task_name} task (id={id(task)}, total_tasks={len(task_storage)})")
+    
     def _is_primary_instance(self, context: ContextTypes.DEFAULT_TYPE) -> bool:
         """
         Check if this is the primary bot instance.
@@ -114,6 +178,14 @@ class NotificationService:
             bot_username = context.bot.username if hasattr(context.bot, 'username') else 'unknown'
             logger.info(f"[Notifications] notify_users_about_product: Bot @{bot_username} processing product {product_id}")
             
+            # Check if this is the primary instance (only primary queues notifications)
+            is_primary = self._is_primary_instance(context)
+            logger.info(f"[Notifications] Primary instance check result: {is_primary}")
+            
+            if not is_primary:
+                logger.info(f"[Notifications] Skipping notification queueing - not primary instance (bot @{bot_username})")
+                return
+            
             # Get product details
             product = await self.db.get_product(product_id)
             if not product:
@@ -136,20 +208,20 @@ class NotificationService:
             
             # Get all subscribed users
             subscribed_users = await self.db.get_subscribed_users()
+            subscribed_count = len(subscribed_users) if subscribed_users else 0
+            
+            logger.info(f"[Notifications] Found {subscribed_count} subscribed users for product {product_id}")
             
             if not subscribed_users:
                 logger.info(f"[Notifications] No subscribed users to notify about product {product_id}")
                 return
-            
-            logger.info(f"[Notifications] Found {len(subscribed_users)} subscribed users for product {product_id}")
-            logger.info(f"[NOTIFY] Subscribed users: {len(subscribed_users)}")
             
             # Queue notifications for all subscribed users in batch
             # Database-level deduplication prevents duplicate notifications
             queued_count = await self.db.queue_notifications_batch(subscribed_users, product_id)
             
             logger.info(f"[Notifications] Queued {queued_count} notifications for product {product_id} (bot @{bot_username})")
-            logger.info(f"[NOTIFY] Queued: {queued_count} notifications")
+            logger.info(f"[NOTIFY] Queued count: {queued_count}/{subscribed_count} notifications")
             
             # Warn if significantly fewer notifications were queued than expected
             if queued_count < len(subscribed_users) * 0.5:  # Less than 50% queued
@@ -159,29 +231,12 @@ class NotificationService:
                 )
             
             # Process the notification queue asynchronously (non-blocking)
-            # CRITICAL: Store task reference in context to prevent garbage collection
-            if not hasattr(context, 'notification_tasks'):
-                context.notification_tasks = []
-            
+            # Store task in application.bot_data for resilience in webhook deployments
             task = asyncio.create_task(self.process_notification_queue(context))
+            self._store_task(context, task, f"notify_product_{product_id}")
             
-            # Add exception handling callback
-            def log_task_exception(task_obj):
-                try:
-                    task_obj.result()
-                    logger.info(f"[Notifications] Background task completed successfully")
-                except Exception as e:
-                    logger.error(f"[Notifications] Error in background notification task: {e}", exc_info=True)
-                finally:
-                    # Clean up completed task
-                    if hasattr(context, 'notification_tasks') and task_obj in context.notification_tasks:
-                        context.notification_tasks.remove(task_obj)
-            
-            task.add_done_callback(log_task_exception)
-            context.notification_tasks.append(task)
-            
-            logger.info(f"[Notifications] Background task created and stored in context for product {product_id}")
-            logger.info(f"[NOTIFY] Background task started for product {product_id}")
+            logger.info(f"[Notifications] Background task created and stored for product {product_id}")
+            logger.info(f"[NOTIFY] Background task started for product {product_id} (task_id={id(task)})")
             
         except Exception as e:
             logger.error(f"Error notifying users about product {product_id}: {e}", exc_info=True)
@@ -200,10 +255,12 @@ class NotificationService:
             # Get bot username for filtering (skip primary check for processing)
             bot_username = context.bot.username if hasattr(context.bot, 'username') else None
             logger.info(f"[Notifications] process_notification_queue: Starting for bot @{bot_username}")
+            logger.info(f"[NOTIFY] Processing queue - START")
             
             pending = await self.db.get_pending_notifications(limit=100)
             
             logger.info(f"[Notifications] Found {len(pending)} total pending notifications before filtering")
+            logger.info(f"[NOTIFY] Pending notifications count (before filter): {len(pending)}")
             
             if not pending:
                 logger.debug(f"[Notifications] No pending notifications to process")
@@ -318,9 +375,11 @@ class NotificationService:
                     failed_count += len(batch) - sent
             
             logger.info(f"[Notifications] Completed: {sent_count} sent successfully, {failed_count} failed (bot @{bot_username})")
+            logger.info(f"[NOTIFY] Processing queue - COMPLETE (sent={sent_count}, failed={failed_count})")
             
         except Exception as e:
             logger.error(f"Error processing notification queue: {e}", exc_info=True)
+            logger.error(f"[NOTIFY] Processing queue - ERROR: {e}")
     
     async def _send_notification_batch(
         self,
@@ -465,10 +524,12 @@ class NotificationService:
             bool: True if message was queued successfully, False otherwise
         """
         try:
+            logger.info(f"[Notifications] send_custom_message_to_user: Queueing message for user {user_id}")
+            
             # Check if user is blocked
             is_blocked = await self.db.is_user_blocked(user_id)
             if is_blocked:
-                logger.warning(f"Cannot send message to blocked user {user_id}")
+                logger.warning(f"[Notifications] Cannot send message to blocked user {user_id}")
                 return False
             
             # Queue the message
@@ -478,30 +539,14 @@ class NotificationService:
                 media_type=media_type,
                 media_file_id=media_file_id
             )
-            
-            # CRITICAL: Store task reference in context to prevent garbage collection
-            if not hasattr(context, 'notification_tasks'):
-                context.notification_tasks = []
+            logger.info(f"[Notifications] Queued custom message for user {user_id}")
             
             # Spawn background task to process the queue
+            # Store task in application.bot_data for resilience in webhook deployments
             task = asyncio.create_task(self.process_custom_message_queue(context))
+            self._store_task(context, task, f"custom_msg_user_{user_id}")
             
-            # Add exception handling callback
-            def log_task_exception(task_obj):
-                try:
-                    task_obj.result()
-                    logger.info(f"[Notifications] Single-user custom message task completed successfully")
-                except Exception as e:
-                    logger.error(f"[Notifications] Error in single-user custom message task: {e}", exc_info=True)
-                finally:
-                    # Clean up completed task
-                    if hasattr(context, 'notification_tasks') and task_obj in context.notification_tasks:
-                        context.notification_tasks.remove(task_obj)
-            
-            task.add_done_callback(log_task_exception)
-            context.notification_tasks.append(task)
-            
-            logger.info(f"[Notifications] Queued custom message for user {user_id}, background task spawned")
+            logger.info(f"[Notifications] Background task created for user {user_id} (task_id={id(task)})")
             
             return True
             
@@ -535,6 +580,8 @@ class NotificationService:
             tuple: (queued_count: int, processing_task: asyncio.Task)
         """
         try:
+            logger.info(f"[Notifications] broadcast_custom_message: Starting broadcast")
+            
             # Get all users
             all_users = await self.db.get_all_users()
             
@@ -587,29 +634,14 @@ class NotificationService:
             )
             
             logger.info(f"[Notifications] Queued {queued} custom messages for broadcast")
+            logger.info(f"[NOTIFY] Broadcast queued count: {queued}/{len(eligible_users)} messages")
             
-            # CRITICAL: Store task reference in context to prevent garbage collection
-            if not hasattr(context, 'notification_tasks'):
-                context.notification_tasks = []
-            
+            # Spawn background task to process the queue
+            # Store task in application.bot_data for resilience in webhook deployments
             task = asyncio.create_task(self.process_custom_message_queue(context))
+            self._store_task(context, task, "broadcast_custom_msg")
             
-            # Add exception handling callback
-            def log_task_exception(task_obj):
-                try:
-                    task_obj.result()
-                    logger.info(f"[Notifications] Custom message queue task completed successfully")
-                except Exception as e:
-                    logger.error(f"[Notifications] Error in custom message queue task: {e}", exc_info=True)
-                finally:
-                    # Clean up completed task
-                    if hasattr(context, 'notification_tasks') and task_obj in context.notification_tasks:
-                        context.notification_tasks.remove(task_obj)
-            
-            task.add_done_callback(log_task_exception)
-            context.notification_tasks.append(task)
-            
-            logger.info(f"[Notifications] Custom message queue background task created and stored")
+            logger.info(f"[Notifications] Background task created for broadcast (task_id={id(task)})")
             
             return (queued, task)
             

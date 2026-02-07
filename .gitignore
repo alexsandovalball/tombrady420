@@ -8,3 +8,4 @@ env/
 *.log
 .DS_Store
 *.pkl
+diagnostics_output.json
