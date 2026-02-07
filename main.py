@@ -736,6 +736,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         f"📂 {get_category_display_name(category)}"
                     )
                     logger.info(f"Product {product_id} categorized as {category} by admin {update.effective_user.id}")
+                    
+                    # Notify subscribed users about the new categorized product
+                    notification_service = NotificationService(db)
+                    try:
+                        queued = await notification_service.notify_subscribers_about_product(context, product_id)
+                        logger.info(f"Queued {queued} subscriber notifications for product {product_id} after categorization")
+                    except Exception as e:
+                        logger.error(f"Error sending notifications for product {product_id}: {e}", exc_info=True)
             else:
                 await query.answer("Invalid category data", show_alert=True)
         
@@ -818,8 +826,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 # IMPORTANT: Await the notification properly and keep task reference
                 try:
-                    await notification_service.notify_users_about_product(context, product_id)
-                    logger.info(f"Notification service completed for product {product_id}")
+                    queued = await notification_service.notify_subscribers_about_product(context, product_id)
+                    logger.info(f"Queued {queued} subscriber notifications for product {product_id} after categorization")
                 except Exception as e:
                     logger.error(f"Error sending notifications for product {product_id}: {e}", exc_info=True)
             else:
