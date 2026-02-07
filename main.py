@@ -70,6 +70,26 @@ media_group_messages = {}
 media_group_timers = {}
 
 
+def format_message_preview(message_text: str, max_length: int = 100) -> str:
+    """
+    Format a message preview for display, handling None values safely.
+    
+    Args:
+        message_text: The message text to preview (can be None)
+        max_length: Maximum length of preview before truncation
+        
+    Returns:
+        Formatted message preview string
+    """
+    if not message_text:
+        return "(no caption)"
+    
+    preview = message_text[:max_length]
+    if len(message_text) > max_length:
+        preview += '...'
+    return preview
+
+
 async def notify_admins_for_categorization(context: ContextTypes.DEFAULT_TYPE, product_id: int):
     """
     Send categorization request to primary admin for a new product.
@@ -474,9 +494,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             
             if success:
                 media_indicator = f" ({media_type})" if media_type else ""
-                message_preview = (message_text or '(no caption)')[:100]
-                if message_text and len(message_text) > 100:
-                    message_preview += '...'
+                message_preview = format_message_preview(message_text)
                 await query.edit_message_text(
                     f"✅ **Message Queued Successfully!**\n\n"
                     f"🆔 User ID: `{target_user_id}`\n"
@@ -517,9 +535,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         
         # Show queued confirmation
         media_indicator = f" ({media_type})" if media_type else ""
-        message_preview = (message_text or '(no caption)')[:100]
-        if message_text and len(message_text) > 100:
-            message_preview += '...'
+        message_preview = format_message_preview(message_text)
         await query.edit_message_text(
             f"✅ **Broadcast Queued Successfully!**\n\n"
             f"📨 Messages queued: {queued_count}\n"

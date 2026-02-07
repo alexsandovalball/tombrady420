@@ -334,22 +334,34 @@ class NotificationService:
         """
         sent_count = 0
         
-        # Prefetch product details for all notifications in batch to reduce DB calls
-        product_ids = list(set(n["product_id"] for n in notifications))
+        # Extract unique product IDs and user IDs in a single pass
+        product_ids = set()
+        user_ids = set()
+        for n in notifications:
+            product_ids.add(n["product_id"])
+            user_ids.add(n["user_id"])
+        
+        # Prefetch product details concurrently using asyncio.gather
         products_cache = {}
+        if product_ids:
+            product_results = await asyncio.gather(
+                *[self.db.get_product(pid) for pid in product_ids],
+                return_exceptions=True
+            )
+            for pid, product in zip(product_ids, product_results):
+                if not isinstance(product, Exception) and product:
+                    products_cache[pid] = product
         
-        for product_id in product_ids:
-            product = await self.db.get_product(product_id)
-            if product:
-                products_cache[product_id] = product
-        
-        # Prefetch user languages to reduce DB calls
-        user_ids = list(set(n["user_id"] for n in notifications))
+        # Prefetch user languages concurrently using asyncio.gather
         user_langs_cache = {}
-        
-        for user_id in user_ids:
-            user_lang = await self.db.get_user_language(user_id)
-            user_langs_cache[user_id] = user_lang
+        if user_ids:
+            lang_results = await asyncio.gather(
+                *[self.db.get_user_language(uid) for uid in user_ids],
+                return_exceptions=True
+            )
+            for uid, lang in zip(user_ids, lang_results):
+                if not isinstance(lang, Exception):
+                    user_langs_cache[uid] = lang if lang else "en"
         
         logger.debug(f"[Notifications] Prefetched {len(products_cache)} products and {len(user_langs_cache)} user languages for batch")
         
@@ -688,10 +700,11 @@ class NotificationService:
                 
                 # Mark messages that exceeded quota as sent (failed due to rate limit)
                 if len(messages) > remaining:
-                    for msg in messages[remaining:]:
+                    excess_messages = messages[remaining:]
+                    for msg in excess_messages:
                         await self.db.mark_custom_message_sent(msg["id"])
-                    failed_count += len(messages) - remaining
-                    logger.debug(f"User {user_id}: {len(messages) - remaining} messages skipped due to rate limit")
+                    failed_count += len(excess_messages)
+                    logger.debug(f"User {user_id}: {len(excess_messages)} messages skipped due to rate limit")
             
             # Send remaining batch
             if batch:
