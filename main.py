@@ -336,6 +336,32 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.error(f"Error handling channel post: {e}", exc_info=True)
 
 
+def _extract_callback_product_id(callback_data: str, prefix: str):
+    """
+    Extract product_id from callback_data if present.
+    
+    Args:
+        callback_data: The callback data string (e.g., "toggle_notifications|123")
+        prefix: The expected prefix (e.g., "toggle_notifications")
+    
+    Returns:
+        tuple: (matched_prefix, product_id or None)
+        - matched_prefix is the prefix that was matched (for backward compatibility)
+        - product_id is the extracted ID or None if not present
+    """
+    if callback_data == prefix:
+        return (prefix, None)
+    elif callback_data.startswith(f"{prefix}|"):
+        parts = callback_data.split("|")
+        if len(parts) >= 2:
+            try:
+                return (prefix, int(parts[1]))
+            except ValueError:
+                logger.warning(f"Invalid product_id in callback: {callback_data}")
+                return (prefix, None)
+    return (None, None)
+
+
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle all callback queries (buttons)."""
     query = update.callback_query
@@ -1000,19 +1026,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         
         # Handle notification toggle (subscribe/unsubscribe)
         # Supports both formats: "toggle_notifications" and "toggle_notifications|{product_id}"
-        elif callback_data == "toggle_notifications" or callback_data.startswith("toggle_notifications|"):
+        prefix, product_id = _extract_callback_product_id(callback_data, "toggle_notifications")
+        if prefix:
             user_id = update.effective_user.id
             is_subscribed = await db.is_user_subscribed(user_id)
-            
-            # Extract product_id if present
-            product_id = None
-            if "|" in callback_data:
-                parts = callback_data.split("|")
-                if len(parts) >= 2:
-                    try:
-                        product_id = int(parts[1])
-                    except ValueError:
-                        logger.warning(f"Invalid product_id in toggle_notifications callback: {callback_data}")
             
             if is_subscribed:
                 # Show confirmation before unsubscribing
@@ -1052,19 +1069,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         
         # Handle confirmation of unsubscribe
         # Supports both formats: "confirm_unsubscribe" and "confirm_unsubscribe|{product_id}"
-        elif callback_data == "confirm_unsubscribe" or callback_data.startswith("confirm_unsubscribe|"):
+        prefix, product_id = _extract_callback_product_id(callback_data, "confirm_unsubscribe")
+        if prefix:
             user_id = update.effective_user.id
             await db.set_user_notifications(user_id, False)
-            
-            # Extract product_id if present
-            product_id = None
-            if "|" in callback_data:
-                parts = callback_data.split("|")
-                if len(parts) >= 2:
-                    try:
-                        product_id = int(parts[1])
-                    except ValueError:
-                        logger.warning(f"Invalid product_id in confirm_unsubscribe callback: {callback_data}")
             
             # Replace buttons with a resubscribe option and keep View Catalog visible
             # Preserve product_id in toggle callback if present
@@ -1084,17 +1092,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         
         # Handle cancellation of unsubscribe
         # Supports both formats: "cancel_unsubscribe" and "cancel_unsubscribe|{product_id}"
-        elif callback_data == "cancel_unsubscribe" or callback_data.startswith("cancel_unsubscribe|"):
-            # Extract product_id if present
-            product_id = None
-            if "|" in callback_data:
-                parts = callback_data.split("|")
-                if len(parts) >= 2:
-                    try:
-                        product_id = int(parts[1])
-                    except ValueError:
-                        logger.warning(f"Invalid product_id in cancel_unsubscribe callback: {callback_data}")
-            
+        prefix, product_id = _extract_callback_product_id(callback_data, "cancel_unsubscribe")
+        if prefix:
             # Restore original buttons with View Catalog and Unsubscribe
             # Preserve product_id in toggle callback if present
             toggle_callback = f"toggle_notifications|{product_id}" if product_id else "toggle_notifications"

@@ -907,8 +907,7 @@ class NotificationService:
             catalog_url = f"https://t.me/{context.bot.username}?start=menu"
             
             # Build inline keyboard with 3 rows as requested
-            # Since all recipients are subscribed (they're receiving this notification), 
-            # the toggle button should show "Unsubscribe" option
+            # For users receiving this notification, show the Unsubscribe option
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("👁️ View Product", url=product_url)],
                 [InlineKeyboardButton("📋 View Catalog", url=catalog_url)],
