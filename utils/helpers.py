@@ -257,7 +257,17 @@ async def send_media_message(
             )
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"Error sending media message: {e}")
+        # Log detailed context for debugging
+        file_id_preview = file_id[:50] if file_id else "None"
+        reply_markup_preview = str(reply_markup)[:100] if reply_markup else "None"
+        logger.exception(
+            f"Error sending media message:\n"
+            f"  chat_id: {chat_id}\n"
+            f"  file_id: {file_id_preview}...\n"
+            f"  file_type: {file_type}\n"
+            f"  reply_markup: {reply_markup_preview}\n"
+            f"  error: {error_msg}"
+        )
         
         # Provide helpful error messages based on the error type
         fallback_text = caption or 'Media'
@@ -269,7 +279,7 @@ async def send_media_message(
         else:
             fallback_text += f"\n\n⚠️ Error displaying media."
         
-        # Fallback to text message
+        # Fallback to text message with reply_markup still attached
         await context.bot.send_message(
             chat_id=chat_id,
             text=fallback_text,

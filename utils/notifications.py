@@ -4,6 +4,7 @@ Implements rate limiting to respect Telegram's anti-spam policies.
 """
 import logging
 import asyncio
+import json
 from typing import List
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -636,9 +637,9 @@ class NotificationService:
             logger.info(f"[Notifications] Queued {queued} custom messages for broadcast")
             logger.info(f"[NOTIFY] Broadcast queued count: {queued}/{len(eligible_users)} messages")
             
-            # Spawn background task to process the queue
+            # Spawn background task to process the queue across all bots
             # Store task in application.bot_data for resilience in webhook deployments
-            task = asyncio.create_task(self.process_custom_message_queue(context))
+            task = asyncio.create_task(self.process_custom_message_queue(context, process_all_bots=True))
             self._store_task(context, task, "broadcast_custom_msg")
             
             logger.info(f"[Notifications] Background task created for broadcast (task_id={id(task)})")
@@ -650,14 +651,19 @@ class NotificationService:
             # Return error immediately - don't wrap in a task that will fail
             raise
     
-    async def process_custom_message_queue(self, context: ContextTypes.DEFAULT_TYPE) -> dict:
+    async def process_custom_message_queue(self, context: ContextTypes.DEFAULT_TYPE, process_all_bots: bool = False) -> dict:
         """
         Process pending custom messages from the queue with rate limiting.
         
         In multi-bot setups:
         - Primary bot queues custom messages (to avoid duplicates)
-        - ALL bots process their own users' messages from the queue
-        - Each bot filters by bot_username to only send to its own users
+        - When process_all_bots=False (default): Each bot processes only its own users' messages
+        - When process_all_bots=True: Process all pending messages across all bots (for global broadcasts)
+        
+        Args:
+            context: Telegram context
+            process_all_bots: If True, process messages for all users regardless of bot.
+                            If False (default), only process messages for users of this bot.
         
         Returns:
             dict: Summary with {"sent_count": int, "failed_count": int}
@@ -674,8 +680,8 @@ class NotificationService:
             if not pending:
                 return {"sent_count": 0, "failed_count": 0}
             
-            # Filter messages for users of this bot only
-            if bot_username:
+            # Filter messages for users of this bot only (unless process_all_bots is True)
+            if not process_all_bots and bot_username:
                 bot_users = await self.db.get_users_by_bot(bot_username)
                 bot_user_set = set(bot_users)
                 pending = [m for m in pending if m["user_id"] in bot_user_set]
@@ -684,7 +690,8 @@ class NotificationService:
                 logger.debug(f"No pending custom messages for bot @{bot_username}")
                 return {"sent_count": 0, "failed_count": 0}
             
-            logger.info(f"[Bot @{bot_username}] Processing {len(pending)} pending custom messages")
+            mode_desc = "all bots" if process_all_bots else f"bot @{bot_username}"
+            logger.info(f"[{mode_desc}] Processing {len(pending)} pending custom messages")
             
             # Group messages by user for rate limiting
             user_messages = {}
@@ -744,7 +751,7 @@ class NotificationService:
                 sent_count += result["sent"]
                 failed_count += result["failed"]
             
-            logger.info(f"[Bot @{bot_username}] Sent {sent_count} custom messages successfully, {failed_count} failed")
+            logger.info(f"[{mode_desc}] Sent {sent_count} custom messages successfully, {failed_count} failed")
             
             return {"sent_count": sent_count, "failed_count": failed_count}
             
@@ -772,6 +779,17 @@ class NotificationService:
                 message_id = message["id"]
                 media_type = message.get("media_type")
                 media_file_id = message.get("media_file_id")
+                reply_markup_json = message.get("reply_markup")
+                
+                # Parse reply_markup if present
+                reply_markup = None
+                if reply_markup_json:
+                    try:
+                        reply_markup_data = json.loads(reply_markup_json)
+                        # Reconstruct InlineKeyboardMarkup from JSON
+                        reply_markup = InlineKeyboardMarkup.de_json(reply_markup_data, context.bot)
+                    except Exception as e:
+                        logger.warning(f"Failed to parse reply_markup for message {message_id}: {e}")
                 
                 # Check if user is blocked
                 is_blocked = await self.db.is_user_blocked(user_id)
@@ -790,14 +808,16 @@ class NotificationService:
                         chat_id=user_id,
                         file_id=media_file_id,
                         file_type=media_type,
-                        caption=message_text or None
+                        caption=message_text or None,
+                        reply_markup=reply_markup
                     )
                 else:
                     # Send text-only message
                     await context.bot.send_message(
                         chat_id=user_id,
                         text=message_text,
-                        parse_mode="Markdown"
+                        parse_mode="Markdown",
+                        reply_markup=reply_markup
                     )
                 
                 # Mark as sent
@@ -806,7 +826,7 @@ class NotificationService:
                 
                 logger.debug(f"Sent custom message to user {user_id}")
                 
-            except Forbidden:
+            except Forbidden as e:
                 # User blocked the bot, block them in our system
                 logger.info(f"User {user_id} blocked the bot, marking as blocked")
                 await self.db.block_user(user_id)
@@ -815,13 +835,25 @@ class NotificationService:
                 
             except TelegramError as e:
                 media_info = f" (media: type={media_type}, file_id={media_file_id[:20]}...)" if media_type and media_file_id else ""
-                logger.error(f"Telegram error sending custom message to {user_id}{media_info}: {e}")
+                reply_markup_info = f" (reply_markup: {str(reply_markup_json)[:50]}...)" if reply_markup_json else ""
+                logger.exception(
+                    f"Telegram error sending custom message:\n"
+                    f"  user_id: {user_id}\n"
+                    f"  message_id: {message_id}{media_info}{reply_markup_info}\n"
+                    f"  error: {str(e)}"
+                )
                 # Don't mark as sent, will retry later
                 failed_count += 1
                 
             except Exception as e:
                 media_info = f" (media: type={media_type}, file_id={media_file_id[:20]}...)" if media_type and media_file_id else ""
-                logger.error(f"Error sending custom message to {user_id}{media_info}: {e}")
+                reply_markup_info = f" (reply_markup: {str(reply_markup_json)[:50]}...)" if reply_markup_json else ""
+                logger.exception(
+                    f"Error sending custom message:\n"
+                    f"  user_id: {user_id}\n"
+                    f"  message_id: {message_id}{media_info}{reply_markup_info}\n"
+                    f"  error: {str(e)}"
+                )
                 # Mark as sent to avoid infinite retries
                 await self.db.mark_custom_message_sent(message_id)
                 failed_count += 1
@@ -885,8 +917,25 @@ class NotificationService:
                 f"👉 Use /menu to view the catalog"
             )
             
-            # Note: Inline keyboards would require database schema changes to store in custom_message_queue
-            # For now, using text-based call to action (/menu command)
+            # Build inline keyboard with product actions
+            # Get product URL (deep link to product view)
+            product_url = f"https://t.me/{context.bot.username}?start=product_{product_id}"
+            
+            # Get catalog URL (deep link to menu)
+            catalog_url = f"https://t.me/{context.bot.username}?start=menu"
+            
+            # Build inline keyboard
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("View Product", url=product_url)],
+                [InlineKeyboardButton("View Catalog", url=catalog_url)],
+                [
+                    InlineKeyboardButton("Subscribe", callback_data=f"subscribe|{product_id}"),
+                    InlineKeyboardButton("Unsubscribe", callback_data=f"unsubscribe|{product_id}")
+                ]
+            ])
+            
+            # Serialize keyboard to JSON
+            reply_markup_json = json.dumps(keyboard.to_dict())
             
             # Get subscribed users
             subscribed_users = await self.db.get_subscribed_users()
@@ -925,15 +974,16 @@ class NotificationService:
             media_type = product.get("file_type")
             media_file_id = product.get("file_id")
             
-            # Queue messages in batch
+            # Queue messages in batch with inline keyboard
             queued_count = await self.db.queue_custom_messages_batch(
                 user_ids=eligible_users,
                 message_text=message_text,
                 media_type=media_type,
-                media_file_id=media_file_id
+                media_file_id=media_file_id,
+                reply_markup=reply_markup_json
             )
             
-            logger.info(f"[NotifySubscribers] Queued {queued_count} messages for product {product_id}")
+            logger.info(f"[NotifySubscribers] Queued {queued_count} messages for product {product_id} with inline keyboard")
             
             # Spawn background task for processing
             task = asyncio.create_task(self.process_custom_message_queue(context))
