@@ -330,8 +330,28 @@ class NotificationService:
         """
         Send a batch of notifications.
         Returns the number of successfully sent notifications.
+        Optimized to prefetch product and user data to reduce DB calls.
         """
         sent_count = 0
+        
+        # Prefetch product details for all notifications in batch to reduce DB calls
+        product_ids = list(set(n["product_id"] for n in notifications))
+        products_cache = {}
+        
+        for product_id in product_ids:
+            product = await self.db.get_product(product_id)
+            if product:
+                products_cache[product_id] = product
+        
+        # Prefetch user languages to reduce DB calls
+        user_ids = list(set(n["user_id"] for n in notifications))
+        user_langs_cache = {}
+        
+        for user_id in user_ids:
+            user_lang = await self.db.get_user_language(user_id)
+            user_langs_cache[user_id] = user_lang
+        
+        logger.debug(f"[Notifications] Prefetched {len(products_cache)} products and {len(user_langs_cache)} user languages for batch")
         
         for notification in notifications:
             try:
@@ -339,16 +359,16 @@ class NotificationService:
                 product_id = notification["product_id"]
                 notification_id = notification["id"]
                 
-                # Get product details
-                product = await self.db.get_product(product_id)
+                # Get product from cache
+                product = products_cache.get(product_id)
                 
                 if not product:
                     # Product deleted, mark notification as sent
                     await self.db.mark_notification_sent(notification_id)
                     continue
                 
-                # Get user's language preference
-                user_lang = await self.db.get_user_language(user_id)
+                # Get user's language preference from cache
+                user_lang = user_langs_cache.get(user_id, "en")
                 
                 # Prepare notification message
                 category = product.get("category", "Unknown")
