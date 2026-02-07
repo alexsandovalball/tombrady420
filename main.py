@@ -473,13 +473,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
     
     if callback_data.startswith("broadcast_confirm_single|"):
-        # Confirm and send single user broadcast (text or media)
+        # Confirm and send single user broadcast (text-only)
         parts = callback_data.split("|")
         if len(parts) >= 2:
             target_user_id = int(parts[1])
             message_text = context.user_data.get('broadcast_message', '')
-            media_type = context.user_data.get('broadcast_media_type')
-            media_file_id = context.user_data.get('broadcast_media_file_id')
             
             # Send the message using NotificationService (imported at module level)
             notification_service = NotificationService(db)
@@ -487,18 +485,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             success = await notification_service.send_custom_message_to_user(
                 context,
                 target_user_id,
-                message_text,
-                media_type=media_type,
-                media_file_id=media_file_id
+                message_text
             )
             
             if success:
-                media_indicator = f" ({media_type})" if media_type else ""
                 message_preview = format_message_preview(message_text)
                 await query.edit_message_text(
                     f"✅ **Message Queued Successfully!**\n\n"
                     f"🆔 User ID: `{target_user_id}`\n"
-                    f"📝 Message{media_indicator}: {message_preview}\n\n"
+                    f"📝 Message: {message_preview}\n\n"
                     f"🚀 Message is being delivered in the background...",
                     parse_mode="Markdown"
                 )
@@ -510,10 +505,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
     
     if callback_data == "broadcast_confirm_all":
-        # Confirm and send broadcast to all users (text or media)
+        # Confirm and send broadcast to all users (text-only)
         message_text = context.user_data.get('broadcast_message', '')
-        media_type = context.user_data.get('broadcast_media_type')
-        media_file_id = context.user_data.get('broadcast_media_file_id')
         
         # Show initial queuing message
         await query.edit_message_text(
@@ -528,18 +521,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         queued_count, processing_task = await notification_service.broadcast_custom_message(
             context,
             message_text,
-            media_type=media_type,
-            media_file_id=media_file_id,
             exclude_blocked=True
         )
         
         # Show queued confirmation
-        media_indicator = f" ({media_type})" if media_type else ""
         message_preview = format_message_preview(message_text)
         await query.edit_message_text(
             f"✅ **Broadcast Queued Successfully!**\n\n"
             f"📨 Messages queued: {queued_count}\n"
-            f"📝 Message{media_indicator}: {message_preview}\n\n"
+            f"📝 Message: {message_preview}\n\n"
             f"🚀 Messages are being delivered now with rate-limiting...",
             parse_mode="Markdown"
         )
@@ -1009,15 +999,30 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await show_users_page(update, context, page)
         
         # Handle notification toggle (subscribe/unsubscribe)
-        elif callback_data == "toggle_notifications":
+        # Supports both formats: "toggle_notifications" and "toggle_notifications|{product_id}"
+        elif callback_data == "toggle_notifications" or callback_data.startswith("toggle_notifications|"):
             user_id = update.effective_user.id
             is_subscribed = await db.is_user_subscribed(user_id)
             
+            # Extract product_id if present
+            product_id = None
+            if "|" in callback_data:
+                parts = callback_data.split("|")
+                if len(parts) >= 2:
+                    try:
+                        product_id = int(parts[1])
+                    except ValueError:
+                        logger.warning(f"Invalid product_id in toggle_notifications callback: {callback_data}")
+            
             if is_subscribed:
                 # Show confirmation before unsubscribing
+                # Preserve product_id in confirmation callbacks if present
+                confirm_callback = f"confirm_unsubscribe|{product_id}" if product_id else "confirm_unsubscribe"
+                cancel_callback = f"cancel_unsubscribe|{product_id}" if product_id else "cancel_unsubscribe"
+                
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ Yes, Unsubscribe", callback_data="confirm_unsubscribe")],
-                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_unsubscribe")]
+                    [InlineKeyboardButton("✅ Yes, Unsubscribe", callback_data=confirm_callback)],
+                    [InlineKeyboardButton("❌ Cancel", callback_data=cancel_callback)]
                 ])
                 
                 await query.edit_message_reply_markup(reply_markup=keyboard)
@@ -1030,10 +1035,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await db.set_user_notifications(user_id, True)
                 
                 # Replace with unsubscribe option and keep View Catalog visible
+                # Preserve product_id in toggle callback if present
+                toggle_callback = f"toggle_notifications|{product_id}" if product_id else "toggle_notifications"
+                
                 try:
                     unsubscribe_keyboard = InlineKeyboardMarkup([
                         [InlineKeyboardButton("📋 View Catalog", callback_data="categories")],
-                        [InlineKeyboardButton("🔕 Unsubscribe", callback_data="toggle_notifications")]
+                        [InlineKeyboardButton("🔕 Unsubscribe", callback_data=toggle_callback)]
                     ])
                     await query.edit_message_reply_markup(reply_markup=unsubscribe_keyboard)
                 except:
@@ -1043,15 +1051,29 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 logger.info(f"User {user_id} subscribed via button")
         
         # Handle confirmation of unsubscribe
-        elif callback_data == "confirm_unsubscribe":
+        # Supports both formats: "confirm_unsubscribe" and "confirm_unsubscribe|{product_id}"
+        elif callback_data == "confirm_unsubscribe" or callback_data.startswith("confirm_unsubscribe|"):
             user_id = update.effective_user.id
             await db.set_user_notifications(user_id, False)
             
+            # Extract product_id if present
+            product_id = None
+            if "|" in callback_data:
+                parts = callback_data.split("|")
+                if len(parts) >= 2:
+                    try:
+                        product_id = int(parts[1])
+                    except ValueError:
+                        logger.warning(f"Invalid product_id in confirm_unsubscribe callback: {callback_data}")
+            
             # Replace buttons with a resubscribe option and keep View Catalog visible
+            # Preserve product_id in toggle callback if present
+            toggle_callback = f"toggle_notifications|{product_id}" if product_id else "toggle_notifications"
+            
             try:
                 resubscribe_keyboard = InlineKeyboardMarkup([
                     [InlineKeyboardButton("📋 View Catalog", callback_data="categories")],
-                    [InlineKeyboardButton("🔔 Resubscribe to Notifications", callback_data="toggle_notifications")]
+                    [InlineKeyboardButton("🔔 Resubscribe to Notifications", callback_data=toggle_callback)]
                 ])
                 await query.edit_message_reply_markup(reply_markup=resubscribe_keyboard)
             except:
@@ -1061,12 +1083,26 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             logger.info(f"User {user_id} unsubscribed via button")
         
         # Handle cancellation of unsubscribe
-        elif callback_data == "cancel_unsubscribe":
+        # Supports both formats: "cancel_unsubscribe" and "cancel_unsubscribe|{product_id}"
+        elif callback_data == "cancel_unsubscribe" or callback_data.startswith("cancel_unsubscribe|"):
+            # Extract product_id if present
+            product_id = None
+            if "|" in callback_data:
+                parts = callback_data.split("|")
+                if len(parts) >= 2:
+                    try:
+                        product_id = int(parts[1])
+                    except ValueError:
+                        logger.warning(f"Invalid product_id in cancel_unsubscribe callback: {callback_data}")
+            
             # Restore original buttons with View Catalog and Unsubscribe
+            # Preserve product_id in toggle callback if present
+            toggle_callback = f"toggle_notifications|{product_id}" if product_id else "toggle_notifications"
+            
             try:
                 original_keyboard = InlineKeyboardMarkup([
                     [InlineKeyboardButton("📋 View Catalog", callback_data="categories")],
-                    [InlineKeyboardButton("🔕 Unsubscribe", callback_data="toggle_notifications")]
+                    [InlineKeyboardButton("🔕 Unsubscribe", callback_data=toggle_callback)]
                 ])
                 await query.edit_message_reply_markup(reply_markup=original_keyboard)
             except:
