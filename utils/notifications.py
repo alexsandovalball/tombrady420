@@ -517,8 +517,28 @@ class NotificationService:
             
             logger.info(f"[Notifications] Queued {queued} custom messages for broadcast")
             
-            # Process the queue
-            await self.process_custom_message_queue(context)
+            # CRITICAL: Store task reference in context to prevent garbage collection
+            if not hasattr(context, 'notification_tasks'):
+                context.notification_tasks = []
+            
+            task = asyncio.create_task(self.process_custom_message_queue(context))
+            
+            # Add exception handling callback
+            def log_task_exception(task_obj):
+                try:
+                    task_obj.result()
+                    logger.info(f"[Notifications] Custom message queue task completed successfully")
+                except Exception as e:
+                    logger.error(f"[Notifications] Error in custom message queue task: {e}", exc_info=True)
+                finally:
+                    # Clean up completed task
+                    if hasattr(context, 'notification_tasks') and task_obj in context.notification_tasks:
+                        context.notification_tasks.remove(task_obj)
+            
+            task.add_done_callback(log_task_exception)
+            context.notification_tasks.append(task)
+            
+            logger.info(f"[Notifications] Custom message queue background task created and stored")
             
             return queued
             
