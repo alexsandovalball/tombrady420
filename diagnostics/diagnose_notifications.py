@@ -20,7 +20,7 @@ import os
 import sys
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -54,7 +54,7 @@ def get_queue_diagnostics(db_path):
         cursor = conn.cursor()
         
         diagnostics = {
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'db_path': db_path,
             'db_exists': os.path.exists(db_path),
             'db_size_bytes': os.path.getsize(db_path) if os.path.exists(db_path) else 0,
@@ -153,7 +153,7 @@ def get_queue_diagnostics(db_path):
         
     except Exception as e:
         return {
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'db_path': db_path,
             'error': str(e),
             'error_type': type(e).__name__,
