@@ -9,3 +9,4 @@ env/
 .DS_Store
 *.pkl
 diagnostics_output.json
+test_reply_markup_migration.py

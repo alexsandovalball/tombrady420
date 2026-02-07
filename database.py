@@ -239,6 +239,16 @@ class Database:
                 else:
                     logger.warning(f"Could not add 'media_file_id' column to custom_message_queue: {e}")
             
+            # Add reply_markup column to custom_message_queue for inline keyboard support
+            try:
+                await db.execute("ALTER TABLE custom_message_queue ADD COLUMN reply_markup TEXT")
+                logger.info("Added 'reply_markup' column to custom_message_queue table")
+            except aiosqlite.OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    logger.debug("Column 'reply_markup' already exists in custom_message_queue table")
+                else:
+                    logger.warning(f"Could not add 'reply_markup' column to custom_message_queue: {e}")
+            
             # Migrate existing media groups to populate additional_message_ids
             # For media groups created before this fix, infer message IDs from sequential ordering
             logger.info("Checking for media groups needing message ID migration...")
@@ -1175,7 +1185,8 @@ class Database:
         user_id: int, 
         message_text: str = None,
         media_type: str = None,
-        media_file_id: str = None
+        media_file_id: str = None,
+        reply_markup: Optional[str] = None
     ):
         """
         Queue a custom message for a user.
@@ -1185,15 +1196,16 @@ class Database:
             message_text: Text message or caption (optional if media is provided)
             media_type: Type of media (photo, video, document, animation, audio)
             media_file_id: File ID of the media
+            reply_markup: JSON-serialized InlineKeyboardMarkup (optional)
         """
         async with aiosqlite.connect(self.db_path) as db:
             # Store empty string if message_text is None for database compatibility
             text_to_store = message_text if message_text is not None else ''
             await db.execute("""
                 INSERT INTO custom_message_queue 
-                (user_id, message_text, media_type, media_file_id, created_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, (user_id, text_to_store, media_type, media_file_id, datetime.now()))
+                (user_id, message_text, media_type, media_file_id, reply_markup, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (user_id, text_to_store, media_type, media_file_id, reply_markup, datetime.now()))
             await db.commit()
     
     async def queue_custom_messages_batch(
@@ -1201,7 +1213,8 @@ class Database:
         user_ids: List[int],
         message_text: str = None,
         media_type: str = None,
-        media_file_id: str = None
+        media_file_id: str = None,
+        reply_markup: Optional[str] = None
     ) -> int:
         """
         Queue custom messages for multiple users in a single batch operation.
@@ -1212,6 +1225,7 @@ class Database:
             message_text: Text message or caption (optional if media is provided)
             media_type: Type of media (photo, video, document, animation, audio)
             media_file_id: File ID of the media
+            reply_markup: JSON-serialized InlineKeyboardMarkup (optional)
             
         Returns:
             Number of messages queued
@@ -1226,12 +1240,12 @@ class Database:
             
             # Build batch insert with VALUES clause
             # This is much faster than individual inserts
-            values = [(uid, text_to_store, media_type, media_file_id, current_time) for uid in user_ids]
+            values = [(uid, text_to_store, media_type, media_file_id, reply_markup, current_time) for uid in user_ids]
             
             await db.executemany("""
                 INSERT INTO custom_message_queue 
-                (user_id, message_text, media_type, media_file_id, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                (user_id, message_text, media_type, media_file_id, reply_markup, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
             """, values)
             await db.commit()
             

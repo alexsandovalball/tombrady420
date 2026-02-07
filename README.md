@@ -233,6 +233,14 @@ The bot uses SQLite with automatic schema management:
 
 Tables: products, bot_users, pagination_state, media_groups, pending_categorization, notification_queue, and more.
 
+### Recent Database Migrations
+
+**Reply Markup Support (Latest)**
+- Added `reply_markup` column to `custom_message_queue` table for inline keyboard support
+- Enables product notifications to include interactive buttons (View Product, View Catalog, Subscribe/Unsubscribe)
+- Migration is automatic on startup - no manual intervention required
+- Backward compatible - existing messages without reply_markup continue to work
+
 ## 🌐 Language Support
 
 ### Supported Languages
