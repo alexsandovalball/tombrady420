@@ -211,7 +211,6 @@ class NotificationService:
             subscribed_count = len(subscribed_users) if subscribed_users else 0
             
             logger.info(f"[Notifications] Found {subscribed_count} subscribed users for product {product_id}")
-            logger.info(f"[NOTIFY] Subscribed users count: {subscribed_count}")
             
             if not subscribed_users:
                 logger.info(f"[Notifications] No subscribed users to notify about product {product_id}")

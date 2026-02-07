@@ -134,10 +134,17 @@ def get_queue_diagnostics(db_path):
             """)
             samples = []
             for row in cursor.fetchall():
+                msg_text = row[2]
+                # Format message preview - only add ellipsis if actually truncated
+                if msg_text and len(msg_text) > 100:
+                    msg_preview = msg_text[:100]
+                else:
+                    msg_preview = msg_text
+                
                 samples.append({
                     'id': row[0],
                     'user_id': row[1],
-                    'message_text': row[2][:100] if row[2] else None,  # Truncate long messages
+                    'message_text': msg_preview,
                     'media_type': row[3],
                     'media_file_id': row[4][:50] if row[4] else None,  # Truncate file IDs
                     'created_at': row[5],

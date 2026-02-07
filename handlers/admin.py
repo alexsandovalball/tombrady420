@@ -988,7 +988,9 @@ async def debug_queues_command(update: Update, context: ContextTypes.DEFAULT_TYP
             lines.append("\n**Sample pending notifications (up to 5):**")
             for row in nq_samples:
                 nq_id, uid, pid, created = row
-                lines.append(f"• ID {nq_id}: user={uid}, product={pid}, created={created[:19] if created else 'N/A'}")
+                # Format timestamp if present
+                created_str = created[:10] if created else 'N/A'  # Show just date
+                lines.append(f"• ID {nq_id}: user={uid}, product={pid}, created={created_str}")
         else:
             lines.append("\n• No pending notifications")
         
@@ -1004,9 +1006,15 @@ async def debug_queues_command(update: Update, context: ContextTypes.DEFAULT_TYP
             lines.append("\n**Sample pending custom messages (up to 5):**")
             for row in cmq_samples:
                 cmq_id, uid, msg_text, media_type, created = row
-                msg_preview = (msg_text[:40] + '...') if msg_text and len(msg_text) > 40 else (msg_text or '(no text)')
+                # Format message preview - only add ellipsis if actually truncated
+                if msg_text and len(msg_text) > 40:
+                    msg_preview = msg_text[:40] + '...'
+                else:
+                    msg_preview = msg_text or '(no text)'
+                
                 media_info = f", media={media_type}" if media_type else ""
-                lines.append(f"• ID {cmq_id}: user={uid}{media_info}, msg=\"{msg_preview}\", created={created[:19] if created else 'N/A'}")
+                created_str = created[:10] if created else 'N/A'  # Show just date
+                lines.append(f"• ID {cmq_id}: user={uid}{media_info}, msg=\"{msg_preview}\", created={created_str}")
         else:
             lines.append("\n• No pending custom messages")
         
