@@ -497,6 +497,15 @@ class NotificationService:
             logger.error(f"Error sending custom message to user {user_id}: {e}", exc_info=True)
             return False
     
+    def _create_empty_result_task(self) -> asyncio.Task:
+        """
+        Create an asyncio task that returns an empty result.
+        Helper to avoid code duplication.
+        """
+        async def empty_task():
+            return {"sent_count": 0, "failed_count": 0}
+        return asyncio.create_task(empty_task())
+    
     async def broadcast_custom_message(
         self,
         context: ContextTypes.DEFAULT_TYPE,
@@ -520,10 +529,7 @@ class NotificationService:
             if not all_users:
                 logger.info(f"[Notifications] broadcast_custom_message: No users to broadcast to")
                 # Return empty task that completes immediately
-                async def empty_task():
-                    return {"sent_count": 0, "failed_count": 0}
-                task = asyncio.create_task(empty_task())
-                return (0, task)
+                return (0, self._create_empty_result_task())
             
             logger.info(f"[Notifications] broadcast_custom_message: Found {len(all_users)} total users")
             
@@ -558,10 +564,7 @@ class NotificationService:
             if not eligible_users:
                 logger.info(f"[Notifications] No eligible users after filtering")
                 # Return empty task that completes immediately
-                async def empty_task():
-                    return {"sent_count": 0, "failed_count": 0}
-                task = asyncio.create_task(empty_task())
-                return (0, task)
+                return (0, self._create_empty_result_task())
             
             # Batch queue all messages in a single database operation
             queued = await self.db.queue_custom_messages_batch(
@@ -600,11 +603,8 @@ class NotificationService:
             
         except Exception as e:
             logger.error(f"Error broadcasting custom message: {e}", exc_info=True)
-            # Return empty task that completes immediately with error
-            async def error_task():
-                raise e
-            task = asyncio.create_task(error_task())
-            return (0, task)
+            # Return error immediately - don't wrap in a task that will fail
+            raise
     
     async def process_custom_message_queue(self, context: ContextTypes.DEFAULT_TYPE) -> dict:
         """
@@ -686,9 +686,12 @@ class NotificationService:
                         batch = []
                         await asyncio.sleep(CUSTOM_MESSAGE_DELAY_SECONDS)
                 
-                # Track messages that exceeded remaining quota
+                # Mark messages that exceeded quota as sent (failed due to rate limit)
                 if len(messages) > remaining:
+                    for msg in messages[remaining:]:
+                        await self.db.mark_custom_message_sent(msg["id"])
                     failed_count += len(messages) - remaining
+                    logger.debug(f"User {user_id}: {len(messages) - remaining} messages skipped due to rate limit")
             
             # Send remaining batch
             if batch:

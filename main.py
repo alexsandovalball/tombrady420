@@ -474,10 +474,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             
             if success:
                 media_indicator = f" ({media_type})" if media_type else ""
+                message_preview = (message_text or '(no caption)')[:100]
+                if message_text and len(message_text) > 100:
+                    message_preview += '...'
                 await query.edit_message_text(
                     f"✅ **Message Queued Successfully!**\n\n"
                     f"🆔 User ID: `{target_user_id}`\n"
-                    f"📝 Message{media_indicator}: {message_text[:100] if message_text else '(no caption)'}{'...' if len(message_text) > 100 else ''}\n\n"
+                    f"📝 Message{media_indicator}: {message_preview}\n\n"
                     f"🚀 Message is being delivered in the background...",
                     parse_mode="Markdown"
                 )
@@ -514,10 +517,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         
         # Show queued confirmation
         media_indicator = f" ({media_type})" if media_type else ""
+        message_preview = (message_text or '(no caption)')[:100]
+        if message_text and len(message_text) > 100:
+            message_preview += '...'
         await query.edit_message_text(
             f"✅ **Broadcast Queued Successfully!**\n\n"
             f"📨 Messages queued: {queued_count}\n"
-            f"📝 Message{media_indicator}: {message_text[:100] if message_text else '(no caption)'}{'...' if len(message_text) > 100 else ''}\n\n"
+            f"📝 Message{media_indicator}: {message_preview}\n\n"
             f"🚀 Messages are being delivered now with rate-limiting...",
             parse_mode="Markdown"
         )
