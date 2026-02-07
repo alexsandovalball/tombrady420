@@ -783,6 +783,7 @@ class NotificationService:
                 
                 # Send media message if media is present
                 if media_type and media_file_id:
+                    logger.debug(f"Sending media message to user {user_id}: type={media_type}, file_id={media_file_id[:20]}...")
                     from utils.helpers import send_media_message
                     await send_media_message(
                         context=context,
@@ -813,15 +814,136 @@ class NotificationService:
                 failed_count += 1
                 
             except TelegramError as e:
-                logger.error(f"Telegram error sending custom message to {user_id}: {e}")
+                media_info = f" (media: type={media_type}, file_id={media_file_id[:20]}...)" if media_type and media_file_id else ""
+                logger.error(f"Telegram error sending custom message to {user_id}{media_info}: {e}")
                 # Don't mark as sent, will retry later
                 failed_count += 1
                 
             except Exception as e:
-                logger.error(f"Error sending custom message to {user_id}: {e}")
+                media_info = f" (media: type={media_type}, file_id={media_file_id[:20]}...)" if media_type and media_file_id else ""
+                logger.error(f"Error sending custom message to {user_id}{media_info}: {e}")
                 # Mark as sent to avoid infinite retries
                 await self.db.mark_custom_message_sent(message_id)
                 failed_count += 1
         
         return {"sent": sent_count, "failed": failed_count}
+    
+    async def notify_subscribers_about_product(self, context: ContextTypes.DEFAULT_TYPE, product_id: int) -> int:
+        """
+        When a product is categorized, queue subscriber notifications (media + text) via queue_custom_messages_batch
+        and spawn a resilient background processing task. Returns the number of queued messages.
+        
+        Args:
+            context: Telegram context
+            product_id: ID of the product to notify about
+            
+        Returns:
+            Number of messages queued
+        """
+        try:
+            logger.info(f"[NotifySubscribers] Starting notification for product {product_id}")
+            
+            # Load product details
+            product = await self.db.get_product(product_id)
+            if not product:
+                logger.warning(f"[NotifySubscribers] Product {product_id} not found")
+                return 0
+            
+            # Check if product is categorized
+            category = product.get("category")
+            if not category:
+                logger.info(f"[NotifySubscribers] Product {product_id} is not categorized, skipping")
+                return 0
+            
+            # Skip notifications for excluded categories
+            if category in NOTIFICATION_EXCLUDED_CATEGORIES:
+                logger.info(f"[NotifySubscribers] Product {product_id} is in excluded category '{category}', skipping")
+                return 0
+            
+            # Build message preview
+            subcategory = product.get("subcategory")
+            caption = product.get("caption", "")
+            
+            # Get user language for category display (default to English)
+            category_display = get_category_display_name(category)
+            subcategory_display = get_subcategory_display_name(subcategory) if subcategory else None
+            
+            # Build category text
+            category_text = f"📂 {category_display}"
+            if subcategory_display:
+                category_text += f" • {subcategory_display}"
+            
+            # Build caption preview (first 100 chars)
+            caption_preview = caption[:100] + "..." if len(caption) > 100 else caption
+            caption_line = f"\n\n📝 {caption_preview}" if caption_preview else ""
+            
+            # Build message text
+            message_text = (
+                f"🆕 **New Product Available!**\n\n"
+                f"{category_text}"
+                f"{caption_line}\n\n"
+                f"👉 Use /menu to view the catalog"
+            )
+            
+            # Note: Inline keyboards would require database schema changes to store in custom_message_queue
+            # For now, using text-based call to action (/menu command)
+            
+            # Get subscribed users
+            subscribed_users = await self.db.get_subscribed_users()
+            if not subscribed_users:
+                logger.info(f"[NotifySubscribers] No subscribed users for product {product_id}")
+                return 0
+            
+            logger.info(f"[NotifySubscribers] Found {len(subscribed_users)} subscribed users")
+            
+            # Filter out blocked users and admins
+            from utils.helpers import get_admin_ids
+            admin_ids = get_admin_ids()
+            
+            eligible_users = []
+            for user_id in subscribed_users:
+                # Skip admins
+                if user_id in admin_ids:
+                    logger.debug(f"[NotifySubscribers] Skipping admin user {user_id}")
+                    continue
+                
+                # Skip blocked users
+                is_blocked = await self.db.is_user_blocked(user_id)
+                if is_blocked:
+                    logger.debug(f"[NotifySubscribers] Skipping blocked user {user_id}")
+                    continue
+                
+                eligible_users.append(user_id)
+            
+            if not eligible_users:
+                logger.info(f"[NotifySubscribers] No eligible users after filtering for product {product_id}")
+                return 0
+            
+            logger.info(f"[NotifySubscribers] {len(eligible_users)} eligible users after filtering")
+            
+            # Get media info from product
+            media_type = product.get("file_type")
+            media_file_id = product.get("file_id")
+            
+            # Queue messages in batch
+            queued_count = await self.db.queue_custom_messages_batch(
+                user_ids=eligible_users,
+                message_text=message_text,
+                media_type=media_type,
+                media_file_id=media_file_id
+            )
+            
+            logger.info(f"[NotifySubscribers] Queued {queued_count} messages for product {product_id}")
+            
+            # Spawn background task for processing
+            task = asyncio.create_task(self.process_custom_message_queue(context))
+            self._store_task(context, task, f"notify_product_{product_id}")
+            
+            logger.info(f"[NotifySubscribers] Background task spawned for product {product_id}")
+            
+            return queued_count
+            
+        except Exception as e:
+            logger.error(f"[NotifySubscribers] Error notifying subscribers about product {product_id}: {e}", exc_info=True)
+            return 0
 

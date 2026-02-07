@@ -555,6 +555,42 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
     from utils.helpers import get_file_id_and_type
     file_id, file_type = get_file_id_and_type(update)
     
+    # Fallback: If no media found, check reply_to_message for media
+    if not file_id and message.reply_to_message:
+        reply_msg = message.reply_to_message
+        
+        # Check for photo (get highest resolution)
+        if reply_msg.photo:
+            file_id = reply_msg.photo[-1].file_id
+            file_type = "photo"
+        # Check for video
+        elif reply_msg.video:
+            file_id = reply_msg.video.file_id
+            file_type = "video"
+        # Check for document
+        elif reply_msg.document:
+            file_id = reply_msg.document.file_id
+            file_type = "document"
+        # Check for animation (GIF)
+        elif reply_msg.animation:
+            file_id = reply_msg.animation.file_id
+            file_type = "animation"
+        # Check for video note
+        elif reply_msg.video_note:
+            file_id = reply_msg.video_note.file_id
+            file_type = "video_note"
+        # Check for audio
+        elif reply_msg.audio:
+            file_id = reply_msg.audio.file_id
+            file_type = "audio"
+        # Check for voice
+        elif reply_msg.voice:
+            file_id = reply_msg.voice.file_id
+            file_type = "voice"
+        
+        if file_id:
+            logger.info(f"Media extracted from reply_to_message: type={file_type}, file_id={file_id[:20]}...")
+    
     if broadcast_mode == 'single_user':
         if broadcast_step == 'awaiting_user_id':
             # Step 1: Received user ID, now ask for message
