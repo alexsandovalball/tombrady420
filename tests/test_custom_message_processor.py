@@ -112,7 +112,9 @@ class TestCustomMessageProcessor:
         # Track calls to process_custom_message_queue
         process_calls = []
         
-        async def mock_process_custom_message_queue(context, process_all_bots=False):
+        original_method = NotificationService.process_custom_message_queue
+        
+        async def mock_process_custom_message_queue(self, context, process_all_bots=False):
             """Mock process_custom_message_queue that records calls."""
             process_calls.append({
                 'context': context,
@@ -130,7 +132,7 @@ class TestCustomMessageProcessor:
         with patch.object(
             NotificationService,
             'process_custom_message_queue',
-            new=mock_process_custom_message_queue
+            mock_process_custom_message_queue
         ):
             # Start the processor with a short interval
             task = start_custom_message_processor_in_background(
@@ -165,7 +167,7 @@ class TestCustomMessageProcessor:
         # Track calls and make some fail
         call_count = [0]
         
-        async def mock_process_with_errors(context, process_all_bots=False):
+        async def mock_process_with_errors(self, context, process_all_bots=False):
             """Mock that fails on first call, succeeds on subsequent calls."""
             call_count[0] += 1
             if call_count[0] == 1:
@@ -182,7 +184,7 @@ class TestCustomMessageProcessor:
         with patch.object(
             NotificationService,
             'process_custom_message_queue',
-            new=mock_process_with_errors
+            mock_process_with_errors
         ):
             # Start the processor with a short interval
             task = start_custom_message_processor_in_background(
@@ -211,7 +213,9 @@ class TestCustomMessageProcessor:
         
         # Add a test user to the database
         user_id = 12345
-        await temp_db.add_user(user_id, 'en', bot_key='BOT_TOKEN_1')
+        await temp_db.track_user(user_id, username='test_user')
+        await temp_db.set_user_language(user_id, 'en')
+        await temp_db.set_last_bot_key(user_id, 'BOT_TOKEN_1')
         
         # Queue a custom message for this user
         await temp_db.queue_custom_message(
