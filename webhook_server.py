@@ -121,7 +121,11 @@ async def setup_application(bot_token: str, bot_index: int = 0):
             )
             logger.info(f"Channel monitoring enabled for primary bot: {channel_id or channel_username}")
     else:
-        logger.info(f"Channel monitoring DISABLED for secondary bot {bot_index} (only primary bot monitors channel)")
+        logger.info(
+            f"Channel monitoring DISABLED for secondary bot {bot_index}. "
+            f"Only primary bot monitors channel for categorization prompts. "
+            f"All bots can deliver notifications to users."
+        )
     
     # Callback query handler (for inline buttons)
     bot_app.add_handler(CallbackQueryHandler(callback_query_handler))

@@ -6,7 +6,7 @@ import logging
 import asyncio
 import json
 import re
-from typing import List
+from typing import List, Optional
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -34,6 +34,11 @@ STAGGER_INTERVAL_SECONDS = 10  # Delay in seconds between groups (reduced from 3
 MAX_CUSTOM_MESSAGES_PER_HOUR = 3  # Maximum custom messages per user per hour
 CUSTOM_MESSAGE_BATCH_SIZE = 5  # Send custom messages in smaller batches
 CUSTOM_MESSAGE_DELAY_SECONDS = 5  # Longer delay for custom messages
+
+# Concurrent notification sending
+NOTIFICATION_CONCURRENCY = 20  # Maximum number of concurrent message sends
+MAX_RETRIES = 3  # Maximum retry attempts for failed sends
+RETRY_BASE_DELAY = 1.0  # Base delay for exponential backoff (seconds)
 
 
 class NotificationService:
@@ -854,93 +859,156 @@ class NotificationService:
         
         return reply_markup_data
     
+    async def _send_single_custom_message(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        message: dict,
+        reply_markup: Optional[InlineKeyboardMarkup] = None,
+        retry_count: int = 0
+    ) -> dict:
+        """
+        Send a single custom message with retry logic.
+        
+        Args:
+            context: Telegram context
+            message: Message data dict
+            reply_markup: Pre-parsed reply markup (to avoid re-parsing)
+            retry_count: Current retry attempt
+            
+        Returns:
+            dict with {"success": bool, "user_id": int, "message_id": int}
+        """
+        user_id = message["user_id"]
+        message_id = message["id"]
+        message_text = message.get("message_text", "")
+        
+        try:
+            # Check if user is blocked
+            is_blocked = await self.db.is_user_blocked(user_id)
+            if is_blocked:
+                # Mark as sent to remove from queue
+                await self.db.mark_custom_message_sent(message_id)
+                return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "blocked"}
+            
+            # Send text-only message
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=message_text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup
+            )
+            
+            # Mark as sent
+            await self.db.mark_custom_message_sent(message_id)
+            logger.debug(f"Sent custom message to user {user_id}")
+            
+            return {"success": True, "user_id": user_id, "message_id": message_id}
+            
+        except Forbidden:
+            # User blocked the bot, block them in our system
+            logger.debug(f"User {user_id} blocked the bot, marking as blocked")
+            await self.db.block_user(user_id)
+            await self.db.mark_custom_message_sent(message_id)
+            return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "forbidden"}
+            
+        except TelegramError as e:
+            error_msg = str(e)
+            
+            # Check for rate limit errors
+            if "Too Many Requests" in error_msg or "retry after" in error_msg.lower():
+                if retry_count < MAX_RETRIES:
+                    # Exponential backoff
+                    delay = RETRY_BASE_DELAY * (2 ** retry_count)
+                    logger.warning(f"Rate limit hit for user {user_id}, retrying in {delay}s (attempt {retry_count + 1}/{MAX_RETRIES})")
+                    await asyncio.sleep(delay)
+                    return await self._send_single_custom_message(context, message, reply_markup, retry_count + 1)
+                else:
+                    logger.error(f"Max retries reached for user {user_id}, giving up")
+                    # Don't mark as sent, will retry in next batch
+                    return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "rate_limit_max_retries"}
+            
+            # Other Telegram errors
+            logger.error(f"Telegram error sending to user {user_id}: {error_msg}")
+            # Don't mark as sent, will retry later
+            return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "telegram_error"}
+            
+        except Exception as e:
+            logger.exception(f"Error sending custom message to user {user_id}: {str(e)}")
+            # Mark as sent to avoid infinite retries for non-recoverable errors
+            await self.db.mark_custom_message_sent(message_id)
+            return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "exception"}
+    
     async def _send_custom_message_batch(
         self,
         context: ContextTypes.DEFAULT_TYPE,
         messages: List[dict]
     ) -> dict:
         """
-        Send a batch of custom text messages (text-only).
+        Send a batch of custom text messages concurrently with rate limiting.
         Media messages are not supported for queued/broadcast messages.
         Returns dict with {"sent": int, "failed": int} counts.
         """
+        if not messages:
+            return {"sent": 0, "failed": 0}
+        
         sent_count = 0
         failed_count = 0
         
-        for message in messages:
+        # Parse reply_markup once if all messages share the same markup
+        # (common case for notifications about the same product)
+        first_reply_markup_json = messages[0].get("reply_markup")
+        shared_reply_markup = None
+        all_same_markup = all(m.get("reply_markup") == first_reply_markup_json for m in messages)
+        
+        if all_same_markup and first_reply_markup_json:
             try:
-                user_id = message["user_id"]
-                message_text = message.get("message_text", "")
-                message_id = message["id"]
-                reply_markup_json = message.get("reply_markup")
-                
-                # Parse reply_markup if present
-                reply_markup = None
-                if reply_markup_json:
-                    try:
-                        reply_markup_data = json.loads(reply_markup_json)
-                        # Normalize t.me URLs to use the current bot's username
-                        # This fixes legacy queued messages and multi-bot scenarios
-                        bot_username = context.bot.username
-                        if bot_username:
-                            reply_markup_data = self._normalize_reply_markup_urls(reply_markup_data, bot_username)
-                        else:
-                            logger.warning(f"Bot username unavailable for message {message_id}, cannot normalize URLs")
-                        # Reconstruct InlineKeyboardMarkup from JSON
-                        reply_markup = InlineKeyboardMarkup.de_json(reply_markup_data, context.bot)
-                    except Exception as e:
-                        logger.warning(f"Failed to parse reply_markup for message {message_id}: {e}")
-                
-                # Check if user is blocked
-                is_blocked = await self.db.is_user_blocked(user_id)
-                if is_blocked:
-                    # Mark as sent to remove from queue
-                    await self.db.mark_custom_message_sent(message_id)
-                    failed_count += 1
-                    continue
-                
-                # Send text-only message (ignore any media fields from legacy queued messages)
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=message_text,
-                    parse_mode="Markdown",
-                    reply_markup=reply_markup
-                )
-                
-                # Mark as sent
-                await self.db.mark_custom_message_sent(message_id)
-                sent_count += 1
-                
-                logger.debug(f"Sent custom message to user {user_id}")
-                
-            except Forbidden as e:
-                # User blocked the bot, block them in our system
-                logger.exception(f"User {user_id} blocked the bot, marking as blocked")
-                await self.db.block_user(user_id)
-                await self.db.mark_custom_message_sent(message_id)
-                failed_count += 1
-                
-            except TelegramError as e:
-                reply_markup_info = f" (reply_markup: {str(reply_markup_json)[:50]}...)" if reply_markup_json else ""
-                logger.exception(
-                    f"Telegram error sending custom message:\n"
-                    f"  user_id: {user_id}\n"
-                    f"  message_id: {message_id}{reply_markup_info}\n"
-                    f"  error: {str(e)}"
-                )
-                # Don't mark as sent, will retry later
-                failed_count += 1
-                
+                reply_markup_data = json.loads(first_reply_markup_json)
+                # Normalize t.me URLs to use the current bot's username
+                bot_username = context.bot.username
+                if bot_username:
+                    reply_markup_data = self._normalize_reply_markup_urls(reply_markup_data, bot_username)
+                shared_reply_markup = InlineKeyboardMarkup.de_json(reply_markup_data, context.bot)
+                logger.debug(f"Reusing reply markup for batch of {len(messages)} messages")
             except Exception as e:
-                reply_markup_info = f" (reply_markup: {str(reply_markup_json)[:50]}...)" if reply_markup_json else ""
-                logger.exception(
-                    f"Error sending custom message:\n"
-                    f"  user_id: {user_id}\n"
-                    f"  message_id: {message_id}{reply_markup_info}\n"
-                    f"  error: {str(e)}"
-                )
-                # Mark as sent to avoid infinite retries
-                await self.db.mark_custom_message_sent(message_id)
+                logger.warning(f"Failed to parse shared reply_markup: {e}")
+        
+        # Create semaphore for concurrency control
+        semaphore = asyncio.Semaphore(NOTIFICATION_CONCURRENCY)
+        
+        async def send_with_semaphore(message: dict):
+            async with semaphore:
+                # Parse individual reply_markup if not shared
+                reply_markup = shared_reply_markup
+                if not all_same_markup:
+                    reply_markup_json = message.get("reply_markup")
+                    if reply_markup_json:
+                        try:
+                            reply_markup_data = json.loads(reply_markup_json)
+                            bot_username = context.bot.username
+                            if bot_username:
+                                reply_markup_data = self._normalize_reply_markup_urls(reply_markup_data, bot_username)
+                            reply_markup = InlineKeyboardMarkup.de_json(reply_markup_data, context.bot)
+                        except Exception as e:
+                            logger.warning(f"Failed to parse reply_markup for message {message['id']}: {e}")
+                
+                return await self._send_single_custom_message(context, message, reply_markup)
+        
+        # Send all messages concurrently
+        tasks = [send_with_semaphore(msg) for msg in messages]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Count successes and failures
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error(f"Exception in concurrent send: {result}")
+                failed_count += 1
+            elif isinstance(result, dict):
+                if result.get("success"):
+                    sent_count += 1
+                else:
+                    failed_count += 1
+            else:
+                logger.warning(f"Unexpected result type: {type(result)}")
                 failed_count += 1
         
         return {"sent": sent_count, "failed": failed_count}
@@ -950,6 +1018,8 @@ class NotificationService:
         When a product is categorized, queue subscriber notifications (media + text) via queue_custom_messages_batch
         and spawn a resilient background processing task. Returns the number of queued messages.
         
+        This function can be called from any bot instance. All bots may queue and send notifications.
+        
         Args:
             context: Telegram context
             product_id: ID of the product to notify about
@@ -958,7 +1028,9 @@ class NotificationService:
             Number of messages queued
         """
         try:
-            logger.info(f"[NotifySubscribers] Starting notification for product {product_id}")
+            # Get bot username for logging
+            bot_username = context.bot.username if hasattr(context.bot, 'username') else 'unknown'
+            logger.info(f"[NotifySubscribers] Starting notification for product {product_id} (bot @{bot_username})")
             
             # Load product details
             product = await self.db.get_product(product_id)
@@ -1003,19 +1075,14 @@ class NotificationService:
             )
             
             # Build inline keyboard with product actions
-            # Row 1: View Product (deep link)
-            # Row 2: View Catalog (deep link)
+            # Row 1: View Product (callback_data to trigger product view handler)
+            # Row 2: View Catalog (callback_data to trigger categories/menu)
             # Row 3: Toggle subscription button
             
-            # Get deep links
-            product_url = f"https://t.me/{context.bot.username}?start=product_{product_id}"
-            catalog_url = f"https://t.me/{context.bot.username}?start=menu"
-            
-            # Build inline keyboard with 3 rows as requested
-            # For users receiving this notification, show the Unsubscribe option
+            # Use callback_data instead of URL deep links so buttons work in the same bot instance
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("👁️ View Product", url=product_url)],
-                [InlineKeyboardButton("📋 View Catalog", url=catalog_url)],
+                [InlineKeyboardButton("👁️ View Product", callback_data=f"product|{product_id}")],
+                [InlineKeyboardButton("📋 View Catalog", callback_data="categories")],
                 [InlineKeyboardButton("🔕 Unsubscribe", callback_data=f"toggle_notifications|{product_id}")]
             ])
             
