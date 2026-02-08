@@ -268,6 +268,23 @@ async def webhook(request: Request):
         bot_app = request.app.state.bot_apps[0]
         update = Update.de_json(json_data, bot_app.bot)
         
+        # Revalidate user when they interact with the bot
+        from database import Database
+        from utils.bot_key import get_bot_env_key
+        db = Database()
+        bot_key = 'BOT_TOKEN'  # Primary bot always uses BOT_TOKEN
+        
+        user_id = None
+        if update.message and update.message.from_user:
+            user_id = update.message.from_user.id
+        elif update.callback_query and update.callback_query.from_user:
+            user_id = update.callback_query.from_user.id
+        
+        if user_id:
+            # Mark user as valid for this bot (undo any invalidation)
+            await db.mark_user_valid(user_id, bot_key)
+            logger.debug(f"Revalidated user {user_id} for bot {bot_key}")
+        
         # Log update details
         if update.message:
             logger.info(f"Processing message update from user {update.message.from_user.id}")
@@ -316,6 +333,23 @@ async def webhook_indexed(request: Request, bot_index: int):
         json_data = await request.json()
         bot_app = request.app.state.bot_apps[bot_index]
         update = Update.de_json(json_data, bot_app.bot)
+        
+        # Revalidate user when they interact with the bot
+        from database import Database
+        db = Database()
+        # Determine bot_key based on index
+        bot_key = 'BOT_TOKEN' if bot_index == 0 else f'BOT_TOKEN_{bot_index}'
+        
+        user_id = None
+        if update.message and update.message.from_user:
+            user_id = update.message.from_user.id
+        elif update.callback_query and update.callback_query.from_user:
+            user_id = update.callback_query.from_user.id
+        
+        if user_id:
+            # Mark user as valid for this bot (undo any invalidation)
+            await db.mark_user_valid(user_id, bot_key)
+            logger.debug(f"Revalidated user {user_id} for bot {bot_key}")
         
         # Log update details
         if update.message:

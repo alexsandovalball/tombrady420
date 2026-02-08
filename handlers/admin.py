@@ -507,7 +507,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     New workflow:
     1. Ask for message
-    2. Wait for message input (text or media)
+    2. Wait for message input (text only)
     3. Show confirmation
     4. Send broadcast
     """
@@ -525,13 +525,9 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         "📝 **Broadcast to All Users - Step 1 of 2**\n\n"
-        "Please send the message you want to broadcast.\n"
-        "You can send:\n"
-        "• Text message\n"
-        "• Photo with caption\n"
-        "• Video with caption\n"
-        "• Document with caption\n"
-        "• Animation (GIF) with caption",
+        "Please send the text message you want to broadcast.\n\n"
+        "**Note:** Only text messages are supported for broadcasts. "
+        "Photos, videos, and other media cannot be sent via the broadcast system.",
         parse_mode="Markdown"
     )
     logger.info(f"Admin {user_id} started broadcast to all users workflow")

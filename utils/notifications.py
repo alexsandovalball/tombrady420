@@ -735,10 +735,14 @@ class NotificationService:
                             If False (default), only process messages for users of this bot.
         
         Returns:
-            dict: Summary with {"sent_count": int, "failed_count": int}
+            dict: Summary with {"sent_count": int, "failed_count": int, "invalidated_count": int, 
+                                 "failure_reasons": dict, "failed_user_ids": list}
         """
         sent_count = 0
         failed_count = 0
+        invalidated_count = 0
+        failure_reasons = {}
+        failed_user_ids = []
         
         try:
             # Get bot username for filtering (skip primary check for processing)
@@ -749,7 +753,8 @@ class NotificationService:
             pending = await self.db.get_pending_custom_messages(limit=100)
             
             if not pending:
-                return {"sent_count": 0, "failed_count": 0}
+                return {"sent_count": 0, "failed_count": 0, "invalidated_count": 0, 
+                        "failure_reasons": {}, "failed_user_ids": []}
             
             # Filter messages for this bot using target_bot_key (unless process_all_bots is True)
             if not process_all_bots:
@@ -779,7 +784,8 @@ class NotificationService:
             
             if not pending:
                 logger.debug(f"No pending custom messages for {bot_display}")
-                return {"sent_count": 0, "failed_count": 0}
+                return {"sent_count": 0, "failed_count": 0, "invalidated_count": 0,
+                        "failure_reasons": {}, "failed_user_ids": []}
             
             mode_desc = "all bots" if process_all_bots else bot_display
             logger.info(f"[{mode_desc}] Processing {len(pending)} pending custom messages")
@@ -803,6 +809,9 @@ class NotificationService:
                     for msg in messages:
                         await self.db.mark_custom_message_sent(msg["id"])
                     failed_count += len(messages)
+                    failure_reasons["blocked"] = failure_reasons.get("blocked", 0) + len(messages)
+                    if user_id not in failed_user_ids:
+                        failed_user_ids.append(user_id)
                     continue
                 
                 # Check rate limit for this user
@@ -811,6 +820,9 @@ class NotificationService:
                 if recent_count >= MAX_CUSTOM_MESSAGES_PER_HOUR:
                     logger.debug(f"User {user_id} reached custom message rate limit, skipping")
                     failed_count += len(messages)
+                    failure_reasons["rate_limited"] = failure_reasons.get("rate_limited", 0) + len(messages)
+                    if user_id not in failed_user_ids:
+                        failed_user_ids.append(user_id)
                     continue
                 
                 # Calculate how many more messages we can send to this user
@@ -825,6 +837,11 @@ class NotificationService:
                         result = await self._send_custom_message_batch(context, batch)
                         sent_count += result["sent"]
                         failed_count += result["failed"]
+                        # Track failure reasons and invalidations
+                        for reason, count in result.get("failure_reasons", {}).items():
+                            failure_reasons[reason] = failure_reasons.get(reason, 0) + count
+                        invalidated_count += result.get("invalidated", 0)
+                        failed_user_ids.extend(result.get("failed_user_ids", []))
                         batch = []
                         await asyncio.sleep(CUSTOM_MESSAGE_DELAY_SECONDS)
                 
@@ -834,6 +851,7 @@ class NotificationService:
                     for msg in excess_messages:
                         await self.db.mark_custom_message_sent(msg["id"])
                     failed_count += len(excess_messages)
+                    failure_reasons["rate_limited"] = failure_reasons.get("rate_limited", 0) + len(excess_messages)
                     logger.debug(f"User {user_id}: {len(excess_messages)} messages skipped due to rate limit")
             
             # Send remaining batch
@@ -841,10 +859,31 @@ class NotificationService:
                 result = await self._send_custom_message_batch(context, batch)
                 sent_count += result["sent"]
                 failed_count += result["failed"]
+                # Track failure reasons and invalidations
+                for reason, count in result.get("failure_reasons", {}).items():
+                    failure_reasons[reason] = failure_reasons.get(reason, 0) + count
+                invalidated_count += result.get("invalidated", 0)
+                failed_user_ids.extend(result.get("failed_user_ids", []))
             
-            logger.info(f"[{mode_desc}] Sent {sent_count} custom messages successfully, {failed_count} failed")
+            # Log comprehensive telemetry
+            telemetry = {
+                "bot": bot_display,
+                "total_queued": len(pending),
+                "sent": sent_count,
+                "failed": failed_count,
+                "invalidated": invalidated_count,
+                "failure_reasons": failure_reasons,
+                "failed_user_ids_sample": failed_user_ids[:10]  # First 10 for debugging
+            }
+            logger.info(f"[{mode_desc}] Broadcast telemetry: {json.dumps(telemetry)}")
             
-            return {"sent_count": sent_count, "failed_count": failed_count}
+            return {
+                "sent_count": sent_count, 
+                "failed_count": failed_count, 
+                "invalidated_count": invalidated_count,
+                "failure_reasons": failure_reasons,
+                "failed_user_ids": failed_user_ids
+            }
             
         except Exception as e:
             logger.error(f"Error processing custom message queue: {e}", exc_info=True)
@@ -907,19 +946,36 @@ class NotificationService:
             retry_count: Current retry attempt (default: 0, incremented internally during retries)
             
         Returns:
-            dict with {"success": bool, "user_id": int, "message_id": int}
+            dict with {"success": bool, "user_id": int, "message_id": int, "reason": str (if failed)}
         """
         user_id = message["user_id"]
         message_id = message["id"]
         message_text = message.get("message_text", "")
         
+        # Get bot identity for logging
+        bot_username = context.bot.username if hasattr(context.bot, 'username') else 'unknown'
+        current_bot_key = get_bot_env_key()
+        bot_token = getattr(context.bot, 'token', '')
+        token_fingerprint = f"...{bot_token[-6:]}" if bot_token else "unknown"
+        
+        logger.debug(f"[Send] Attempting to send to user {user_id} via bot @{bot_username} (key={current_bot_key}, token={token_fingerprint})")
+        
         try:
-            # Check if user is blocked
+            # Check if user is blocked globally
             is_blocked = await self.db.is_user_blocked(user_id)
             if is_blocked:
                 # Mark as sent to remove from queue
                 await self.db.mark_custom_message_sent(message_id)
+                logger.debug(f"[Send] Skipped user {user_id} (globally blocked)")
                 return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "blocked"}
+            
+            # Check if user is invalid for this specific bot
+            is_invalid_for_bot = await self.db.is_user_invalid_for_bot(user_id, current_bot_key)
+            if is_invalid_for_bot:
+                # Mark as sent to remove from queue
+                await self.db.mark_custom_message_sent(message_id)
+                logger.debug(f"[Send] Skipped user {user_id} (invalid for bot {current_bot_key})")
+                return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "invalid_for_bot"}
             
             # Send text-only message
             await context.bot.send_message(
@@ -931,13 +987,13 @@ class NotificationService:
             
             # Mark as sent
             await self.db.mark_custom_message_sent(message_id)
-            logger.debug(f"Sent custom message to user {user_id}")
+            logger.debug(f"[Send] ✓ Sent to user {user_id} via bot @{bot_username}")
             
             return {"success": True, "user_id": user_id, "message_id": message_id}
             
         except Forbidden:
             # User blocked the bot, block them in our system
-            logger.info(f"User {user_id} blocked the bot (Forbidden), marking as blocked")
+            logger.info(f"[Send] User {user_id} blocked bot @{bot_username} (Forbidden), marking as blocked")
             await self.db.block_user(user_id)
             await self.db.mark_custom_message_sent(message_id)
             return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "forbidden"}
@@ -946,39 +1002,40 @@ class NotificationService:
             error_msg = str(e)
             # Check for chat not found errors (chat was deleted, user deactivated, etc.)
             if self._is_chat_not_found(error_msg):
-                logger.info(f"User {user_id} chat not found (BadRequest), marking as invalid: {error_msg}")
-                await self.db.mark_user_invalid(user_id)
+                logger.info(f"[Send] User {user_id} chat not found for bot @{bot_username} (BadRequest: {error_msg}), marking invalid for this bot")
+                # Mark invalid only for this specific bot
+                await self.db.mark_user_invalid(user_id, bot_id=current_bot_key, reason="chat_not_found")
                 await self.db.mark_custom_message_sent(message_id)
                 return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "chat_not_found"}
             else:
                 # Other BadRequest errors (e.g., message too long, invalid formatting)
-                logger.warning(f"BadRequest error sending to user {user_id}: {error_msg}")
+                logger.warning(f"[Send] BadRequest error for user {user_id} via bot @{bot_username}: {error_msg}")
                 await self.db.mark_custom_message_sent(message_id)
                 return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "bad_request"}
             
         except TelegramError as e:
             error_msg = str(e)
             
-            # Check for rate limit errors
+            # Check for rate limit errors (RetryAfter)
             if "Too Many Requests" in error_msg or "retry after" in error_msg.lower():
                 if retry_count < MAX_RETRIES:
                     # Exponential backoff with maximum cap to prevent excessive delays
                     delay = min(RETRY_BASE_DELAY * (2 ** retry_count), 30.0)
-                    logger.warning(f"Rate limit hit for user {user_id}, retrying in {delay}s (attempt {retry_count + 1}/{MAX_RETRIES})")
+                    logger.warning(f"[Send] Rate limit for user {user_id} via bot @{bot_username}, retrying in {delay}s (attempt {retry_count + 1}/{MAX_RETRIES})")
                     await asyncio.sleep(delay)
                     return await self._send_single_custom_message(context, message, reply_markup, retry_count + 1)
                 else:
-                    logger.error(f"Max retries reached for user {user_id}, giving up")
+                    logger.error(f"[Send] Max retries reached for user {user_id} via bot @{bot_username}, giving up")
                     # Don't mark as sent, will retry in next batch
                     return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "rate_limit_max_retries"}
             
-            # Other Telegram errors
-            logger.error(f"Telegram error sending to user {user_id}: {error_msg}")
+            # Other Telegram errors (network issues, etc.) - transient
+            logger.error(f"[Send] Telegram error for user {user_id} via bot @{bot_username}: {error_msg}")
             # Don't mark as sent, will retry later
             return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "telegram_error"}
             
         except Exception as e:
-            logger.exception(f"Error sending custom message to user {user_id}: {str(e)}")
+            logger.exception(f"[Send] Exception sending to user {user_id} via bot @{bot_username}: {str(e)}")
             # Mark as sent to avoid infinite retries for non-recoverable errors
             await self.db.mark_custom_message_sent(message_id)
             return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "exception"}
@@ -1049,21 +1106,40 @@ class NotificationService:
         tasks = [send_with_semaphore(msg) for msg in messages]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Count successes and failures
+        # Count successes, failures, and track reasons
+        failure_reasons = {}
+        invalidated_count = 0
+        failed_user_ids = []
+        
         for result in results:
             if isinstance(result, Exception):
                 logger.error(f"Exception in concurrent send: {result}")
                 failed_count += 1
+                failure_reasons["exception"] = failure_reasons.get("exception", 0) + 1
             elif isinstance(result, dict):
                 if result.get("success"):
                     sent_count += 1
                 else:
                     failed_count += 1
+                    reason = result.get("reason", "unknown")
+                    failure_reasons[reason] = failure_reasons.get("reason", 0) + 1
+                    if reason == "chat_not_found":
+                        invalidated_count += 1
+                    user_id = result.get("user_id")
+                    if user_id and user_id not in failed_user_ids:
+                        failed_user_ids.append(user_id)
             else:
                 logger.warning(f"Unexpected result type: {type(result)}")
                 failed_count += 1
+                failure_reasons["unknown_type"] = failure_reasons.get("unknown_type", 0) + 1
         
-        return {"sent": sent_count, "failed": failed_count}
+        return {
+            "sent": sent_count, 
+            "failed": failed_count,
+            "failure_reasons": failure_reasons,
+            "invalidated": invalidated_count,
+            "failed_user_ids": failed_user_ids
+        }
     
     async def notify_subscribers_about_product(self, context: ContextTypes.DEFAULT_TYPE, product_id: int) -> int:
         """
