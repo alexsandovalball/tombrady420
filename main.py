@@ -1389,14 +1389,8 @@ async def post_init(application: Application):
             This is called by the broadcast listener when a new event is detected.
             """
             try:
-                # Create a mock context using the application
-                # We can use application.create_task to get access to bot context
-                class BroadcastContext:
-                    def __init__(self, app):
-                        self.bot = app.bot
-                        self.application = app
-                        
-                mock_context = BroadcastContext(application)
+                # Create a context using the shared BroadcastContext class
+                mock_context = broadcast_forwarder.BroadcastContext(application)
                 
                 # Queue the broadcast using the existing broadcast_custom_message
                 # but with process_all_bots=False so each bot only processes its own users

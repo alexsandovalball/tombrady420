@@ -20,6 +20,18 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL_SECONDS = 3  # How often to check for new broadcast events
 
 
+class BroadcastContext:
+    """
+    Lightweight context object for broadcast processing.
+    
+    This provides the minimal interface needed for the notification service
+    to process broadcasts without requiring a full Telegram context.
+    """
+    def __init__(self, app):
+        self.bot = app.bot
+        self.application = app
+
+
 async def publish_broadcast(db: Database, message_text: str, payload: Optional[dict] = None) -> int:
     """
     Publish a broadcast event to the database.

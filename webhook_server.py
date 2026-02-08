@@ -91,13 +91,8 @@ async def setup_application(bot_token: str, bot_index: int = 0):
             async def process_broadcast_event(context_dict: dict, message_text: str):
                 """Process a broadcast event by queuing messages for users of this bot."""
                 try:
-                    # Create a mock context using the application
-                    class BroadcastContext:
-                        def __init__(self, app):
-                            self.bot = app.bot
-                            self.application = app
-                    
-                    mock_context = BroadcastContext(bot_app)
+                    # Create a context using the shared BroadcastContext class
+                    mock_context = broadcast_forwarder.BroadcastContext(bot_app)
                     
                     # Queue the broadcast for this bot's users
                     queued_count, processing_task = await notification_service.broadcast_custom_message(
