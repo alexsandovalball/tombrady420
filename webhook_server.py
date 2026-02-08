@@ -96,6 +96,23 @@ async def setup_application(bot_token: str, bot_index: int = 0):
         except Exception as e:
             logger.error(f"Failed to start broadcast listener for bot {bot_index}: {e}", exc_info=True)
             logger.warning("Broadcast forwarding will not work for this bot instance")
+        
+        # Start custom message processor for this secondary bot instance
+        try:
+            from utils.notifications import start_custom_message_processor_in_background
+            
+            db = Database(Config.DB_PATH)
+            
+            # Guard to prevent multiple starts
+            if 'custom_message_processor_task' not in bot_app.bot_data:
+                processor_task = start_custom_message_processor_in_background(bot_app, db, interval_seconds=3)
+                bot_app.bot_data['custom_message_processor_task'] = processor_task
+                logger.info(f"Custom message processor started for secondary bot {bot_index}")
+            else:
+                logger.debug(f"Custom message processor already running for secondary bot {bot_index}")
+        except Exception as e:
+            logger.error(f"Failed to start custom message processor for bot {bot_index}: {e}", exc_info=True)
+            logger.warning("Background message delivery may be impaired for this bot instance")
     
     # Register handlers
     bot_app.add_handler(CommandHandler("start", start_command))

@@ -1393,3 +1393,133 @@ async def enqueue_local_broadcast(context: dict, message_text: str) -> None:
         # Don't raise - we want the broadcast forwarder to continue
 
 
+# ===========================
+# Background Delivery Processor
+# ===========================
+
+class BotContext:
+    """
+    Minimal context wrapper for NotificationService methods.
+    
+    This wrapper provides the required .bot attribute with username and send methods
+    that NotificationService needs to process custom messages.
+    """
+    
+    def __init__(self, application):
+        """
+        Initialize context wrapper.
+        
+        Args:
+            application: The Telegram Application instance
+        """
+        self.bot = application.bot
+        self.bot_data = application.bot_data
+
+
+async def _custom_message_processor_loop(application, db: Database, interval_seconds: int):
+    """
+    Internal background loop that periodically processes pending custom messages.
+    
+    This loop:
+    1. Creates a BotContext wrapper for the application
+    2. Calls NotificationService.process_custom_message_queue periodically
+    3. Logs results and handles errors gracefully
+    4. Continues running with backoff on errors
+    
+    Args:
+        application: Telegram Application instance
+        db: Database instance
+        interval_seconds: Poll interval in seconds
+    """
+    from utils.bot_key import get_bot_env_key, get_bot_key_display
+    
+    bot_key = get_bot_env_key()
+    bot_username = application.bot.username if hasattr(application.bot, 'username') else None
+    bot_display = get_bot_key_display(bot_key, bot_username)
+    
+    logger.info(f"[CustomMessageProcessor] Starting background processor for {bot_display} with interval={interval_seconds}s")
+    
+    notification_service = NotificationService(db)
+    context = BotContext(application)
+    
+    consecutive_errors = 0
+    max_consecutive_errors = 10
+    
+    while True:
+        try:
+            # Process pending custom messages for this bot
+            result = await notification_service.process_custom_message_queue(context, process_all_bots=False)
+            
+            # Log summary if any messages were processed
+            sent = result.get("sent_count", 0)
+            failed = result.get("failed_count", 0)
+            invalidated = result.get("invalidated_count", 0)
+            
+            if sent > 0 or failed > 0 or invalidated > 0:
+                logger.info(
+                    f"[CustomMessageProcessor] {bot_display} - Processed: "
+                    f"sent={sent}, failed={failed}, invalidated={invalidated}"
+                )
+                
+                # Log failure reasons if there were failures
+                failure_reasons = result.get("failure_reasons", {})
+                if failure_reasons:
+                    logger.info(f"[CustomMessageProcessor] {bot_display} - Failure breakdown: {failure_reasons}")
+            
+            # Reset error counter on success
+            consecutive_errors = 0
+            
+        except Exception as e:
+            consecutive_errors += 1
+            logger.error(
+                f"[CustomMessageProcessor] {bot_display} - Error processing queue "
+                f"(consecutive errors: {consecutive_errors}): {e}",
+                exc_info=True
+            )
+            
+            # If too many consecutive errors, increase backoff
+            if consecutive_errors >= max_consecutive_errors:
+                logger.warning(
+                    f"[CustomMessageProcessor] {bot_display} - "
+                    f"{consecutive_errors} consecutive errors, extending backoff to 60s"
+                )
+                await asyncio.sleep(60)
+                continue
+        
+        # Wait before next poll
+        await asyncio.sleep(interval_seconds)
+
+
+def start_custom_message_processor_in_background(
+    application,
+    db: Database,
+    interval_seconds: int = 3
+) -> asyncio.Task:
+    """
+    Start a background task that periodically processes pending custom messages.
+    
+    This processor ensures that queued messages (from broadcasts, product notifications,
+    or custom sends) are delivered by the bot instance responsible for each user.
+    
+    In multi-bot setups:
+    - Each bot instance runs its own processor
+    - Messages are filtered by target_bot_key to avoid duplicates
+    - The processor respects rate limits and handles errors gracefully
+    
+    Args:
+        application: Telegram Application instance (must have .bot with username and .bot_data)
+        db: Database instance
+        interval_seconds: Poll interval in seconds (default: 3s)
+    
+    Returns:
+        asyncio.Task: The background task running the processor loop
+    
+    Example:
+        >>> task = start_custom_message_processor_in_background(application, db, interval_seconds=3)
+        >>> # Store task to prevent garbage collection
+        >>> application.bot_data['custom_message_processor_task'] = task
+    """
+    task = asyncio.create_task(_custom_message_processor_loop(application, db, interval_seconds))
+    return task
+
+
