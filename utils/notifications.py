@@ -53,7 +53,7 @@ class NotificationService:
         self.db = db
     
     @staticmethod
-    def _is_chat_not_found_error(error_msg: str) -> bool:
+    def _is_chat_not_found(error_msg: str) -> bool:
         """
         Check if a Telegram error message indicates chat not found.
         
@@ -548,7 +548,7 @@ class NotificationService:
             except BadRequest as e:
                 error_msg = str(e)
                 # Check for chat not found errors
-                if self._is_chat_not_found_error(error_msg):
+                if self._is_chat_not_found(error_msg):
                     logger.info(f"User {user_id} chat not found (BadRequest), marking as invalid: {error_msg}")
                     await self.db.mark_user_invalid(user_id)
                     await self.db.mark_notification_sent(notification_id)
@@ -945,7 +945,7 @@ class NotificationService:
         except BadRequest as e:
             error_msg = str(e)
             # Check for chat not found errors (chat was deleted, user deactivated, etc.)
-            if self._is_chat_not_found_error(error_msg):
+            if self._is_chat_not_found(error_msg):
                 logger.info(f"User {user_id} chat not found (BadRequest), marking as invalid: {error_msg}")
                 await self.db.mark_user_invalid(user_id)
                 await self.db.mark_custom_message_sent(message_id)

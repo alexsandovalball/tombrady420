@@ -62,14 +62,14 @@ class TestChatNotFoundHandling:
         
         # Verify user is not blocked initially
         is_blocked = await temp_db.is_user_blocked(user_id)
-        assert is_blocked == False
+        assert not is_blocked
         
         # Mark user as invalid
         await temp_db.mark_user_invalid(user_id)
         
         # Verify user is now blocked
         is_blocked = await temp_db.is_user_blocked(user_id)
-        assert is_blocked == True
+        assert is_blocked
         
         # Verify notifications are disabled
         # (We need to check the database directly since there's no get method)
@@ -113,12 +113,12 @@ class TestChatNotFoundHandling:
         )
         
         # Verify failure with correct reason
-        assert result["success"] == False
+        assert not result["success"]
         assert result["reason"] == "chat_not_found"
         
         # Verify user was marked as invalid
         is_blocked = await temp_db.is_user_blocked(user_id)
-        assert is_blocked == True
+        assert is_blocked
     
     @pytest.mark.asyncio
     async def test_notification_chat_not_found_marks_invalid(self, temp_db, notification_service):
@@ -165,7 +165,7 @@ class TestChatNotFoundHandling:
         
         # Verify user was marked as invalid
         is_blocked = await temp_db.is_user_blocked(user_id)
-        assert is_blocked == True
+        assert is_blocked
 
 
 class TestForbiddenHandling:
@@ -196,12 +196,12 @@ class TestForbiddenHandling:
         )
         
         # Verify failure
-        assert result["success"] == False
+        assert not result["success"]
         assert result["reason"] == "forbidden"
         
         # Verify user was blocked
         is_blocked = await temp_db.is_user_blocked(user_id)
-        assert is_blocked == True
+        assert is_blocked
     
     @pytest.mark.asyncio
     async def test_notification_forbidden_disables_notifications(self, temp_db, notification_service):
@@ -287,7 +287,7 @@ class TestRateLimitRetry:
         )
         
         # Verify success after retries
-        assert result["success"] == True
+        assert result["success"]
         assert call_count == 3  # Should have tried 3 times
     
     @pytest.mark.asyncio
@@ -316,7 +316,7 @@ class TestRateLimitRetry:
         )
         
         # Verify failure after max retries
-        assert result["success"] == False
+        assert not result["success"]
         assert result["reason"] == "rate_limit_max_retries"
 
 
@@ -349,12 +349,12 @@ class TestOtherBadRequestErrors:
         )
         
         # Verify failure with bad_request reason
-        assert result["success"] == False
+        assert not result["success"]
         assert result["reason"] == "bad_request"
         
         # Verify user was NOT marked as blocked (different from chat not found)
         is_blocked = await temp_db.is_user_blocked(user_id)
-        assert is_blocked == False
+        assert not is_blocked
 
 
 if __name__ == '__main__':
