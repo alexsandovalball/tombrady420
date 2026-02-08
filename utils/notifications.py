@@ -1052,17 +1052,33 @@ class NotificationService:
             
             logger.info(f"[NotifySubscribers] {len(eligible_users)} eligible users after filtering")
             
-            # Queue text-only messages in batch with inline keyboard
+            # Get all users with their last_bot_key to route messages properly
+            all_users_data = await self.db.get_all_users()
+            user_last_bot_keys = {user["user_id"]: user.get("last_bot_key") for user in all_users_data}
+            
+            # Build list of (user_id, target_bot_key) for routing
+            current_bot_key = get_bot_env_key()
+            users_with_targets = []
+            for user_id in eligible_users:
+                # Use user's preferred bot, fallback to current process bot key
+                target_bot_key = user_last_bot_keys.get(user_id) or current_bot_key
+                users_with_targets.append((user_id, target_bot_key))
+            
+            # Queue text-only messages in batch with inline keyboard and target routing
             # Media is not supported for queued/broadcast messages
-            queued_count = await self.db.queue_custom_messages_batch(
-                user_ids=eligible_users,
+            queued_count = await self.db.queue_custom_messages_batch_with_targets(
+                users_with_targets=users_with_targets,
                 message_text=message_text,
                 media_type=None,
                 media_file_id=None,
                 reply_markup=reply_markup_json
             )
             
-            logger.info(f"[NotifySubscribers] Queued {queued_count} messages for product {product_id} with inline keyboard")
+            # Log target_bot_key distribution for visibility
+            target_distribution = {}
+            for _, target_key in users_with_targets:
+                target_distribution[target_key] = target_distribution.get(target_key, 0) + 1
+            logger.info(f"[NotifySubscribers] Queued {queued_count} messages for product {product_id}. Target distribution: {target_distribution}")
             
             # Spawn background task for processing
             task = asyncio.create_task(self.process_custom_message_queue(context))
