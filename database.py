@@ -51,6 +51,8 @@ class Database:
                     additional_message_ids TEXT,
                     category TEXT,
                     subcategory TEXT,
+                    uploader_bot_id TEXT,
+                    storage_url TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(message_id, chat_id)
                 )
@@ -251,6 +253,24 @@ class Database:
                     logger.debug("Column 'additional_message_ids' already exists in products table")
                 else:
                     logger.warning(f"Could not add 'additional_message_ids' column to products: {e}")
+            
+            try:
+                await db.execute("ALTER TABLE products ADD COLUMN uploader_bot_id TEXT")
+                logger.info("Added 'uploader_bot_id' column to products table")
+            except aiosqlite.OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    logger.debug("Column 'uploader_bot_id' already exists in products table")
+                else:
+                    logger.warning(f"Could not add 'uploader_bot_id' column to products: {e}")
+            
+            try:
+                await db.execute("ALTER TABLE products ADD COLUMN storage_url TEXT")
+                logger.info("Added 'storage_url' column to products table")
+            except aiosqlite.OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    logger.debug("Column 'storage_url' already exists in products table")
+                else:
+                    logger.warning(f"Could not add 'storage_url' column to products: {e}")
             
             # Add media support columns to custom_message_queue
             try:
@@ -511,20 +531,23 @@ class Database:
         additional_file_ids: Optional[str] = None,
         additional_message_ids: Optional[str] = None,
         category: Optional[str] = None,
-        subcategory: Optional[str] = None
+        subcategory: Optional[str] = None,
+        uploader_bot_id: Optional[str] = None
     ) -> int:
         """Add a new product to the database."""
         async with aiosqlite.connect(self.db_path) as db:
             try:
                 cursor = await db.execute("""
                     INSERT INTO products (file_id, file_type, caption, message_id, chat_id, 
-                                        media_group_id, additional_file_ids, additional_message_ids, category, subcategory, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        media_group_id, additional_file_ids, additional_message_ids, 
+                                        category, subcategory, uploader_bot_id, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (file_id, file_type, caption or "", message_id, chat_id, 
-                      media_group_id, additional_file_ids, additional_message_ids, category, subcategory, datetime.now()))
+                      media_group_id, additional_file_ids, additional_message_ids, 
+                      category, subcategory, uploader_bot_id, datetime.now()))
                 await db.commit()
                 product_id = cursor.lastrowid
-                logger.info(f"Product added: ID={product_id}, message_id={message_id}, category={category}")
+                logger.info(f"Product added: ID={product_id}, message_id={message_id}, category={category}, uploader_bot={uploader_bot_id}")
                 return product_id
             except aiosqlite.IntegrityError:
                 logger.warning(f"Product already exists: message_id={message_id}, chat_id={chat_id}")
