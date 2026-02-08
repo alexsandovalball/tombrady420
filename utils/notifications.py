@@ -279,6 +279,9 @@ class NotificationService:
             # Filter notifications for this bot using target_bot_key
             original_count = len(pending)
             
+            # Pre-fetch bot users for backward compatibility filtering
+            bot_user_set = set(await self.db.get_users_by_bot(bot_username)) if bot_username else set()
+            
             # Filter to messages targeted to this bot OR with NULL target_bot_key (backward compatibility)
             filtered_pending = []
             for n in pending:
@@ -290,8 +293,6 @@ class NotificationService:
                 elif target_key is None:
                     # NULL target_bot_key - fall back to bot_username filtering for backward compatibility
                     if bot_username:
-                        bot_users = await self.db.get_users_by_bot(bot_username)
-                        bot_user_set = set(bot_users)
                         if n["user_id"] in bot_user_set:
                             filtered_pending.append(n)
                     else:
@@ -643,7 +644,7 @@ class NotificationService:
                     continue
                 
                 # Get user's preferred bot (last_bot_key), fallback to primary bot token if not set
-                target_bot_key = user.get("last_bot_key") or current_bot_key
+                target_bot_key = user.get("last_bot_key") if user.get("last_bot_key") is not None else current_bot_key
                 users_with_targets.append((user_id, target_bot_key))
             
             logger.info(f"[Notifications] Eligible users: {len(users_with_targets)} (filtered {blocked_count} blocked, {admin_count} admins)")
@@ -717,6 +718,9 @@ class NotificationService:
             if not process_all_bots:
                 original_count = len(pending)
                 
+                # Pre-fetch bot users for backward compatibility filtering
+                bot_user_set = set(await self.db.get_users_by_bot(bot_username)) if bot_username else set()
+                
                 # Filter to messages targeted to this bot OR with NULL target_bot_key (backward compatibility)
                 filtered_pending = []
                 for m in pending:
@@ -728,8 +732,6 @@ class NotificationService:
                     elif target_key is None:
                         # NULL target_bot_key - fall back to bot_username filtering for backward compatibility
                         if bot_username:
-                            bot_users = await self.db.get_users_by_bot(bot_username)
-                            bot_user_set = set(bot_users)
                             if m["user_id"] in bot_user_set:
                                 filtered_pending.append(m)
                         else:
