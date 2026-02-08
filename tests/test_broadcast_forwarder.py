@@ -20,13 +20,13 @@ class TestBroadcastForwarder:
     @pytest.mark.asyncio
     async def test_publish_broadcast_success(self):
         """Test successful broadcast publishing to Redis."""
-        from utils import broadcast_forwarder
-        
         # Mock Redis client
         mock_redis = MagicMock()
         mock_redis.publish.return_value = 2  # 2 subscribers received the message
         
-        with patch('utils.broadcast_forwarder.get_redis_client', return_value=mock_redis):
+        with patch('utils.redis_client.get_redis_client', return_value=mock_redis):
+            from utils import broadcast_forwarder
+            
             # Publish a broadcast
             message_text = "Test broadcast message"
             success = await broadcast_forwarder.publish_broadcast(message_text)
@@ -49,10 +49,10 @@ class TestBroadcastForwarder:
     @pytest.mark.asyncio
     async def test_publish_broadcast_redis_error(self):
         """Test broadcast publishing failure when Redis is unavailable."""
-        from utils import broadcast_forwarder
-        
         # Mock Redis client to raise error
-        with patch('utils.broadcast_forwarder.get_redis_client', side_effect=Exception("Redis unavailable")):
+        with patch('utils.redis_client.get_redis_client', side_effect=Exception("Redis unavailable")):
+            from utils import broadcast_forwarder
+            
             # Try to publish
             success = await broadcast_forwarder.publish_broadcast("Test message")
             
@@ -62,8 +62,6 @@ class TestBroadcastForwarder:
     @pytest.mark.asyncio
     async def test_listener_receives_broadcast(self):
         """Test that listener receives and processes broadcast messages."""
-        from utils import broadcast_forwarder
-        
         # Create mock Redis pubsub
         mock_pubsub = MagicMock()
         
@@ -106,9 +104,11 @@ class TestBroadcastForwarder:
             received_message.append(message_text)
             enqueue_called.set()
         
-        with patch('utils.broadcast_forwarder.get_redis_client', return_value=mock_redis):
-            with patch('utils.broadcast_forwarder.get_bot_env_key', return_value='BOT_TOKEN'):
-                with patch('utils.broadcast_forwarder.get_bot_key_display', return_value='@test_bot'):
+        with patch('utils.redis_client.get_redis_client', return_value=mock_redis):
+            with patch('utils.bot_key.get_bot_env_key', return_value='BOT_TOKEN'):
+                with patch('utils.bot_key.get_bot_key_display', return_value='@test_bot'):
+                    from utils import broadcast_forwarder
+                    
                     # Start listener loop (it will be cancelled after first message)
                     try:
                         await broadcast_forwarder._redis_listener_loop(mock_context, mock_enqueue)
@@ -125,14 +125,14 @@ class TestBroadcastForwarder:
     @pytest.mark.asyncio
     async def test_start_listener_no_redis(self):
         """Test that listener is not started when Redis is not configured."""
-        from utils import broadcast_forwarder
+        mock_context = MagicMock()
+        mock_enqueue = AsyncMock()
         
         # Mock Config with no REDIS_URL
-        with patch('utils.broadcast_forwarder.Config') as mock_config:
+        with patch('configs.config.Config') as mock_config:
             mock_config.REDIS_URL = None
             
-            mock_context = MagicMock()
-            mock_enqueue = AsyncMock()
+            from utils import broadcast_forwarder
             
             # Try to start listener
             task = broadcast_forwarder.start_listener_in_background(mock_context, mock_enqueue)
@@ -143,14 +143,14 @@ class TestBroadcastForwarder:
     @pytest.mark.asyncio
     async def test_start_listener_success(self):
         """Test successful listener startup."""
-        from utils import broadcast_forwarder
-        
-        # Reset global listener task
-        broadcast_forwarder._listener_task = None
-        
         # Mock Config with REDIS_URL
-        with patch('utils.broadcast_forwarder.Config') as mock_config:
+        with patch('configs.config.Config') as mock_config:
             mock_config.REDIS_URL = "redis://localhost:6379/0"
+            
+            from utils import broadcast_forwarder
+            
+            # Reset global listener task
+            broadcast_forwarder._listener_task = None
             
             mock_context = MagicMock()
             mock_enqueue = AsyncMock()
@@ -160,7 +160,7 @@ class TestBroadcastForwarder:
                 # Simulate running task
                 await asyncio.sleep(0.1)
             
-            with patch('utils.broadcast_forwarder._redis_listener_loop', side_effect=mock_listener_loop):
+            with patch.object(broadcast_forwarder, '_redis_listener_loop', side_effect=mock_listener_loop):
                 # Start listener
                 task = broadcast_forwarder.start_listener_in_background(mock_context, mock_enqueue)
                 
@@ -203,102 +203,112 @@ class TestEnqueueLocalBroadcast:
     @pytest.mark.asyncio
     async def test_enqueue_filters_admins(self):
         """Test that enqueue_local_broadcast filters out admin users."""
-        from utils.notifications import NotificationService
-        
-        # Create mock database
-        mock_db = AsyncMock()
-        
-        # Mock users: 2 regular users, 1 admin, 1 blocked
-        mock_users = [
-            {"user_id": 1, "last_bot_key": "BOT_TOKEN", "is_blocked": 0},
-            {"user_id": 2, "last_bot_key": "BOT_TOKEN", "is_blocked": 0},
-            {"user_id": 999, "last_bot_key": "BOT_TOKEN", "is_blocked": 0},  # admin
-            {"user_id": 3, "last_bot_key": "BOT_TOKEN", "is_blocked": 1},  # blocked
-        ]
-        mock_db.get_all_users.return_value = mock_users
-        mock_db.queue_custom_messages_batch_with_targets.return_value = 2
-        
-        # Create notification service
-        service = NotificationService(mock_db)
-        
-        # Mock context
-        mock_context = MagicMock()
-        mock_context.bot = MagicMock()
-        mock_context.bot.username = "test_bot"
-        
-        with patch('utils.notifications.get_admin_ids', return_value=[999]):
-            with patch('utils.notifications.get_bot_env_key', return_value='BOT_TOKEN'):
-                with patch('utils.notifications.get_bot_key_display', return_value='@test_bot'):
-                    # Mock the store task method
-                    service._store_task = MagicMock()
-                    
-                    # Enqueue broadcast
-                    count = await service.enqueue_local_broadcast(
-                        mock_context,
-                        "Test message",
-                        exclude_blocked=True
-                    )
-                    
-                    # Should queue for 2 users only (not admin, not blocked)
-                    assert count == 2
-                    
-                    # Verify queue was called with correct users
-                    call_args = mock_db.queue_custom_messages_batch_with_targets.call_args
-                    users_with_targets = call_args[1]['users_with_targets']
-                    
-                    # Should only have users 1 and 2
-                    user_ids = [uid for uid, _ in users_with_targets]
-                    assert set(user_ids) == {1, 2}
+        # Mock all the dependencies before importing
+        with patch.dict('sys.modules', {
+            'deep_translator': MagicMock(),
+            'translations.translator': MagicMock()
+        }):
+            from utils.notifications import NotificationService
+            
+            # Create mock database
+            mock_db = AsyncMock()
+            
+            # Mock users: 2 regular users, 1 admin, 1 blocked
+            mock_users = [
+                {"user_id": 1, "last_bot_key": "BOT_TOKEN", "is_blocked": 0},
+                {"user_id": 2, "last_bot_key": "BOT_TOKEN", "is_blocked": 0},
+                {"user_id": 999, "last_bot_key": "BOT_TOKEN", "is_blocked": 0},  # admin
+                {"user_id": 3, "last_bot_key": "BOT_TOKEN", "is_blocked": 1},  # blocked
+            ]
+            mock_db.get_all_users.return_value = mock_users
+            mock_db.queue_custom_messages_batch_with_targets.return_value = 2
+            
+            # Create notification service
+            service = NotificationService(mock_db)
+            
+            # Mock context
+            mock_context = MagicMock()
+            mock_context.bot = MagicMock()
+            mock_context.bot.username = "test_bot"
+            
+            with patch('utils.helpers.get_admin_ids', return_value=[999]):
+                with patch('utils.bot_key.get_bot_env_key', return_value='BOT_TOKEN'):
+                    with patch('utils.bot_key.get_bot_key_display', return_value='@test_bot'):
+                        # Mock the store task method
+                        service._store_task = MagicMock()
+                        
+                        # Enqueue broadcast
+                        count = await service.enqueue_local_broadcast(
+                            mock_context,
+                            "Test message",
+                            exclude_blocked=True
+                        )
+                        
+                        # Should queue for 2 users only (not admin, not blocked)
+                        assert count == 2
+                        
+                        # Verify queue was called with correct users
+                        call_args = mock_db.queue_custom_messages_batch_with_targets.call_args
+                        users_with_targets = call_args[1]['users_with_targets']
+                        
+                        # Should only have users 1 and 2
+                        user_ids = [uid for uid, _ in users_with_targets]
+                        assert set(user_ids) == {1, 2}
     
     @pytest.mark.asyncio
     async def test_enqueue_filters_other_bots(self):
         """Test that enqueue_local_broadcast only queues for current bot's users."""
-        from utils.notifications import NotificationService
-        
-        # Create mock database
-        mock_db = AsyncMock()
-        
-        # Mock users: some for BOT_TOKEN, some for BOT_TOKEN_1
-        mock_users = [
-            {"user_id": 1, "last_bot_key": "BOT_TOKEN", "is_blocked": 0},
-            {"user_id": 2, "last_bot_key": "BOT_TOKEN_1", "is_blocked": 0},  # other bot
-            {"user_id": 3, "last_bot_key": "BOT_TOKEN", "is_blocked": 0},
-            {"user_id": 4, "last_bot_key": None, "is_blocked": 0},  # NULL - will be included
-        ]
-        mock_db.get_all_users.return_value = mock_users
-        mock_db.queue_custom_messages_batch_with_targets.return_value = 3
-        
-        # Create notification service
-        service = NotificationService(mock_db)
-        
-        # Mock context
-        mock_context = MagicMock()
-        mock_context.bot = MagicMock()
-        mock_context.bot.username = "test_bot"
-        
-        with patch('utils.notifications.get_admin_ids', return_value=[]):
-            with patch('utils.notifications.get_bot_env_key', return_value='BOT_TOKEN'):
-                with patch('utils.notifications.get_bot_key_display', return_value='@test_bot'):
-                    # Mock the store task method
-                    service._store_task = MagicMock()
-                    
-                    # Enqueue broadcast
-                    count = await service.enqueue_local_broadcast(
-                        mock_context,
-                        "Test message",
-                        exclude_blocked=True
-                    )
-                    
-                    # Should queue for 3 users: 1, 3, and 4 (NULL is included)
-                    assert count == 3
-                    
-                    # Verify queue was called with correct users
-                    call_args = mock_db.queue_custom_messages_batch_with_targets.call_args
-                    users_with_targets = call_args[1]['users_with_targets']
-                    
-                    # Should have users 1, 3, and 4 (not 2 - different bot)
-                    user_ids = [uid for uid, _ in users_with_targets]
-                    assert set(user_ids) == {1, 3, 4}
+        # Mock all the dependencies before importing
+        with patch.dict('sys.modules', {
+            'deep_translator': MagicMock(),
+            'translations.translator': MagicMock()
+        }):
+            from utils.notifications import NotificationService
+            
+            # Create mock database
+            mock_db = AsyncMock()
+            
+            # Mock users: some for BOT_TOKEN, some for BOT_TOKEN_1
+            mock_users = [
+                {"user_id": 1, "last_bot_key": "BOT_TOKEN", "is_blocked": 0},
+                {"user_id": 2, "last_bot_key": "BOT_TOKEN_1", "is_blocked": 0},  # other bot
+                {"user_id": 3, "last_bot_key": "BOT_TOKEN", "is_blocked": 0},
+                {"user_id": 4, "last_bot_key": None, "is_blocked": 0},  # NULL - will be included
+            ]
+            mock_db.get_all_users.return_value = mock_users
+            mock_db.queue_custom_messages_batch_with_targets.return_value = 3
+            
+            # Create notification service
+            service = NotificationService(mock_db)
+            
+            # Mock context
+            mock_context = MagicMock()
+            mock_context.bot = MagicMock()
+            mock_context.bot.username = "test_bot"
+            
+            with patch('utils.helpers.get_admin_ids', return_value=[]):
+                with patch('utils.bot_key.get_bot_env_key', return_value='BOT_TOKEN'):
+                    with patch('utils.bot_key.get_bot_key_display', return_value='@test_bot'):
+                        # Mock the store task method
+                        service._store_task = MagicMock()
+                        
+                        # Enqueue broadcast
+                        count = await service.enqueue_local_broadcast(
+                            mock_context,
+                            "Test message",
+                            exclude_blocked=True
+                        )
+                        
+                        # Should queue for 3 users: 1, 3, and 4 (NULL is included)
+                        assert count == 3
+                        
+                        # Verify queue was called with correct users
+                        call_args = mock_db.queue_custom_messages_batch_with_targets.call_args
+                        users_with_targets = call_args[1]['users_with_targets']
+                        
+                        # Should have users 1, 3, and 4 (not 2 - different bot)
+                        user_ids = [uid for uid, _ in users_with_targets]
+                        assert set(user_ids) == {1, 3, 4}
 
 
 if __name__ == "__main__":
