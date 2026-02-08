@@ -147,6 +147,28 @@ Run multiple bot instances from the **same** Render webservice:
    - ✅ Single deployment - easier to manage
    - ✅ Lower costs - one webservice for multiple bots
    - ✅ Easy scaling - just add more `BOT_TOKEN_N` variables
+   - ✅ **Cross-instance broadcasts** - DB-backed forwarding ensures all bots receive broadcast messages
+
+### DB-Backed Broadcast Forwarding
+
+The bot uses a database-backed broadcast forwarding system that replaces the need for Redis pub/sub:
+
+- **No external dependencies** - Works with the existing SQLite database
+- **Automatic cross-instance sync** - All bot instances automatically receive and process broadcast events
+- **Fault tolerant** - Events persist in the database and are processed even if a bot instance restarts
+- **Per-bot filtering** - Each bot instance only delivers messages to its assigned users
+
+**How it works:**
+1. When an admin uses `/broadcast`, the message is stored as an event in the database
+2. Each bot instance polls the database every 3 seconds for new broadcast events
+3. Each bot processes events for its assigned users (based on `last_bot_key`)
+4. Events are marked as processed per-bot to prevent duplicate delivery
+
+**Deployment considerations:**
+- ✅ **Works out of the box** - No additional configuration needed
+- ✅ **Shared database required** - All bot instances must access the same SQLite file (use Render's persistent disk or a centralized database)
+- ⚠️ **Enable WAL mode** - For better concurrent access: `PRAGMA journal_mode=WAL;`
+- ⚠️ **Shared storage** - Ensure all bot instances can read/write the same database file
 
 See [configs/.env.example](configs/.env.example) for complete Render.com deployment notes.
 
