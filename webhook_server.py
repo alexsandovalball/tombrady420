@@ -207,7 +207,7 @@ async def lifespan(app: FastAPI):
     
     # Start broadcast listeners for all bot instances
     try:
-        from utils.broadcast_forwarder import start_listener_in_background
+        from utils.broadcast_forwarder import start_listener_in_background, MinimalContext
         from utils.notifications import NotificationService
         from database import Database
         from configs.config import Config
@@ -219,12 +219,16 @@ async def lifespan(app: FastAPI):
             # Note: In webhook mode, we need to use the database from post_init
             # For now, create a new instance
             db = Database()
-            notification_service = NotificationService(db)
             
             for idx, bot_app in enumerate(bot_apps):
                 try:
+                    # Create a new NotificationService instance for each bot
+                    # This ensures proper per-bot filtering
+                    notification_service = NotificationService(db)
+                    
                     # Create enqueue callback for this bot instance
-                    async def make_enqueue_callback(ns):
+                    # Use default parameter to capture the notification_service at creation time
+                    async def make_enqueue_callback(ns=notification_service):
                         async def enqueue_callback(context, message_text):
                             """Callback for Redis listener to enqueue local broadcasts."""
                             await ns.enqueue_local_broadcast(
@@ -234,15 +238,9 @@ async def lifespan(app: FastAPI):
                             )
                         return enqueue_callback
                     
-                    enqueue_callback = await make_enqueue_callback(notification_service)
+                    enqueue_callback = await make_enqueue_callback()
                     
                     # Create minimal context for listener
-                    class MinimalContext:
-                        """Minimal context object for broadcast listener."""
-                        def __init__(self, bot, application):
-                            self.bot = bot
-                            self.application = application
-                    
                     context = MinimalContext(bot_app.bot, bot_app)
                     
                     # Start listener

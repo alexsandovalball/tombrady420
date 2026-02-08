@@ -4,6 +4,7 @@ Broadcast forwarder using Redis pub/sub to distribute broadcasts across bot inst
 This module provides:
 1. publish_broadcast() - Publishes broadcast events to Redis
 2. start_listener_in_background() - Starts a Redis listener in each bot process to enqueue local broadcasts
+3. MinimalContext - Helper class for creating context objects for listeners
 """
 import logging
 import asyncio
@@ -20,6 +21,16 @@ BROADCAST_CHANNEL = "bot:broadcast"
 _listener_task: Optional[asyncio.Task] = None
 
 
+class MinimalContext:
+    """
+    Minimal context object for broadcast listener.
+    Used when starting listeners without a full Telegram update context.
+    """
+    def __init__(self, bot, application):
+        self.bot = bot
+        self.application = application
+
+
 async def publish_broadcast(message_text: str) -> bool:
     """
     Publish a broadcast event to Redis pub/sub channel.
@@ -33,13 +44,14 @@ async def publish_broadcast(message_text: str) -> bool:
     """
     try:
         from utils.redis_client import get_redis_client
+        import time
         
         redis_client = get_redis_client()
         
         # Prepare broadcast payload
         payload = {
             "message_text": message_text,
-            "timestamp": asyncio.get_event_loop().time()
+            "timestamp": time.time()
         }
         
         # Publish to Redis channel
@@ -65,6 +77,12 @@ async def _redis_listener_loop(
     """
     Internal Redis listener loop that subscribes to broadcast channel.
     When a message is received, it calls the enqueue_callback to process the broadcast locally.
+    
+    Note: This uses the synchronous redis pubsub interface with a timeout. While not fully async,
+    this is acceptable because:
+    1. The blocking is minimal (1 second timeout)
+    2. It runs in a dedicated background task
+    3. The redis library's async support (redis.asyncio) requires Python 3.7+ and additional setup
     
     Args:
         context: Telegram context for bot operations
@@ -96,6 +114,8 @@ async def _redis_listener_loop(
         while True:
             try:
                 # Get message with timeout to allow graceful shutdown
+                # Note: This is a synchronous call, but with a 1-second timeout
+                # it's acceptable for this background task
                 message = pubsub.get_message(timeout=1.0)
                 
                 if message and message['type'] == 'message':

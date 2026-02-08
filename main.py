@@ -1371,7 +1371,7 @@ async def start_broadcast_listener(application: Application):
     Called as a post_start callback.
     """
     try:
-        from utils.broadcast_forwarder import start_listener_in_background
+        from utils.broadcast_forwarder import start_listener_in_background, MinimalContext
         from configs.config import Config
         
         # Check if Redis is configured
@@ -1390,15 +1390,6 @@ async def start_broadcast_listener(application: Application):
             return
         
         # Create a minimal context for the listener
-        # The listener will receive the actual context when callbacks are invoked
-        from telegram.ext import ContextTypes
-        
-        class MinimalContext:
-            """Minimal context object for broadcast listener."""
-            def __init__(self, bot, application):
-                self.bot = bot
-                self.application = application
-        
         context = MinimalContext(application.bot, application)
         
         # Start the listener

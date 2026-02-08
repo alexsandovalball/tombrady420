@@ -16,6 +16,10 @@ def get_redis_client() -> redis.Redis:
     """
     Get or create a singleton Redis client instance.
     
+    Note: Uses synchronous Redis client. The initial ping() call during initialization
+    is synchronous but only happens once. For production use with async/await throughout,
+    consider using redis.asyncio.Redis.
+    
     Returns:
         redis.Redis: Configured Redis client
         
@@ -44,7 +48,7 @@ def get_redis_client() -> redis.Redis:
                 health_check_interval=30
             )
             
-            # Test the connection
+            # Test the connection (synchronous - only runs once during initialization)
             _redis_client.ping()
             logger.info(f"Redis client initialized successfully: {redis_url}")
             
