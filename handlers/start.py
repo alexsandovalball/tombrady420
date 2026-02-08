@@ -8,6 +8,7 @@ from database import Database
 from translations.translator import get_translated_string_async
 from translations.language_config import LANGUAGE_DISPLAY, DEFAULT_LANGUAGE
 from utils.helpers import is_admin, get_user_display_name, ADMIN_COMMANDS_FALLBACK, escape_markdown_v1
+from utils.bot_key import get_bot_env_key
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -29,6 +30,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_name=user.last_name,
         bot_username=bot_username
     )
+    await db.set_last_bot_key(user.id, get_bot_env_key())
     
     # For new users, show language selection menu
     if is_new_user:
@@ -135,6 +137,7 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_name=update.effective_user.last_name,
         bot_username=bot_username
     )
+    await db.set_last_bot_key(user_id, get_bot_env_key())
     
     # Get user's language preference
     user_lang = await db.get_user_language(user_id)
