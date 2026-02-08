@@ -4,10 +4,12 @@ Helper utilities for the bot.
 import logging
 import json
 import asyncio
+import aiohttp
+import io
 from typing import List, Optional, Dict, Tuple
-from telegram import Update, User
+from telegram import Update, User, Bot, InputFile
 from telegram.ext import ContextTypes
-from telegram.error import Forbidden
+from telegram.error import Forbidden, BadRequest
 
 from configs.config import Config
 from utils.bot_key import is_primary_bot_process
@@ -175,6 +177,57 @@ def get_file_id_and_type(update: Update) -> tuple[Optional[str], Optional[str]]:
     return None, None
 
 
+async def download_media_from_bot(
+    bot_token: str,
+    file_id: str,
+    file_type: str
+) -> Optional[bytes]:
+    """
+    Download media file from Telegram using a specific bot's token.
+    
+    This is used for cross-bot media delivery: when bot A uploaded a file,
+    bot B can use this function with bot A's token to download the media bytes.
+    
+    Args:
+        bot_token: The bot token to use for authentication
+        file_id: Telegram file_id to download
+        file_type: Type of media (photo, video, document, etc.)
+        
+    Returns:
+        Media file bytes if successful, None otherwise
+    """
+    try:
+        # Create a temporary bot instance with the uploader's token
+        bot = Bot(token=bot_token)
+        
+        # Get file info from Telegram
+        file = await bot.get_file(file_id)
+        
+        # Download file bytes using aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get(file.file_path) as response:
+                if response.status == 200:
+                    file_bytes = await response.read()
+                    logger.info(
+                        f"Successfully downloaded media from uploader bot: "
+                        f"file_id={file_id[:30]}..., size={len(file_bytes)} bytes, type={file_type}"
+                    )
+                    return file_bytes
+                else:
+                    logger.error(
+                        f"Failed to download media from Telegram: "
+                        f"HTTP {response.status}, file_id={file_id[:30]}..."
+                    )
+                    return None
+                    
+    except Exception as e:
+        logger.error(
+            f"Error downloading media from uploader bot: {e}, "
+            f"file_id={file_id[:30]}..., type={file_type}"
+        )
+        return None
+
+
 def has_media(update: Update) -> bool:
     """Check if message contains media."""
     file_id, _ = get_file_id_and_type(update)
@@ -187,16 +240,33 @@ async def send_media_message(
     file_id: str,
     file_type: str,
     caption: str = None,
-    reply_markup=None
+    reply_markup=None,
+    product_id: Optional[int] = None,
+    uploader_bot_id: Optional[str] = None
 ):
     """
     Send a media message based on file type.
+    
+    Implements cross-bot media delivery fallback:
+    - If sending fails with "Wrong file identifier" error and uploader_bot_id is provided,
+      downloads the media from the uploader bot and re-uploads it with the current bot.
+    
+    Args:
+        context: Telegram context
+        chat_id: Target chat ID
+        file_id: Telegram file_id to send
+        file_type: Type of media (photo, video, document, etc.)
+        caption: Optional caption text
+        reply_markup: Optional inline keyboard
+        product_id: Optional product ID for DB updates after fallback
+        uploader_bot_id: Optional bot env key that uploaded this media (e.g., 'BOT_TOKEN', 'BOT_TOKEN_1')
     """
-    try:
+    async def _send_media(fid: str) -> None:
+        """Internal helper to send media by type."""
         if file_type == "photo":
             await context.bot.send_photo(
                 chat_id=chat_id,
-                photo=file_id,
+                photo=fid,
                 caption=caption,
                 reply_markup=reply_markup,
                 parse_mode=None
@@ -204,7 +274,7 @@ async def send_media_message(
         elif file_type == "video":
             await context.bot.send_video(
                 chat_id=chat_id,
-                video=file_id,
+                video=fid,
                 caption=caption,
                 reply_markup=reply_markup,
                 parse_mode=None
@@ -212,7 +282,7 @@ async def send_media_message(
         elif file_type == "animation":
             await context.bot.send_animation(
                 chat_id=chat_id,
-                animation=file_id,
+                animation=fid,
                 caption=caption,
                 reply_markup=reply_markup,
                 parse_mode=None
@@ -220,7 +290,7 @@ async def send_media_message(
         elif file_type in ["document", "audio", "voice", "video_note"]:
             await context.bot.send_document(
                 chat_id=chat_id,
-                document=file_id,
+                document=fid,
                 caption=caption,
                 reply_markup=reply_markup,
                 parse_mode=None
@@ -232,17 +302,112 @@ async def send_media_message(
                 text=caption or "Media",
                 reply_markup=reply_markup
             )
-    except Exception as e:
+    
+    # Try to send media with original file_id
+    try:
+        await _send_media(file_id)
+        return  # Success - no fallback needed
+        
+    except BadRequest as e:
         error_msg = str(e)
-        # Log detailed context for debugging
+        
+        # Check if this is a cross-bot file_id error that we can recover from
+        is_file_id_error = "Wrong file identifier" in error_msg or "file_id" in error_msg.lower()
+        
+        if is_file_id_error and uploader_bot_id:
+            # Attempt cross-bot fallback
+            logger.warning(
+                f"Cross-bot file_id error detected. Attempting fallback download:\n"
+                f"  product_id: {product_id}\n"
+                f"  file_id: {file_id[:50]}...\n"
+                f"  file_type: {file_type}\n"
+                f"  uploader_bot_id: {uploader_bot_id}\n"
+                f"  current_bot: {context.bot.username}"
+            )
+            
+            # Resolve uploader_bot_id to bot token
+            bot_token = None
+            if uploader_bot_id == 'BOT_TOKEN' and Config.BOT_TOKEN:
+                bot_token = Config.BOT_TOKEN
+            elif uploader_bot_id.startswith('BOT_TOKEN_'):
+                # Extract index from 'BOT_TOKEN_N'
+                try:
+                    # BOT_TOKENS list: [BOT_TOKEN, BOT_TOKEN_1, BOT_TOKEN_2, ...]
+                    # BOT_TOKEN is at index 0, BOT_TOKEN_1 at index 1, etc.
+                    if uploader_bot_id == 'BOT_TOKEN':
+                        bot_token = Config.BOT_TOKENS[0] if Config.BOT_TOKENS else None
+                    else:
+                        # Parse the number from BOT_TOKEN_N
+                        suffix = uploader_bot_id.replace('BOT_TOKEN_', '')
+                        token_index = int(suffix)
+                        if token_index < len(Config.BOT_TOKENS):
+                            bot_token = Config.BOT_TOKENS[token_index]
+                except (ValueError, IndexError) as parse_error:
+                    logger.error(f"Failed to parse uploader_bot_id '{uploader_bot_id}': {parse_error}")
+            
+            if not bot_token:
+                logger.error(
+                    f"Cannot resolve uploader_bot_id '{uploader_bot_id}' to bot token. "
+                    f"Available tokens: {len(Config.BOT_TOKENS)}"
+                )
+                raise  # Re-raise original error - can't recover
+            
+            # Download media from uploader bot
+            media_bytes = await download_media_from_bot(bot_token, file_id, file_type)
+            
+            if not media_bytes:
+                logger.error("Failed to download media from uploader bot - cannot recover")
+                raise  # Re-raise original error
+            
+            # Re-upload media with current bot
+            try:
+                logger.info(
+                    f"Re-uploading media with current bot (@{context.bot.username}): "
+                    f"size={len(media_bytes)} bytes, type={file_type}"
+                )
+                
+                # Create InputFile from bytes
+                media_file = InputFile(io.BytesIO(media_bytes), filename=f"media.{file_type}")
+                
+                # Send using current bot (which will get a new file_id)
+                await _send_media(media_file)
+                
+                logger.info(
+                    f"Successfully delivered media via cross-bot fallback: "
+                    f"product_id={product_id}, uploader={uploader_bot_id}, "
+                    f"current_bot=@{context.bot.username}"
+                )
+                
+                # TODO: Optionally update DB with new file_id for this bot
+                # This would require capturing the new file_id from the sent message
+                # For now, we just log success and continue
+                
+                return  # Success via fallback
+                
+            except Exception as reupload_error:
+                logger.error(
+                    f"Failed to re-upload media after download: {reupload_error}",
+                    exc_info=True
+                )
+                raise  # Re-raise original error - fallback failed
+        
+        # If not a file_id error or no uploader_bot_id, just re-raise
+        raise
+        
+    except Exception as e:
+        # Log all other errors and provide fallback text message
+        error_msg = str(e)
         file_id_preview = file_id[:50] if file_id and len(file_id) > 50 else file_id or "None"
         file_id_suffix = "..." if file_id and len(file_id) > 50 else ""
         reply_markup_preview = str(reply_markup)[:100] if reply_markup else "None"
+        
         logger.exception(
             f"Error sending media message:\n"
             f"  chat_id: {chat_id}\n"
             f"  file_id: {file_id_preview}{file_id_suffix}\n"
             f"  file_type: {file_type}\n"
+            f"  product_id: {product_id}\n"
+            f"  uploader_bot_id: {uploader_bot_id}\n"
             f"  reply_markup: {reply_markup_preview}\n"
             f"  error: {error_msg}"
         )
