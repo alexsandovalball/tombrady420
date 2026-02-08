@@ -133,7 +133,8 @@ class ConfigClass:
         if len(self.BOT_TOKENS) > 1:
             logger.warning(
                 f"⚠️  Multiple bot tokens configured ({len(self.BOT_TOKENS)} bots). "
-                f"Only the primary bot (first token: ...{self.BOT_TOKENS[0][-5:]}) will send notifications."
+                f"Primary bot (first token: ...{self.BOT_TOKENS[0][-5:]}) will monitor channel and receive channel posts for categorization. "
+                f"All configured bots may deliver notifications to users."
             )
             if self.BOT_TOKEN and self.BOT_TOKEN != self.BOT_TOKENS[0]:
                 logger.warning(
@@ -147,7 +148,7 @@ class ConfigClass:
             logger.info(f"  - Primary bot token: {'*' * 10}{self.BOT_TOKEN[-5:]}")
         logger.info(f"  - Total bot instances: {len(self.BOT_TOKENS)}")
         for idx, token in enumerate(self.BOT_TOKENS):
-            is_primary = " (PRIMARY - sends notifications)" if idx == 0 else " (secondary - no notifications)"
+            is_primary = " (PRIMARY - monitors channel for categorization)" if idx == 0 else " (secondary - can deliver notifications)"
             logger.info(f"    - Bot {idx}: {'*' * 10}{token[-5:]}{is_primary}")
         logger.info(f"  - Admin IDs: {len(self.ADMIN_IDS)} admin(s) configured")
         logger.info(f"  - Channel: {self.CHANNEL_ID or self.CHANNEL_USERNAME}")
