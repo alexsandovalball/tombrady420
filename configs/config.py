@@ -94,6 +94,10 @@ class ConfigClass:
         # If not set, we'll try to determine it at runtime or fall back to None
         self.PRIMARY_BOT_USERNAME = config('PRIMARY_BOT_USERNAME', default=None)
         
+        # Load REDIS_URL for pub/sub broadcast forwarding
+        # Optional - if not set, broadcasts will only go to local bot instance
+        self.REDIS_URL = config('REDIS_URL', default=None)
+        
         self._loaded = True
     
     def validate(self) -> None:

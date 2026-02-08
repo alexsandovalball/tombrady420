@@ -1314,4 +1314,126 @@ class NotificationService:
         except Exception as e:
             logger.error(f"[NotifySubscribers] Error notifying subscribers about product {product_id}: {e}", exc_info=True)
             return 0
+    
+    async def enqueue_local_broadcast(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        message_text: str,
+        exclude_blocked: bool = True
+    ) -> int:
+        """
+        Enqueue a broadcast message for local bot instance users only.
+        This is called by the Redis listener when a broadcast event is received.
+        
+        Filters users to only those belonging to current bot instance,
+        excludes configured admins, and records per-bot telemetry.
+        
+        Args:
+            context: Telegram context for bot operations
+            message_text: The text message to broadcast
+            exclude_blocked: Whether to exclude blocked users (default: True)
+            
+        Returns:
+            int: Number of messages queued for this bot instance
+        """
+        try:
+            current_bot_key = get_bot_env_key()
+            bot_username = context.bot.username if hasattr(context.bot, 'username') else None
+            bot_display = get_bot_key_display(current_bot_key, bot_username)
+            
+            logger.info(
+                f"[Notifications] enqueue_local_broadcast: Starting for {bot_display}"
+            )
+            
+            # Get all users
+            all_users = await self.db.get_all_users()
+            
+            if not all_users:
+                logger.info(f"[Notifications] enqueue_local_broadcast: No users in database")
+                return 0
+            
+            logger.info(
+                f"[Notifications] enqueue_local_broadcast: Found {len(all_users)} total users"
+            )
+            
+            # Pre-fetch admin IDs once (optimization)
+            from utils.helpers import get_admin_ids
+            admin_ids_set = set(get_admin_ids())
+            
+            # Filter to only users belonging to this bot instance
+            # and exclude admins and blocked users
+            local_users = []
+            blocked_count = 0
+            admin_count = 0
+            other_bot_count = 0
+            
+            for user in all_users:
+                user_id = user["user_id"]
+                
+                # Skip admin users
+                if user_id in admin_ids_set:
+                    admin_count += 1
+                    continue
+                
+                # Skip blocked users if requested
+                if exclude_blocked and user.get("is_blocked", 0) == 1:
+                    blocked_count += 1
+                    continue
+                
+                # Only include users belonging to this bot instance
+                # Users with NULL last_bot_key or matching current_bot_key
+                user_bot_key = user.get("last_bot_key")
+                if user_bot_key is not None and user_bot_key != current_bot_key:
+                    other_bot_count += 1
+                    continue
+                
+                local_users.append(user_id)
+            
+            logger.info(
+                f"[Notifications] enqueue_local_broadcast: Filtered to {len(local_users)} "
+                f"local users for {bot_display} "
+                f"(excluded: {admin_count} admins, {blocked_count} blocked, "
+                f"{other_bot_count} other bots)"
+            )
+            
+            if not local_users:
+                logger.info(
+                    f"[Notifications] enqueue_local_broadcast: No eligible local users"
+                )
+                return 0
+            
+            # Queue messages for local users with current bot key as target
+            users_with_targets = [(user_id, current_bot_key) for user_id in local_users]
+            
+            queued_count = await self.db.queue_custom_messages_batch_with_targets(
+                users_with_targets=users_with_targets,
+                message_text=message_text,
+                media_type=None,
+                media_file_id=None
+            )
+            
+            logger.info(
+                f"[Notifications] enqueue_local_broadcast: Queued {queued_count} messages "
+                f"for {bot_display}"
+            )
+            
+            # Spawn background task to process the queue for this bot
+            task = asyncio.create_task(
+                self.process_custom_message_queue(context, process_all_bots=False)
+            )
+            self._store_task(context, task, f"local_broadcast_{current_bot_key}")
+            
+            logger.info(
+                f"[Notifications] enqueue_local_broadcast: Background task spawned for {bot_display}"
+            )
+            
+            return queued_count
+            
+        except Exception as e:
+            logger.error(
+                f"[Notifications] enqueue_local_broadcast: Error: {e}",
+                exc_info=True
+            )
+            return 0
+
 

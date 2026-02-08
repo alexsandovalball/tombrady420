@@ -538,69 +538,98 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Confirm and send broadcast to all users (text-only)
         message_text = context.user_data.get('broadcast_message', '')
         
-        # Show initial queuing message
+        # Show initial publishing message
         await query.edit_message_text(
-            "⏳ **Queueing broadcast...**\n\nPlease wait...",
+            "⏳ **Publishing broadcast...**\n\nPlease wait...",
             parse_mode="Markdown"
         )
         
-        # Broadcast using notification service (imported at module level)
-        notification_service = NotificationService(db)
+        # Import broadcast forwarder
+        from utils.broadcast_forwarder import publish_broadcast
+        from configs.config import Config
         
-        start_time = datetime.now()
-        queued_count, processing_task = await notification_service.broadcast_custom_message(
-            context,
-            message_text,
-            exclude_blocked=True
-        )
-        
-        # Show queued confirmation
-        message_preview = format_message_preview(message_text)
-        await query.edit_message_text(
-            f"✅ **Broadcast Queued Successfully!**\n\n"
-            f"📨 Messages queued: {queued_count}\n"
-            f"📝 Message: {message_preview}\n\n"
-            f"🚀 Messages are being delivered now with rate-limiting...",
-            parse_mode="Markdown"
-        )
-        logger.info(f"Admin {user_id} broadcast message to {queued_count} users")
-        
-        # Schedule a background task to notify admin when processing completes
-        async def notify_completion():
-            try:
-                # Wait for the processing task to complete
-                result = await processing_task
-                
-                # Send completion message with final counts
-                duration = datetime.now() - start_time
-                sent_count = result.get("sent_count", 0)
-                failed_count = result.get("failed_count", 0)
-                
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=f"✅ **Broadcast Completed!**\n\n"
-                         f"📊 Successfully delivered: {sent_count}\n"
-                         f"❌ Failed: {failed_count}\n"
-                         f"📨 Total queued: {queued_count}\n"
-                         f"⏱️ Time taken: {int(duration.total_seconds())} seconds",
+        # Check if Redis is configured for global broadcasts
+        if Config.REDIS_URL:
+            # Publish broadcast to Redis - all bot instances will receive and process
+            success = await publish_broadcast(message_text)
+            
+            if success:
+                message_preview = format_message_preview(message_text)
+                await query.edit_message_text(
+                    f"✅ **Broadcast Published Successfully!**\n\n"
+                    f"📝 Message: {message_preview}\n\n"
+                    f"🚀 All bot instances are processing the broadcast...\n"
+                    f"Messages will be delivered with rate-limiting.",
                     parse_mode="Markdown"
                 )
-            except Exception as e:
-                # Send error message to admin
-                logger.error(f"Error in broadcast completion notification: {e}", exc_info=True)
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=f"❌ **Broadcast Processing Error!**\n\n"
-                         f"An error occurred while processing the broadcast.\n"
-                         f"Check the logs for details.",
+                logger.info(f"Admin {user_id} published broadcast via Redis")
+            else:
+                await query.edit_message_text(
+                    "❌ **Failed to publish broadcast**\n\n"
+                    "Check Redis connection and logs for details.",
                     parse_mode="Markdown"
                 )
-        
-        # Store task reference to prevent garbage collection
-        if not hasattr(context, 'notification_tasks'):
-            context.notification_tasks = []
-        
-        task = asyncio.create_task(notify_completion())
+                logger.error(f"Admin {user_id} failed to publish broadcast via Redis")
+        else:
+            # Fallback to local broadcast if Redis not configured
+            logger.warning("Redis not configured (REDIS_URL not set), using local broadcast")
+            
+            notification_service = NotificationService(db)
+            
+            start_time = datetime.now()
+            queued_count, processing_task = await notification_service.broadcast_custom_message(
+                context,
+                message_text,
+                exclude_blocked=True
+            )
+            
+            # Show queued confirmation
+            message_preview = format_message_preview(message_text)
+            await query.edit_message_text(
+                f"✅ **Broadcast Queued Successfully!**\n\n"
+                f"📨 Messages queued: {queued_count}\n"
+                f"📝 Message: {message_preview}\n\n"
+                f"🚀 Messages are being delivered now with rate-limiting...",
+                parse_mode="Markdown"
+            )
+            logger.info(f"Admin {user_id} broadcast message to {queued_count} users (local)")
+            
+            # Schedule a background task to notify admin when processing completes
+            async def notify_completion():
+                try:
+                    # Wait for the processing task to complete
+                    result = await processing_task
+                    
+                    # Send completion message with final counts
+                    duration = datetime.now() - start_time
+                    sent_count = result.get("sent_count", 0)
+                    failed_count = result.get("failed_count", 0)
+                    
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=f"✅ **Broadcast Completed!**\n\n"
+                             f"📊 Successfully delivered: {sent_count}\n"
+                             f"❌ Failed: {failed_count}\n"
+                             f"📨 Total queued: {queued_count}\n"
+                             f"⏱️ Time taken: {int(duration.total_seconds())} seconds",
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    # Send error message to admin
+                    logger.error(f"Error in broadcast completion notification: {e}", exc_info=True)
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=f"❌ **Broadcast Processing Error!**\n\n"
+                             f"An error occurred while processing the broadcast.\n"
+                             f"Check the logs for details.",
+                        parse_mode="Markdown"
+                    )
+            
+            # Store task reference to prevent garbage collection
+            if not hasattr(context, 'notification_tasks'):
+                context.notification_tasks = []
+            
+            task = asyncio.create_task(notify_completion())
         
         # Add exception handler to the task
         def log_completion_task_exception(task_obj):
@@ -1336,6 +1365,49 @@ async def cleanup_task(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error in cleanup task: {e}")
 
 
+async def start_broadcast_listener(application: Application):
+    """
+    Start the Redis broadcast listener after application starts.
+    Called as a post_start callback.
+    """
+    try:
+        from utils.broadcast_forwarder import start_listener_in_background, MinimalContext
+        from configs.config import Config
+        
+        # Check if Redis is configured
+        if not Config.REDIS_URL:
+            logger.info(
+                "Redis not configured (REDIS_URL not set). "
+                "Broadcasts will work locally but not across bot instances."
+            )
+            return
+        
+        # Get the enqueue callback from bot_data
+        enqueue_callback = application.bot_data.get('broadcast_enqueue_callback')
+        
+        if not enqueue_callback:
+            logger.error("Broadcast enqueue callback not found in bot_data")
+            return
+        
+        # Create a minimal context for the listener
+        context = MinimalContext(application.bot, application)
+        
+        # Start the listener
+        listener_task = start_listener_in_background(context, enqueue_callback)
+        
+        if listener_task:
+            # Store task in bot_data to prevent garbage collection
+            if 'background_tasks' not in application.bot_data:
+                application.bot_data['background_tasks'] = []
+            application.bot_data['background_tasks'].append(listener_task)
+            logger.info("Broadcast listener started successfully")
+        else:
+            logger.warning("Broadcast listener not started (Redis may not be configured)")
+            
+    except Exception as e:
+        logger.error(f"Failed to start broadcast listener: {e}", exc_info=True)
+
+
 async def post_init(application: Application):
     """Initialize database and start background tasks."""
     await db.init_db()
@@ -1350,6 +1422,35 @@ async def post_init(application: Application):
     
     # Start cleanup task
     asyncio.create_task(cleanup_task(application))
+    
+    # Start Redis broadcast listener if configured
+    try:
+        from utils.broadcast_forwarder import start_listener_in_background
+        from utils.notifications import NotificationService
+        
+        # Create enqueue callback that wraps NotificationService.enqueue_local_broadcast
+        notification_service = NotificationService(db)
+        
+        async def enqueue_callback(context, message_text):
+            """Callback for Redis listener to enqueue local broadcasts."""
+            await notification_service.enqueue_local_broadcast(
+                context,
+                message_text,
+                exclude_blocked=True
+            )
+        
+        # Start listener with application context
+        # Note: We need to create a context-like object with the bot
+        # For now, we'll start it after the application is fully running
+        # So we'll defer this to after handlers are registered
+        
+        # Store the callback in application data for later use
+        application.bot_data['broadcast_enqueue_callback'] = enqueue_callback
+        
+        logger.info("Broadcast enqueue callback registered")
+        
+    except Exception as e:
+        logger.error(f"Failed to register broadcast listener callback: {e}", exc_info=True)
 
 
 async def setup_bot_commands(bot):
@@ -1435,8 +1536,15 @@ def main():
     # Create persistence instance
     persistence = PicklePersistence(filepath='bot_persistence.pkl')
     
-    # Create application with persistence
-    application = Application.builder().token(bot_token).persistence(persistence).post_init(post_init).build()
+    # Create application with persistence and post_start callback
+    application = (
+        Application.builder()
+        .token(bot_token)
+        .persistence(persistence)
+        .post_init(post_init)
+        .post_start(start_broadcast_listener)
+        .build()
+    )
     
     # Register handlers
     application.add_handler(CommandHandler("start", start_command))
