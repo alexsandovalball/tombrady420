@@ -76,8 +76,54 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     if bot_index == 0:
         await post_init(bot_app)
     else:
-        # For secondary bots, set commands
+        # For secondary bots, set commands and start broadcast listener
         await setup_bot_commands(bot_app.bot)
+        
+        # Start broadcast listener for secondary bots as well
+        try:
+            from database import Database
+            from utils import broadcast_forwarder
+            from utils.notifications import NotificationService
+            
+            db = Database()
+            notification_service = NotificationService(db)
+            
+            async def process_broadcast_event(context_dict: dict, message_text: str):
+                """Process a broadcast event by queuing messages for users of this bot."""
+                try:
+                    # Create a mock context using the application
+                    class BroadcastContext:
+                        def __init__(self, app):
+                            self.bot = app.bot
+                            self.application = app
+                    
+                    mock_context = BroadcastContext(bot_app)
+                    
+                    # Queue the broadcast for this bot's users
+                    queued_count, processing_task = await notification_service.broadcast_custom_message(
+                        mock_context,
+                        message_text,
+                        exclude_blocked=True
+                    )
+                    
+                    logger.info(f"[BroadcastListener Bot{bot_index}] Queued {queued_count} messages from broadcast event")
+                    
+                except Exception as e:
+                    logger.error(f"[BroadcastListener Bot{bot_index}] Error processing broadcast event: {e}", exc_info=True)
+                    raise
+            
+            # Start the listener in background
+            listener_task = broadcast_forwarder.start_listener_in_background(db, process_broadcast_event)
+            logger.info(f"Broadcast listener started successfully for bot {bot_index}")
+            
+            # Store task reference
+            if not hasattr(bot_app, 'bot_data'):
+                bot_app.bot_data = {}
+            bot_app.bot_data['broadcast_listener_task'] = listener_task
+            
+        except Exception as e:
+            logger.warning(f"Failed to start broadcast listener for bot {bot_index}: {e}. Broadcasts will use local-only mode.")
+
     
     # Register handlers
     bot_app.add_handler(CommandHandler("start", start_command))
