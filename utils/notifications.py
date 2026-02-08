@@ -873,7 +873,7 @@ class NotificationService:
             context: Telegram context
             message: Message data dict
             reply_markup: Pre-parsed reply markup (to avoid re-parsing)
-            retry_count: Current retry attempt
+            retry_count: Current retry attempt (default: 0, incremented internally during retries)
             
         Returns:
             dict with {"success": bool, "user_id": int, "message_id": int}
@@ -917,8 +917,8 @@ class NotificationService:
             # Check for rate limit errors
             if "Too Many Requests" in error_msg or "retry after" in error_msg.lower():
                 if retry_count < MAX_RETRIES:
-                    # Exponential backoff
-                    delay = RETRY_BASE_DELAY * (2 ** retry_count)
+                    # Exponential backoff with maximum cap to prevent excessive delays
+                    delay = min(RETRY_BASE_DELAY * (2 ** retry_count), 30.0)
                     logger.warning(f"Rate limit hit for user {user_id}, retrying in {delay}s (attempt {retry_count + 1}/{MAX_RETRIES})")
                     await asyncio.sleep(delay)
                     return await self._send_single_custom_message(context, message, reply_markup, retry_count + 1)
@@ -958,7 +958,14 @@ class NotificationService:
         # (common case for notifications about the same product)
         first_reply_markup_json = messages[0].get("reply_markup")
         shared_reply_markup = None
-        all_same_markup = all(m.get("reply_markup") == first_reply_markup_json for m in messages)
+        # Quick check: compare first message with a sample of others to detect shared markup
+        # Most batches either all share or all differ, so sampling is efficient
+        sample_size = min(5, len(messages))
+        all_same_markup = all(messages[i].get("reply_markup") == first_reply_markup_json for i in range(sample_size))
+        
+        # If sample suggests same markup, verify all (optimization for common case)
+        if all_same_markup and len(messages) > sample_size:
+            all_same_markup = all(m.get("reply_markup") == first_reply_markup_json for m in messages[sample_size:])
         
         if all_same_markup and first_reply_markup_json:
             try:

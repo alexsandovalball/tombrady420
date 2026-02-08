@@ -26,9 +26,18 @@ from utils.notifications import NotificationService
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from configs.config import Config
 
+# Test constants
+TEST_MESSAGE_ID = 999999
+TEST_CHAT_ID = -1001234567890
+
 
 async def setup_test_product(db: Database) -> int:
-    """Create a test product in the database."""
+    """
+    Create a test product in the database.
+    
+    Returns:
+        int: Product ID of the created and categorized test product
+    """
     print("📦 Creating test product...")
     
     # Create a simple test product
@@ -36,8 +45,8 @@ async def setup_test_product(db: Database) -> int:
         file_id="test_file_id_123",
         file_type="photo",
         caption="Test product for smoke testing",
-        message_id=999999,
-        chat_id=-1001234567890,
+        message_id=TEST_MESSAGE_ID,
+        chat_id=TEST_CHAT_ID,
         media_group_id=None,
         additional_file_ids=None,
         additional_message_ids=None
