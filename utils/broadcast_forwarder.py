@@ -22,6 +22,10 @@ from utils.bot_key import get_bot_env_key
 logger = logging.getLogger(__name__)
 
 # Configurable polling interval in seconds
+# Trade-offs:
+# - Lower values (1-2s): More responsive broadcasts, higher DB load
+# - Higher values (5-10s): Lower DB load, delayed broadcast delivery
+# - Default (3s): Balanced approach for most use cases
 POLL_INTERVAL_SECONDS = 3
 
 

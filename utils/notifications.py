@@ -1326,13 +1326,12 @@ async def enqueue_local_broadcast(context: dict, message_text: str) -> None:
     assigned to this bot.
     
     Args:
-        context: Dictionary with optional payload data (currently unused but reserved for future use)
+        context: Dictionary with optional payload data (reserved for future use, currently unused)
         message_text: The broadcast message text to send
     
     Note:
-        This function requires access to the bot context and database.
-        In practice, it will be called with a properly initialized context
-        from the main application or webhook server.
+        The context parameter is currently not utilized but is kept for API compatibility
+        and future extensibility (e.g., priority flags, metadata).
     """
     try:
         from database import Database

@@ -1384,7 +1384,7 @@ async def post_init(application: Application):
         listener_task = broadcast_forwarder.start_listener_in_background(db, enqueue_local_broadcast)
         
         # Store task to prevent garbage collection
-        if not hasattr(application.bot_data, 'broadcast_listener_task'):
+        if 'broadcast_listener_task' not in application.bot_data:
             application.bot_data['broadcast_listener_task'] = listener_task
         
         logger.info("Broadcast listener started successfully")

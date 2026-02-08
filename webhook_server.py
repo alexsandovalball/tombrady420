@@ -89,7 +89,7 @@ async def setup_application(bot_token: str, bot_index: int = 0):
             listener_task = broadcast_forwarder.start_listener_in_background(db, enqueue_local_broadcast)
             
             # Store task to prevent garbage collection
-            if not hasattr(bot_app.bot_data, 'broadcast_listener_task'):
+            if 'broadcast_listener_task' not in bot_app.bot_data:
                 bot_app.bot_data['broadcast_listener_task'] = listener_task
             
             logger.info(f"Broadcast listener started for secondary bot {bot_index}")
