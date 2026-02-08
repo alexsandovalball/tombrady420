@@ -271,9 +271,6 @@ class Database:
                     logger.debug("Column 'storage_url' already exists in products table")
                 else:
                     logger.warning(f"Could not add 'storage_url' column to products: {e}")
-                    logger.debug("Column 'additional_message_ids' already exists in products table")
-                else:
-                    logger.warning(f"Could not add 'additional_message_ids' column to products: {e}")
             
             # Add media support columns to custom_message_queue
             try:

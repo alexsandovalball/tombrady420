@@ -304,11 +304,13 @@ async def send_media_message(
             )
     
     # Try to send media with original file_id
+    last_error = None
     try:
         await _send_media(file_id)
         return  # Success - no fallback needed
         
     except BadRequest as e:
+        last_error = e
         error_msg = str(e)
         
         # Check if this is a cross-bot file_id error that we can recover from
@@ -350,56 +352,56 @@ async def send_media_message(
                     f"Cannot resolve uploader_bot_id '{uploader_bot_id}' to bot token. "
                     f"Available tokens: {len(Config.BOT_TOKENS)}"
                 )
-                raise  # Re-raise original error - can't recover
-            
-            # Download media from uploader bot
-            media_bytes = await download_media_from_bot(bot_token, file_id, file_type)
-            
-            if not media_bytes:
-                logger.error("Failed to download media from uploader bot - cannot recover")
-                raise  # Re-raise original error
-            
-            # Re-upload media with current bot
-            try:
-                logger.info(
-                    f"Re-uploading media with current bot (@{context.bot.username}): "
-                    f"size={len(media_bytes)} bytes, type={file_type}"
-                )
+                # Fall through to text fallback at the end
+            else:
+                # Download media from uploader bot
+                media_bytes = await download_media_from_bot(bot_token, file_id, file_type)
                 
-                # Create InputFile from bytes
-                media_file = InputFile(io.BytesIO(media_bytes), filename=f"media.{file_type}")
-                
-                # Send using current bot (which will get a new file_id)
-                await _send_media(media_file)
-                
-                logger.info(
-                    f"Successfully delivered media via cross-bot fallback: "
-                    f"product_id={product_id}, uploader={uploader_bot_id}, "
-                    f"current_bot=@{context.bot.username}"
-                )
-                
-                # TODO: Optionally update DB with new file_id for this bot
-                # This would require capturing the new file_id from the sent message
-                # For now, we just log success and continue
-                
-                return  # Success via fallback
-                
-            except Exception as reupload_error:
-                logger.error(
-                    f"Failed to re-upload media after download: {reupload_error}",
-                    exc_info=True
-                )
-                raise  # Re-raise original error - fallback failed
+                if media_bytes:
+                    # Re-upload media with current bot
+                    try:
+                        logger.info(
+                            f"Re-uploading media with current bot (@{context.bot.username}): "
+                            f"size={len(media_bytes)} bytes, type={file_type}"
+                        )
+                        
+                        # Create InputFile from bytes
+                        media_file = InputFile(io.BytesIO(media_bytes), filename=f"media.{file_type}")
+                        
+                        # Send using current bot (which will get a new file_id)
+                        await _send_media(media_file)
+                        
+                        logger.info(
+                            f"Successfully delivered media via cross-bot fallback: "
+                            f"product_id={product_id}, uploader={uploader_bot_id}, "
+                            f"current_bot=@{context.bot.username}"
+                        )
+                        
+                        # TODO: Optionally update DB with new file_id for this bot
+                        # This would require capturing the new file_id from the sent message
+                        # For now, we just log success and continue
+                        
+                        return  # Success via fallback
+                        
+                    except Exception as reupload_error:
+                        logger.error(
+                            f"Failed to re-upload media after download: {reupload_error}",
+                            exc_info=True
+                        )
+                        last_error = reupload_error
+                        # Fall through to text fallback
+                else:
+                    logger.error("Failed to download media from uploader bot - cannot recover")
+                    # Fall through to text fallback
         
-        # If not a file_id error or no uploader_bot_id, just re-raise
-        raise
+        # Fall through to text fallback for all error cases
         
     except Exception as e:
-        # Log all other errors and provide fallback text message
+        last_error = e
+        # Log all other errors
         error_msg = str(e)
         file_id_preview = file_id[:50] if file_id and len(file_id) > 50 else file_id or "None"
         file_id_suffix = "..." if file_id and len(file_id) > 50 else ""
-        reply_markup_preview = str(reply_markup)[:100] if reply_markup else "None"
         
         logger.exception(
             f"Error sending media message:\n"
@@ -408,26 +410,38 @@ async def send_media_message(
             f"  file_type: {file_type}\n"
             f"  product_id: {product_id}\n"
             f"  uploader_bot_id: {uploader_bot_id}\n"
-            f"  reply_markup: {reply_markup_preview}\n"
             f"  error: {error_msg}"
         )
-        
-        # Provide helpful error messages based on the error type
-        fallback_text = caption or 'Media'
-        if "Wrong file identifier" in error_msg or "file_id" in error_msg.lower():
-            fallback_text += (
-                "\n\n⚠️ Media temporarily unavailable (file ID issue).\n"
-                "If this persists, please report this product to an admin."
-            )
-        else:
-            fallback_text += f"\n\n⚠️ Error displaying media."
-        
-        # Fallback to text message with reply_markup still attached
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=fallback_text,
-            reply_markup=reply_markup
+        # Fall through to text fallback
+    
+    # Text fallback (reached if any error occurred and wasn't recovered)
+    error_msg = str(last_error) if last_error else "Unknown error"
+    reply_markup_preview = str(reply_markup)[:100] if reply_markup else "None"
+    
+    logger.warning(
+        f"Sending text fallback message for media failure:\n"
+        f"  chat_id: {chat_id}\n"
+        f"  product_id: {product_id}\n"
+        f"  error: {error_msg}\n"
+        f"  reply_markup: {reply_markup_preview}"
+    )
+    
+    # Provide helpful error messages based on the error type
+    fallback_text = caption or 'Media'
+    if "Wrong file identifier" in error_msg or "file_id" in error_msg.lower():
+        fallback_text += (
+            "\n\n⚠️ Media temporarily unavailable (file ID issue).\n"
+            "If this persists, please report this product to an admin."
         )
+    else:
+        fallback_text += f"\n\n⚠️ Error displaying media."
+    
+    # Fallback to text message with reply_markup still attached
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=fallback_text,
+        reply_markup=reply_markup
+    )
 
 
 async def get_bot_specific_file_id(
