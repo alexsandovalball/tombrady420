@@ -272,19 +272,6 @@ class TestProcessorIntegration:
     @pytest.mark.asyncio
     async def test_processor_respects_bot_key_filtering(self, mock_application, temp_db, monkeypatch):
         """Test that processor only processes messages for its bot."""
-        processed_count = 0
-        
-        async def counting_process_queue(self, context, process_all_bots=False):
-            nonlocal processed_count
-            
-            # Call the real method to test filtering
-            result = await NotificationService.process_custom_message_queue.__wrapped__(
-                self, context, process_all_bots
-            )
-            
-            processed_count += result.get("sent_count", 0)
-            return result
-        
         # Queue messages for different bots
         user1 = 111111
         user2 = 222222
