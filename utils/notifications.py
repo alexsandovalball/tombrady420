@@ -644,7 +644,8 @@ class NotificationService:
                     continue
                 
                 # Get user's preferred bot (last_bot_key), fallback to primary bot token if not set
-                target_bot_key = user.get("last_bot_key") if user.get("last_bot_key") is not None else current_bot_key
+                last_bot_key = user.get("last_bot_key")
+                target_bot_key = last_bot_key if last_bot_key is not None else current_bot_key
                 users_with_targets.append((user_id, target_bot_key))
             
             logger.info(f"[Notifications] Eligible users: {len(users_with_targets)} (filtered {blocked_count} blocked, {admin_count} admins)")
@@ -1063,7 +1064,8 @@ class NotificationService:
             users_with_targets = []
             for user_id in eligible_users:
                 # Use user's preferred bot, fallback to current process bot key
-                target_bot_key = user_last_bot_keys.get(user_id) or current_bot_key
+                last_bot_key = user_last_bot_keys.get(user_id)
+                target_bot_key = last_bot_key if last_bot_key is not None else current_bot_key
                 users_with_targets.append((user_id, target_bot_key))
             
             # Queue text-only messages in batch with inline keyboard and target routing
