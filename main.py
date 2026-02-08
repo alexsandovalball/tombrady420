@@ -230,19 +230,20 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
     additional_files = json.dumps(list(zip(file_ids[1:], file_types[1:]))) if len(file_ids) > 1 else None
     additional_msg_ids = json.dumps(message_ids[1:]) if len(message_ids) > 1 else None
     
-        product_id = await db.add_product(
-            file_id=file_ids[0],
-            file_type=file_types[0],
-            caption=caption,
-            message_id=first_message.message_id,
-            chat_id=chat_id,
-            media_group_id=media_group_id,
-            additional_file_ids=additional_files,
-            additional_message_ids=additional_msg_ids,
-            category=None,  # No automatic categorization
-            subcategory=None,
-            uploader_bot_id=get_bot_env_key()
-        )
+    # Fixed: Removed unexpected indent that was causing IndentationError
+    product_id = await db.add_product(
+        file_id=file_ids[0],
+        file_type=file_types[0],
+        caption=caption,
+        message_id=first_message.message_id,
+        chat_id=chat_id,
+        media_group_id=media_group_id,
+        additional_file_ids=additional_files,
+        additional_message_ids=additional_msg_ids,
+        category=None,  # No automatic categorization
+        subcategory=None,
+        uploader_bot_id=get_bot_env_key()
+    )
     
     if product_id > 0:
         # Register this media group
