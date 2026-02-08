@@ -16,6 +16,7 @@ from database import Database
 from utils.categories import get_category_display_name, get_subcategory_display_name, NOTIFICATION_EXCLUDED_CATEGORIES
 from translations.translator import translate_text_async
 from configs.config import Config
+from utils.bot_key import get_bot_env_key, get_bot_key_display
 
 logger = logging.getLogger(__name__)
 
@@ -261,7 +262,9 @@ class NotificationService:
         try:
             # Get bot username for filtering (skip primary check for processing)
             bot_username = context.bot.username if hasattr(context.bot, 'username') else None
-            logger.info(f"[Notifications] process_notification_queue: Starting for bot @{bot_username}")
+            current_bot_key = get_bot_env_key()
+            bot_display = get_bot_key_display(current_bot_key, bot_username)
+            logger.info(f"[Notifications] process_notification_queue: Starting for {bot_display}")
             logger.info(f"[NOTIFY] Processing queue - START")
             
             pending = await self.db.get_pending_notifications(limit=100)
@@ -273,23 +276,37 @@ class NotificationService:
                 logger.debug(f"[Notifications] No pending notifications to process")
                 return
             
-            # Filter notifications for users of this bot only
-            if bot_username:
-                bot_users = await self.db.get_users_by_bot(bot_username)
-                bot_user_set = set(bot_users)
-                logger.info(f"[Notifications] Bot @{bot_username} has {len(bot_user_set)} users")
-                logger.debug(f"[Notifications] Bot user IDs: {bot_user_set}")
+            # Filter notifications for this bot using target_bot_key
+            original_count = len(pending)
+            
+            # Filter to messages targeted to this bot OR with NULL target_bot_key (backward compatibility)
+            filtered_pending = []
+            for n in pending:
+                target_key = n.get("target_bot_key")
                 
-                original_count = len(pending)
-                pending = [n for n in pending if n["user_id"] in bot_user_set]
-                filtered_out = original_count - len(pending)
-                logger.info(f"[Notifications] Filtered out {filtered_out} notifications not for this bot, {len(pending)} remaining")
+                if target_key == current_bot_key:
+                    # Explicitly targeted to this bot
+                    filtered_pending.append(n)
+                elif target_key is None:
+                    # NULL target_bot_key - fall back to bot_username filtering for backward compatibility
+                    if bot_username:
+                        bot_users = await self.db.get_users_by_bot(bot_username)
+                        bot_user_set = set(bot_users)
+                        if n["user_id"] in bot_user_set:
+                            filtered_pending.append(n)
+                    else:
+                        # No bot_username to filter by, include it
+                        filtered_pending.append(n)
+            
+            pending = filtered_pending
+            filtered_out = original_count - len(pending)
+            logger.info(f"[Notifications] Filtered out {filtered_out} notifications not for this bot, {len(pending)} remaining")
             
             if not pending:
-                logger.debug(f"[Notifications] No pending notifications for bot @{bot_username} after filtering")
+                logger.debug(f"[Notifications] No pending notifications for {bot_display} after filtering")
                 return
             
-            logger.info(f"[Notifications] Processing {len(pending)} pending notifications for bot @{bot_username}")
+            logger.info(f"[Notifications] Processing {len(pending)} pending notifications for {bot_display}")
             
             # Group notifications by user for rate limiting
             user_notifications = {}
@@ -577,13 +594,19 @@ class NotificationService:
         """
         Broadcast a custom text message to all users with rate limiting.
         Text-only - media is not supported for queued/broadcast messages.
-        Optimized with batch insert for better performance.
+        
+        In multi-bot setups, queues messages with each user's preferred bot (last_bot_key)
+        so the correct bot process delivers the message.
         
         Returns:
             tuple: (queued_count: int, processing_task: asyncio.Task)
         """
         try:
-            logger.info(f"[Notifications] broadcast_custom_message: Starting broadcast")
+            current_bot_key = get_bot_env_key()
+            bot_username = context.bot.username if hasattr(context.bot, 'username') else None
+            bot_display = get_bot_key_display(current_bot_key, bot_username)
+            
+            logger.info(f"[Notifications] broadcast_custom_message: Starting broadcast from {bot_display}")
             
             # Get all users
             all_users = await self.db.get_all_users()
@@ -601,8 +624,8 @@ class NotificationService:
             
             logger.info(f"[Notifications] Filtering broadcast: exclude_blocked={exclude_blocked}, admin_count={len(admin_ids_set)}")
             
-            # Collect eligible user IDs (filter in memory before DB operations)
-            eligible_users = []
+            # Collect eligible users with their preferred bot keys
+            users_with_targets = []  # List of (user_id, target_bot_key)
             blocked_count = 0
             admin_count = 0
             
@@ -619,25 +642,31 @@ class NotificationService:
                     admin_count += 1
                     continue
                 
-                eligible_users.append(user_id)
+                # Get user's preferred bot (last_bot_key), fallback to primary bot token if not set
+                target_bot_key = user.get("last_bot_key") or current_bot_key
+                users_with_targets.append((user_id, target_bot_key))
             
-            logger.info(f"[Notifications] Eligible users: {len(eligible_users)} (filtered {blocked_count} blocked, {admin_count} admins)")
+            logger.info(f"[Notifications] Eligible users: {len(users_with_targets)} (filtered {blocked_count} blocked, {admin_count} admins)")
             
-            if not eligible_users:
+            if not users_with_targets:
                 logger.info(f"[Notifications] No eligible users after filtering")
                 # Return empty task that completes immediately
                 return (0, self._create_empty_result_task())
             
-            # Batch queue all messages in a single database operation (text-only, no media)
-            queued = await self.db.queue_custom_messages_batch(
-                eligible_users,
+            # Batch queue all messages with individual target_bot_key for routing
+            queued = await self.db.queue_custom_messages_batch_with_targets(
+                users_with_targets,
                 message_text,
                 media_type=None,
                 media_file_id=None
             )
             
-            logger.info(f"[Notifications] Queued {queued} custom messages for broadcast")
-            logger.info(f"[NOTIFY] Broadcast queued count: {queued}/{len(eligible_users)} messages")
+            # Log target_bot_key distribution for visibility
+            target_distribution = {}
+            for _, target_key in users_with_targets:
+                target_distribution[target_key] = target_distribution.get(target_key, 0) + 1
+            logger.info(f"[Notifications] Queued {queued} custom messages. Target distribution: {target_distribution}")
+            logger.info(f"[NOTIFY] Broadcast queued count: {queued}/{len(users_with_targets)} messages")
             
             # Spawn background task to process the queue across all bots
             # Store task in application.bot_data for resilience in webhook deployments
@@ -676,23 +705,44 @@ class NotificationService:
         try:
             # Get bot username for filtering (skip primary check for processing)
             bot_username = context.bot.username if hasattr(context.bot, 'username') else None
+            current_bot_key = get_bot_env_key()
+            bot_display = get_bot_key_display(current_bot_key, bot_username)
             
             pending = await self.db.get_pending_custom_messages(limit=100)
             
             if not pending:
                 return {"sent_count": 0, "failed_count": 0}
             
-            # Filter messages for users of this bot only (unless process_all_bots is True)
-            if not process_all_bots and bot_username:
-                bot_users = await self.db.get_users_by_bot(bot_username)
-                bot_user_set = set(bot_users)
-                pending = [m for m in pending if m["user_id"] in bot_user_set]
+            # Filter messages for this bot using target_bot_key (unless process_all_bots is True)
+            if not process_all_bots:
+                original_count = len(pending)
+                
+                # Filter to messages targeted to this bot OR with NULL target_bot_key (backward compatibility)
+                filtered_pending = []
+                for m in pending:
+                    target_key = m.get("target_bot_key")
+                    
+                    if target_key == current_bot_key:
+                        # Explicitly targeted to this bot
+                        filtered_pending.append(m)
+                    elif target_key is None:
+                        # NULL target_bot_key - fall back to bot_username filtering for backward compatibility
+                        if bot_username:
+                            bot_users = await self.db.get_users_by_bot(bot_username)
+                            bot_user_set = set(bot_users)
+                            if m["user_id"] in bot_user_set:
+                                filtered_pending.append(m)
+                        else:
+                            # No bot_username to filter by, include it
+                            filtered_pending.append(m)
+                
+                pending = filtered_pending
             
             if not pending:
-                logger.debug(f"No pending custom messages for bot @{bot_username}")
+                logger.debug(f"No pending custom messages for {bot_display}")
                 return {"sent_count": 0, "failed_count": 0}
             
-            mode_desc = "all bots" if process_all_bots else f"bot @{bot_username}"
+            mode_desc = "all bots" if process_all_bots else bot_display
             logger.info(f"[{mode_desc}] Processing {len(pending)} pending custom messages")
             
             # Group messages by user for rate limiting
