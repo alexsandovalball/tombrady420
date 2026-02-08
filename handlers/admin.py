@@ -538,7 +538,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle the multi-step broadcast workflow for admins (text or media)."""
+    """Handle the multi-step broadcast workflow for admins (text-only)."""
     user_id = update.effective_user.id
     
     if not is_admin(user_id):
@@ -547,49 +547,9 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
     broadcast_mode = context.user_data.get('broadcast_mode')
     broadcast_step = context.user_data.get('broadcast_step')
     
-    # Get message content (text or media)
+    # Get message content (text-only, ignore any media)
     message = update.message
     message_text = message.text or message.caption or ""
-    
-    # Check if message has media
-    from utils.helpers import get_file_id_and_type
-    file_id, file_type = get_file_id_and_type(update)
-    
-    # Fallback: If no media found, check reply_to_message for media
-    if not file_id and message.reply_to_message:
-        reply_msg = message.reply_to_message
-        
-        # Check for photo (get highest resolution)
-        if reply_msg.photo:
-            file_id = reply_msg.photo[-1].file_id
-            file_type = "photo"
-        # Check for video
-        elif reply_msg.video:
-            file_id = reply_msg.video.file_id
-            file_type = "video"
-        # Check for document
-        elif reply_msg.document:
-            file_id = reply_msg.document.file_id
-            file_type = "document"
-        # Check for animation (GIF)
-        elif reply_msg.animation:
-            file_id = reply_msg.animation.file_id
-            file_type = "animation"
-        # Check for video note
-        elif reply_msg.video_note:
-            file_id = reply_msg.video_note.file_id
-            file_type = "video_note"
-        # Check for audio
-        elif reply_msg.audio:
-            file_id = reply_msg.audio.file_id
-            file_type = "audio"
-        # Check for voice
-        elif reply_msg.voice:
-            file_id = reply_msg.voice.file_id
-            file_type = "voice"
-        
-        if file_id:
-            logger.info(f"Media extracted from reply_to_message: type={file_type}, file_id={file_id[:20]}...")
     
     if broadcast_mode == 'single_user':
         if broadcast_step == 'awaiting_user_id':
@@ -615,7 +575,7 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 await update.message.reply_text(
                     f"📝 **Broadcast to Single User - Step 2 of 3**\n\n"
                     f"🆔 User ID: `{target_user_id}`\n\n"
-                    f"Please send the message (text or media with caption):",
+                    f"Please send the text message:",
                     parse_mode="Markdown"
                 )
                 logger.info(f"Admin {user_id} entered user ID: {target_user_id}")
@@ -628,11 +588,9 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 context.user_data.clear()
                 
         elif broadcast_step == 'awaiting_message':
-            # Step 2: Received message (text or media), show confirmation
+            # Step 2: Received message (text-only), show confirmation
             target_user_id = context.user_data.get('target_user_id')
             context.user_data['broadcast_message'] = message_text
-            context.user_data['broadcast_media_type'] = file_type
-            context.user_data['broadcast_media_file_id'] = file_id
             context.user_data['broadcast_step'] = 'awaiting_confirmation'
             
             # Show confirmation with inline buttons
@@ -643,7 +601,7 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
             ])
             
             # Build confirmation message using helper
-            message_preview = _format_message_preview(message_text, file_type)
+            message_preview = _format_message_preview(message_text, None)
             
             await update.message.reply_text(
                 f"✅ **Broadcast to Single User - Confirmation**\n\n"
@@ -657,10 +615,8 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
             
     elif broadcast_mode == 'all_users':
         if broadcast_step == 'awaiting_message':
-            # Step 1: Received message (text or media), show confirmation
+            # Step 1: Received message (text-only), show confirmation
             context.user_data['broadcast_message'] = message_text
-            context.user_data['broadcast_media_type'] = file_type
-            context.user_data['broadcast_media_file_id'] = file_id
             context.user_data['broadcast_step'] = 'awaiting_confirmation'
             
             # Get user count
@@ -675,7 +631,7 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
             ])
             
             # Build confirmation message using helper
-            message_preview = _format_message_preview(message_text, file_type)
+            message_preview = _format_message_preview(message_text, None)
             
             await update.message.reply_text(
                 f"✅ **Broadcast to All Users - Confirmation**\n\n"

@@ -512,20 +512,18 @@ class NotificationService:
         self,
         context: ContextTypes.DEFAULT_TYPE,
         user_id: int,
-        message_text: str = None,
-        media_type: str = None,
-        media_file_id: str = None
+        message_text: str = None
     ) -> bool:
         """
-        Send a custom message to a specific user with rate limiting.
-        Supports text and media messages.
+        Send a custom text message to a specific user with rate limiting.
+        Text-only - media is not supported for queued/broadcast messages.
         Queues the message and spawns background processing task.
         
         Returns:
             bool: True if message was queued successfully, False otherwise
         """
         try:
-            logger.info(f"[Notifications] send_custom_message_to_user: Queueing message for user {user_id}")
+            logger.info(f"[Notifications] send_custom_message_to_user: Queueing text message for user {user_id}")
             
             # Check if user is blocked
             is_blocked = await self.db.is_user_blocked(user_id)
@@ -533,12 +531,12 @@ class NotificationService:
                 logger.warning(f"[Notifications] Cannot send message to blocked user {user_id}")
                 return False
             
-            # Queue the message
+            # Queue the message (text-only, media fields are None)
             await self.db.queue_custom_message(
                 user_id, 
                 message_text,
-                media_type=media_type,
-                media_file_id=media_file_id
+                media_type=None,
+                media_file_id=None
             )
             logger.info(f"[Notifications] Queued custom message for user {user_id}")
             
@@ -568,13 +566,11 @@ class NotificationService:
         self,
         context: ContextTypes.DEFAULT_TYPE,
         message_text: str = None,
-        media_type: str = None,
-        media_file_id: str = None,
         exclude_blocked: bool = True
     ) -> tuple:
         """
-        Broadcast a custom message to all users with rate limiting.
-        Supports text and media messages.
+        Broadcast a custom text message to all users with rate limiting.
+        Text-only - media is not supported for queued/broadcast messages.
         Optimized with batch insert for better performance.
         
         Returns:
@@ -626,12 +622,12 @@ class NotificationService:
                 # Return empty task that completes immediately
                 return (0, self._create_empty_result_task())
             
-            # Batch queue all messages in a single database operation
+            # Batch queue all messages in a single database operation (text-only, no media)
             queued = await self.db.queue_custom_messages_batch(
                 eligible_users,
                 message_text,
-                media_type=media_type,
-                media_file_id=media_file_id
+                media_type=None,
+                media_file_id=None
             )
             
             logger.info(f"[Notifications] Queued {queued} custom messages for broadcast")
@@ -766,7 +762,8 @@ class NotificationService:
         messages: List[dict]
     ) -> dict:
         """
-        Send a batch of custom messages (text or media).
+        Send a batch of custom text messages (text-only).
+        Media messages are not supported for queued/broadcast messages.
         Returns dict with {"sent": int, "failed": int} counts.
         """
         sent_count = 0
@@ -777,8 +774,6 @@ class NotificationService:
                 user_id = message["user_id"]
                 message_text = message.get("message_text", "")
                 message_id = message["id"]
-                media_type = message.get("media_type")
-                media_file_id = message.get("media_file_id")
                 reply_markup_json = message.get("reply_markup")
                 
                 # Parse reply_markup if present
@@ -799,26 +794,13 @@ class NotificationService:
                     failed_count += 1
                     continue
                 
-                # Send media message if media is present
-                if media_type and media_file_id:
-                    logger.debug(f"Sending media message to user {user_id}: type={media_type}, file_id={media_file_id[:20]}...")
-                    from utils.helpers import send_media_message
-                    await send_media_message(
-                        context=context,
-                        chat_id=user_id,
-                        file_id=media_file_id,
-                        file_type=media_type,
-                        caption=message_text or None,
-                        reply_markup=reply_markup
-                    )
-                else:
-                    # Send text-only message
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text=message_text,
-                        parse_mode="Markdown",
-                        reply_markup=reply_markup
-                    )
+                # Send text-only message (ignore any media fields from legacy queued messages)
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=message_text,
+                    parse_mode="Markdown",
+                    reply_markup=reply_markup
+                )
                 
                 # Mark as sent
                 await self.db.mark_custom_message_sent(message_id)
@@ -834,24 +816,22 @@ class NotificationService:
                 failed_count += 1
                 
             except TelegramError as e:
-                media_info = f" (media: type={media_type}, file_id={media_file_id[:20]}...)" if media_type and media_file_id else ""
                 reply_markup_info = f" (reply_markup: {str(reply_markup_json)[:50]}...)" if reply_markup_json else ""
                 logger.exception(
                     f"Telegram error sending custom message:\n"
                     f"  user_id: {user_id}\n"
-                    f"  message_id: {message_id}{media_info}{reply_markup_info}\n"
+                    f"  message_id: {message_id}{reply_markup_info}\n"
                     f"  error: {str(e)}"
                 )
                 # Don't mark as sent, will retry later
                 failed_count += 1
                 
             except Exception as e:
-                media_info = f" (media: type={media_type}, file_id={media_file_id[:20]}...)" if media_type and media_file_id else ""
                 reply_markup_info = f" (reply_markup: {str(reply_markup_json)[:50]}...)" if reply_markup_json else ""
                 logger.exception(
                     f"Error sending custom message:\n"
                     f"  user_id: {user_id}\n"
-                    f"  message_id: {message_id}{media_info}{reply_markup_info}\n"
+                    f"  message_id: {message_id}{reply_markup_info}\n"
                     f"  error: {str(e)}"
                 )
                 # Mark as sent to avoid infinite retries
@@ -918,20 +898,20 @@ class NotificationService:
             )
             
             # Build inline keyboard with product actions
-            # Get product URL (deep link to product view)
-            product_url = f"https://t.me/{context.bot.username}?start=product_{product_id}"
+            # Row 1: View Product (deep link)
+            # Row 2: View Catalog (deep link)
+            # Row 3: Toggle subscription button
             
-            # Get catalog URL (deep link to menu)
+            # Get deep links
+            product_url = f"https://t.me/{context.bot.username}?start=product_{product_id}"
             catalog_url = f"https://t.me/{context.bot.username}?start=menu"
             
-            # Build inline keyboard
+            # Build inline keyboard with 3 rows as requested
+            # For users receiving this notification, show the Unsubscribe option
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("View Product", url=product_url)],
-                [InlineKeyboardButton("View Catalog", url=catalog_url)],
-                [
-                    InlineKeyboardButton("Subscribe", callback_data=f"subscribe|{product_id}"),
-                    InlineKeyboardButton("Unsubscribe", callback_data=f"unsubscribe|{product_id}")
-                ]
+                [InlineKeyboardButton("👁️ View Product", url=product_url)],
+                [InlineKeyboardButton("📋 View Catalog", url=catalog_url)],
+                [InlineKeyboardButton("🔕 Unsubscribe", callback_data=f"toggle_notifications|{product_id}")]
             ])
             
             # Serialize keyboard to JSON
@@ -970,16 +950,13 @@ class NotificationService:
             
             logger.info(f"[NotifySubscribers] {len(eligible_users)} eligible users after filtering")
             
-            # Get media info from product
-            media_type = product.get("file_type")
-            media_file_id = product.get("file_id")
-            
-            # Queue messages in batch with inline keyboard
+            # Queue text-only messages in batch with inline keyboard
+            # Media is not supported for queued/broadcast messages
             queued_count = await self.db.queue_custom_messages_batch(
                 user_ids=eligible_users,
                 message_text=message_text,
-                media_type=media_type,
-                media_file_id=media_file_id,
+                media_type=None,
+                media_file_id=None,
                 reply_markup=reply_markup_json
             )
             
