@@ -46,6 +46,7 @@ from utils.helpers import (
 )
 from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES
 from utils.notifications import NotificationService
+from utils.bot_key import get_bot_env_key
 
 # Configure logging with structured format for better visibility on Render
 logging.basicConfig(
@@ -376,6 +377,9 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 show_alert=True
             )
             return
+    
+    # Track user interaction
+    await db.set_last_bot_key(user_id, get_bot_env_key())
     
     await query.answer()  # Answer callback to prevent loading spinner
     
@@ -1255,6 +1259,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_name=user.last_name,
         bot_username=bot_username
     )
+    await db.set_last_bot_key(user.id, get_bot_env_key())
     
     # Check if user is blocked
     user_id = update.effective_user.id
