@@ -1315,3 +1315,92 @@ class NotificationService:
             logger.error(f"[NotifySubscribers] Error notifying subscribers about product {product_id}: {e}", exc_info=True)
             return 0
 
+
+# Standalone function for broadcast forwarding integration
+async def enqueue_local_broadcast(context: dict, message_text: str) -> None:
+    """
+    Enqueue a broadcast message to be sent to all local users of this bot instance.
+    
+    This is a wrapper function used by the broadcast_forwarder to deliver broadcasts
+    to users assigned to this bot instance. It filters users by the current bot's
+    assignment and queues the message for delivery.
+    
+    Args:
+        context: Context dictionary (may contain additional metadata from broadcast)
+        message_text: The text message to broadcast
+        
+    Note:
+        This function expects to be called with an application context that has
+        the bot and database available. The broadcast_forwarder will need to
+        provide this context when calling.
+    """
+    from telegram.ext import ContextTypes
+    from utils.helpers import get_admin_ids
+    
+    logger.info(f"[BroadcastForward] enqueue_local_broadcast called with message: {message_text[:50]}...")
+    
+    # Import locally to avoid circular dependency
+    db = Database()
+    
+    # This is a simplified version - in practice, we need the actual telegram context
+    # The broadcast forwarder will need to be integrated with the bot application
+    # For now, we'll implement a basic version that queues messages
+    
+    try:
+        # Get all users
+        all_users = await db.get_all_users()
+        
+        if not all_users:
+            logger.info("[BroadcastForward] No users to broadcast to")
+            return
+        
+        # Get admin IDs to exclude them
+        admin_ids_set = set(get_admin_ids())
+        
+        # Get current bot key for filtering
+        from utils.bot_key import get_bot_env_key
+        current_bot_key = get_bot_env_key()
+        
+        # Collect eligible users with their target bot keys
+        users_with_targets = []
+        for user in all_users:
+            user_id = user["user_id"]
+            
+            # Skip blocked users
+            if user.get("is_blocked", 0) == 1:
+                continue
+            
+            # Skip admin users
+            if user_id in admin_ids_set:
+                continue
+            
+            # Get user's preferred bot (last_bot_key)
+            last_bot_key = user.get("last_bot_key")
+            target_bot_key = last_bot_key if last_bot_key is not None else current_bot_key
+            
+            # Only include users assigned to this bot
+            if target_bot_key == current_bot_key:
+                users_with_targets.append((user_id, target_bot_key))
+        
+        if not users_with_targets:
+            logger.info(f"[BroadcastForward] No eligible users for bot {current_bot_key}")
+            return
+        
+        # Queue messages for these users
+        queued = await db.queue_custom_messages_batch_with_targets(
+            users_with_targets,
+            message_text,
+            media_type=None,
+            media_file_id=None
+        )
+        
+        logger.info(f"[BroadcastForward] Queued {queued} messages for {len(users_with_targets)} users on bot {current_bot_key}")
+        
+        # Note: The actual sending will be handled by the existing notification queue processor
+        # which should be running in the bot application
+        
+    except Exception as e:
+        logger.error(f"[BroadcastForward] Error in enqueue_local_broadcast: {e}", exc_info=True)
+        raise
+
+
