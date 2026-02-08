@@ -544,77 +544,105 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode="Markdown"
         )
         
-        # Broadcast using notification service (imported at module level)
-        notification_service = NotificationService(db)
-        
-        start_time = datetime.now()
-        queued_count, processing_task = await notification_service.broadcast_custom_message(
-            context,
-            message_text,
-            exclude_blocked=True
-        )
-        
-        # Show queued confirmation
-        message_preview = format_message_preview(message_text)
-        await query.edit_message_text(
-            f"✅ **Broadcast Queued Successfully!**\n\n"
-            f"📨 Messages queued: {queued_count}\n"
-            f"📝 Message: {message_preview}\n\n"
-            f"🚀 Messages are being delivered now with rate-limiting...",
-            parse_mode="Markdown"
-        )
-        logger.info(f"Admin {user_id} broadcast message to {queued_count} users")
-        
-        # Schedule a background task to notify admin when processing completes
-        async def notify_completion():
-            try:
-                # Wait for the processing task to complete
-                result = await processing_task
-                
-                # Send completion message with final counts
-                duration = datetime.now() - start_time
-                sent_count = result.get("sent_count", 0)
-                failed_count = result.get("failed_count", 0)
-                
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=f"✅ **Broadcast Completed!**\n\n"
-                         f"📊 Successfully delivered: {sent_count}\n"
-                         f"❌ Failed: {failed_count}\n"
-                         f"📨 Total queued: {queued_count}\n"
-                         f"⏱️ Time taken: {int(duration.total_seconds())} seconds",
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                # Send error message to admin
-                logger.error(f"Error in broadcast completion notification: {e}", exc_info=True)
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=f"❌ **Broadcast Processing Error!**\n\n"
-                         f"An error occurred while processing the broadcast.\n"
-                         f"Check the logs for details.",
-                    parse_mode="Markdown"
-                )
-        
-        # Store task reference to prevent garbage collection
-        if not hasattr(context, 'notification_tasks'):
-            context.notification_tasks = []
-        
-        task = asyncio.create_task(notify_completion())
-        
-        # Add exception handler to the task
-        def log_completion_task_exception(task_obj):
-            try:
-                task_obj.result()
-            except Exception as e:
-                logger.error(f"Error in notify_completion task: {e}", exc_info=True)
-            finally:
-                # Clean up completed task
-                if hasattr(context, 'notification_tasks') and task_obj in context.notification_tasks:
-                    context.notification_tasks.remove(task_obj)
-        
-        task.add_done_callback(log_completion_task_exception)
-        context.notification_tasks.append(task)
+        # Use DB-backed broadcast forwarding (no Redis)
+        # This will insert a broadcast event that all bot instances will process
+        try:
+            from utils import broadcast_forwarder
+            
+            start_time = datetime.now()
+            broadcast_id = await broadcast_forwarder.publish_broadcast(db, message_text)
+            
+            logger.info(f"Admin {user_id} published broadcast event {broadcast_id}")
+            
+            # The broadcast will be picked up by all bot instances (including this one)
+            # via their polling listeners, so we don't need to call broadcast_custom_message directly
+            
+            # Show queued confirmation
+            message_preview = format_message_preview(message_text)
+            await query.edit_message_text(
+                f"✅ **Broadcast Published Successfully!**\n\n"
+                f"📨 Broadcast ID: {broadcast_id}\n"
+                f"📝 Message: {message_preview}\n\n"
+                f"🚀 All bot instances will process this broadcast...",
+                parse_mode="Markdown"
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to publish broadcast via DB forwarder: {e}", exc_info=True)
+            
+            # Fallback to direct local broadcast if DB publish fails
+            logger.warning("Falling back to local broadcast (non-forwarded)")
+            
+            notification_service = NotificationService(db)
+            
+            start_time = datetime.now()
+            queued_count, processing_task = await notification_service.broadcast_custom_message(
+                context,
+                message_text,
+                exclude_blocked=True
+            )
+            
+            # Show queued confirmation
+            message_preview = format_message_preview(message_text)
+            await query.edit_message_text(
+                f"✅ **Broadcast Queued Successfully!**\n\n"
+                f"📨 Messages queued: {queued_count}\n"
+                f"📝 Message: {message_preview}\n\n"
+                f"🚀 Messages are being delivered now with rate-limiting...",
+                parse_mode="Markdown"
+            )
+            logger.info(f"Admin {user_id} broadcast message to {queued_count} users (local fallback)")
+            
+            # Schedule a background task to notify admin when processing completes
+            async def notify_completion():
+                try:
+                    # Wait for the processing task to complete
+                    result = await processing_task
+                    
+                    # Send completion message with final counts
+                    duration = datetime.now() - start_time
+                    sent_count = result.get("sent_count", 0)
+                    failed_count = result.get("failed_count", 0)
+                    
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=f"✅ **Broadcast Completed!**\n\n"
+                             f"📊 Successfully delivered: {sent_count}\n"
+                             f"❌ Failed: {failed_count}\n"
+                             f"📨 Total queued: {queued_count}\n"
+                             f"⏱️ Time taken: {int(duration.total_seconds())} seconds",
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    # Send error message to admin
+                    logger.error(f"Error in broadcast completion notification: {e}", exc_info=True)
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text=f"❌ **Broadcast Processing Error!**\n\n"
+                             f"An error occurred while processing the broadcast.\n"
+                             f"Check the logs for details.",
+                        parse_mode="Markdown"
+                    )
+            
+            # Store task reference to prevent garbage collection
+            if not hasattr(context, 'notification_tasks'):
+                context.notification_tasks = []
+            
+            task = asyncio.create_task(notify_completion())
+            
+            # Add exception handler to the task
+            def log_completion_task_exception(task_obj):
+                try:
+                    task_obj.result()
+                except Exception as e:
+                    logger.error(f"Error in notify_completion task: {e}", exc_info=True)
+                finally:
+                    # Clean up completed task
+                    if hasattr(context, 'notification_tasks') and task_obj in context.notification_tasks:
+                        context.notification_tasks.remove(task_obj)
+            
+            task.add_done_callback(log_completion_task_exception)
+            context.notification_tasks.append(task)
         
         context.user_data.clear()
         return
@@ -1347,6 +1375,22 @@ async def post_init(application: Application):
     
     # Set bot commands for the command menu
     await setup_bot_commands(application.bot)
+    
+    # Start broadcast listener for DB-backed broadcast forwarding (no Redis)
+    try:
+        from utils import broadcast_forwarder
+        from utils.notifications import enqueue_local_broadcast
+        
+        listener_task = broadcast_forwarder.start_listener_in_background(db, enqueue_local_broadcast)
+        
+        # Store task to prevent garbage collection
+        if 'broadcast_listener_task' not in application.bot_data:
+            application.bot_data['broadcast_listener_task'] = listener_task
+        
+        logger.info("Broadcast listener started successfully")
+    except Exception as e:
+        logger.error(f"Failed to start broadcast listener: {e}", exc_info=True)
+        logger.warning("Broadcast forwarding will not work, but local broadcasts will still function")
     
     # Start cleanup task
     asyncio.create_task(cleanup_task(application))

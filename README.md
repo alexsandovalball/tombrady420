@@ -34,6 +34,7 @@ A production-ready Telegram bot for managing and browsing a media product catalo
 - 🔒 **Environment-based Configuration** - All settings via environment variables
 - 🌐 **Webhook Support** - Production-ready for Render.com and other platforms
 - 📦 **SQLite Database** - Lightweight, no external database required
+- 🔁 **Cross-Instance Broadcasts** - DB-backed broadcast forwarding (no Redis)
 - 🛡️ **Rate Limiting** - Anti-spam protection for notifications
 - 🔄 **Automatic Migration** - Database schema updates on startup
 - 📝 **Comprehensive Logging** - Structured logs for monitoring
@@ -147,6 +148,29 @@ Run multiple bot instances from the **same** Render webservice:
    - ✅ Single deployment - easier to manage
    - ✅ Lower costs - one webservice for multiple bots
    - ✅ Easy scaling - just add more `BOT_TOKEN_N` variables
+
+### Cross-Instance Broadcast Forwarding
+
+When using multiple bot instances (either via multi-bot deployment or separate servers), broadcasts sent via `/broadcast` are automatically forwarded to all bot instances using **database-backed event forwarding** (no Redis required).
+
+**How it works:**
+- Admin broadcasts create an event in the SQLite database
+- Each bot instance polls for unprocessed broadcast events (default: every 3 seconds)
+- Each bot processes broadcasts for its assigned users only
+- Events are marked as processed per-bot to prevent duplicates
+
+**Requirements:**
+- All bot instances must share the same SQLite database file
+- For multi-server deployments, use:
+  - Shared persistent disk (e.g., Render.com persistent disk)
+  - Network-attached storage (NFS, EFS)
+  - Or a centralized database (PostgreSQL - requires code modifications)
+
+**Note:** SQLite works well for multi-bot deployments on a single server. For true multi-server deployments across different hosts, consider enabling WAL mode:
+```python
+# In database.py, add after connecting:
+await db.execute("PRAGMA journal_mode=WAL")
+```
 
 See [configs/.env.example](configs/.env.example) for complete Render.com deployment notes.
 
