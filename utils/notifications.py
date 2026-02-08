@@ -38,6 +38,11 @@ CUSTOM_MESSAGE_DELAY_SECONDS = 5  # Longer delay for custom messages
 class NotificationService:
     """Service for managing and sending product notifications."""
     
+    # Compiled regex pattern for matching t.me deep-link URLs
+    # Matches: https://t.me/{valid_telegram_username}?start={anything}
+    # Telegram usernames start with a letter and contain only letters, digits, and underscores
+    _TELEGRAM_DEEPLINK_PATTERN = re.compile(r'https://t\.me/[a-zA-Z][a-zA-Z0-9_]*(\?start=[^"\s]*)')
+    
     def __init__(self, db: Database):
         self.db = db
     
@@ -772,10 +777,6 @@ class NotificationService:
         if not reply_markup_data or not isinstance(reply_markup_data, dict):
             return reply_markup_data
         
-        # Pattern to match t.me URLs: https://t.me/{any_username}?start={anything}
-        # We'll replace the username part with the current bot's username
-        url_pattern = re.compile(r'https://t\.me/[^/?]+(\?start=[^"\s]*)')
-        
         # InlineKeyboardMarkup structure: {"inline_keyboard": [[button, ...], ...]}
         inline_keyboard = reply_markup_data.get("inline_keyboard", [])
         
@@ -789,7 +790,8 @@ class NotificationService:
                 if "url" in button and isinstance(button["url"], str):
                     original_url = button["url"]
                     # Replace old username with new username, preserving the query string
-                    normalized_url = url_pattern.sub(
+                    # Uses pre-compiled pattern from class constant
+                    normalized_url = self._TELEGRAM_DEEPLINK_PATTERN.sub(
                         lambda m: f'https://t.me/{bot_username}{m.group(1)}',
                         original_url
                     )
@@ -829,6 +831,8 @@ class NotificationService:
                         bot_username = context.bot.username
                         if bot_username:
                             reply_markup_data = self._normalize_reply_markup_urls(reply_markup_data, bot_username)
+                        else:
+                            logger.warning(f"Bot username unavailable for message {message_id}, cannot normalize URLs")
                         # Reconstruct InlineKeyboardMarkup from JSON
                         reply_markup = InlineKeyboardMarkup.de_json(reply_markup_data, context.bot)
                     except Exception as e:
