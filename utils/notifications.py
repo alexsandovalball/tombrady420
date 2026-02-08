@@ -10,7 +10,7 @@ from typing import List, Optional
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from telegram.error import TelegramError, Forbidden
+from telegram.error import TelegramError, Forbidden, BadRequest
 
 from database import Database
 from utils.categories import get_category_display_name, get_subcategory_display_name, NOTIFICATION_EXCLUDED_CATEGORIES
@@ -51,6 +51,25 @@ class NotificationService:
     
     def __init__(self, db: Database):
         self.db = db
+    
+    @staticmethod
+    def _is_chat_not_found(error_msg: str) -> bool:
+        """
+        Check if a Telegram error message indicates chat not found.
+        
+        Common error messages when chat is not accessible:
+        - "Chat not found"
+        - "User not found"
+        - "Chat_not_found"
+        
+        Args:
+            error_msg: The error message from the Telegram exception
+            
+        Returns:
+            True if the error indicates chat/user not found, False otherwise
+        """
+        error_lower = error_msg.lower()
+        return "chat not found" in error_lower or "user not found" in error_lower
     
     def _get_task_storage(self, context: ContextTypes.DEFAULT_TYPE) -> list:
         """
@@ -522,9 +541,21 @@ class NotificationService:
                 
             except Forbidden:
                 # User blocked the bot, disable notifications
-                logger.info(f"User {user_id} blocked the bot, disabling notifications")
+                logger.info(f"User {user_id} blocked the bot (Forbidden), disabling notifications")
                 await self.db.set_user_notifications(user_id, False)
                 await self.db.mark_notification_sent(notification_id)
+            
+            except BadRequest as e:
+                error_msg = str(e)
+                # Check for chat not found errors
+                if self._is_chat_not_found(error_msg):
+                    logger.info(f"User {user_id} chat not found (BadRequest), marking as invalid: {error_msg}")
+                    await self.db.mark_user_invalid(user_id)
+                    await self.db.mark_notification_sent(notification_id)
+                else:
+                    # Other BadRequest errors
+                    logger.warning(f"BadRequest error sending notification to {user_id}: {error_msg}")
+                    await self.db.mark_notification_sent(notification_id)
                 
             except TelegramError as e:
                 logger.error(f"Telegram error sending notification to {user_id}: {e}")
@@ -906,10 +937,24 @@ class NotificationService:
             
         except Forbidden:
             # User blocked the bot, block them in our system
-            logger.debug(f"User {user_id} blocked the bot, marking as blocked")
+            logger.info(f"User {user_id} blocked the bot (Forbidden), marking as blocked")
             await self.db.block_user(user_id)
             await self.db.mark_custom_message_sent(message_id)
             return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "forbidden"}
+        
+        except BadRequest as e:
+            error_msg = str(e)
+            # Check for chat not found errors (chat was deleted, user deactivated, etc.)
+            if self._is_chat_not_found(error_msg):
+                logger.info(f"User {user_id} chat not found (BadRequest), marking as invalid: {error_msg}")
+                await self.db.mark_user_invalid(user_id)
+                await self.db.mark_custom_message_sent(message_id)
+                return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "chat_not_found"}
+            else:
+                # Other BadRequest errors (e.g., message too long, invalid formatting)
+                logger.warning(f"BadRequest error sending to user {user_id}: {error_msg}")
+                await self.db.mark_custom_message_sent(message_id)
+                return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "bad_request"}
             
         except TelegramError as e:
             error_msg = str(e)
