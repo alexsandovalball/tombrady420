@@ -1408,7 +1408,7 @@ class BotContext:
         bot: The Telegram bot instance
         application: The Application instance (optional, for bot_data access)
     """
-    def __init__(self, bot, application=None):
+    def __init__(self, bot: 'telegram.Bot', application: Optional['telegram.ext.Application'] = None):
         self.bot = bot
         self.application = application
 
