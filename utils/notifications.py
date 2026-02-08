@@ -57,19 +57,32 @@ class NotificationService:
         """
         Check if a Telegram error message indicates chat not found.
         
-        Common error messages when chat is not accessible:
-        - "Chat not found"
-        - "User not found"
-        - "Chat_not_found"
+        This should ONLY match permanent errors where the chat is truly inaccessible,
+        not temporary issues or other errors.
+        
+        Confirmed permanent errors:
+        - "Chat not found" - chat was deleted or never existed
+        - "User not found" - user account deleted
+        - "Forbidden: bot was blocked by the user" - handled separately as Forbidden
+        - "Forbidden: user is deactivated" - user deactivated their account
         
         Args:
             error_msg: The error message from the Telegram exception
             
         Returns:
-            True if the error indicates chat/user not found, False otherwise
+            True if the error indicates PERMANENT chat/user inaccessibility, False otherwise
         """
         error_lower = error_msg.lower()
-        return "chat not found" in error_lower or "user not found" in error_lower
+        
+        # Only match specific permanent error patterns
+        permanent_patterns = [
+            "chat not found",
+            "user not found", 
+            "user is deactivated",
+            "chat_not_found"  # Alternative format
+        ]
+        
+        return any(pattern in error_lower for pattern in permanent_patterns)
     
     def _get_task_storage(self, context: ContextTypes.DEFAULT_TYPE) -> list:
         """
@@ -479,6 +492,14 @@ class NotificationService:
                 product_id = notification["product_id"]
                 notification_id = notification["id"]
                 
+                # Check if user is invalid for this bot before attempting to send
+                current_bot_key = get_bot_env_key()
+                is_invalid = await self.db.is_user_invalid_for_bot(user_id, current_bot_key)
+                if is_invalid:
+                    logger.debug(f"Skipping notification for user {user_id} - marked invalid for bot {current_bot_key}")
+                    await self.db.mark_notification_sent(notification_id)
+                    continue
+                
                 # Get product from cache
                 product = products_cache.get(product_id)
                 
@@ -549,12 +570,15 @@ class NotificationService:
                 error_msg = str(e)
                 # Check for chat not found errors
                 if self._is_chat_not_found(error_msg):
-                    logger.info(f"User {user_id} chat not found (BadRequest), marking as invalid: {error_msg}")
-                    await self.db.mark_user_invalid(user_id)
+                    # Get current bot key for bot-specific invalidation
+                    current_bot_key = get_bot_env_key()
+                    logger.info(f"User {user_id} chat not found for bot {current_bot_key} (BadRequest: {error_msg}), marking as invalid for this bot only")
+                    # Mark invalid ONLY for this specific bot, not globally
+                    await self.db.mark_user_invalid(user_id, bot_id=current_bot_key, reason="chat_not_found")
                     await self.db.mark_notification_sent(notification_id)
                 else:
-                    # Other BadRequest errors
-                    logger.warning(f"BadRequest error sending notification to {user_id}: {error_msg}")
+                    # Other BadRequest errors - DO NOT block the user
+                    logger.warning(f"BadRequest error sending notification to {user_id}: {error_msg} - NOT blocking user")
                     await self.db.mark_notification_sent(notification_id)
                 
             except TelegramError as e:
