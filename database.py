@@ -1320,6 +1320,22 @@ class Database:
                 row = await cursor.fetchone()
                 return row[0] == 1 if row else False
     
+    async def mark_user_invalid(self, user_id: int):
+        """
+        Mark a user as invalid/blocked when chat is not found or inaccessible.
+        This is called when Telegram returns "Chat not found" or similar errors,
+        indicating the user ID is no longer valid or the bot cannot access the chat.
+        Also disables notifications for the user.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE bot_users 
+                SET is_blocked = 1, notifications_enabled = 0 
+                WHERE user_id = ?
+            """, (user_id,))
+            await db.commit()
+        logger.info(f"[Database] Marked user {user_id} as invalid (chat not found/inaccessible)")
+    
     async def queue_custom_message(
         self, 
         user_id: int, 
