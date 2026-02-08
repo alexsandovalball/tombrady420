@@ -51,8 +51,8 @@ class TestChatNotFoundHandling:
     """Test handling of chat not found errors."""
     
     @pytest.mark.asyncio
-    async def test_mark_user_invalid_creates_blocked_user(self, temp_db):
-        """Test that mark_user_invalid properly blocks user and disables notifications."""
+    async def test_mark_user_invalid_global(self, temp_db):
+        """Test that mark_user_invalid without bot_id does global blocking (backward compatibility)."""
         # Create a test user
         user_id = 12345
         await temp_db.track_user(user_id, "testuser", "Test", "User", "testbot")
@@ -64,15 +64,14 @@ class TestChatNotFoundHandling:
         is_blocked = await temp_db.is_user_blocked(user_id)
         assert not is_blocked
         
-        # Mark user as invalid
+        # Mark user as invalid WITHOUT bot_id (global block)
         await temp_db.mark_user_invalid(user_id)
         
-        # Verify user is now blocked
+        # Verify user is now globally blocked
         is_blocked = await temp_db.is_user_blocked(user_id)
         assert is_blocked
         
         # Verify notifications are disabled
-        # (We need to check the database directly since there's no get method)
         import aiosqlite
         async with aiosqlite.connect(temp_db.db_path) as db:
             async with db.execute(
@@ -84,11 +83,54 @@ class TestChatNotFoundHandling:
                 assert row[0] == 0  # notifications_enabled should be 0 (False)
     
     @pytest.mark.asyncio
-    async def test_custom_message_chat_not_found_marks_invalid(self, temp_db, notification_service):
-        """Test that chat not found errors mark user as invalid."""
+    async def test_mark_user_invalid_bot_specific(self, temp_db):
+        """Test that mark_user_invalid with bot_id only blocks for that bot."""
         # Create a test user
         user_id = 12346
         await temp_db.track_user(user_id, "testuser2", "Test", "User2", "testbot")
+        
+        # Mark user as invalid for specific bot
+        await temp_db.mark_user_invalid(user_id, bot_id="BOT_TOKEN_1", reason="chat_not_found")
+        
+        # Verify user is NOT globally blocked
+        is_blocked = await temp_db.is_user_blocked(user_id)
+        assert not is_blocked
+        
+        # Verify user IS invalid for BOT_TOKEN_1
+        is_invalid = await temp_db.is_user_invalid_for_bot(user_id, "BOT_TOKEN_1")
+        assert is_invalid
+        
+        # Verify user is NOT invalid for other bots
+        is_invalid_other = await temp_db.is_user_invalid_for_bot(user_id, "BOT_TOKEN")
+        assert not is_invalid_other
+    
+    @pytest.mark.asyncio
+    async def test_mark_user_valid_revalidation(self, temp_db):
+        """Test that mark_user_valid removes bot-specific invalidation."""
+        # Create a test user
+        user_id = 12347
+        await temp_db.track_user(user_id, "testuser3", "Test", "User3", "testbot")
+        
+        # Mark user as invalid for specific bot
+        await temp_db.mark_user_invalid(user_id, bot_id="BOT_TOKEN", reason="chat_not_found")
+        
+        # Verify user is invalid
+        is_invalid = await temp_db.is_user_invalid_for_bot(user_id, "BOT_TOKEN")
+        assert is_invalid
+        
+        # Revalidate user
+        await temp_db.mark_user_valid(user_id, "BOT_TOKEN")
+        
+        # Verify user is no longer invalid
+        is_invalid = await temp_db.is_user_invalid_for_bot(user_id, "BOT_TOKEN")
+        assert not is_invalid
+    
+    @pytest.mark.asyncio
+    async def test_custom_message_chat_not_found_marks_invalid_bot_specific(self, temp_db, notification_service):
+        """Test that chat not found errors mark user as invalid for specific bot only."""
+        # Create a test user
+        user_id = 12348
+        await temp_db.track_user(user_id, "testuser4", "Test", "User4", "testbot")
         
         # Queue a custom message
         await temp_db.queue_custom_message(user_id, "Test message")
@@ -102,30 +144,37 @@ class TestChatNotFoundHandling:
         mock_context = MagicMock()
         mock_bot = MagicMock()
         mock_bot.username = "testbot"
+        mock_bot.token = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"  # Mock token
         mock_bot.send_message = AsyncMock(
             side_effect=BadRequest("Chat not found")
         )
         mock_context.bot = mock_bot
         
-        # Send the message (should handle error)
-        result = await notification_service._send_single_custom_message(
-            mock_context, message
-        )
+        # Mock get_bot_env_key to return a specific bot key
+        with patch('utils.notifications.get_bot_env_key', return_value='BOT_TOKEN'):
+            # Send the message (should handle error)
+            result = await notification_service._send_single_custom_message(
+                mock_context, message
+            )
         
         # Verify failure with correct reason
         assert not result["success"]
         assert result["reason"] == "chat_not_found"
         
-        # Verify user was marked as invalid
+        # Verify user was marked as invalid for BOT_TOKEN specifically
+        is_invalid = await temp_db.is_user_invalid_for_bot(user_id, "BOT_TOKEN")
+        assert is_invalid
+        
+        # Verify user is NOT globally blocked
         is_blocked = await temp_db.is_user_blocked(user_id)
-        assert is_blocked
+        assert not is_blocked
     
     @pytest.mark.asyncio
-    async def test_notification_chat_not_found_marks_invalid(self, temp_db, notification_service):
-        """Test that chat not found in notification batch marks user as invalid."""
+    async def test_notification_chat_not_found_marks_invalid_bot_specific(self, temp_db, notification_service):
+        """Test that chat not found in notification batch marks user as invalid for specific bot only."""
         # Create a test user
-        user_id = 12347
-        await temp_db.track_user(user_id, "testuser3", "Test", "User3", "testbot")
+        user_id = 12349
+        await temp_db.track_user(user_id, "testuser5", "Test", "User5", "testbot")
         
         # Create a test product
         product_id = await temp_db.add_product(
@@ -150,22 +199,29 @@ class TestChatNotFoundHandling:
         mock_context = MagicMock()
         mock_bot = MagicMock()
         mock_bot.username = "testbot"
+        mock_bot.token = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"  # Mock token
         mock_bot.send_message = AsyncMock(
             side_effect=BadRequest("User not found")
         )
         mock_context.bot = mock_bot
         
-        # Send the notification batch
-        sent_count = await notification_service._send_notification_batch(
-            mock_context, notifications
-        )
+        # Mock get_bot_env_key to return a specific bot key
+        with patch('utils.notifications.get_bot_env_key', return_value='BOT_TOKEN_1'):
+            # Send the notification batch
+            sent_count = await notification_service._send_notification_batch(
+                mock_context, notifications
+            )
         
         # Verify no messages were sent
         assert sent_count == 0
         
-        # Verify user was marked as invalid
+        # Verify user was marked as invalid for BOT_TOKEN_1 specifically
+        is_invalid = await temp_db.is_user_invalid_for_bot(user_id, "BOT_TOKEN_1")
+        assert is_invalid
+        
+        # Verify user is NOT globally blocked
         is_blocked = await temp_db.is_user_blocked(user_id)
-        assert is_blocked
+        assert not is_blocked
 
 
 class TestForbiddenHandling:

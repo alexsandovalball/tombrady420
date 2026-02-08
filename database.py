@@ -161,6 +161,18 @@ class Database:
                 )
             """)
             
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS bot_invalidations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    bot_id TEXT NOT NULL,
+                    reason TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    is_active INTEGER DEFAULT 1,
+                    UNIQUE(user_id, bot_id)
+                )
+            """)
+            
             # Set default order contact if not exists
             await db.execute("""
                 INSERT OR IGNORE INTO bot_settings (key, value)
@@ -1320,21 +1332,82 @@ class Database:
                 row = await cursor.fetchone()
                 return row[0] == 1 if row else False
     
-    async def mark_user_invalid(self, user_id: int):
+    async def mark_user_invalid(self, user_id: int, bot_id: Optional[str] = None, reason: Optional[str] = None):
         """
-        Mark a user as invalid/blocked when chat is not found or inaccessible.
+        Mark a user as invalid/blocked for a specific bot when chat is not found or inaccessible.
         This is called when Telegram returns "Chat not found" or similar errors,
         indicating the user ID is no longer valid or the bot cannot access the chat.
-        Also disables notifications for the user.
+        
+        IMPORTANT: This should ONLY be called for PERMANENT errors like "chat not found".
+        Do NOT call this for temporary errors, rate limits, or non-critical BadRequest errors.
+        
+        Args:
+            user_id: User ID to mark as invalid
+            bot_id: Bot identifier (bot_key like 'BOT_TOKEN' or username). 
+                   If provided, marks invalid ONLY for that bot.
+                   If None, marks GLOBALLY invalid (backward compatibility - use with caution!)
+            reason: Reason for invalidation (e.g., 'chat_not_found', 'user_deactivated')
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            if bot_id:
+                # Mark invalid for specific bot in bot_invalidations table
+                # This does NOT set is_blocked globally - user can still use other bots
+                await db.execute("""
+                    INSERT OR REPLACE INTO bot_invalidations 
+                    (user_id, bot_id, reason, created_at, is_active)
+                    VALUES (?, ?, ?, ?, 1)
+                """, (user_id, bot_id, reason, datetime.now()))
+                await db.commit()
+                logger.info(f"[Database] Marked user {user_id} as invalid for bot {bot_id} ONLY (reason: {reason}) - user NOT globally blocked")
+            else:
+                # WARNING: Global block - sets is_blocked=1 which affects ALL bots
+                # This is for backward compatibility only - prefer bot-specific invalidation
+                logger.warning(f"[Database] GLOBAL BLOCK: Marking user {user_id} as globally invalid (no bot_id specified). This affects ALL bots!")
+                await db.execute("""
+                    UPDATE bot_users 
+                    SET is_blocked = 1, notifications_enabled = 0 
+                    WHERE user_id = ?
+                """, (user_id,))
+                await db.commit()
+                logger.info(f"[Database] Marked user {user_id} as globally invalid (chat not found/inaccessible)")
+    
+    async def mark_user_valid(self, user_id: int, bot_id: str):
+        """
+        Mark a user as valid for a specific bot (undo invalidation).
+        Called when user interacts with the bot, indicating the chat is accessible again.
+        
+        Args:
+            user_id: User ID to mark as valid
+            bot_id: Bot identifier (bot_key like 'BOT_TOKEN' or username)
         """
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
-                UPDATE bot_users 
-                SET is_blocked = 1, notifications_enabled = 0 
-                WHERE user_id = ?
-            """, (user_id,))
+                UPDATE bot_invalidations 
+                SET is_active = 0
+                WHERE user_id = ? AND bot_id = ? AND is_active = 1
+            """, (user_id, bot_id))
             await db.commit()
-        logger.info(f"[Database] Marked user {user_id} as invalid (chat not found/inaccessible)")
+            if db.total_changes > 0:
+                logger.info(f"[Database] Revalidated user {user_id} for bot {bot_id}")
+    
+    async def is_user_invalid_for_bot(self, user_id: int, bot_id: str) -> bool:
+        """
+        Check if a user is marked as invalid for a specific bot.
+        
+        Args:
+            user_id: User ID to check
+            bot_id: Bot identifier (bot_key like 'BOT_TOKEN' or username)
+            
+        Returns:
+            True if user is invalid for this bot, False otherwise
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT COUNT(*) FROM bot_invalidations 
+                WHERE user_id = ? AND bot_id = ? AND is_active = 1
+            """, (user_id, bot_id)) as cursor:
+                row = await cursor.fetchone()
+                return row[0] > 0 if row else False
     
     async def queue_custom_message(
         self, 
