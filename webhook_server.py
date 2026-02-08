@@ -205,6 +205,66 @@ async def lifespan(app: FastAPI):
     app.state.bot_apps = bot_apps
     logger.info(f"All {len(bot_apps)} bot(s) initialized successfully")
     
+    # Start broadcast listeners for all bot instances
+    try:
+        from utils.broadcast_forwarder import start_listener_in_background
+        from utils.notifications import NotificationService
+        from database import Database
+        from configs.config import Config
+        
+        if Config.REDIS_URL:
+            logger.info("Starting broadcast listeners for all bot instances...")
+            
+            # Get database instance (shared across all bots)
+            # Note: In webhook mode, we need to use the database from post_init
+            # For now, create a new instance
+            db = Database()
+            notification_service = NotificationService(db)
+            
+            for idx, bot_app in enumerate(bot_apps):
+                try:
+                    # Create enqueue callback for this bot instance
+                    async def make_enqueue_callback(ns):
+                        async def enqueue_callback(context, message_text):
+                            """Callback for Redis listener to enqueue local broadcasts."""
+                            await ns.enqueue_local_broadcast(
+                                context,
+                                message_text,
+                                exclude_blocked=True
+                            )
+                        return enqueue_callback
+                    
+                    enqueue_callback = await make_enqueue_callback(notification_service)
+                    
+                    # Create minimal context for listener
+                    class MinimalContext:
+                        """Minimal context object for broadcast listener."""
+                        def __init__(self, bot, application):
+                            self.bot = bot
+                            self.application = application
+                    
+                    context = MinimalContext(bot_app.bot, bot_app)
+                    
+                    # Start listener
+                    listener_task = start_listener_in_background(context, enqueue_callback)
+                    
+                    if listener_task:
+                        # Store in bot_data to prevent garbage collection
+                        if 'background_tasks' not in bot_app.bot_data:
+                            bot_app.bot_data['background_tasks'] = []
+                        bot_app.bot_data['background_tasks'].append(listener_task)
+                        logger.info(f"Broadcast listener started for bot {idx}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to start broadcast listener for bot {idx}: {e}", exc_info=True)
+            
+            logger.info("All broadcast listeners started")
+        else:
+            logger.info("Redis not configured (REDIS_URL not set), broadcast listeners not started")
+            
+    except Exception as e:
+        logger.error(f"Failed to start broadcast listeners: {e}", exc_info=True)
+    
     # Log cache status for multi-bot setups
     if len(bot_apps) > 1:
         cache_size = get_file_id_cache_size()
