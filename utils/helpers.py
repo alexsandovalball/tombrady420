@@ -329,21 +329,17 @@ async def send_media_message(
             
             # Resolve uploader_bot_id to bot token
             bot_token = None
-            if uploader_bot_id == 'BOT_TOKEN' and Config.BOT_TOKEN:
-                bot_token = Config.BOT_TOKEN
+            if uploader_bot_id == 'BOT_TOKEN':
+                # Primary bot - use first token in list for consistency
+                bot_token = Config.BOT_TOKENS[0] if Config.BOT_TOKENS else Config.BOT_TOKEN
             elif uploader_bot_id.startswith('BOT_TOKEN_'):
-                # Extract index from 'BOT_TOKEN_N'
+                # Secondary bot - parse index from 'BOT_TOKEN_N'
                 try:
-                    # BOT_TOKENS list: [BOT_TOKEN, BOT_TOKEN_1, BOT_TOKEN_2, ...]
-                    # BOT_TOKEN is at index 0, BOT_TOKEN_1 at index 1, etc.
-                    if uploader_bot_id == 'BOT_TOKEN':
-                        bot_token = Config.BOT_TOKENS[0] if Config.BOT_TOKENS else None
-                    else:
-                        # Parse the number from BOT_TOKEN_N
-                        suffix = uploader_bot_id.replace('BOT_TOKEN_', '')
-                        token_index = int(suffix)
-                        if token_index < len(Config.BOT_TOKENS):
-                            bot_token = Config.BOT_TOKENS[token_index]
+                    # Parse the number from BOT_TOKEN_N
+                    suffix = uploader_bot_id.replace('BOT_TOKEN_', '')
+                    token_index = int(suffix)
+                    if token_index < len(Config.BOT_TOKENS):
+                        bot_token = Config.BOT_TOKENS[token_index]
                 except (ValueError, IndexError) as parse_error:
                     logger.error(f"Failed to parse uploader_bot_id '{uploader_bot_id}': {parse_error}")
             
@@ -365,8 +361,20 @@ async def send_media_message(
                             f"size={len(media_bytes)} bytes, type={file_type}"
                         )
                         
+                        # Map file_type to proper extension
+                        extension_map = {
+                            "photo": "jpg",
+                            "video": "mp4",
+                            "animation": "gif",
+                            "document": "pdf",
+                            "audio": "mp3",
+                            "voice": "ogg",
+                            "video_note": "mp4"
+                        }
+                        extension = extension_map.get(file_type, "bin")
+                        
                         # Create InputFile from bytes
-                        media_file = InputFile(io.BytesIO(media_bytes), filename=f"media.{file_type}")
+                        media_file = InputFile(io.BytesIO(media_bytes), filename=f"media.{extension}")
                         
                         # Send using current bot (which will get a new file_id)
                         await _send_media(media_file)
