@@ -1233,6 +1233,8 @@ class Database:
             current_time = datetime.now()
             
             # Check for existing notifications
+            # Note: SQLite datetime modifiers don't support parameter substitution for the modifier string,
+            # so we concatenate the minutes value. This is safe as dedup_minutes is calculated from a constant.
             dedup_minutes = NOTIFICATION_DEDUP_WINDOW_HOURS * 60
             placeholders = ','.join(['?'] * len(user_ids))
             async with db.execute(f"""
