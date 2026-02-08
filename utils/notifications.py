@@ -5,6 +5,7 @@ Implements rate limiting to respect Telegram's anti-spam policies.
 import logging
 import asyncio
 import json
+import re
 from typing import List
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -36,6 +37,11 @@ CUSTOM_MESSAGE_DELAY_SECONDS = 5  # Longer delay for custom messages
 
 class NotificationService:
     """Service for managing and sending product notifications."""
+    
+    # Compiled regex pattern for matching t.me deep-link URLs
+    # Matches: https://t.me/{valid_telegram_username}?start={anything}
+    # Telegram usernames start with a letter and contain only letters, digits, and underscores
+    _TELEGRAM_DEEPLINK_PATTERN = re.compile(r'https://t\.me/[a-zA-Z][a-zA-Z0-9_]*(\?start=[^"\s]*)')
     
     def __init__(self, db: Database):
         self.db = db
@@ -756,6 +762,45 @@ class NotificationService:
             # Re-raise to allow caller to detect failure
             raise
     
+    def _normalize_reply_markup_urls(self, reply_markup_data: dict, bot_username: str) -> dict:
+        """
+        Normalize t.me deep-link URLs in reply_markup to use the current bot's username.
+        This fixes issues where queued messages contain URLs with different bot usernames.
+        
+        Args:
+            reply_markup_data: Parsed reply_markup JSON (InlineKeyboardMarkup.to_dict() format)
+            bot_username: Username of the bot that will send the message
+            
+        Returns:
+            Updated reply_markup_data with normalized URLs
+        """
+        if not reply_markup_data or not isinstance(reply_markup_data, dict):
+            return reply_markup_data
+        
+        # InlineKeyboardMarkup structure: {"inline_keyboard": [[button, ...], ...]}
+        inline_keyboard = reply_markup_data.get("inline_keyboard", [])
+        
+        for row in inline_keyboard:
+            if not isinstance(row, list):
+                continue
+            for button in row:
+                if not isinstance(button, dict):
+                    continue
+                # Check if button has a URL field
+                if "url" in button and isinstance(button["url"], str):
+                    original_url = button["url"]
+                    # Replace old username with new username, preserving the query string
+                    # Uses pre-compiled pattern from class constant
+                    normalized_url = self._TELEGRAM_DEEPLINK_PATTERN.sub(
+                        lambda m: f'https://t.me/{bot_username}{m.group(1)}',
+                        original_url
+                    )
+                    if normalized_url != original_url:
+                        logger.debug(f"Normalized URL: {original_url} -> {normalized_url}")
+                        button["url"] = normalized_url
+        
+        return reply_markup_data
+    
     async def _send_custom_message_batch(
         self,
         context: ContextTypes.DEFAULT_TYPE,
@@ -781,6 +826,13 @@ class NotificationService:
                 if reply_markup_json:
                     try:
                         reply_markup_data = json.loads(reply_markup_json)
+                        # Normalize t.me URLs to use the current bot's username
+                        # This fixes legacy queued messages and multi-bot scenarios
+                        bot_username = context.bot.username
+                        if bot_username:
+                            reply_markup_data = self._normalize_reply_markup_urls(reply_markup_data, bot_username)
+                        else:
+                            logger.warning(f"Bot username unavailable for message {message_id}, cannot normalize URLs")
                         # Reconstruct InlineKeyboardMarkup from JSON
                         reply_markup = InlineKeyboardMarkup.de_json(reply_markup_data, context.bot)
                     except Exception as e:
