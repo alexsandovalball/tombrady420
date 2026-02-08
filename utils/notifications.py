@@ -52,6 +52,25 @@ class NotificationService:
     def __init__(self, db: Database):
         self.db = db
     
+    @staticmethod
+    def _is_chat_not_found_error(error_msg: str) -> bool:
+        """
+        Check if a Telegram error message indicates chat not found.
+        
+        Common error messages when chat is not accessible:
+        - "Chat not found"
+        - "User not found"
+        - "Chat_not_found"
+        
+        Args:
+            error_msg: The error message from the Telegram exception
+            
+        Returns:
+            True if the error indicates chat/user not found, False otherwise
+        """
+        error_lower = error_msg.lower()
+        return "chat not found" in error_lower or "user not found" in error_lower
+    
     def _get_task_storage(self, context: ContextTypes.DEFAULT_TYPE) -> list:
         """
         Get the task storage list from application.bot_data for resilient task tracking.
@@ -529,7 +548,7 @@ class NotificationService:
             except BadRequest as e:
                 error_msg = str(e)
                 # Check for chat not found errors
-                if "chat not found" in error_msg.lower() or "user not found" in error_msg.lower():
+                if self._is_chat_not_found_error(error_msg):
                     logger.info(f"User {user_id} chat not found (BadRequest), marking as invalid: {error_msg}")
                     await self.db.mark_user_invalid(user_id)
                     await self.db.mark_notification_sent(notification_id)
@@ -926,7 +945,7 @@ class NotificationService:
         except BadRequest as e:
             error_msg = str(e)
             # Check for chat not found errors (chat was deleted, user deactivated, etc.)
-            if "chat not found" in error_msg.lower() or "user not found" in error_msg.lower():
+            if self._is_chat_not_found_error(error_msg):
                 logger.info(f"User {user_id} chat not found (BadRequest), marking as invalid: {error_msg}")
                 await self.db.mark_user_invalid(user_id)
                 await self.db.mark_custom_message_sent(message_id)
