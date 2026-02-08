@@ -1303,11 +1303,14 @@ class NotificationService:
                 target_distribution[target_key] = target_distribution.get(target_key, 0) + 1
             logger.info(f"[NotifySubscribers] Queued {queued_count} messages for product {product_id}. Target distribution: {target_distribution}")
             
-            # Spawn background task for processing
+            # Spawn background task for processing (this will only process messages for the current bot)
             task = asyncio.create_task(self.process_custom_message_queue(context))
             self._store_task(context, task, f"notify_product_{product_id}")
             
-            logger.info(f"[NotifySubscribers] Background task spawned for product {product_id}")
+            logger.info(
+                f"[NotifySubscribers] Background task spawned for product {product_id} on bot @{bot_username}. "
+                f"Note: Messages targeted to other bots will be processed by their background processors."
+            )
             
             return queued_count
             
@@ -1391,5 +1394,104 @@ async def enqueue_local_broadcast(context: dict, message_text: str) -> None:
     except Exception as e:
         logger.error(f"[BroadcastEnqueue] Error enqueueing local broadcast: {e}", exc_info=True)
         # Don't raise - we want the broadcast forwarder to continue
+
+
+class BotContext:
+    """
+    Minimal context wrapper around a Telegram bot instance.
+    
+    This class provides a lightweight context object compatible with
+    NotificationService.process_custom_message_queue when we don't have
+    a full ContextTypes.DEFAULT_TYPE object (e.g., in background tasks).
+    
+    Attributes:
+        bot: The Telegram bot instance
+        application: The Application instance (optional, for bot_data access)
+    """
+    def __init__(self, bot, application=None):
+        self.bot = bot
+        self.application = application
+
+
+async def _processor_loop(application, db: Database, interval_seconds: int = 3):
+    """
+    Background loop that periodically processes custom message queue.
+    
+    This loop continuously calls process_custom_message_queue for this bot instance
+    at regular intervals to ensure messages queued by the DB forwarder or other
+    processes are delivered.
+    
+    Args:
+        application: The Telegram Application instance
+        db: Database instance
+        interval_seconds: Sleep interval between processing cycles (default: 3)
+    """
+    from utils.bot_key import get_bot_env_key, get_bot_key_display
+    
+    bot_key = get_bot_env_key()
+    bot_username = application.bot.username if hasattr(application.bot, 'username') else None
+    bot_display = get_bot_key_display(bot_key, bot_username)
+    
+    logger.info(f"[CustomMessageProcessor] Starting background processor for {bot_display} (interval={interval_seconds}s)")
+    
+    service = NotificationService(db)
+    bot_context = BotContext(application.bot, application)
+    
+    while True:
+        try:
+            # Process pending messages for this bot
+            result = await service.process_custom_message_queue(bot_context, process_all_bots=False)
+            
+            # Log only if messages were processed or failed
+            if result['sent_count'] > 0 or result['failed_count'] > 0 or result['invalidated_count'] > 0:
+                logger.info(
+                    f"[CustomMessageProcessor] {bot_display} processed queue: "
+                    f"sent={result['sent_count']}, failed={result['failed_count']}, "
+                    f"invalidated={result['invalidated_count']}"
+                )
+            
+            # Wait before next poll
+            await asyncio.sleep(interval_seconds)
+            
+        except Exception as e:
+            logger.error(f"[CustomMessageProcessor] Error in processor loop for {bot_display}: {e}", exc_info=True)
+            # Wait before retrying to avoid tight error loops
+            await asyncio.sleep(interval_seconds)
+
+
+def start_custom_message_processor_in_background(application, db: Database, interval_seconds: int = 3) -> asyncio.Task:
+    """
+    Start a background task that processes custom message queue for this bot instance.
+    
+    This function creates a persistent background worker that ensures messages
+    assigned to this bot (via target_bot_key) are delivered even if they were
+    enqueued by other processes (e.g., DB broadcast forwarder on secondary bots).
+    
+    Args:
+        application: The Telegram Application instance
+        db: Database instance
+        interval_seconds: Polling interval for processing queue (default: 3 seconds)
+    
+    Returns:
+        The asyncio.Task running the processor loop. Store this in application.bot_data
+        to prevent garbage collection.
+    
+    Example:
+        >>> task = start_custom_message_processor_in_background(app, db)
+        >>> app.bot_data['custom_message_processor_task'] = task
+    """
+    from utils.bot_key import get_bot_env_key, get_bot_key_display
+    
+    bot_key = get_bot_env_key()
+    bot_username = application.bot.username if hasattr(application.bot, 'username') else None
+    bot_display = get_bot_key_display(bot_key, bot_username)
+    
+    logger.info(f"[CustomMessageProcessor] Scheduling background processor for {bot_display}")
+    
+    task = asyncio.create_task(_processor_loop(application, db, interval_seconds))
+    
+    logger.info(f"[CustomMessageProcessor] Background processor started for {bot_display}")
+    
+    return task
 
 
