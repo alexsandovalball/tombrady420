@@ -1395,6 +1395,20 @@ async def post_init(application: Application):
         logger.error(f"Failed to start broadcast listener: {e}", exc_info=True)
         logger.warning("Broadcast forwarding will not work, but local broadcasts will still function")
     
+    # Start custom message processor for this bot instance
+    try:
+        from utils.notifications import start_custom_message_processor_in_background
+        
+        processor_task = start_custom_message_processor_in_background(application, db, interval_seconds=3)
+        
+        # Store task to prevent garbage collection
+        application.bot_data['custom_message_processor_task'] = processor_task
+        
+        logger.info("Custom message processor started successfully for primary bot")
+    except Exception as e:
+        logger.error(f"Failed to start custom message processor: {e}", exc_info=True)
+        logger.warning("Custom message delivery may be unreliable")
+    
     # Start cleanup task
     asyncio.create_task(cleanup_task(application))
 
