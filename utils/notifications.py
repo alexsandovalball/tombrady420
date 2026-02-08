@@ -1315,3 +1315,82 @@ class NotificationService:
             logger.error(f"[NotifySubscribers] Error notifying subscribers about product {product_id}: {e}", exc_info=True)
             return 0
 
+
+# Module-level helper for broadcast forwarding
+async def enqueue_local_broadcast(context: dict, message_text: str) -> None:
+    """
+    Enqueue a broadcast message for local delivery by this bot instance.
+    
+    This is used by the broadcast forwarder to process broadcast events.
+    It creates a notification service and broadcasts the message to all users
+    assigned to this bot.
+    
+    Args:
+        context: Dictionary with optional payload data (currently unused but reserved for future use)
+        message_text: The broadcast message text to send
+    
+    Note:
+        This function requires access to the bot context and database.
+        In practice, it will be called with a properly initialized context
+        from the main application or webhook server.
+    """
+    try:
+        from database import Database
+        from configs.config import Config
+        
+        # Get database instance
+        db = Database(Config.DB_PATH)
+        
+        # We need a telegram context to call broadcast_custom_message
+        # Since we don't have one here, we'll use the queue directly
+        # Get all users for this bot
+        from utils.bot_key import get_bot_env_key
+        from utils.helpers import get_admin_ids
+        
+        bot_key = get_bot_env_key()
+        logger.info(f"[BroadcastEnqueue] Processing broadcast for {bot_key}: {message_text[:50]}...")
+        
+        # Get all users
+        all_users = await db.get_all_users()
+        admin_ids_set = set(get_admin_ids())
+        
+        # Filter for this bot's users (based on last_bot_key), excluding blocked and admins
+        users_with_targets = []
+        for user in all_users:
+            user_id = user["user_id"]
+            
+            # Skip blocked users
+            if user.get("is_blocked", 0) == 1:
+                continue
+            
+            # Skip admin users
+            if user_id in admin_ids_set:
+                continue
+            
+            # Get user's preferred bot - if it matches ours (or is None/matches current), include them
+            last_bot_key = user.get("last_bot_key")
+            target_bot_key = last_bot_key if last_bot_key is not None else bot_key
+            
+            # Only queue for users assigned to this bot
+            if target_bot_key == bot_key:
+                users_with_targets.append((user_id, target_bot_key))
+        
+        if not users_with_targets:
+            logger.info(f"[BroadcastEnqueue] No users to broadcast to for {bot_key}")
+            return
+        
+        # Queue messages
+        queued = await db.queue_custom_messages_batch_with_targets(
+            users_with_targets,
+            message_text,
+            media_type=None,
+            media_file_id=None
+        )
+        
+        logger.info(f"[BroadcastEnqueue] Queued {queued} broadcast messages for {bot_key}")
+        
+    except Exception as e:
+        logger.error(f"[BroadcastEnqueue] Error enqueueing local broadcast: {e}", exc_info=True)
+        # Don't raise - we want the broadcast forwarder to continue
+
+

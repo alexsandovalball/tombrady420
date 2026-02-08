@@ -173,6 +173,25 @@ class Database:
                 )
             """)
             
+            # Broadcast forwarding tables (DB-backed, no Redis)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS broadcast_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_text TEXT NOT NULL,
+                    payload_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS broadcast_processed (
+                    broadcast_id INTEGER NOT NULL,
+                    bot_key TEXT NOT NULL,
+                    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (broadcast_id, bot_key)
+                )
+            """)
+            
             # Set default order contact if not exists
             await db.execute("""
                 INSERT OR IGNORE INTO bot_settings (key, value)
@@ -1568,6 +1587,84 @@ class Database:
             """, (user_id, minutes)) as cursor:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
+    
+    # Broadcast forwarding methods (DB-backed, no Redis)
+    async def insert_broadcast_event(self, message_text: str, payload_json: Optional[str] = None) -> int:
+        """
+        Insert a broadcast event into the database.
+        
+        Args:
+            message_text: The broadcast message text
+            payload_json: Optional JSON payload with additional data
+        
+        Returns:
+            The ID of the newly inserted broadcast event
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                INSERT INTO broadcast_events (message_text, payload_json)
+                VALUES (?, ?)
+            """, (message_text, payload_json))
+            await db.commit()
+            return cursor.lastrowid
+    
+    async def get_unprocessed_broadcasts_for_bot(self, bot_key: Optional[str]) -> List[Dict[str, Any]]:
+        """
+        Get broadcast events that have not been processed by this bot.
+        
+        Args:
+            bot_key: The bot environment key (e.g., 'BOT_TOKEN', 'BOT_TOKEN_1').
+                     If None, returns all unprocessed events.
+        
+        Returns:
+            List of broadcast event dictionaries with id, message_text, payload_json, created_at
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            
+            if bot_key is None:
+                # Return all events if no bot_key specified
+                async with db.execute("""
+                    SELECT id, message_text, payload_json, created_at
+                    FROM broadcast_events
+                    ORDER BY created_at ASC
+                """) as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(row) for row in rows]
+            else:
+                # Return events not yet processed by this bot
+                async with db.execute("""
+                    SELECT be.id, be.message_text, be.payload_json, be.created_at
+                    FROM broadcast_events be
+                    LEFT JOIN broadcast_processed bp 
+                        ON be.id = bp.broadcast_id AND bp.bot_key = ?
+                    WHERE bp.broadcast_id IS NULL
+                    ORDER BY be.created_at ASC
+                """, (bot_key,)) as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(row) for row in rows]
+    
+    async def mark_broadcast_processed(self, broadcast_id: int, bot_key: Optional[str]) -> None:
+        """
+        Mark a broadcast event as processed by this bot.
+        Uses INSERT OR IGNORE to avoid errors if already marked.
+        
+        Args:
+            broadcast_id: The broadcast event ID
+            bot_key: The bot environment key (e.g., 'BOT_TOKEN', 'BOT_TOKEN_1').
+                     If None, does nothing.
+        """
+        if bot_key is None:
+            logger.debug(f"[BroadcastDB] Skipping mark_broadcast_processed for broadcast {broadcast_id} - bot_key is None")
+            return
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT OR IGNORE INTO broadcast_processed (broadcast_id, bot_key)
+                VALUES (?, ?)
+            """, (broadcast_id, bot_key))
+            await db.commit()
+            logger.debug(f"[BroadcastDB] Marked broadcast {broadcast_id} as processed by {bot_key}")
     
     async def get_user_language(self, user_id: int) -> str:
         """Get user's preferred language with caching."""

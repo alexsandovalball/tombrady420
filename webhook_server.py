@@ -76,8 +76,26 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     if bot_index == 0:
         await post_init(bot_app)
     else:
-        # For secondary bots, set commands
+        # For secondary bots, set commands and start broadcast listener
         await setup_bot_commands(bot_app.bot)
+        
+        # Start broadcast listener for this secondary bot instance
+        try:
+            from database import Database
+            from utils import broadcast_forwarder
+            from utils.notifications import enqueue_local_broadcast
+            
+            db = Database(Config.DB_PATH)
+            listener_task = broadcast_forwarder.start_listener_in_background(db, enqueue_local_broadcast)
+            
+            # Store task to prevent garbage collection
+            if not hasattr(bot_app.bot_data, 'broadcast_listener_task'):
+                bot_app.bot_data['broadcast_listener_task'] = listener_task
+            
+            logger.info(f"Broadcast listener started for secondary bot {bot_index}")
+        except Exception as e:
+            logger.error(f"Failed to start broadcast listener for bot {bot_index}: {e}", exc_info=True)
+            logger.warning("Broadcast forwarding will not work for this bot instance")
     
     # Register handlers
     bot_app.add_handler(CommandHandler("start", start_command))
