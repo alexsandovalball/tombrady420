@@ -47,6 +47,16 @@ def get_bot_applications() -> List[Application]:
         return []
 
 
+def get_bot_username(bot_app: Application) -> str:
+    """
+    Get the username of a bot application.
+    Returns 'unknown' if username is not available.
+    """
+    if hasattr(bot_app, 'bot') and hasattr(bot_app.bot, 'username'):
+        return bot_app.bot.username
+    return 'unknown'
+
+
 def get_bot_by_username(username: str) -> Optional[Application]:
     """
     Get a bot application by username.
@@ -60,9 +70,8 @@ def get_bot_by_username(username: str) -> Optional[Application]:
     
     bot_apps = get_bot_applications()
     for bot_app in bot_apps:
-        if hasattr(bot_app, 'bot') and hasattr(bot_app.bot, 'username'):
-            if bot_app.bot.username.lower() == username:
-                return bot_app
+        if get_bot_username(bot_app).lower() == username:
+            return bot_app
     return None
 
 
@@ -315,7 +324,7 @@ class NotificationService:
                 logger.warning(f"Bot @{bot_username} not found, using primary bot")
                 bot_app = bot_apps[0]
             
-            logger.info(f"Sending {len(bot_notifications)} notifications via bot @{bot_app.bot.username if hasattr(bot_app.bot, 'username') else 'unknown'}")
+            logger.info(f"Sending {len(bot_notifications)} notifications via bot @{get_bot_username(bot_app)}")
             
             # Send each notification
             for notification in bot_notifications:
@@ -399,7 +408,7 @@ class NotificationService:
             # Mark as sent
             await self.db.mark_notification_sent(notification_id)
             
-            logger.debug(f"Sent notification to user {user_id} for product {product_id} via bot @{bot_app.bot.username if hasattr(bot_app.bot, 'username') else 'unknown'}")
+            logger.debug(f"Sent notification to user {user_id} for product {product_id} via bot @{get_bot_username(bot_app)}")
             return True
             
         except Forbidden:
@@ -605,7 +614,7 @@ class NotificationService:
                 logger.warning(f"Bot @{bot_username} not found, using primary bot")
                 bot_app = bot_apps[0]
             
-            logger.info(f"Sending {len(bot_messages)} custom messages via bot @{bot_app.bot.username if hasattr(bot_app.bot, 'username') else 'unknown'}")
+            logger.info(f"Sending {len(bot_messages)} custom messages via bot @{get_bot_username(bot_app)}")
             
             # Send each message
             for message in bot_messages:
@@ -632,7 +641,7 @@ class NotificationService:
                     await self.db.mark_custom_message_sent(message_id)
                     sent_count += 1
                     
-                    logger.debug(f"Sent custom message to user {user_id} via bot @{bot_app.bot.username if hasattr(bot_app.bot, 'username') else 'unknown'}")
+                    logger.debug(f"Sent custom message to user {user_id} via bot @{get_bot_username(bot_app)}")
                     
                 except Forbidden:
                     # User blocked the bot, block them in our system
