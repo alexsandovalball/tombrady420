@@ -1376,28 +1376,39 @@ async def post_init(application: Application):
     # This allows enqueue_local_broadcast to filter users by bot_username without needing a context
     from utils.bot_key import set_bot_username
     
-    # Try to get bot username with retry logic
+    # Try to get bot username with retry logic (improved for reliability)
     bot_username = None
-    max_retries = 2
+    max_retries = 3  # Increased from 2 to 3 attempts
     retry_delay = 1.0  # seconds
     
-    for attempt in range(max_retries + 1):
+    for attempt in range(max_retries):
         try:
             bot_username = application.bot.username
             if bot_username:
-                logger.info(f"Bot username retrieved successfully on attempt {attempt + 1}: @{bot_username}")
+                set_bot_username(bot_username)
+                logger.info(
+                    f"✅ Bot username set successfully on attempt {attempt + 1}: @{bot_username}"
+                )
                 break
+            else:
+                logger.warning(
+                    f"Attempt {attempt + 1}/{max_retries}: application.bot.username is None"
+                )
         except (RuntimeError, AttributeError) as e:
-            logger.warning(f"Attempt {attempt + 1}/{max_retries + 1}: application.bot not initialized yet. Error: {str(e)}")
-            if attempt < max_retries:
-                logger.info(f"Retrying in {retry_delay}s...")
-                await asyncio.sleep(retry_delay)
+            logger.warning(
+                f"Attempt {attempt + 1}/{max_retries}: Failed to get bot username. Error: {str(e)}"
+            )
+        
+        # Retry if not the last attempt
+        if attempt < max_retries - 1:
+            logger.info(f"Retrying in {retry_delay}s...")
+            await asyncio.sleep(retry_delay)
     
-    if bot_username:
-        set_bot_username(bot_username)
-        logger.info(f"Bot username set successfully: @{bot_username}")
-    else:
-        logger.warning("Bot username not available after retries. Broadcast filtering will use fallback logic.")
+    if not bot_username:
+        logger.warning(
+            "⚠️  Bot username not available after {max_retries} attempts. "
+            "Broadcast filtering will use fallback logic (may broadcast to all users)."
+        )
         # Note: enqueue_local_broadcast will handle None bot_username gracefully
     
     # Set up translation service with database
