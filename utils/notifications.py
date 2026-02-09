@@ -21,6 +21,7 @@ from utils.bot_key import get_bot_env_key, get_bot_key_display
 logger = logging.getLogger(__name__)
 
 # Rate limiting configuration
+NOTIFICATION_TASKS_KEY = "notification_tasks"
 MAX_NOTIFICATIONS_PER_HOUR = 5  # Maximum notifications per user per hour
 NOTIFICATION_BATCH_SIZE = 10  # Send notifications in batches
 BATCH_DELAY_SECONDS = 3  # Delay between batches to avoid hitting rate limits
@@ -102,18 +103,18 @@ class NotificationService:
             # Try to use application.bot_data (preferred - persists in webhook mode)
             if hasattr(context, 'application') and context.application is not None:
                 bot_data = context.application.bot_data
-                if 'notification_tasks' not in bot_data:
-                    bot_data['notification_tasks'] = []
+                if NOTIFICATION_TASKS_KEY not in bot_data:
+                    bot_data[NOTIFICATION_TASKS_KEY] = []
                 logger.debug("[TaskStorage] Using application.bot_data for task storage (resilient)")
-                return bot_data['notification_tasks']
+                return bot_data[NOTIFICATION_TASKS_KEY]
         except Exception as e:
             logger.warning(f"[TaskStorage] Could not access application.bot_data: {e}")
         
         # Fallback to context.notification_tasks (less resilient but backwards compatible)
-        if not hasattr(context, 'notification_tasks'):
-            context.notification_tasks = []
+        if not hasattr(context, NOTIFICATION_TASKS_KEY):
+            setattr(context, NOTIFICATION_TASKS_KEY, [])
         logger.warning("[TaskStorage] Falling back to context.notification_tasks (ephemeral - may be lost in webhook mode)")
-        return context.notification_tasks
+        return getattr(context, NOTIFICATION_TASKS_KEY)
     
     def _store_task(self, context: ContextTypes.DEFAULT_TYPE, task: asyncio.Task, task_name: str = "notification"):
         """
@@ -222,14 +223,6 @@ class NotificationService:
             # Get bot username for logging
             bot_username = context.bot.username if hasattr(context.bot, 'username') else 'unknown'
             logger.info(f"[Notifications] notify_users_about_product: Bot @{bot_username} processing product {product_id}")
-            
-            # Check if this is the primary instance (only primary queues notifications)
-            is_primary = self._is_primary_instance(context)
-            logger.info(f"[Notifications] Primary instance check result: {is_primary}")
-            
-            if not is_primary:
-                logger.info(f"[Notifications] Skipping notification queueing - not primary instance (bot @{bot_username})")
-                return
             
             # Get product details
             product = await self.db.get_product(product_id)
@@ -730,9 +723,9 @@ class NotificationService:
             logger.info(f"[Notifications] Queued {queued} custom messages. Target distribution: {target_distribution}")
             logger.info(f"[NOTIFY] Broadcast queued count: {queued}/{len(users_with_targets)} messages")
             
-            # Spawn background task to process the queue across all bots
+            # Spawn background task to process the queue for users assigned to this bot instance
             # Store task in application.bot_data for resilience in webhook deployments
-            task = asyncio.create_task(self.process_custom_message_queue(context, process_all_bots=True))
+            task = asyncio.create_task(self.process_custom_message_queue(context, process_all_bots=False))
             self._store_task(context, task, "broadcast_custom_msg")
             
             logger.info(f"[Notifications] Background task created for broadcast (task_id={id(task)})")
@@ -1521,5 +1514,3 @@ def start_custom_message_processor_in_background(
     """
     task = asyncio.create_task(_custom_message_processor_loop(application, db, interval_seconds))
     return task
-
-
