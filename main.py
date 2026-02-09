@@ -1376,7 +1376,7 @@ async def post_init(application: Application):
     # This allows enqueue_local_broadcast to filter users by bot_username without needing a context
     from utils.bot_key import set_bot_username
     try:
-        bot_username = application.bot.username if hasattr(application.bot, 'username') else None
+        bot_username = application.bot.username
     except (RuntimeError, AttributeError) as e:
         # Bot not initialized yet or ExtBot properties not accessible
         bot_username = None
