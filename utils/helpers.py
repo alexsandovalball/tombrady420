@@ -188,6 +188,11 @@ async def download_media_from_bot(
     This is used for cross-bot media delivery: when bot A uploaded a file,
     bot B can use this function with bot A's token to download the media bytes.
     
+    Implements fallback strategy:
+    1. Try Bot.get_file().download_as_bytearray() (preferred, simpler)
+    2. Fallback to constructing file API URL and downloading via aiohttp
+    3. Retry once on failure
+    
     Args:
         bot_token: The bot token to use for authentication
         file_id: Telegram file_id to download
@@ -196,36 +201,92 @@ async def download_media_from_bot(
     Returns:
         Media file bytes if successful, None otherwise
     """
-    try:
-        # Create a temporary bot instance with the uploader's token
-        bot = Bot(token=bot_token)
-        
-        # Get file info from Telegram
-        file = await bot.get_file(file_id)
-        
-        # Download file bytes using aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.get(file.file_path) as response:
-                if response.status == 200:
-                    file_bytes = await response.read()
-                    logger.info(
-                        f"Successfully downloaded media from uploader bot: "
-                        f"file_id={file_id[:30]}..., size={len(file_bytes)} bytes, type={file_type}"
-                    )
-                    return file_bytes
-                else:
-                    logger.error(
-                        f"Failed to download media from Telegram: "
-                        f"HTTP {response.status}, file_id={file_id[:30]}..."
-                    )
-                    return None
-                    
-    except Exception as e:
-        logger.error(
-            f"Error downloading media from uploader bot: {e}, "
-            f"file_id={file_id[:30]}..., type={file_type}"
-        )
-        return None
+    max_retries = 1
+    timeout_seconds = 30
+    
+    for attempt in range(max_retries + 1):
+        try:
+            # Create a temporary bot instance with the uploader's token
+            bot = Bot(token=bot_token)
+            
+            # Get file info from Telegram
+            logger.debug(
+                f"Attempt {attempt + 1}/{max_retries + 1}: Getting file info for file_id={file_id[:30]}..."
+            )
+            tg_file = await bot.get_file(file_id)
+            
+            # Try preferred method: download_as_bytearray()
+            try:
+                logger.debug(f"Trying download_as_bytearray() for file_id={file_id[:30]}...")
+                file_bytes = await asyncio.wait_for(
+                    tg_file.download_as_bytearray(),
+                    timeout=timeout_seconds
+                )
+                logger.info(
+                    f"Successfully downloaded media via download_as_bytearray(): "
+                    f"file_id={file_id[:30]}..., size={len(file_bytes)} bytes, type={file_type}"
+                )
+                return bytes(file_bytes)
+            except Exception as download_error:
+                logger.debug(
+                    f"download_as_bytearray() failed: {download_error}. "
+                    f"Trying fallback with aiohttp..."
+                )
+                
+                # Fallback: construct file API URL and download via aiohttp
+                # The file_path returned by get_file() is already a full URL
+                file_url = tg_file.file_path
+                
+                logger.debug(f"Downloading from URL: {file_url}")
+                async with aiohttp.ClientSession() as session:
+                    async with asyncio.wait_for(
+                        session.get(file_url),
+                        timeout=timeout_seconds
+                    ) as response:
+                        if response.status == 200:
+                            file_bytes = await response.read()
+                            logger.info(
+                                f"Successfully downloaded media via aiohttp fallback: "
+                                f"file_id={file_id[:30]}..., size={len(file_bytes)} bytes, type={file_type}"
+                            )
+                            return file_bytes
+                        else:
+                            logger.error(
+                                f"Failed to download media from Telegram: "
+                                f"HTTP {response.status}, file_id={file_id[:30]}..., "
+                                f"attempt {attempt + 1}/{max_retries + 1}"
+                            )
+                            if attempt < max_retries:
+                                logger.info(f"Retrying download in 1 second...")
+                                await asyncio.sleep(1)
+                                continue
+                            return None
+                        
+        except asyncio.TimeoutError:
+            logger.error(
+                f"Timeout downloading media (>{timeout_seconds}s): "
+                f"file_id={file_id[:30]}..., type={file_type}, "
+                f"attempt {attempt + 1}/{max_retries + 1}"
+            )
+            if attempt < max_retries:
+                logger.info(f"Retrying download in 1 second...")
+                await asyncio.sleep(1)
+                continue
+            return None
+        except Exception as e:
+            logger.error(
+                f"Error downloading media from uploader bot: {e}, "
+                f"file_id={file_id[:30]}..., type={file_type}, "
+                f"attempt {attempt + 1}/{max_retries + 1}",
+                exc_info=True
+            )
+            if attempt < max_retries:
+                logger.info(f"Retrying download in 1 second...")
+                await asyncio.sleep(1)
+                continue
+            return None
+    
+    return None
 
 
 def has_media(update: Update) -> bool:
@@ -242,7 +303,8 @@ async def send_media_message(
     caption: str = None,
     reply_markup=None,
     product_id: Optional[int] = None,
-    uploader_bot_id: Optional[str] = None
+    uploader_bot_id: Optional[str] = None,
+    db = None
 ):
     """
     Send a media message based on file type.
@@ -250,6 +312,7 @@ async def send_media_message(
     Implements cross-bot media delivery fallback:
     - If sending fails with "Wrong file identifier" error and uploader_bot_id is provided,
       downloads the media from the uploader bot and re-uploads it with the current bot.
+    - If reupload succeeds and product_id is provided, updates the DB with the new file_id.
     
     Args:
         context: Telegram context
@@ -260,44 +323,50 @@ async def send_media_message(
         reply_markup: Optional inline keyboard
         product_id: Optional product ID for DB updates after fallback
         uploader_bot_id: Optional bot env key that uploaded this media (e.g., 'BOT_TOKEN', 'BOT_TOKEN_1')
+        db: Optional Database instance for updating file_id after successful reupload
     """
-    async def _send_media(fid: str) -> None:
-        """Internal helper to send media by type."""
+    async def _send_media(file_id_or_input):
+        """
+        Internal helper to send media by type. Returns sent message.
+        
+        Args:
+            file_id_or_input: Either a file_id string or an InputFile object
+        """
         if file_type == "photo":
-            await context.bot.send_photo(
+            return await context.bot.send_photo(
                 chat_id=chat_id,
-                photo=fid,
+                photo=file_id_or_input,
                 caption=caption,
                 reply_markup=reply_markup,
                 parse_mode=None
             )
         elif file_type == "video":
-            await context.bot.send_video(
+            return await context.bot.send_video(
                 chat_id=chat_id,
-                video=fid,
+                video=file_id_or_input,
                 caption=caption,
                 reply_markup=reply_markup,
                 parse_mode=None
             )
         elif file_type == "animation":
-            await context.bot.send_animation(
+            return await context.bot.send_animation(
                 chat_id=chat_id,
-                animation=fid,
+                animation=file_id_or_input,
                 caption=caption,
                 reply_markup=reply_markup,
                 parse_mode=None
             )
         elif file_type in ["document", "audio", "voice", "video_note"]:
-            await context.bot.send_document(
+            return await context.bot.send_document(
                 chat_id=chat_id,
-                document=fid,
+                document=file_id_or_input,
                 caption=caption,
                 reply_markup=reply_markup,
                 parse_mode=None
             )
         else:
             # Fallback to text message
-            await context.bot.send_message(
+            return await context.bot.send_message(
                 chat_id=chat_id,
                 text=caption or "Media",
                 reply_markup=reply_markup
@@ -377,7 +446,7 @@ async def send_media_message(
                         media_file = InputFile(io.BytesIO(media_bytes), filename=f"media.{extension}")
                         
                         # Send using current bot (which will get a new file_id)
-                        await _send_media(media_file)
+                        sent_message = await _send_media(media_file)
                         
                         logger.info(
                             f"Successfully delivered media via cross-bot fallback: "
@@ -385,9 +454,59 @@ async def send_media_message(
                             f"current_bot=@{context.bot.username}"
                         )
                         
-                        # TODO: Optionally update DB with new file_id for this bot
-                        # This would require capturing the new file_id from the sent message
-                        # For now, we just log success and continue
+                        # Update DB with new file_id if product_id is provided and we have a DB connection
+                        if product_id and db and sent_message:
+                            try:
+                                # Extract the new file_id from the sent message
+                                new_file_id = None
+                                if file_type == "photo" and sent_message.photo:
+                                    new_file_id = sent_message.photo[-1].file_id
+                                elif file_type == "video" and sent_message.video:
+                                    new_file_id = sent_message.video.file_id
+                                elif file_type == "animation" and sent_message.animation:
+                                    new_file_id = sent_message.animation.file_id
+                                elif file_type == "document" and sent_message.document:
+                                    new_file_id = sent_message.document.file_id
+                                elif file_type == "audio" and sent_message.audio:
+                                    new_file_id = sent_message.audio.file_id
+                                elif file_type == "voice" and sent_message.voice:
+                                    new_file_id = sent_message.voice.file_id
+                                elif file_type == "video_note" and sent_message.video_note:
+                                    new_file_id = sent_message.video_note.file_id
+                                
+                                if new_file_id:
+                                    # Get current bot key for updating uploader_bot_id
+                                    from utils.bot_key import get_bot_env_key
+                                    current_bot_key = get_bot_env_key()
+                                    
+                                    # Update product with new file_id and current bot as uploader
+                                    success = await db.update_product_file_id(
+                                        product_id=product_id,
+                                        file_id=new_file_id,
+                                        uploader_bot_id=current_bot_key
+                                    )
+                                    
+                                    if success:
+                                        logger.info(
+                                            f"Persisted new file_id to DB: product_id={product_id}, "
+                                            f"new_file_id={new_file_id[:30]}..., "
+                                            f"new_uploader={current_bot_key}"
+                                        )
+                                    else:
+                                        logger.warning(
+                                            f"Failed to persist new file_id to DB for product_id={product_id}"
+                                        )
+                                else:
+                                    logger.warning(
+                                        f"Could not extract new file_id from sent message for "
+                                        f"product_id={product_id}, file_type={file_type}"
+                                    )
+                            except Exception as db_error:
+                                logger.error(
+                                    f"Error updating DB with new file_id: {db_error}",
+                                    exc_info=True
+                                )
+                                # Continue anyway - the message was sent successfully
                         
                         return  # Success via fallback
                         

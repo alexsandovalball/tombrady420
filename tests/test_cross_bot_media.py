@@ -93,44 +93,35 @@ class TestDownloadMediaFromBot:
         # Mock bot and file
         mock_file = Mock(spec=File)
         mock_file.file_path = "https://api.telegram.org/file/bot123/photos/file.jpg"
+        mock_file.download_as_bytearray = AsyncMock(return_value=bytearray(b"fake_image_bytes_12345"))
         
         mock_bot = AsyncMock(spec=Bot)
         mock_bot.get_file = AsyncMock(return_value=mock_file)
-        
-        # Mock aiohttp response - must be a proper async context manager
-        mock_response = MagicMock()
-        mock_response.status = 200
-        mock_response.read = AsyncMock(return_value=b"fake_image_bytes_12345")
-        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = AsyncMock(return_value=None)
-        
-        mock_session = MagicMock()
-        mock_session.get = MagicMock(return_value=mock_response)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=None)
         
         # Patch at the module level where it's imported, not where it's defined
         with patch('utils.helpers.Bot', return_value=mock_bot):
-            with patch('utils.helpers.aiohttp.ClientSession', return_value=mock_session):
-                media_bytes = await download_media_from_bot(
-                    bot_token="fake_token_123",
-                    file_id="test_file_id_789",
-                    file_type="photo"
-                )
+            media_bytes = await download_media_from_bot(
+                bot_token="fake_token_123",
+                file_id="test_file_id_789",
+                file_type="photo"
+            )
         
         assert media_bytes == b"fake_image_bytes_12345"
         mock_bot.get_file.assert_called_once_with("test_file_id_789")
+        mock_file.download_as_bytearray.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_download_media_http_error(self):
-        """Test download failure due to HTTP error."""
+        """Test download failure with fallback to aiohttp when download_as_bytearray fails."""
         mock_file = Mock(spec=File)
         mock_file.file_path = "https://api.telegram.org/file/bot123/photos/file.jpg"
+        # Simulate download_as_bytearray failing, triggering fallback to aiohttp
+        mock_file.download_as_bytearray = AsyncMock(side_effect=Exception("Download failed"))
         
         mock_bot = AsyncMock(spec=Bot)
         mock_bot.get_file = AsyncMock(return_value=mock_file)
         
-        # Mock failed HTTP response
+        # Mock failed HTTP response (fallback path)
         mock_response = MagicMock()
         mock_response.status = 404
         mock_response.__aenter__ = AsyncMock(return_value=mock_response)
@@ -149,6 +140,7 @@ class TestDownloadMediaFromBot:
                     file_type="photo"
                 )
         
+        # Should return None after both attempts fail
         assert media_bytes is None
     
     @pytest.mark.asyncio
@@ -419,6 +411,135 @@ class TestBotTokenResolution:
         
         # Verify secondary token was used
         assert used_token == "secondary_token_abc"
+
+
+class TestCrossBotMediaWithDBUpdate:
+    """Test cross-bot media fallback with database update."""
+    
+    @pytest.mark.asyncio
+    async def test_send_media_updates_db_on_successful_reupload(self, temp_db):
+        """Test that successful reupload persists new file_id to database."""
+        # Setup mock context
+        mock_context = AsyncMock()
+        mock_context.bot = AsyncMock()
+        mock_context.bot.username = "secondary_bot"
+        
+        # Create a mock sent message with a new file_id
+        mock_sent_message = Mock()
+        mock_photo = Mock()
+        mock_photo.file_id = "new_file_id_from_reupload_12345"
+        mock_sent_message.photo = [mock_photo]
+        
+        # First send_photo fails with BadRequest, second succeeds and returns message
+        mock_context.bot.send_photo = AsyncMock(
+            side_effect=[
+                BadRequest("Wrong file identifier/HTTP URL specified"),
+                mock_sent_message  # Success on retry with InputFile
+            ]
+        )
+        
+        # Mock Config
+        mock_config = Mock()
+        mock_config.BOT_TOKEN = "primary_bot_token"
+        mock_config.BOT_TOKENS = ["primary_bot_token", "secondary_bot_token"]
+        
+        # Mock download_media_from_bot to return fake bytes
+        fake_media_bytes = b"fake_image_data_xyz"
+        
+        # Create a test product in the database
+        product_id = await temp_db.add_product(
+            file_id="old_cross_bot_file_id",
+            file_type="photo",
+            caption="Test product",
+            message_id=99999,
+            chat_id=-100123456789,
+            uploader_bot_id="BOT_TOKEN"
+        )
+        
+        # Verify initial state
+        product = await temp_db.get_product(product_id)
+        assert product["file_id"] == "old_cross_bot_file_id"
+        assert product["uploader_bot_id"] == "BOT_TOKEN"
+        
+        with patch('utils.helpers.Config', mock_config):
+            with patch('utils.helpers.download_media_from_bot', 
+                      AsyncMock(return_value=fake_media_bytes)):
+                with patch('utils.bot_key.get_bot_env_key', return_value='BOT_TOKEN_1'):
+                    await send_media_message(
+                        context=mock_context,
+                        chat_id=12345,
+                        file_id="old_cross_bot_file_id",
+                        file_type="photo",
+                        caption="Test caption",
+                        product_id=product_id,
+                        uploader_bot_id="BOT_TOKEN",
+                        db=temp_db
+                    )
+        
+        # Verify send_photo was called twice (initial fail + retry)
+        assert mock_context.bot.send_photo.call_count == 2
+        
+        # Second call should use InputFile
+        second_call_kwargs = mock_context.bot.send_photo.call_args_list[1][1]
+        assert isinstance(second_call_kwargs['photo'], InputFile)
+        
+        # Verify database was updated with new file_id and uploader_bot_id
+        updated_product = await temp_db.get_product(product_id)
+        assert updated_product["file_id"] == "new_file_id_from_reupload_12345"
+        assert updated_product["uploader_bot_id"] == "BOT_TOKEN_1"
+    
+    @pytest.mark.asyncio
+    async def test_send_media_handles_db_update_failure_gracefully(self, temp_db):
+        """Test that DB update failure doesn't prevent successful media delivery."""
+        # Setup mock context
+        mock_context = AsyncMock()
+        mock_context.bot = AsyncMock()
+        mock_context.bot.username = "secondary_bot"
+        
+        # Create a mock sent message
+        mock_sent_message = Mock()
+        mock_photo = Mock()
+        mock_photo.file_id = "new_file_id_abc"
+        mock_sent_message.photo = [mock_photo]
+        
+        # First send_photo fails, second succeeds
+        mock_context.bot.send_photo = AsyncMock(
+            side_effect=[
+                BadRequest("Wrong file identifier/HTTP URL specified"),
+                mock_sent_message
+            ]
+        )
+        
+        # Mock Config
+        mock_config = Mock()
+        mock_config.BOT_TOKEN = "primary_bot_token"
+        mock_config.BOT_TOKENS = ["primary_bot_token"]
+        
+        # Create a mock DB that fails on update
+        mock_db = AsyncMock()
+        mock_db.update_product_file_id = AsyncMock(return_value=False)  # Update fails
+        
+        with patch('utils.helpers.Config', mock_config):
+            with patch('utils.helpers.download_media_from_bot', 
+                      AsyncMock(return_value=b"fake_bytes")):
+                with patch('utils.bot_key.get_bot_env_key', return_value='BOT_TOKEN'):
+                    # Should not raise exception even if DB update fails
+                    await send_media_message(
+                        context=mock_context,
+                        chat_id=12345,
+                        file_id="old_file_id",
+                        file_type="photo",
+                        caption="Test",
+                        product_id=1,
+                        uploader_bot_id="BOT_TOKEN",
+                        db=mock_db
+                    )
+        
+        # Verify media was still sent successfully (2 calls)
+        assert mock_context.bot.send_photo.call_count == 2
+        
+        # Verify DB update was attempted
+        mock_db.update_product_file_id.assert_called_once()
 
 
 if __name__ == "__main__":

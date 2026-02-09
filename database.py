@@ -960,6 +960,44 @@ class Database:
             """, (product_id,))
             await db.commit()
     
+    async def update_product_file_id(self, product_id: int, file_id: str, uploader_bot_id: Optional[str] = None) -> bool:
+        """
+        Update a product's file_id and optionally uploader_bot_id.
+        
+        This is used when cross-bot media fallback succeeds: the new file_id from
+        the current bot is persisted so future sends from this bot won't fail.
+        
+        Args:
+            product_id: The product ID to update
+            file_id: The new file_id to store
+            uploader_bot_id: Optional uploader bot ID to update (e.g., 'BOT_TOKEN', 'BOT_TOKEN_1')
+        
+        Returns:
+            True if update succeeded, False otherwise
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                if uploader_bot_id is not None:
+                    await db.execute("""
+                        UPDATE products SET file_id = ?, uploader_bot_id = ? WHERE id = ?
+                    """, (file_id, uploader_bot_id, product_id))
+                else:
+                    await db.execute("""
+                        UPDATE products SET file_id = ? WHERE id = ?
+                    """, (file_id, product_id))
+                await db.commit()
+                logger.info(
+                    f"Updated product file_id: product_id={product_id}, "
+                    f"new_file_id={file_id[:30]}..., uploader_bot_id={uploader_bot_id}"
+                )
+                return True
+        except Exception as e:
+            logger.error(
+                f"Failed to update product file_id: product_id={product_id}, error={e}",
+                exc_info=True
+            )
+            return False
+    
     async def add_pending_categorization(self, product_id: int):
         """Mark a product as needing categorization."""
         async with aiosqlite.connect(self.db_path) as db:
