@@ -534,11 +534,31 @@ class NotificationService:
                 logger.info(f"[Notifications] No subscribed users to notify about product {product_id}")
                 return
             
-            # Queue notifications for all subscribed users in batch
-            # Database-level deduplication prevents duplicate notifications
-            queued_count = await self.db.queue_notifications_batch(subscribed_users, product_id)
+            # Get user preferences (last_bot_key) for routing notifications to correct bots
+            # This ensures each user gets notification from their preferred bot
+            users_with_targets = []
+            current_bot_key = get_bot_env_key()
             
-            logger.info(f"[Notifications] Queued {queued_count} notifications for product {product_id} (bot @{bot_username})")
+            # Fetch all users to get their last_bot_key
+            all_users_data = await self.db.get_all_users()
+            user_bot_keys = {u['user_id']: u.get('last_bot_key') for u in all_users_data}
+            
+            for user_id in subscribed_users:
+                # Use user's preferred bot (last_bot_key), fallback to current bot
+                target_bot_key = user_bot_keys.get(user_id) or current_bot_key
+                users_with_targets.append((user_id, target_bot_key))
+            
+            # Queue notifications for all subscribed users with individual bot targeting
+            # Database-level deduplication prevents duplicate notifications
+            queued_count = await self.db.queue_notifications_batch_with_targets(
+                users_with_targets, 
+                product_id
+            )
+            
+            logger.info(
+                f"[Notifications] Queued {queued_count} notifications for product {product_id} "
+                f"across {len(set(tk for _, tk in users_with_targets))} different bots"
+            )
             logger.info(f"[NOTIFY] Queued count: {queued_count}/{subscribed_count} notifications")
             
             # Warn if significantly fewer notifications were queued than expected
