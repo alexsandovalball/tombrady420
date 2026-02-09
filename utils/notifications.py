@@ -1121,9 +1121,30 @@ class NotificationService:
                 # Check if user is blocked
                 is_blocked = await self.db.is_user_blocked(user_id)
                 if is_blocked:
-                    # Mark as sent to remove from queue
+                    # Log invalidation record details for debugging
+                    # First try to get bot-specific invalidation, then fall back to any active invalidation
+                    invalidation_record = await self.db.get_user_invalidation_record(user_id, bot_id=current_bot_key)
+                    if not invalidation_record:
+                        # Try without bot_id to get any active invalidation
+                        invalidation_record = await self.db.get_user_invalidation_record(user_id)
+                    
+                    if invalidation_record:
+                        logger.info(
+                            f"[{bot_display}] User {user_id} is blocked - active invalidation: "
+                            f"bot_id={invalidation_record.get('bot_id')}, "
+                            f"reason={invalidation_record.get('reason')}, "
+                            f"created_at={invalidation_record.get('created_at')}"
+                        )
+                    else:
+                        logger.info(f"[{bot_display}] User {user_id} is globally blocked (is_blocked=1)")
+                    
+                    # Mark as sent to remove from queue using atomic update
                     for msg in messages:
-                        await self.db.mark_custom_message_sent(msg["id"])
+                        marked = await self.db.mark_custom_message_sent_atomic(msg["id"])
+                        if not marked:
+                            logger.warning(
+                                f"[{bot_display}] Race condition: message {msg['id']} already marked as sent for user {user_id}"
+                            )
                     failed_count += len(messages)
                     failure_reasons["blocked"] = failure_reasons.get("blocked", 0) + len(messages)
                     if user_id not in failed_user_ids:
@@ -1134,7 +1155,11 @@ class NotificationService:
                 recent_count = await self.db.get_recent_custom_messages_count(user_id, minutes=60)
                 
                 if recent_count >= MAX_CUSTOM_MESSAGES_PER_HOUR:
-                    logger.debug(f"User {user_id} reached custom message rate limit, skipping")
+                    logger.info(
+                        f"[{bot_display}] User {user_id} hit rate limit: "
+                        f"recent_count ({recent_count}) >= MAX_CUSTOM_MESSAGES_PER_HOUR ({MAX_CUSTOM_MESSAGES_PER_HOUR}) "
+                        f"in last 60 minutes, skipping {len(messages)} message(s)"
+                    )
                     failed_count += len(messages)
                     failure_reasons["rate_limited"] = failure_reasons.get("rate_limited", 0) + len(messages)
                     if user_id not in failed_user_ids:
@@ -1328,8 +1353,10 @@ class NotificationService:
             # Check if user is blocked globally
             is_blocked = await self.db.is_user_blocked(user_id)
             if is_blocked:
-                # Mark as sent to remove from queue
-                await self.db.mark_custom_message_sent(message_id)
+                # Mark as sent to remove from queue using atomic update
+                marked = await self.db.mark_custom_message_sent_atomic(message_id)
+                if not marked:
+                    logger.warning(f"[Send] Race condition: message {message_id} already marked as sent for user {user_id}")
                 logger.debug(f"[Send] Skipped user {user_id} (globally blocked)")
                 return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "blocked"}
             
@@ -1369,13 +1396,17 @@ class NotificationService:
                     # Retry (this will fail if still invalid, but gives user a chance)
                     is_invalid_for_bot = await self.db.is_user_invalid_for_bot(user_id, current_bot_key)
                     if is_invalid_for_bot:
-                        # Still invalid after retry, mark as sent
-                        await self.db.mark_custom_message_sent(message_id)
+                        # Still invalid after retry, mark as sent using atomic update
+                        marked = await self.db.mark_custom_message_sent_atomic(message_id)
+                        if not marked:
+                            logger.warning(f"[Send] Race condition: message {message_id} already marked as sent for user {user_id}")
                         logger.debug(f"[Send] User {user_id} still invalid for bot {current_bot_key} after recent-start retry")
                         return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "invalid_for_bot_after_retry"}
                 else:
-                    # Mark as sent to remove from queue
-                    await self.db.mark_custom_message_sent(message_id)
+                    # Mark as sent to remove from queue using atomic update
+                    marked = await self.db.mark_custom_message_sent_atomic(message_id)
+                    if not marked:
+                        logger.warning(f"[Send] Race condition: message {message_id} already marked as sent for user {user_id}")
                     logger.debug(f"[Send] Skipped user {user_id} (invalid for bot {current_bot_key})")
                     return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "invalid_for_bot"}
             
@@ -1390,8 +1421,10 @@ class NotificationService:
             )
             
             if result["success"]:
-                # Mark as sent
-                await self.db.mark_custom_message_sent(message_id)
+                # Mark as sent using atomic update
+                marked = await self.db.mark_custom_message_sent_atomic(message_id)
+                if not marked:
+                    logger.warning(f"[Send] Race condition: message {message_id} already marked as sent for user {user_id}")
                 logger.debug(f"[Send] ✓ Sent to user {user_id} via bot @{bot_username}")
                 return {"success": True, "user_id": user_id, "message_id": message_id}
             else:
@@ -1403,23 +1436,36 @@ class NotificationService:
                 if "Forbidden" in error or "blocked" in error.lower() or "bot was blocked" in error.lower():
                     logger.info(f"[Send] User {user_id} blocked bot @{bot_username}, marking as blocked")
                     await self.db.block_user(user_id)
-                    await self.db.mark_custom_message_sent(message_id)
+                    marked = await self.db.mark_custom_message_sent_atomic(message_id)
+                    if not marked:
+                        logger.warning(f"[Send] Race condition: message {message_id} already marked as sent for user {user_id}")
                     return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "forbidden", "retry_after": retry_after}
                 
                 if self._is_chat_not_found(error):
-                    logger.info(f"[Send] User {user_id} chat not found for bot @{bot_username}, marking invalid for this bot")
+                    logger.info(
+                        f"[Send] User {user_id} chat not found for bot @{bot_username}, "
+                        f"marking invalid for bot {current_bot_key} ONLY (not global)"
+                    )
+                    # CRITICAL: Always pass bot_id to ensure bot-scoped invalidation
                     await self.db.mark_user_invalid(user_id, bot_id=current_bot_key, reason="chat_not_found")
-                    await self.db.mark_custom_message_sent(message_id)
+                    marked = await self.db.mark_custom_message_sent_atomic(message_id)
+                    if not marked:
+                        logger.warning(f"[Send] Race condition: message {message_id} already marked as sent for user {user_id}")
                     return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "chat_not_found", "retry_after": retry_after}
                 
                 if "BadRequest" in error or "message too long" in error.lower() or "can't parse" in error.lower() or "Message is too long" in error:
                     logger.warning(f"[Send] BadRequest error for user {user_id} via bot @{bot_username}: {error}")
-                    await self.db.mark_custom_message_sent(message_id)
+                    marked = await self.db.mark_custom_message_sent_atomic(message_id)
+                    if not marked:
+                        logger.warning(f"[Send] Race condition: message {message_id} already marked as sent for user {user_id}")
                     return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "bad_request", "retry_after": retry_after}
                 
                 # RetryAfter is transient - check for it and set pause state
                 if "RetryAfter" in error or retry_after or "Too Many Requests" in error or "retry after" in error.lower() or "rate_limit" in error.lower() or "429" in error:
-                    logger.warning(f"[Send] Rate limited for user {user_id}: {error}, retry_after={retry_after}")
+                    logger.warning(
+                        f"[Send] Rate limited for user {user_id}: error_type={type(result.get('exception', Exception)).__name__}, "
+                        f"error_msg={error}, retry_after={retry_after}, bot=@{bot_username}"
+                    )
                     
                     # Set pause state in database for this bot
                     pause_set = False
@@ -1434,9 +1480,11 @@ class NotificationService:
                             if pause_set:
                                 buffer_seconds = getattr(Config, 'PAUSE_BUFFER_SECONDS', 5.0)
                                 logger.info(
-                                    f"[Send] Set pause for bot @{bot_username} for {retry_after}s "
-                                    f"(+buffer={buffer_seconds}s)"
+                                    f"[Send] ✓ Set pause for bot @{bot_username} (key={current_bot_key}) "
+                                    f"for {retry_after}s (+buffer={buffer_seconds}s)"
                                 )
+                            else:
+                                logger.warning(f"[Send] Failed to set pause for bot @{bot_username}")
                         except Exception as pause_error:
                             logger.error(f"[Send] Failed to set pause state: {pause_error}")
                     
@@ -1458,30 +1506,48 @@ class NotificationService:
             
         except Forbidden:
             # User blocked the bot, block them in our system
-            logger.info(f"[Send] User {user_id} blocked bot @{bot_username} (Forbidden), marking as blocked")
+            logger.info(f"[Send] User {user_id} blocked bot @{bot_username} (Forbidden exception), marking as blocked")
             await self.db.block_user(user_id)
-            await self.db.mark_custom_message_sent(message_id)
+            marked = await self.db.mark_custom_message_sent_atomic(message_id)
+            if not marked:
+                logger.warning(f"[Send] Race condition: message {message_id} already marked as sent for user {user_id}")
             return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "forbidden"}
         
         except BadRequest as e:
             error_msg = str(e)
+            logger.info(
+                f"[Send] BadRequest exception for user {user_id} via bot @{bot_username}: "
+                f"exception_type=BadRequest, error_msg={error_msg}"
+            )
             # Check for chat not found errors (chat was deleted, user deactivated, etc.)
             if self._is_chat_not_found(error_msg):
-                logger.info(f"[Send] User {user_id} chat not found for bot @{bot_username} (BadRequest: {error_msg}), marking invalid for this bot")
-                # Mark invalid only for this specific bot
+                logger.info(
+                    f"[Send] User {user_id} chat not found for bot @{bot_username} (BadRequest: {error_msg}), "
+                    f"marking invalid for bot {current_bot_key} ONLY (not global)"
+                )
+                # CRITICAL: Always pass bot_id to ensure bot-scoped invalidation
                 await self.db.mark_user_invalid(user_id, bot_id=current_bot_key, reason="chat_not_found")
-                await self.db.mark_custom_message_sent(message_id)
+                marked = await self.db.mark_custom_message_sent_atomic(message_id)
+                if not marked:
+                    logger.warning(f"[Send] Race condition: message {message_id} already marked as sent for user {user_id}")
                 return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "chat_not_found"}
             else:
                 # Other BadRequest errors (e.g., message too long, invalid formatting)
-                logger.warning(f"[Send] BadRequest error for user {user_id} via bot @{bot_username}: {error_msg}")
-                await self.db.mark_custom_message_sent(message_id)
+                logger.warning(f"[Send] Non-permanent BadRequest error for user {user_id} via bot @{bot_username}: {error_msg}")
+                marked = await self.db.mark_custom_message_sent_atomic(message_id)
+                if not marked:
+                    logger.warning(f"[Send] Race condition: message {message_id} already marked as sent for user {user_id}")
                 return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "bad_request"}
             
         except Exception as e:
-            logger.exception(f"[Send] Exception sending to user {user_id} via bot @{bot_username}: {str(e)}")
+            logger.exception(
+                f"[Send] Unexpected exception sending to user {user_id} via bot @{bot_username}: "
+                f"exception_type={type(e).__name__}, error_msg={str(e)}"
+            )
             # Mark as sent to avoid infinite retries for non-recoverable errors
-            await self.db.mark_custom_message_sent(message_id)
+            marked = await self.db.mark_custom_message_sent_atomic(message_id)
+            if not marked:
+                logger.warning(f"[Send] Race condition: message {message_id} already marked as sent for user {user_id}")
             return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "exception"}
     
     async def _send_custom_message_batch(

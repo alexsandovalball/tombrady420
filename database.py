@@ -1497,6 +1497,30 @@ class Database:
             """, (datetime.now(), notification_id))
             await db.commit()
     
+    async def mark_notification_sent_atomic(self, notification_id: int) -> bool:
+        """
+        Atomically mark a notification as sent only if not already marked.
+        
+        This prevents race conditions where multiple bot instances might try to
+        mark the same notification as sent simultaneously.
+        
+        Args:
+            notification_id: ID of the notification
+            
+        Returns:
+            True if the notification was successfully marked (rows affected = 1),
+            False if the notification was already marked (rows affected = 0)
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                UPDATE notification_queue 
+                SET sent_at = ? 
+                WHERE id = ? AND sent_at IS NULL
+            """, (datetime.now(), notification_id))
+            await db.commit()
+            rows_affected = cursor.rowcount
+            return rows_affected > 0
+    
     async def get_pending_notifications(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Get pending notifications from queue."""
         async with aiosqlite.connect(self.db_path) as db:
@@ -1622,6 +1646,42 @@ class Database:
             """, (user_id, bot_id)) as cursor:
                 row = await cursor.fetchone()
                 return row[0] > 0 if row else False
+    
+    async def get_user_invalidation_record(self, user_id: int, bot_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Get the active invalidation record for a user.
+        
+        Args:
+            user_id: User ID to check
+            bot_id: Bot identifier. If provided, gets bot-specific invalidation.
+                   If None, gets any active invalidation for debugging.
+            
+        Returns:
+            Dictionary with invalidation details (bot_id, reason, created_at) or None
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            if bot_id:
+                async with db.execute("""
+                    SELECT user_id, bot_id, reason, created_at, is_active 
+                    FROM bot_invalidations
+                    WHERE user_id = ? AND bot_id = ? AND is_active = 1
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                """, (user_id, bot_id)) as cursor:
+                    row = await cursor.fetchone()
+                    return dict(row) if row else None
+            else:
+                # Get any active invalidation for debugging
+                async with db.execute("""
+                    SELECT user_id, bot_id, reason, created_at, is_active 
+                    FROM bot_invalidations
+                    WHERE user_id = ? AND is_active = 1
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                """, (user_id,)) as cursor:
+                    row = await cursor.fetchone()
+                    return dict(row) if row else None
     
     async def queue_custom_message(
         self, 
@@ -1772,6 +1832,30 @@ class Database:
                 UPDATE custom_message_queue SET sent_at = ? WHERE id = ?
             """, (datetime.now(), message_id))
             await db.commit()
+    
+    async def mark_custom_message_sent_atomic(self, message_id: int) -> bool:
+        """
+        Atomically mark a custom message as sent only if not already marked.
+        
+        This prevents race conditions where multiple bot instances might try to
+        mark the same message as sent simultaneously.
+        
+        Args:
+            message_id: ID of the custom message
+            
+        Returns:
+            True if the message was successfully marked (rows affected = 1),
+            False if the message was already marked (rows affected = 0)
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                UPDATE custom_message_queue 
+                SET sent_at = ? 
+                WHERE id = ? AND sent_at IS NULL
+            """, (datetime.now(), message_id))
+            await db.commit()
+            rows_affected = cursor.rowcount
+            return rows_affected > 0
     
     async def increment_custom_message_retry_count(self, message_id: int):
         """
