@@ -73,6 +73,9 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     # Create application with persistence
     bot_app = Application.builder().token(bot_token).persistence(persistence).build()
     
+    # Initialize the application so application.bot is safe to access
+    await bot_app.initialize()
+    
     # Initialize database (only once for the primary bot)
     if bot_index == 0:
         await post_init(bot_app)
@@ -177,8 +180,7 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     # Error handler
     bot_app.add_error_handler(error_handler)
     
-    # Initialize the application
-    await bot_app.initialize()
+    # Start the application
     await bot_app.start()
     
     # Set webhook
