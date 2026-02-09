@@ -89,8 +89,6 @@ class NotificationService:
         Get bot applications with caching to avoid repeated imports.
         Cache is refreshed every 60 seconds.
         """
-        from datetime import datetime
-        
         # Check if cache is valid
         if (self._bot_apps_cache is not None and 
             self._bot_apps_cache_time is not None and

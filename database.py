@@ -888,7 +888,7 @@ class Database:
                     rows = await cursor.fetchall()
                     for row in rows:
                         result[row['bot_username']].append(row['user_id'])
-                    return result
+                    return dict(result)
         
         # Filter admins in SQL for better performance
         num_admins = len(admin_ids)
@@ -904,7 +904,7 @@ class Database:
                 rows = await cursor.fetchall()
                 for row in rows:
                     result[row['bot_username']].append(row['user_id'])
-                return result
+                return dict(result)
     
     async def get_all_users_by_bot(self) -> Dict[str, List[Dict[str, Any]]]:
         """
@@ -922,7 +922,7 @@ class Database:
                 for row in rows:
                     user_dict = dict(row)
                     result[user_dict.get('bot_username')].append(user_dict)
-                return result
+                return dict(result)
     
     async def queue_notification(self, user_id: int, product_id: int):
         """Add a notification to the queue."""
