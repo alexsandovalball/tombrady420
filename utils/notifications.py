@@ -306,7 +306,9 @@ class NotificationService:
             # Get user's bot_username from database
             user = await self.db.get_user_by_id(user_id)
             if not user:
-                # User not found, mark notification as sent
+                # User not found, mark notification as sent and skip
+                # This will be handled by _send_single_notification, but we skip grouping
+                logger.debug(f"User {user_id} not found, will mark notification as sent")
                 await self.db.mark_notification_sent(notification["id"])
                 continue
             
@@ -596,7 +598,8 @@ class NotificationService:
             # Get user's bot_username from database
             user = await self.db.get_user_by_id(user_id)
             if not user:
-                # User not found, mark message as sent
+                # User not found, mark message as sent and skip
+                logger.debug(f"User {user_id} not found, will mark custom message as sent")
                 await self.db.mark_custom_message_sent(message["id"])
                 continue
             
