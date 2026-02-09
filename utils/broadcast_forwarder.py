@@ -11,6 +11,7 @@ Key features:
 - Automatic deduplication via broadcast_processed table
 """
 import asyncio
+import inspect
 import logging
 import json
 from typing import Callable, Awaitable, Optional, Any, Dict
@@ -82,6 +83,19 @@ def start_listener_in_background(db: Database, enqueue_callback: Callable[[dict,
     """
     bot_key = get_bot_env_key()
     logger.info(f"[BroadcastForwarder] Starting broadcast listener for bot_key={bot_key} with poll_interval={POLL_INTERVAL_SECONDS}s")
+    
+    # Normalize enqueue_callback to (context, message_text) signature when callers passed a function expecting (db, context, message_text)
+    try:
+        sig = inspect.signature(enqueue_callback)
+        params = [p for p in sig.parameters.values() if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+        if len(params) == 3:
+            # enqueue_callback(db, context, message_text) -> adapt to (context, message_text)
+            original = enqueue_callback
+            enqueue_callback = lambda context, message_text: original(db, context, message_text)
+            logger.info("[BroadcastForwarder] Wrapped enqueue_callback to bind db for 3-arg callback")
+    except Exception:
+        # If inspect fails for some callables, just proceed — runtime error will be handled in the loop
+        logger.debug("[BroadcastForwarder] Could not inspect enqueue_callback signature; proceeding without normalization")
     
     task = asyncio.create_task(_listener_loop(db, enqueue_callback, bot_key))
     return task

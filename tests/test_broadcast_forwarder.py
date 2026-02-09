@@ -440,6 +440,43 @@ class TestStartListenerInBackground:
             await task
         except asyncio.CancelledError:
             pass
+    
+    @pytest.mark.asyncio
+    async def test_start_listener_wraps_3arg_callback(self, temp_db):
+        """Test that start_listener_in_background automatically wraps 3-arg callbacks."""
+        # Create a 3-arg callback that expects (db, context, message_text)
+        # We need to create an actual async function with 3 parameters
+        call_tracker = []
+        
+        async def three_arg_callback(db, context, message_text):
+            """Mock 3-arg callback with proper signature."""
+            call_tracker.append((db, context, message_text))
+        
+        # Create a broadcast event
+        message_text = "Test 3-arg callback"
+        payload = {"key": "value"}
+        broadcast_id = await broadcast_forwarder.publish_broadcast(temp_db, message_text, payload)
+        
+        # Start listener with 3-arg callback
+        with patch('utils.bot_key.get_bot_env_key', return_value='BOT_TOKEN'):
+            task = broadcast_forwarder.start_listener_in_background(temp_db, three_arg_callback)
+        
+        # Wait for processing
+        await asyncio.sleep(0.5)
+        
+        # Cancel the task
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        
+        # Verify the 3-arg callback was called with db, context, and message_text
+        assert len(call_tracker) >= 1
+        db_arg, context_arg, message_arg = call_tracker[0]
+        assert db_arg == temp_db
+        assert context_arg == payload
+        assert message_arg == message_text
 
 
 if __name__ == '__main__':
