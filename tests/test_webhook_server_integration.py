@@ -11,6 +11,7 @@ import pytest
 import pytest_asyncio
 import asyncio
 import tempfile
+import aiosqlite
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -35,7 +36,7 @@ async def temp_db():
     # Cleanup
     try:
         os.unlink(db_path)
-    except:
+    except OSError:
         pass
 
 
@@ -80,7 +81,6 @@ class TestWebhookServerPattern:
                 assert len(events) == 0, "Broadcast should have been processed"
                 
                 # Verify a message was queued for the user
-                import aiosqlite
                 async with aiosqlite.connect(temp_db.db_path) as db:
                     async with db.execute("SELECT COUNT(*) as count FROM custom_message_queue WHERE user_id = ?", (12345,)) as cursor:
                         row = await cursor.fetchone()

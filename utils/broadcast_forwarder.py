@@ -91,7 +91,7 @@ def start_listener_in_background(db: Database, enqueue_callback: Callable[[dict,
         if len(params) == 3:
             # enqueue_callback(db, context, message_text) -> adapt to (context, message_text)
             original = enqueue_callback
-            enqueue_callback = (lambda context, message_text, _f=original, _db=db: _f(_db, context, message_text))
+            enqueue_callback = lambda context, message_text: original(db, context, message_text)
             logger.info("[BroadcastForwarder] Wrapped enqueue_callback to bind db for 3-arg callback")
     except Exception:
         # If inspect fails for some callables, just proceed — runtime error will be handled in the loop
