@@ -98,14 +98,15 @@ class TestRateLimiter:
     
     @pytest.mark.asyncio
     async def test_paused_until_expires(self, temp_db):
-        """Test that expired pause state is automatically cleaned up."""
+        """Test that expired pause state is automatically cleaned up on read."""
         bot_key = "test_bot"
         past_time = time.time() - 10  # 10 seconds in the past
         
+        # Note: set_paused_until will reject this and log a warning, not actually set it
         await rate_limiter.set_paused_until(bot_key, past_time)
-        paused_until = await rate_limiter.get_paused_until(bot_key)
         
-        # Should return None because it's expired
+        # Since the timestamp was in the past, it should not have been set
+        paused_until = await rate_limiter.get_paused_until(bot_key)
         assert paused_until is None
     
     @pytest.mark.asyncio

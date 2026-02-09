@@ -1219,13 +1219,12 @@ class NotificationService:
                     # Get user's started_at timestamp
                     user_data = await self.db.get_user(user_id)
                     if user_data and user_data.get('started_at'):
+                        from datetime import datetime as dt
                         started_at = user_data['started_at']
                         # Parse timestamps (could be datetime objects or strings)
                         if isinstance(started_at, str):
-                            from datetime import datetime as dt
                             started_at = dt.fromisoformat(started_at)
                         if isinstance(enqueued_at, str):
-                            from datetime import datetime as dt
                             enqueued_at = dt.fromisoformat(enqueued_at)
                         
                         # Check if user started within RETRY_ON_RECENT_START_SECONDS after broadcast
