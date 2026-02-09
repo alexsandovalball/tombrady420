@@ -565,7 +565,9 @@ async def send_media_message(
                                 except Exception as cache_error:
                                     logger.warning(f"Error caching new bot file_id: {cache_error}")
                             
-                            # Update DB with new file_id if product_id is provided and we have a DB connection
+                            # Also update the product's canonical file_id in the database
+                            # This makes the newly uploaded file_id the canonical one and marks
+                            # the current bot as the uploader for future cross-bot operations
                             if product_id and db and new_file_id:
                                 try:
                                     # Update product with new file_id and current bot as uploader
