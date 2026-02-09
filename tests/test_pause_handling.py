@@ -296,9 +296,14 @@ class TestExponentialBackoff:
         assert len(delays) >= 3
         
         # Check that delays generally increase (allowing for jitter)
-        # We can't check exact values due to jitter, but should see increasing trend
-        assert delays[0] < delays[1] * 1.5  # Allow 50% variance for jitter
-        assert delays[1] < delays[2] * 1.5
+        # With base_backoff=1.0, delays should be approximately: 1s, 2s, 4s
+        # Allow variance due to jitter factor (0.1 means up to 10% jitter)
+        # First delay should be roughly 1s
+        assert 0.9 <= delays[0] <= 1.2
+        # Second delay should be roughly 2s and greater than first
+        assert 1.8 <= delays[1] <= 2.5
+        # Third delay should be roughly 4s and greater than second
+        assert 3.5 <= delays[2] <= 5.0
 
 
 class TestPauseMetrics:

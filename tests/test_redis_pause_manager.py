@@ -142,7 +142,8 @@ class TestPauseStateBasicOperations:
         
         # Get remaining time (should be ~35 seconds: 30 + 5 buffer)
         remaining = await redis_pause_manager.get_remaining_pause_seconds(bot_username)
-        assert 30.0 <= remaining <= 40.0  # Allow some variance
+        # Allow small variance for processing time (within 1 second)
+        assert 34.0 <= remaining <= 36.0
     
     @pytest.mark.asyncio
     async def test_clear_pause_state(self, redis_client):

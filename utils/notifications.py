@@ -1430,9 +1430,10 @@ class NotificationService:
                                 retry_after_header=str(retry_after)
                             )
                             if pause_set:
+                                buffer_seconds = getattr(Config, 'PAUSE_BUFFER_SECONDS', 5.0)
                                 logger.info(
                                     f"[Send] Set pause for bot @{bot_username} for {retry_after}s "
-                                    f"(+buffer={Config.PAUSE_BUFFER_SECONDS}s)"
+                                    f"(+buffer={buffer_seconds}s)"
                                 )
                         except Exception as pause_error:
                             logger.error(f"[Send] Failed to set pause state: {pause_error}")

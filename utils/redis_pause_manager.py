@@ -24,6 +24,10 @@ DEFAULT_REDIS_HOST = 'localhost'
 DEFAULT_REDIS_PORT = 6379
 DEFAULT_REDIS_DB = 0
 
+# TTL safety buffer to prevent premature expiry of pause keys
+# This extra time ensures the key doesn't expire before the pause duration ends
+TTL_SAFETY_BUFFER_SECONDS = 60
+
 # Metrics counters (in-memory for simplicity, could be exported to Prometheus/StatsD)
 _metrics = {
     "pause_set_count": 0,
@@ -42,6 +46,8 @@ def get_redis_client() -> redis.Redis:
     redis_port = getattr(Config, 'REDIS_PORT', DEFAULT_REDIS_PORT)
     redis_db = getattr(Config, 'REDIS_DB', DEFAULT_REDIS_DB)
     redis_password = getattr(Config, 'REDIS_PASSWORD', None)
+    socket_timeout = getattr(Config, 'REDIS_SOCKET_TIMEOUT', 5)
+    connect_timeout = getattr(Config, 'REDIS_CONNECT_TIMEOUT', 5)
     
     return redis.Redis(
         host=redis_host,
@@ -49,8 +55,8 @@ def get_redis_client() -> redis.Redis:
         db=redis_db,
         password=redis_password,
         decode_responses=True,
-        socket_connect_timeout=5,
-        socket_timeout=5
+        socket_connect_timeout=connect_timeout,
+        socket_timeout=socket_timeout
     )
 
 
@@ -210,7 +216,7 @@ async def set_pause_state(
         
         pause_json = json.dumps(pause_data)
         # Set TTL slightly longer than pause duration to avoid premature expiry
-        ttl = int(retry_after_seconds + buffer_seconds + 60)
+        ttl = int(retry_after_seconds + buffer_seconds + TTL_SAFETY_BUFFER_SECONDS)
         
         try:
             result = await client.eval(lua_script, 1, key, pause_json, new_paused_until, ttl)
