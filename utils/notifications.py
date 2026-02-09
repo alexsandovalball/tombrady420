@@ -6,7 +6,9 @@ import logging
 import asyncio
 import json
 import re
-from typing import List, Optional
+import random
+import time
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -18,6 +20,7 @@ from translations.translator import translate_text_async
 from configs.config import Config
 from utils.bot_key import get_bot_env_key, get_bot_key_display
 from utils import broadcast_forwarder
+from utils import rate_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +42,204 @@ CUSTOM_MESSAGE_DELAY_SECONDS = 5  # Longer delay for custom messages
 
 # Concurrent notification sending
 NOTIFICATION_CONCURRENCY = 20  # Maximum number of concurrent message sends
-MAX_RETRIES = 3  # Maximum retry attempts for failed sends
-RETRY_BASE_DELAY = 1.0  # Base delay for exponential backoff (seconds)
+
+
+def _mask_token(token: str) -> str:
+    """
+    Mask a bot token for safe logging.
+    Shows first 8 and last 8 characters.
+    
+    Args:
+        token: Bot token to mask
+    
+    Returns:
+        Masked token string
+    """
+    if not token or len(token) < 16:
+        return "***"
+    return f"{token[:8]}...{token[-8:]}"
+
+
+async def send_message_with_rate_handling(
+    bot,
+    chat_id: int,
+    text: str = None,
+    parse_mode: str = None,
+    reply_markup = None,
+    photo: str = None,
+    video: str = None,
+    document: str = None,
+    animation: str = None,
+    audio: str = None,
+    caption: str = None,
+    bot_key: str = None,
+    max_retries: int = None,
+    base_backoff: float = None
+) -> Dict[str, Any]:
+    """
+    Send a Telegram message with rate-limit handling and automatic retry.
+    
+    Handles:
+    - RetryAfter exceptions with server-provided retry_after delay
+    - TimedOut and NetworkError with exponential backoff
+    - Shared pause state via database so all workers respect RetryAfter windows
+    
+    Args:
+        bot: Telegram bot instance
+        chat_id: Chat ID to send to
+        text: Message text (for text messages)
+        parse_mode: Parse mode (e.g., "Markdown", "HTML")
+        reply_markup: Reply markup (keyboard)
+        photo/video/document/animation/audio: Media file_id
+        caption: Caption for media
+        bot_key: Bot identifier for pause state (defaults to get_bot_env_key())
+        max_retries: Max retry attempts (defaults to Config.BROADCAST_MAX_SEND_RETRIES)
+        base_backoff: Base backoff seconds (defaults to Config.BROADCAST_BASE_BACKOFF_SECONDS)
+    
+    Returns:
+        dict with {"success": bool, "error": Optional[str], "retry_after": Optional[float]}
+    """
+    if bot_key is None:
+        bot_key = get_bot_env_key()
+    
+    if max_retries is None:
+        max_retries = Config.BROADCAST_MAX_SEND_RETRIES
+    
+    if base_backoff is None:
+        base_backoff = Config.BROADCAST_BASE_BACKOFF_SECONDS
+    
+    # Mask token for logging
+    token = getattr(bot, 'token', '')
+    token_display = _mask_token(token)
+    
+    # Determine message type
+    media_type = None
+    media_id = None
+    if photo:
+        media_type, media_id = "photo", photo
+    elif video:
+        media_type, media_id = "video", video
+    elif document:
+        media_type, media_id = "document", document
+    elif animation:
+        media_type, media_id = "animation", animation
+    elif audio:
+        media_type, media_id = "audio", audio
+    
+    retry_count = 0
+    last_error = None
+    
+    while retry_count <= max_retries:
+        try:
+            # Check if bot is paused due to rate limiting
+            remaining_pause = await rate_limiter.get_remaining_pause_seconds(bot_key)
+            if remaining_pause > 0:
+                logger.info(f"[RateHandler] Bot {bot_key} (token={token_display}) paused for {remaining_pause:.1f}s, waiting...")
+                await asyncio.sleep(remaining_pause)
+            
+            # Send the message
+            if media_type:
+                # Send media message
+                send_method = getattr(bot, f'send_{media_type}')
+                await send_method(
+                    chat_id=chat_id,
+                    **{media_type: media_id},
+                    caption=caption or text,
+                    parse_mode=parse_mode,
+                    reply_markup=reply_markup
+                )
+            else:
+                # Send text message
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    parse_mode=parse_mode,
+                    reply_markup=reply_markup
+                )
+            
+            return {"success": True, "error": None, "retry_after": None}
+        
+        except (Forbidden, BadRequest) as e:
+            # Permanent errors - don't retry
+            # NOTE: BadRequest inherits from NetworkError, so catch it first
+            error_msg = str(e)
+            logger.debug(f"[RateHandler] Permanent error for chat {chat_id}: {type(e).__name__}: {error_msg}")
+            return {"success": False, "error": error_msg, "retry_after": None}
+        
+        except RetryAfter as e:
+            retry_after = e.retry_after if hasattr(e, 'retry_after') else 30
+            # Add small jitter to avoid thundering herd
+            jitter = random.uniform(0, min(retry_after * 0.1, 5.0))
+            pause_duration = retry_after + jitter
+            pause_until = time.time() + pause_duration
+            
+            logger.warning(
+                f"[RateHandler] RetryAfter for chat {chat_id} via bot {bot_key} (token={token_display}): "
+                f"retry_after={retry_after}s, pausing all workers until {pause_until} ({pause_duration:.1f}s)"
+            )
+            
+            # Set shared pause state so all workers wait
+            await rate_limiter.set_paused_until(bot_key, pause_until)
+            
+            if retry_count < max_retries:
+                await asyncio.sleep(pause_duration)
+                retry_count += 1
+                last_error = f"RetryAfter({retry_after}s)"
+            else:
+                logger.error(
+                    f"[RateHandler] Max retries ({max_retries}) reached after RetryAfter for chat {chat_id} "
+                    f"via bot {bot_key} (token={token_display})"
+                )
+                return {"success": False, "error": f"RetryAfter({retry_after}s)", "retry_after": retry_after}
+        
+        except (TimedOut, NetworkError) as e:
+            error_type = type(e).__name__
+            if retry_count < max_retries:
+                # Exponential backoff with cap
+                delay = min(base_backoff * (2 ** retry_count), 30.0)
+                logger.warning(
+                    f"[RateHandler] {error_type} for chat {chat_id} via bot {bot_key} (token={token_display}), "
+                    f"retrying in {delay}s (attempt {retry_count + 1}/{max_retries})"
+                )
+                await asyncio.sleep(delay)
+                retry_count += 1
+                last_error = error_type
+            else:
+                logger.error(
+                    f"[RateHandler] Max retries ({max_retries}) reached after {error_type} for chat {chat_id} "
+                    f"via bot {bot_key} (token={token_display})"
+                )
+                return {"success": False, "error": error_type, "retry_after": None}
+        
+        except TelegramError as e:
+            error_msg = str(e)
+            # Check for rate limit errors in generic TelegramError messages
+            if "Too Many Requests" in error_msg or "retry after" in error_msg.lower():
+                # Treat as transient rate limit error with retry
+                if retry_count < max_retries:
+                    delay = min(base_backoff * (2 ** retry_count), 30.0)
+                    logger.warning(
+                        f"[RateHandler] Rate limit (TelegramError) for chat {chat_id} via bot {bot_key} (token={token_display}), "
+                        f"retrying in {delay}s (attempt {retry_count + 1}/{max_retries})"
+                    )
+                    await asyncio.sleep(delay)
+                    retry_count += 1
+                    last_error = "rate_limited"
+                else:
+                    logger.error(f"[RateHandler] Max retries ({max_retries}) reached after rate limit for chat {chat_id} via bot {bot_key} (token={token_display})")
+                    return {"success": False, "error": "rate_limit_max_retries", "retry_after": None}
+            else:
+                # Other Telegram errors
+                logger.error(f"[RateHandler] TelegramError for chat {chat_id} via bot {bot_key} (token={token_display}): {error_msg}")
+                return {"success": False, "error": error_msg, "retry_after": None}
+        
+        except Exception as e:
+            error_msg = str(e)
+            logger.exception(f"[RateHandler] Unexpected exception for chat {chat_id}: {error_msg}")
+            return {"success": False, "error": f"Exception: {error_msg}", "retry_after": None}
+    
+    # Should not reach here, but handle edge case
+    return {"success": False, "error": last_error or "Unknown", "retry_after": None}
 
 
 class NotificationService:
@@ -761,6 +960,8 @@ class NotificationService:
         invalidated_count = 0
         failure_reasons = {}
         failed_user_ids = []
+        rate_limit_info = None  # Will be populated if rate limiting occurs
+        failure_samples_list = []  # Collect sample failure messages
         
         try:
             # Get bot username for filtering (skip primary check for processing)
@@ -882,6 +1083,11 @@ class NotificationService:
                     failure_reasons[reason] = failure_reasons.get(reason, 0) + count
                 invalidated_count += result.get("invalidated", 0)
                 failed_user_ids.extend(result.get("failed_user_ids", []))
+                # Collect rate limit info and failure samples
+                if "rate_limit_info" in result:
+                    rate_limit_info = result["rate_limit_info"]
+                if "failure_samples" in result:
+                    failure_samples_list.extend(result["failure_samples"])
             
             # Log comprehensive telemetry
             telemetry = {
@@ -893,6 +1099,15 @@ class NotificationService:
                 "failure_reasons": failure_reasons,
                 "failed_user_ids_sample": failed_user_ids[:10]  # First 10 for debugging
             }
+            
+            # Add rate limit info if available
+            if rate_limit_info:
+                telemetry["rate_limit_info"] = rate_limit_info
+            
+            # Add failure samples
+            if failure_samples_list:
+                telemetry["failure_reason_samples"] = failure_samples_list[:20]  # First 20 samples
+            
             logger.info(f"[{mode_desc}] Broadcast telemetry: {json.dumps(telemetry)}")
             
             return {
@@ -955,7 +1170,12 @@ class NotificationService:
         retry_count: int = 0
     ) -> dict:
         """
-        Send a single custom message with retry logic.
+        Send a single custom message with retry logic and rate-limit handling.
+        
+        Features:
+        - Uses send_message_with_rate_handling for robust RetryAfter handling
+        - Implements retry-on-recent-start heuristic for "invalid_for_bot" errors
+        - Tracks retry metadata in database
         
         Args:
             context: Telegram context
@@ -964,17 +1184,20 @@ class NotificationService:
             retry_count: Current retry attempt (default: 0, incremented internally during retries)
             
         Returns:
-            dict with {"success": bool, "user_id": int, "message_id": int, "reason": str (if failed)}
+            dict with {"success": bool, "user_id": int, "message_id": int, "reason": str (if failed), 
+                      "retry_after": Optional[float]}
         """
         user_id = message["user_id"]
         message_id = message["id"]
         message_text = message.get("message_text", "")
+        retry_count_db = message.get("retry_count", 0)  # Track retries from database
+        enqueued_at = message.get("enqueued_at")  # When broadcast was enqueued
         
         # Get bot identity for logging
         bot_username = context.bot.username if hasattr(context.bot, 'username') else 'unknown'
         current_bot_key = get_bot_env_key()
         bot_token = getattr(context.bot, 'token', '')
-        token_fingerprint = f"...{bot_token[-6:]}" if bot_token else "unknown"
+        token_fingerprint = _mask_token(bot_token)
         
         logger.debug(f"[Send] Attempting to send to user {user_id} via bot @{bot_username} (key={current_bot_key}, token={token_fingerprint})")
         
@@ -990,24 +1213,98 @@ class NotificationService:
             # Check if user is invalid for this specific bot
             is_invalid_for_bot = await self.db.is_user_invalid_for_bot(user_id, current_bot_key)
             if is_invalid_for_bot:
-                # Mark as sent to remove from queue
-                await self.db.mark_custom_message_sent(message_id)
-                logger.debug(f"[Send] Skipped user {user_id} (invalid for bot {current_bot_key})")
-                return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "invalid_for_bot"}
+                # Check retry-on-recent-start heuristic
+                should_retry_recent_start = False
+                if enqueued_at and retry_count_db == 0:
+                    # Get user's started_at timestamp
+                    user_data = await self.db.get_user(user_id)
+                    if user_data and user_data.get('started_at'):
+                        from datetime import datetime as dt
+                        started_at = user_data['started_at']
+                        # Parse timestamps (could be datetime objects or strings)
+                        if isinstance(started_at, str):
+                            started_at = dt.fromisoformat(started_at)
+                        if isinstance(enqueued_at, str):
+                            enqueued_at = dt.fromisoformat(enqueued_at)
+                        
+                        # Check if user started within RETRY_ON_RECENT_START_SECONDS after broadcast
+                        if isinstance(started_at, datetime) and isinstance(enqueued_at, datetime):
+                            time_diff = (started_at - enqueued_at).total_seconds()
+                            if 0 <= time_diff <= Config.BROADCAST_RETRY_ON_RECENT_START_SECONDS:
+                                should_retry_recent_start = True
+                                logger.info(
+                                    f"[Send] User {user_id} started {time_diff:.1f}s after broadcast enqueue "
+                                    f"(within {Config.BROADCAST_RETRY_ON_RECENT_START_SECONDS}s window), "
+                                    f"will retry after {Config.BROADCAST_RECENT_START_RETRY_DELAY_SECONDS}s"
+                                )
+                
+                if should_retry_recent_start:
+                    # Schedule retry after delay
+                    await asyncio.sleep(Config.BROADCAST_RECENT_START_RETRY_DELAY_SECONDS)
+                    # Update retry count
+                    await self.db.increment_custom_message_retry_count(message_id)
+                    # Retry (this will fail if still invalid, but gives user a chance)
+                    is_invalid_for_bot = await self.db.is_user_invalid_for_bot(user_id, current_bot_key)
+                    if is_invalid_for_bot:
+                        # Still invalid after retry, mark as sent
+                        await self.db.mark_custom_message_sent(message_id)
+                        logger.debug(f"[Send] User {user_id} still invalid for bot {current_bot_key} after recent-start retry")
+                        return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "invalid_for_bot_after_retry"}
+                else:
+                    # Mark as sent to remove from queue
+                    await self.db.mark_custom_message_sent(message_id)
+                    logger.debug(f"[Send] Skipped user {user_id} (invalid for bot {current_bot_key})")
+                    return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "invalid_for_bot"}
             
-            # Send text-only message
-            await context.bot.send_message(
+            # Send message using rate-limit-aware helper
+            result = await send_message_with_rate_handling(
+                bot=context.bot,
                 chat_id=user_id,
                 text=message_text,
                 parse_mode="Markdown",
-                reply_markup=reply_markup
+                reply_markup=reply_markup,
+                bot_key=current_bot_key
             )
             
-            # Mark as sent
-            await self.db.mark_custom_message_sent(message_id)
-            logger.debug(f"[Send] ✓ Sent to user {user_id} via bot @{bot_username}")
-            
-            return {"success": True, "user_id": user_id, "message_id": message_id}
+            if result["success"]:
+                # Mark as sent
+                await self.db.mark_custom_message_sent(message_id)
+                logger.debug(f"[Send] ✓ Sent to user {user_id} via bot @{bot_username}")
+                return {"success": True, "user_id": user_id, "message_id": message_id}
+            else:
+                # Handle different error types
+                error = result.get("error", "unknown")
+                retry_after = result.get("retry_after")
+                
+                # Check for permanent errors that should mark message as sent
+                if "Forbidden" in error or "blocked" in error.lower() or "bot was blocked" in error.lower():
+                    logger.info(f"[Send] User {user_id} blocked bot @{bot_username}, marking as blocked")
+                    await self.db.block_user(user_id)
+                    await self.db.mark_custom_message_sent(message_id)
+                    return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "forbidden", "retry_after": retry_after}
+                
+                if self._is_chat_not_found(error):
+                    logger.info(f"[Send] User {user_id} chat not found for bot @{bot_username}, marking invalid for this bot")
+                    await self.db.mark_user_invalid(user_id, bot_id=current_bot_key, reason="chat_not_found")
+                    await self.db.mark_custom_message_sent(message_id)
+                    return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "chat_not_found", "retry_after": retry_after}
+                
+                if "BadRequest" in error or "message too long" in error.lower() or "can't parse" in error.lower() or "Message is too long" in error:
+                    logger.warning(f"[Send] BadRequest error for user {user_id} via bot @{bot_username}: {error}")
+                    await self.db.mark_custom_message_sent(message_id)
+                    return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "bad_request", "retry_after": retry_after}
+                
+                # RetryAfter is transient - check for it
+                if "RetryAfter" in error or retry_after or "Too Many Requests" in error or "retry after" in error.lower() or "rate_limit" in error.lower():
+                    logger.warning(f"[Send] Rate limited for user {user_id}: {error}")
+                    # Don't mark as sent - will retry in next batch
+                    # Preserve the reason from send_message_with_rate_handling
+                    reason = "rate_limit_max_retries" if "max_retries" in error.lower() else "rate_limited"
+                    return {"success": False, "user_id": user_id, "message_id": message_id, "reason": reason, "retry_after": retry_after}
+                
+                # Other transient errors (TimedOut, NetworkError) - don't mark as sent, will retry later
+                logger.warning(f"[Send] Transient error for user {user_id} via bot @{bot_username}: {error}")
+                return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "transient_error", "retry_after": retry_after}
             
         except Forbidden:
             # User blocked the bot, block them in our system
@@ -1030,46 +1327,6 @@ class NotificationService:
                 logger.warning(f"[Send] BadRequest error for user {user_id} via bot @{bot_username}: {error_msg}")
                 await self.db.mark_custom_message_sent(message_id)
                 return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "bad_request"}
-        
-        except (TimedOut, NetworkError, RetryAfter) as e:
-            # Transient errors - retry with exponential backoff
-            error_type = type(e).__name__
-            if retry_count < MAX_RETRIES:
-                delay = min(RETRY_BASE_DELAY * (2 ** retry_count), 30.0)
-                logger.warning(
-                    f"[Send] {error_type} for user {user_id} via bot @{bot_username}, "
-                    f"retrying in {delay}s (attempt {retry_count + 1}/{MAX_RETRIES})"
-                )
-                await asyncio.sleep(delay)
-                return await self._send_single_custom_message(context, message, reply_markup, retry_count + 1)
-            else:
-                logger.error(
-                    f"[Send] Max retries ({MAX_RETRIES}) reached for user {user_id} "
-                    f"via bot @{bot_username} after {error_type}, giving up"
-                )
-                # Don't mark as sent, will retry in next batch
-                return {"success": False, "user_id": user_id, "message_id": message_id, "reason": f"{error_type.lower()}_max_retries"}
-            
-        except TelegramError as e:
-            error_msg = str(e)
-            
-            # Check for rate limit errors (RetryAfter pattern in error message)
-            if "Too Many Requests" in error_msg or "retry after" in error_msg.lower():
-                if retry_count < MAX_RETRIES:
-                    # Exponential backoff with maximum cap to prevent excessive delays
-                    delay = min(RETRY_BASE_DELAY * (2 ** retry_count), 30.0)
-                    logger.warning(f"[Send] Rate limit for user {user_id} via bot @{bot_username}, retrying in {delay}s (attempt {retry_count + 1}/{MAX_RETRIES})")
-                    await asyncio.sleep(delay)
-                    return await self._send_single_custom_message(context, message, reply_markup, retry_count + 1)
-                else:
-                    logger.error(f"[Send] Max retries reached for user {user_id} via bot @{bot_username}, giving up")
-                    # Don't mark as sent, will retry in next batch
-                    return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "rate_limit_max_retries"}
-            
-            # Other Telegram errors (network issues, etc.) - transient
-            logger.error(f"[Send] Telegram error for user {user_id} via bot @{bot_username}: {error_msg}")
-            # Don't mark as sent, will retry later
-            return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "telegram_error"}
             
         except Exception as e:
             logger.exception(f"[Send] Exception sending to user {user_id} via bot @{bot_username}: {str(e)}")
@@ -1147,19 +1404,32 @@ class NotificationService:
         failure_reasons = {}
         invalidated_count = 0
         failed_user_ids = []
+        retry_after_samples = []  # Track RetryAfter values
+        failure_samples = []  # Track sample error messages
         
         for result in results:
             if isinstance(result, Exception):
                 logger.error(f"Exception in concurrent send: {result}")
                 failed_count += 1
                 failure_reasons["exception"] = failure_reasons.get("exception", 0) + 1
+                failure_samples.append(f"Exception: {str(result)}")
             elif isinstance(result, dict):
                 if result.get("success"):
                     sent_count += 1
                 else:
                     failed_count += 1
                     reason = result.get("reason", "unknown")
-                    failure_reasons[reason] = failure_reasons.get("reason", 0) + 1
+                    failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
+                    
+                    # Track RetryAfter samples
+                    retry_after = result.get("retry_after")
+                    if retry_after and len(retry_after_samples) < 10:
+                        retry_after_samples.append(retry_after)
+                    
+                    # Track failure samples
+                    if len(failure_samples) < 20:
+                        failure_samples.append(f"{reason}: {result.get('error', 'N/A')}")
+                    
                     if reason == "chat_not_found":
                         invalidated_count += 1
                     user_id = result.get("user_id")
@@ -1170,12 +1440,23 @@ class NotificationService:
                 failed_count += 1
                 failure_reasons["unknown_type"] = failure_reasons.get("unknown_type", 0) + 1
         
+        # Build rate_limit_info if we have RetryAfter samples
+        rate_limit_info = None
+        if retry_after_samples:
+            rate_limit_info = {
+                "count": len(retry_after_samples),
+                "retry_after_samples": retry_after_samples,
+                "max_retry_after": max(retry_after_samples)
+            }
+        
         return {
             "sent": sent_count, 
             "failed": failed_count,
             "failure_reasons": failure_reasons,
             "invalidated": invalidated_count,
-            "failed_user_ids": failed_user_ids
+            "failed_user_ids": failed_user_ids,
+            "rate_limit_info": rate_limit_info,
+            "failure_samples": failure_samples
         }
     
     async def notify_subscribers_about_product(self, context: ContextTypes.DEFAULT_TYPE, product_id: int) -> int:

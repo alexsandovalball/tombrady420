@@ -194,6 +194,14 @@ class Database:
                 )
             """)
             
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS bot_rate_pause_state (
+                    bot_key TEXT PRIMARY KEY,
+                    paused_until REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+            """)
+            
             # Set default order contact if not exists
             await db.execute("""
                 INSERT OR IGNORE INTO bot_settings (key, value)
@@ -328,6 +336,43 @@ class Database:
                     logger.debug("Column 'target_bot_key' already exists in notification_queue table")
                 else:
                     logger.warning(f"Could not add 'target_bot_key' column to notification_queue: {e}")
+            
+            # Add rate limiting and retry support columns (2026-02-09)
+            try:
+                await db.execute("ALTER TABLE bot_users ADD COLUMN started_at TIMESTAMP")
+                logger.info("Added 'started_at' column to bot_users table")
+            except aiosqlite.OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    logger.debug("Column 'started_at' already exists in bot_users table")
+                else:
+                    logger.warning(f"Could not add 'started_at' column to bot_users: {e}")
+            
+            try:
+                await db.execute("ALTER TABLE custom_message_queue ADD COLUMN retry_count INTEGER DEFAULT 0")
+                logger.info("Added 'retry_count' column to custom_message_queue table")
+            except aiosqlite.OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    logger.debug("Column 'retry_count' already exists in custom_message_queue table")
+                else:
+                    logger.warning(f"Could not add 'retry_count' column to custom_message_queue: {e}")
+            
+            try:
+                await db.execute("ALTER TABLE custom_message_queue ADD COLUMN enqueued_at TIMESTAMP")
+                logger.info("Added 'enqueued_at' column to custom_message_queue table")
+            except aiosqlite.OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    logger.debug("Column 'enqueued_at' already exists in custom_message_queue table")
+                else:
+                    logger.warning(f"Could not add 'enqueued_at' column to custom_message_queue: {e}")
+            
+            try:
+                await db.execute("ALTER TABLE custom_message_queue ADD COLUMN scheduled_retry_at TIMESTAMP")
+                logger.info("Added 'scheduled_retry_at' column to custom_message_queue table")
+            except aiosqlite.OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    logger.debug("Column 'scheduled_retry_at' already exists in custom_message_queue table")
+                else:
+                    logger.warning(f"Could not add 'scheduled_retry_at' column to custom_message_queue: {e}")
             
             # Migrate existing media groups to populate additional_message_ids
             # For media groups created before this fix, infer message IDs from sequential ordering
@@ -966,13 +1011,31 @@ class Database:
                     WHERE user_id = ?
                 """, (username, first_name, last_name, current_time, bot_username, user_id))
             else:
-                # Insert new user
+                # Insert new user - set started_at to track when user first interacted
                 await db.execute("""
-                    INSERT INTO bot_users (user_id, username, first_name, last_name, first_seen, last_seen, bot_username)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (user_id, username, first_name, last_name, current_time, current_time, bot_username))
+                    INSERT INTO bot_users (user_id, username, first_name, last_name, first_seen, last_seen, bot_username, started_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (user_id, username, first_name, last_name, current_time, current_time, bot_username, current_time))
             
             await db.commit()
+    
+    async def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get user data by user_id.
+        
+        Args:
+            user_id: Telegram user ID
+        
+        Returns:
+            User data dictionary or None if not found
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM bot_users WHERE user_id = ?
+            """, (user_id,)) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
     
     async def set_last_bot_key(self, user_id: int, bot_key: str):
         """
@@ -1547,11 +1610,12 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             # Store empty string if message_text is None for database compatibility
             text_to_store = message_text if message_text is not None else ''
+            current_time = datetime.now()
             await db.execute("""
                 INSERT INTO custom_message_queue 
-                (user_id, message_text, media_type, media_file_id, reply_markup, target_bot_key, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (user_id, text_to_store, media_type, media_file_id, reply_markup, target_bot_key, datetime.now()))
+                (user_id, message_text, media_type, media_file_id, reply_markup, target_bot_key, created_at, enqueued_at, retry_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+            """, (user_id, text_to_store, media_type, media_file_id, reply_markup, target_bot_key, current_time, current_time))
             await db.commit()
     
     async def queue_custom_messages_batch(
@@ -1593,12 +1657,12 @@ class Database:
             
             # Build batch insert with VALUES clause
             # This is much faster than individual inserts
-            values = [(uid, text_to_store, media_type, media_file_id, reply_markup, target_bot_key, current_time) for uid in user_ids]
+            values = [(uid, text_to_store, media_type, media_file_id, reply_markup, target_bot_key, current_time, current_time, 0) for uid in user_ids]
             
             await db.executemany("""
                 INSERT INTO custom_message_queue 
-                (user_id, message_text, media_type, media_file_id, reply_markup, target_bot_key, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (user_id, message_text, media_type, media_file_id, reply_markup, target_bot_key, created_at, enqueued_at, retry_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, values)
             await db.commit()
             
@@ -1635,13 +1699,13 @@ class Database:
             current_time = datetime.now()
             
             # Build batch insert with individual target_bot_key for each user
-            values = [(uid, text_to_store, media_type, media_file_id, reply_markup, target_key, current_time) 
+            values = [(uid, text_to_store, media_type, media_file_id, reply_markup, target_key, current_time, current_time, 0) 
                      for uid, target_key in users_with_targets]
             
             await db.executemany("""
                 INSERT INTO custom_message_queue 
-                (user_id, message_text, media_type, media_file_id, reply_markup, target_bot_key, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (user_id, message_text, media_type, media_file_id, reply_markup, target_bot_key, created_at, enqueued_at, retry_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, values)
             await db.commit()
             
@@ -1666,6 +1730,21 @@ class Database:
             await db.execute("""
                 UPDATE custom_message_queue SET sent_at = ? WHERE id = ?
             """, (datetime.now(), message_id))
+            await db.commit()
+    
+    async def increment_custom_message_retry_count(self, message_id: int):
+        """
+        Increment the retry count for a custom message.
+        
+        Args:
+            message_id: ID of the custom message
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE custom_message_queue 
+                SET retry_count = COALESCE(retry_count, 0) + 1
+                WHERE id = ?
+            """, (message_id,))
             await db.commit()
     
     async def get_recent_custom_messages_count(self, user_id: int, minutes: int = 60) -> int:

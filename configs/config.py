@@ -94,6 +94,12 @@ class ConfigClass:
         # If not set, we'll try to determine it at runtime or fall back to None
         self.PRIMARY_BOT_USERNAME = config('PRIMARY_BOT_USERNAME', default=None)
         
+        # Broadcast rate limiting and retry configuration
+        self.BROADCAST_MAX_SEND_RETRIES = config('BROADCAST_MAX_SEND_RETRIES', default=5, cast=int)
+        self.BROADCAST_BASE_BACKOFF_SECONDS = config('BROADCAST_BASE_BACKOFF_SECONDS', default=0.5, cast=float)
+        self.BROADCAST_RETRY_ON_RECENT_START_SECONDS = config('BROADCAST_RETRY_ON_RECENT_START_SECONDS', default=60, cast=int)
+        self.BROADCAST_RECENT_START_RETRY_DELAY_SECONDS = config('BROADCAST_RECENT_START_RETRY_DELAY_SECONDS', default=5, cast=int)
+        
         self._loaded = True
     
     def validate(self) -> None:
