@@ -504,7 +504,6 @@ async def send_media_message(
                     media_bytes = await download_media_from_bot(bot_token, file_id, file_type)
                     
                     if media_bytes:
-                    if media_bytes:
                         # Re-upload media with current bot
                         try:
                             logger.info(
@@ -600,16 +599,16 @@ async def send_media_message(
                             
                             return  # Success via fallback
                         
-                    except Exception as reupload_error:
-                        logger.error(
-                            f"Failed to re-upload media after download: {reupload_error}",
-                            exc_info=True
-                        )
-                        last_error = reupload_error
+                        except Exception as reupload_error:
+                            logger.error(
+                                f"Failed to re-upload media after download: {reupload_error}",
+                                exc_info=True
+                            )
+                            last_error = reupload_error
+                            # Fall through to text fallback
+                    else:
+                        logger.error("Failed to download media from uploader bot - cannot recover")
                         # Fall through to text fallback
-                else:
-                    logger.error("Failed to download media from uploader bot - cannot recover")
-                    # Fall through to text fallback
         
         # Fall through to text fallback for all error cases
         
