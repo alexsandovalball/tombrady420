@@ -1372,6 +1372,15 @@ async def post_init(application: Application):
     await db.init_db()
     logger.info("Database initialized")
     
+    # Set the bot username in the bot_key module for use in broadcast callbacks
+    # This allows enqueue_local_broadcast to filter users by bot_username without needing a context
+    from utils.bot_key import set_bot_username
+    bot_username = application.bot.username if hasattr(application.bot, 'username') else None
+    if bot_username:
+        set_bot_username(bot_username)
+    else:
+        logger.warning("Bot username not available during post_init")
+    
     # Set up translation service with database
     translation_service.set_database(db)
     logger.info("Translation service configured with database caching")
