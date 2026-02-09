@@ -203,6 +203,30 @@ class Database:
                 )
             """)
             
+            # Media file_ids caching table for per-bot file_id storage
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS media_file_ids (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bot_key TEXT NOT NULL,
+                    resource_id INTEGER NOT NULL,
+                    file_id TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(bot_key, resource_id)
+                )
+            """)
+            
+            # Create indexes for media_file_ids table
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_media_file_ids_bot_resource 
+                ON media_file_ids(bot_key, resource_id)
+            """)
+            
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_media_file_ids_updated_at 
+                ON media_file_ids(updated_at)
+            """)
+            
             # Set default order contact if not exists
             await db.execute("""
                 INSERT OR IGNORE INTO bot_settings (key, value)
@@ -2164,6 +2188,72 @@ class Database:
         # Invalidate cache
         async with _cache_lock:
             _order_contact_cache = (contact, datetime.now())
+    
+    async def get_bot_file_id(self, bot_key: str, resource_id: int) -> Optional[str]:
+        """
+        Get cached bot-specific file_id for a media resource.
+        
+        Args:
+            bot_key: Bot environment key (e.g., 'BOT_TOKEN', 'BOT_TOKEN_1')
+            resource_id: Product ID or other resource identifier
+            
+        Returns:
+            Cached file_id or None if not found
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT file_id FROM media_file_ids
+                WHERE bot_key = ? AND resource_id = ?
+            """, (bot_key, resource_id)) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else None
+    
+    async def set_bot_file_id(self, bot_key: str, resource_id: int, file_id: str) -> bool:
+        """
+        Cache bot-specific file_id for a media resource (upsert).
+        
+        Args:
+            bot_key: Bot environment key (e.g., 'BOT_TOKEN', 'BOT_TOKEN_1')
+            resource_id: Product ID or other resource identifier
+            file_id: Bot-specific Telegram file_id
+            
+        Returns:
+            True on success, False on error
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("""
+                    INSERT INTO media_file_ids (bot_key, resource_id, file_id, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(bot_key, resource_id) 
+                    DO UPDATE SET 
+                        file_id = excluded.file_id,
+                        updated_at = excluded.updated_at
+                """, (bot_key, resource_id, file_id, datetime.now(), datetime.now()))
+                await db.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error caching bot file_id: {e}", exc_info=True)
+            return False
+    
+    async def invalidate_bot_file_id(self, bot_key: str, resource_id: int) -> bool:
+        """
+        Invalidate (delete) cached bot-specific file_id for a media resource.
+        
+        Args:
+            bot_key: Bot environment key (e.g., 'BOT_TOKEN', 'BOT_TOKEN_1')
+            resource_id: Product ID or other resource identifier
+            
+        Returns:
+            True if a row was deleted, False if not found
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                DELETE FROM media_file_ids
+                WHERE bot_key = ? AND resource_id = ?
+            """, (bot_key, resource_id))
+            await db.commit()
+            return cursor.rowcount > 0
 
 
 async def clear_database_caches():

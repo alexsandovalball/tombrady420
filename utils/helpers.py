@@ -309,22 +309,29 @@ async def send_media_message(
     """
     Send a media message based on file type.
     
-    Implements cross-bot media delivery fallback:
-    - If sending fails with "Wrong file identifier" error and uploader_bot_id is provided,
-      downloads the media from the uploader bot and re-uploads it with the current bot.
-    - If reupload succeeds and product_id is provided, updates the DB with the new file_id.
+    Implements cross-bot media delivery fallback with per-bot file_id caching:
+    - Looks up bot-specific cached file_id before sending
+    - Attempts to send using bot-specific file_id (if available) or canonical file_id
+    - If sending fails with "Wrong file identifier" error:
+      - Invalidates the bot-specific cache entry
+      - Downloads media from uploader bot (if uploader_bot_id provided)
+      - Re-uploads with current bot
+      - Caches the new bot-specific file_id
+    - If reupload succeeds and product_id is provided, updates the DB with the new file_id
     
     Args:
         context: Telegram context
         chat_id: Target chat ID
-        file_id: Telegram file_id to send
+        file_id: Telegram file_id to send (canonical/original)
         file_type: Type of media (photo, video, document, etc.)
         caption: Optional caption text
         reply_markup: Optional inline keyboard
-        product_id: Optional product ID for DB updates after fallback
+        product_id: Optional product ID for DB updates and caching
         uploader_bot_id: Optional bot env key that uploaded this media (e.g., 'BOT_TOKEN', 'BOT_TOKEN_1')
-        db: Optional Database instance for updating file_id after successful reupload
+        db: Optional Database instance for file_id caching and product updates
     """
+    from utils.bot_key import get_bot_env_key
+    
     async def _send_media(file_id_or_input):
         """
         Internal helper to send media by type. Returns sent message.
@@ -372,10 +379,67 @@ async def send_media_message(
                 reply_markup=reply_markup
             )
     
-    # Try to send media with original file_id
+    # Get current bot key for file_id caching
+    current_bot_key = get_bot_env_key()
+    
+    # Try to get bot-specific cached file_id if product_id and db are available
+    file_id_to_send = file_id  # Start with canonical file_id
+    used_cached_file_id = False
+    
+    if product_id and db:
+        try:
+            cached_file_id = await db.get_bot_file_id(current_bot_key, product_id)
+            if cached_file_id:
+                logger.debug(
+                    f"Using cached bot-specific file_id for bot={current_bot_key}, "
+                    f"product_id={product_id}, file_id={cached_file_id[:30]}..."
+                )
+                file_id_to_send = cached_file_id
+                used_cached_file_id = True
+            else:
+                logger.debug(
+                    f"No cached file_id for bot={current_bot_key}, product_id={product_id}, "
+                    f"will try canonical file_id"
+                )
+        except Exception as cache_error:
+            logger.warning(f"Error checking bot file_id cache: {cache_error}")
+            # Continue with canonical file_id
+    
+    # Try to send media with selected file_id (cached or canonical)
     last_error = None
     try:
-        await _send_media(file_id)
+        sent_message = await _send_media(file_id_to_send)
+        
+        # On successful send, cache the bot-specific file_id if not already cached
+        if product_id and db and not used_cached_file_id:
+            try:
+                # Extract the bot-specific file_id from the sent message
+                bot_file_id = None
+                if file_type == "photo" and sent_message.photo:
+                    bot_file_id = sent_message.photo[-1].file_id
+                elif file_type == "video" and sent_message.video:
+                    bot_file_id = sent_message.video.file_id
+                elif file_type == "animation" and sent_message.animation:
+                    bot_file_id = sent_message.animation.file_id
+                elif file_type == "document" and sent_message.document:
+                    bot_file_id = sent_message.document.file_id
+                elif file_type == "audio" and sent_message.audio:
+                    bot_file_id = sent_message.audio.file_id
+                elif file_type == "voice" and sent_message.voice:
+                    bot_file_id = sent_message.voice.file_id
+                elif file_type == "video_note" and sent_message.video_note:
+                    bot_file_id = sent_message.video_note.file_id
+                
+                if bot_file_id:
+                    success = await db.set_bot_file_id(current_bot_key, product_id, bot_file_id)
+                    if success:
+                        logger.info(
+                            f"Cached bot-specific file_id: bot={current_bot_key}, "
+                            f"product_id={product_id}, file_id={bot_file_id[:30]}..."
+                        )
+            except Exception as cache_error:
+                logger.warning(f"Error caching bot file_id after successful send: {cache_error}")
+        
         return  # Success - no fallback needed
         
     except BadRequest as e:
@@ -383,102 +447,129 @@ async def send_media_message(
         error_msg = str(e)
         
         # Check if this is a cross-bot file_id error that we can recover from
-        is_file_id_error = "Wrong file identifier" in error_msg or "file_id" in error_msg.lower()
+        is_file_id_error = "Wrong file identifier" in error_msg or "http url specified" in error_msg.lower()
         
-        if is_file_id_error and uploader_bot_id:
-            # Attempt cross-bot fallback
+        if is_file_id_error:
             logger.warning(
-                f"Cross-bot file_id error detected. Attempting fallback download:\n"
-                f"  product_id: {product_id}\n"
-                f"  file_id: {file_id[:50]}...\n"
-                f"  file_type: {file_type}\n"
-                f"  uploader_bot_id: {uploader_bot_id}\n"
-                f"  current_bot: {context.bot.username}"
+                f"File_id error detected for bot={current_bot_key}, product_id={product_id}: {error_msg}"
             )
             
-            # Resolve uploader_bot_id to bot token
-            bot_token = None
-            if uploader_bot_id == 'BOT_TOKEN':
-                # Primary bot - use first token in list for consistency
-                bot_token = Config.BOT_TOKENS[0] if Config.BOT_TOKENS else Config.BOT_TOKEN
-            elif uploader_bot_id.startswith('BOT_TOKEN_'):
-                # Secondary bot - parse index from 'BOT_TOKEN_N'
+            # Invalidate cached file_id if we used one
+            if used_cached_file_id and product_id and db:
                 try:
-                    # Parse the number from BOT_TOKEN_N
-                    suffix = uploader_bot_id.replace('BOT_TOKEN_', '')
-                    token_index = int(suffix)
-                    if token_index < len(Config.BOT_TOKENS):
-                        bot_token = Config.BOT_TOKENS[token_index]
-                except (ValueError, IndexError) as parse_error:
-                    logger.error(f"Failed to parse uploader_bot_id '{uploader_bot_id}': {parse_error}")
+                    invalidated = await db.invalidate_bot_file_id(current_bot_key, product_id)
+                    if invalidated:
+                        logger.info(
+                            f"Invalidated cached file_id for bot={current_bot_key}, "
+                            f"product_id={product_id}"
+                        )
+                except Exception as inv_error:
+                    logger.warning(f"Error invalidating cached file_id: {inv_error}")
             
-            if not bot_token:
-                logger.error(
-                    f"Cannot resolve uploader_bot_id '{uploader_bot_id}' to bot token. "
-                    f"Available tokens: {len(Config.BOT_TOKENS)}"
+            # Attempt fallback if uploader_bot_id is provided
+            if uploader_bot_id:
+                logger.warning(
+                    f"Attempting cross-bot fallback download:\n"
+                    f"  product_id: {product_id}\n"
+                    f"  file_id: {file_id[:50]}...\n"
+                    f"  file_type: {file_type}\n"
+                    f"  uploader_bot_id: {uploader_bot_id}\n"
+                    f"  current_bot: {context.bot.username}"
                 )
-                # Fall through to text fallback at the end
-            else:
-                # Download media from uploader bot
-                media_bytes = await download_media_from_bot(bot_token, file_id, file_type)
                 
-                if media_bytes:
-                    # Re-upload media with current bot
+                # Resolve uploader_bot_id to bot token
+                bot_token = None
+                if uploader_bot_id == 'BOT_TOKEN':
+                    # Primary bot - use first token in list for consistency
+                    bot_token = Config.BOT_TOKENS[0] if Config.BOT_TOKENS else Config.BOT_TOKEN
+                elif uploader_bot_id.startswith('BOT_TOKEN_'):
+                    # Secondary bot - parse index from 'BOT_TOKEN_N'
                     try:
-                        logger.info(
-                            f"Re-uploading media with current bot (@{context.bot.username}): "
-                            f"size={len(media_bytes)} bytes, type={file_type}"
-                        )
-                        
-                        # Map file_type to proper extension
-                        extension_map = {
-                            "photo": "jpg",
-                            "video": "mp4",
-                            "animation": "gif",
-                            "document": "pdf",
-                            "audio": "mp3",
-                            "voice": "ogg",
-                            "video_note": "mp4"
-                        }
-                        extension = extension_map.get(file_type, "bin")
-                        
-                        # Create InputFile from bytes
-                        media_file = InputFile(io.BytesIO(media_bytes), filename=f"media.{extension}")
-                        
-                        # Send using current bot (which will get a new file_id)
-                        sent_message = await _send_media(media_file)
-                        
-                        logger.info(
-                            f"Successfully delivered media via cross-bot fallback: "
-                            f"product_id={product_id}, uploader={uploader_bot_id}, "
-                            f"current_bot=@{context.bot.username}"
-                        )
-                        
-                        # Update DB with new file_id if product_id is provided and we have a DB connection
-                        if product_id and db and sent_message:
-                            try:
-                                # Extract the new file_id from the sent message
-                                new_file_id = None
-                                if file_type == "photo" and sent_message.photo:
-                                    new_file_id = sent_message.photo[-1].file_id
-                                elif file_type == "video" and sent_message.video:
-                                    new_file_id = sent_message.video.file_id
-                                elif file_type == "animation" and sent_message.animation:
-                                    new_file_id = sent_message.animation.file_id
-                                elif file_type == "document" and sent_message.document:
-                                    new_file_id = sent_message.document.file_id
-                                elif file_type == "audio" and sent_message.audio:
-                                    new_file_id = sent_message.audio.file_id
-                                elif file_type == "voice" and sent_message.voice:
-                                    new_file_id = sent_message.voice.file_id
-                                elif file_type == "video_note" and sent_message.video_note:
-                                    new_file_id = sent_message.video_note.file_id
-                                
-                                if new_file_id:
-                                    # Get current bot key for updating uploader_bot_id
-                                    from utils.bot_key import get_bot_env_key
-                                    current_bot_key = get_bot_env_key()
-                                    
+                        # Parse the number from BOT_TOKEN_N
+                        suffix = uploader_bot_id.replace('BOT_TOKEN_', '')
+                        token_index = int(suffix)
+                        if token_index < len(Config.BOT_TOKENS):
+                            bot_token = Config.BOT_TOKENS[token_index]
+                    except (ValueError, IndexError) as parse_error:
+                        logger.error(f"Failed to parse uploader_bot_id '{uploader_bot_id}': {parse_error}")
+                
+                if not bot_token:
+                    logger.error(
+                        f"Cannot resolve uploader_bot_id '{uploader_bot_id}' to bot token. "
+                        f"Available tokens: {len(Config.BOT_TOKENS)}"
+                    )
+                    # Fall through to text fallback at the end
+                else:
+                    # Download media from uploader bot
+                    media_bytes = await download_media_from_bot(bot_token, file_id, file_type)
+                    
+                    if media_bytes:
+                        # Re-upload media with current bot
+                        try:
+                            logger.info(
+                                f"Re-uploading media with current bot (@{context.bot.username}): "
+                                f"size={len(media_bytes)} bytes, type={file_type}"
+                            )
+                            
+                            # Map file_type to proper extension
+                            extension_map = {
+                                "photo": "jpg",
+                                "video": "mp4",
+                                "animation": "gif",
+                                "document": "pdf",
+                                "audio": "mp3",
+                                "voice": "ogg",
+                                "video_note": "mp4"
+                            }
+                            extension = extension_map.get(file_type, "bin")
+                            
+                            # Create InputFile from bytes
+                            media_file = InputFile(io.BytesIO(media_bytes), filename=f"media.{extension}")
+                            
+                            # Send using current bot (which will get a new file_id)
+                            sent_message = await _send_media(media_file)
+                            
+                            logger.info(
+                                f"Successfully delivered media via cross-bot fallback: "
+                                f"product_id={product_id}, uploader={uploader_bot_id}, "
+                                f"current_bot=@{context.bot.username}"
+                            )
+                            
+                            # Extract the new bot-specific file_id from the sent message
+                            new_file_id = None
+                            if file_type == "photo" and sent_message.photo:
+                                new_file_id = sent_message.photo[-1].file_id
+                            elif file_type == "video" and sent_message.video:
+                                new_file_id = sent_message.video.file_id
+                            elif file_type == "animation" and sent_message.animation:
+                                new_file_id = sent_message.animation.file_id
+                            elif file_type == "document" and sent_message.document:
+                                new_file_id = sent_message.document.file_id
+                            elif file_type == "audio" and sent_message.audio:
+                                new_file_id = sent_message.audio.file_id
+                            elif file_type == "voice" and sent_message.voice:
+                                new_file_id = sent_message.voice.file_id
+                            elif file_type == "video_note" and sent_message.video_note:
+                                new_file_id = sent_message.video_note.file_id
+                            
+                            # Cache the new bot-specific file_id
+                            if new_file_id and product_id and db:
+                                try:
+                                    success = await db.set_bot_file_id(current_bot_key, product_id, new_file_id)
+                                    if success:
+                                        logger.info(
+                                            f"Cached new bot-specific file_id after fallback: "
+                                            f"bot={current_bot_key}, product_id={product_id}, "
+                                            f"file_id={new_file_id[:30]}..."
+                                        )
+                                except Exception as cache_error:
+                                    logger.warning(f"Error caching new bot file_id: {cache_error}")
+                            
+                            # Also update the product's canonical file_id in the database
+                            # This makes the newly uploaded file_id the canonical one and marks
+                            # the current bot as the uploader for future cross-bot operations
+                            if product_id and db and new_file_id:
+                                try:
                                     # Update product with new file_id and current bot as uploader
                                     success = await db.update_product_file_id(
                                         product_id=product_id,
@@ -488,38 +579,38 @@ async def send_media_message(
                                     
                                     if success:
                                         logger.info(
-                                            f"Persisted new file_id to DB: product_id={product_id}, "
+                                            f"Updated product file_id in DB: product_id={product_id}, "
                                             f"new_file_id={new_file_id[:30]}..., "
                                             f"new_uploader={current_bot_key}"
                                         )
                                     else:
                                         logger.warning(
-                                            f"Failed to persist new file_id to DB for product_id={product_id}"
+                                            f"Failed to update product file_id in DB for product_id={product_id}"
                                         )
-                                else:
-                                    logger.warning(
-                                        f"Could not extract new file_id from sent message for "
-                                        f"product_id={product_id}, file_type={file_type}"
+                                except Exception as db_error:
+                                    logger.error(
+                                        f"Error updating DB with new file_id: {db_error}",
+                                        exc_info=True
                                     )
-                            except Exception as db_error:
-                                logger.error(
-                                    f"Error updating DB with new file_id: {db_error}",
-                                    exc_info=True
+                                    # Continue anyway - the message was sent successfully
+                            elif not new_file_id:
+                                logger.warning(
+                                    f"Could not extract new file_id from sent message for "
+                                    f"product_id={product_id}, file_type={file_type}"
                                 )
-                                # Continue anyway - the message was sent successfully
+                            
+                            return  # Success via fallback
                         
-                        return  # Success via fallback
-                        
-                    except Exception as reupload_error:
-                        logger.error(
-                            f"Failed to re-upload media after download: {reupload_error}",
-                            exc_info=True
-                        )
-                        last_error = reupload_error
+                        except Exception as reupload_error:
+                            logger.error(
+                                f"Failed to re-upload media after download: {reupload_error}",
+                                exc_info=True
+                            )
+                            last_error = reupload_error
+                            # Fall through to text fallback
+                    else:
+                        logger.error("Failed to download media from uploader bot - cannot recover")
                         # Fall through to text fallback
-                else:
-                    logger.error("Failed to download media from uploader bot - cannot recover")
-                    # Fall through to text fallback
         
         # Fall through to text fallback for all error cases
         
