@@ -7,7 +7,7 @@ for permanent failures.
 """
 import logging
 import asyncio
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timezone
 from telegram import Bot, InlineKeyboardMarkup
 from telegram.error import (
@@ -122,7 +122,7 @@ async def send_with_retry_and_fallback(
     message_text: str,
     primary_bot: Bot,
     primary_bot_key: str,
-    fallback_bots: Optional[List[tuple[Bot, str]]] = None,
+    fallback_bots: Optional[List[Tuple[Bot, str]]] = None,
     parse_mode: str = "Markdown",
     reply_markup: Optional[InlineKeyboardMarkup] = None,
     max_retries: int = DEFAULT_MAX_RETRIES,
@@ -337,14 +337,17 @@ async def _log_to_file(result: SendAttemptResult, message_text: str):
     """
     Fallback logging to file when database logging is not available.
     
+    Uses tempfile.gettempdir() for cross-platform compatibility.
+    
     Args:
         result: SendAttemptResult to log
         message_text: Full message text
     """
     import json
     import os
+    import tempfile
     
-    log_dir = "/tmp/send_attempts"
+    log_dir = os.path.join(tempfile.gettempdir(), "send_attempts")
     os.makedirs(log_dir, exist_ok=True)
     
     log_file = os.path.join(log_dir, "send_attempts.jsonl")
@@ -354,6 +357,13 @@ async def _log_to_file(result: SendAttemptResult, message_text: str):
         "message_preview": message_text[:100]
     }
     
-    # Append to JSONL file
+    # Use thread executor for file I/O to avoid blocking event loop
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _write_log_sync, log_file, log_entry)
+
+
+def _write_log_sync(log_file: str, log_entry: dict):
+    """Synchronous file write helper for run_in_executor."""
+    import json
     with open(log_file, "a") as f:
         f.write(json.dumps(log_entry) + "\n")
