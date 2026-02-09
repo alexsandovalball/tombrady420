@@ -21,6 +21,7 @@ from configs.config import Config
 from utils.bot_key import get_bot_env_key, get_bot_key_display
 from utils import broadcast_forwarder
 from utils import rate_limiter
+from utils import redis_pause_manager
 
 logger = logging.getLogger(__name__)
 
@@ -128,14 +129,29 @@ async def send_message_with_rate_handling(
     
     retry_count = 0
     last_error = None
+    last_retry_after = None
+    
+    # Get bot username for Redis pause state
+    bot_username = getattr(bot, 'username', None)
+    
+    # Get exponential backoff config
+    max_backoff = getattr(Config, 'MAX_BACKOFF_SECONDS', 300.0)
+    jitter_factor = getattr(Config, 'BACKOFF_JITTER_FACTOR', 0.1)
     
     while retry_count <= max_retries:
         try:
-            # Check if bot is paused due to rate limiting
-            remaining_pause = await rate_limiter.get_remaining_pause_seconds(bot_key)
-            if remaining_pause > 0:
-                logger.info(f"[RateHandler] Bot {bot_key} (token={token_display}) paused for {remaining_pause:.1f}s, waiting...")
-                await asyncio.sleep(remaining_pause)
+            # Check if bot is paused in Redis (shared pause state)
+            if bot_username:
+                remaining_pause = await redis_pause_manager.get_remaining_pause_seconds(bot_username)
+                if remaining_pause > 0:
+                    logger.info(f"[RateHandler] Bot @{bot_username} (token={token_display}) paused for {remaining_pause:.1f}s, waiting...")
+                    await asyncio.sleep(remaining_pause)
+            else:
+                # Fallback to database pause if no bot username
+                remaining_pause = await rate_limiter.get_remaining_pause_seconds(bot_key)
+                if remaining_pause > 0:
+                    logger.info(f"[RateHandler] Bot {bot_key} (token={token_display}) paused for {remaining_pause:.1f}s, waiting...")
+                    await asyncio.sleep(remaining_pause)
             
             # Send the message
             if media_type:
@@ -168,21 +184,43 @@ async def send_message_with_rate_handling(
         
         except RetryAfter as e:
             retry_after = e.retry_after if hasattr(e, 'retry_after') else 30
-            # Add small jitter to avoid thundering herd
-            jitter = random.uniform(0, min(retry_after * 0.1, 5.0))
-            pause_duration = retry_after + jitter
-            pause_until = time.time() + pause_duration
+            last_retry_after = retry_after
             
             logger.warning(
                 f"[RateHandler] RetryAfter for chat {chat_id} via bot {bot_key} (token={token_display}): "
-                f"retry_after={retry_after}s, pausing all workers until {pause_until} ({pause_duration:.1f}s)"
+                f"retry_after={retry_after}s"
             )
             
-            # Set shared pause state so all workers wait
-            await rate_limiter.set_paused_until(bot_key, pause_until)
+            # Set shared pause state in Redis so all workers wait
+            if bot_username:
+                try:
+                    await redis_pause_manager.set_pause_state(
+                        bot_username=bot_username,
+                        retry_after_seconds=retry_after,
+                        reason="rate_limit_retry_after",
+                        set_by=f"send_message@{bot_key}",
+                        retry_after_header=str(retry_after)
+                    )
+                except Exception as pause_error:
+                    logger.error(f"[RateHandler] Failed to set pause in Redis: {pause_error}")
+                    # Fallback to database pause
+                    jitter = random.uniform(0, min(retry_after * 0.1, 5.0))
+                    pause_duration = retry_after + jitter
+                    pause_until = time.time() + pause_duration
+                    await rate_limiter.set_paused_until(bot_key, pause_until)
+            else:
+                # No bot username, use database pause
+                jitter = random.uniform(0, min(retry_after * 0.1, 5.0))
+                pause_duration = retry_after + jitter
+                pause_until = time.time() + pause_duration
+                await rate_limiter.set_paused_until(bot_key, pause_until)
             
             if retry_count < max_retries:
-                await asyncio.sleep(pause_duration)
+                # Wait for retry_after + buffer + jitter
+                buffer_seconds = getattr(Config, 'PAUSE_BUFFER_SECONDS', 5.0)
+                jitter = random.uniform(0, retry_after * jitter_factor)
+                delay = retry_after + buffer_seconds + jitter
+                await asyncio.sleep(delay)
                 retry_count += 1
                 last_error = f"RetryAfter({retry_after}s)"
             else:
@@ -195,11 +233,13 @@ async def send_message_with_rate_handling(
         except (TimedOut, NetworkError) as e:
             error_type = type(e).__name__
             if retry_count < max_retries:
-                # Exponential backoff with cap
-                delay = min(base_backoff * (2 ** retry_count), 30.0)
+                # Exponential backoff with jitter and cap
+                base_delay = base_backoff * (2 ** retry_count)
+                jitter = random.uniform(0, base_delay * jitter_factor)
+                delay = min(base_delay + jitter, max_backoff)
                 logger.warning(
                     f"[RateHandler] {error_type} for chat {chat_id} via bot {bot_key} (token={token_display}), "
-                    f"retrying in {delay}s (attempt {retry_count + 1}/{max_retries})"
+                    f"retrying in {delay:.1f}s (attempt {retry_count + 1}/{max_retries})"
                 )
                 await asyncio.sleep(delay)
                 retry_count += 1
@@ -214,20 +254,51 @@ async def send_message_with_rate_handling(
         except TelegramError as e:
             error_msg = str(e)
             # Check for rate limit errors in generic TelegramError messages
-            if "Too Many Requests" in error_msg or "retry after" in error_msg.lower():
+            if "Too Many Requests" in error_msg or "retry after" in error_msg.lower() or "429" in error_msg:
+                # Try to extract retry_after from error message
+                retry_after_extracted = None
+                try:
+                    # Try to parse "retry after X seconds" pattern
+                    import re
+                    match = re.search(r'retry after (\d+)', error_msg, re.IGNORECASE)
+                    if match:
+                        retry_after_extracted = int(match.group(1))
+                    else:
+                        # Default to configured value
+                        retry_after_extracted = getattr(Config, 'DEFAULT_RETRY_AFTER_SECONDS', 30.0)
+                except Exception:
+                    retry_after_extracted = getattr(Config, 'DEFAULT_RETRY_AFTER_SECONDS', 30.0)
+                
+                last_retry_after = retry_after_extracted
+                
+                # Set pause in Redis
+                if bot_username and retry_after_extracted:
+                    try:
+                        await redis_pause_manager.set_pause_state(
+                            bot_username=bot_username,
+                            retry_after_seconds=retry_after_extracted,
+                            reason="rate_limit_429",
+                            set_by=f"send_message@{bot_key}",
+                            retry_after_header=str(retry_after_extracted)
+                        )
+                    except Exception as pause_error:
+                        logger.error(f"[RateHandler] Failed to set pause in Redis: {pause_error}")
+                
                 # Treat as transient rate limit error with retry
                 if retry_count < max_retries:
-                    delay = min(base_backoff * (2 ** retry_count), 30.0)
+                    buffer_seconds = getattr(Config, 'PAUSE_BUFFER_SECONDS', 5.0)
+                    jitter = random.uniform(0, retry_after_extracted * jitter_factor)
+                    delay = retry_after_extracted + buffer_seconds + jitter
                     logger.warning(
                         f"[RateHandler] Rate limit (TelegramError) for chat {chat_id} via bot {bot_key} (token={token_display}), "
-                        f"retrying in {delay}s (attempt {retry_count + 1}/{max_retries})"
+                        f"retrying in {delay:.1f}s (attempt {retry_count + 1}/{max_retries})"
                     )
                     await asyncio.sleep(delay)
                     retry_count += 1
                     last_error = "rate_limited"
                 else:
                     logger.error(f"[RateHandler] Max retries ({max_retries}) reached after rate limit for chat {chat_id} via bot {bot_key} (token={token_display})")
-                    return {"success": False, "error": "rate_limit_max_retries", "retry_after": None}
+                    return {"success": False, "error": "rate_limit_max_retries", "retry_after": retry_after_extracted}
             else:
                 # Other Telegram errors
                 logger.error(f"[RateHandler] TelegramError for chat {chat_id} via bot {bot_key} (token={token_display}): {error_msg}")
@@ -237,6 +308,10 @@ async def send_message_with_rate_handling(
             error_msg = str(e)
             logger.exception(f"[RateHandler] Unexpected exception for chat {chat_id}: {error_msg}")
             return {"success": False, "error": f"Exception: {error_msg}", "retry_after": None}
+    
+    # If we exit the loop, all retries were exhausted
+    logger.error(f"[RateHandler] All retries exhausted for chat {chat_id} via bot {bot_key} (token={token_display})")
+    return {"success": False, "error": f"Max retries reached: {last_error}", "retry_after": last_retry_after}
     
     # Should not reach here, but handle edge case
     return {"success": False, "error": last_error or "Unknown", "retry_after": None}
@@ -955,6 +1030,30 @@ class NotificationService:
             dict: Summary with {"sent_count": int, "failed_count": int, "invalidated_count": int, 
                                  "failure_reasons": dict, "failed_user_ids": list}
         """
+        # Get bot username for filtering and pause check
+        bot_username = context.bot.username if hasattr(context.bot, 'username') else None
+        current_bot_key = get_bot_env_key()
+        bot_display = get_bot_key_display(current_bot_key, bot_username)
+        
+        # Check if bot is paused due to rate limiting
+        if bot_username:
+            is_paused = await redis_pause_manager.is_paused(bot_username)
+            if is_paused:
+                remaining = await redis_pause_manager.get_remaining_pause_seconds(bot_username)
+                logger.info(
+                    f"[{bot_display}] Bot is paused due to rate limiting, "
+                    f"remaining: {remaining:.1f}s - skipping processing"
+                )
+                # Increment pause skipped metric
+                await redis_pause_manager.increment_pause_skipped_metric(bot_username)
+                return {
+                    "sent_count": 0,
+                    "failed_count": 0,
+                    "invalidated_count": 0,
+                    "failure_reasons": {"paused": 1},
+                    "failed_user_ids": []
+                }
+        
         sent_count = 0
         failed_count = 0
         invalidated_count = 0
@@ -964,11 +1063,6 @@ class NotificationService:
         failure_samples_list = []  # Collect sample failure messages
         
         try:
-            # Get bot username for filtering (skip primary check for processing)
-            bot_username = context.bot.username if hasattr(context.bot, 'username') else None
-            current_bot_key = get_bot_env_key()
-            bot_display = get_bot_key_display(current_bot_key, bot_username)
-            
             pending = await self.db.get_pending_custom_messages(limit=100)
             
             if not pending:
@@ -1061,6 +1155,20 @@ class NotificationService:
                             failure_reasons[reason] = failure_reasons.get(reason, 0) + count
                         invalidated_count += result.get("invalidated", 0)
                         failed_user_ids.extend(result.get("failed_user_ids", []))
+                        
+                        # Check if pause was set during batch (429 response)
+                        if result.get("pause_set"):
+                            logger.info(f"[{bot_display}] Pause was set during batch processing, stopping immediately")
+                            batch = []
+                            # Stop processing entirely - don't process more messages
+                            return {
+                                "sent_count": sent_count,
+                                "failed_count": failed_count,
+                                "invalidated_count": invalidated_count,
+                                "failure_reasons": failure_reasons,
+                                "failed_user_ids": failed_user_ids
+                            }
+                        
                         batch = []
                         await asyncio.sleep(CUSTOM_MESSAGE_DELAY_SECONDS)
                 
@@ -1083,6 +1191,18 @@ class NotificationService:
                     failure_reasons[reason] = failure_reasons.get(reason, 0) + count
                 invalidated_count += result.get("invalidated", 0)
                 failed_user_ids.extend(result.get("failed_user_ids", []))
+                
+                # Check if pause was set during batch (429 response)
+                if result.get("pause_set"):
+                    logger.info(f"[{bot_display}] Pause was set during final batch, stopping immediately")
+                    return {
+                        "sent_count": sent_count,
+                        "failed_count": failed_count,
+                        "invalidated_count": invalidated_count,
+                        "failure_reasons": failure_reasons,
+                        "failed_user_ids": failed_user_ids
+                    }
+                
                 # Collect rate limit info and failure samples
                 if "rate_limit_info" in result:
                     rate_limit_info = result["rate_limit_info"]
@@ -1294,13 +1414,40 @@ class NotificationService:
                     await self.db.mark_custom_message_sent(message_id)
                     return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "bad_request", "retry_after": retry_after}
                 
-                # RetryAfter is transient - check for it
-                if "RetryAfter" in error or retry_after or "Too Many Requests" in error or "retry after" in error.lower() or "rate_limit" in error.lower():
-                    logger.warning(f"[Send] Rate limited for user {user_id}: {error}")
-                    # Don't mark as sent - will retry in next batch
+                # RetryAfter is transient - check for it and set pause state
+                if "RetryAfter" in error or retry_after or "Too Many Requests" in error or "retry after" in error.lower() or "rate_limit" in error.lower() or "429" in error:
+                    logger.warning(f"[Send] Rate limited for user {user_id}: {error}, retry_after={retry_after}")
+                    
+                    # Set pause state in Redis for this bot
+                    pause_set = False
+                    if bot_username and retry_after:
+                        try:
+                            pause_set = await redis_pause_manager.set_pause_state(
+                                bot_username=bot_username,
+                                retry_after_seconds=retry_after,
+                                reason="rate_limit_429",
+                                set_by=f"message_processor@{current_bot_key}",
+                                retry_after_header=str(retry_after)
+                            )
+                            if pause_set:
+                                logger.info(
+                                    f"[Send] Set pause for bot @{bot_username} for {retry_after}s "
+                                    f"(+buffer={Config.PAUSE_BUFFER_SECONDS}s)"
+                                )
+                        except Exception as pause_error:
+                            logger.error(f"[Send] Failed to set pause state: {pause_error}")
+                    
+                    # Don't mark as sent - will retry in next batch (after pause expires)
                     # Preserve the reason from send_message_with_rate_handling
                     reason = "rate_limit_max_retries" if "max_retries" in error.lower() else "rate_limited"
-                    return {"success": False, "user_id": user_id, "message_id": message_id, "reason": reason, "retry_after": retry_after}
+                    return {
+                        "success": False,
+                        "user_id": user_id,
+                        "message_id": message_id,
+                        "reason": reason,
+                        "retry_after": retry_after,
+                        "pause_set": pause_set
+                    }
                 
                 # Other transient errors (TimedOut, NetworkError) - don't mark as sent, will retry later
                 logger.warning(f"[Send] Transient error for user {user_id} via bot @{bot_username}: {error}")
@@ -1406,6 +1553,7 @@ class NotificationService:
         failed_user_ids = []
         retry_after_samples = []  # Track RetryAfter values
         failure_samples = []  # Track sample error messages
+        pause_set = False  # Track if pause was set due to 429
         
         for result in results:
             if isinstance(result, Exception):
@@ -1425,6 +1573,10 @@ class NotificationService:
                     retry_after = result.get("retry_after")
                     if retry_after and len(retry_after_samples) < 10:
                         retry_after_samples.append(retry_after)
+                    
+                    # Check if pause was set for this result
+                    if result.get("pause_set"):
+                        pause_set = True
                     
                     # Track failure samples
                     if len(failure_samples) < 20:
@@ -1456,7 +1608,8 @@ class NotificationService:
             "invalidated": invalidated_count,
             "failed_user_ids": failed_user_ids,
             "rate_limit_info": rate_limit_info,
-            "failure_samples": failure_samples
+            "failure_samples": failure_samples,
+            "pause_set": pause_set  # Indicate if pause was set during this batch
         }
     
     async def notify_subscribers_about_product(self, context: ContextTypes.DEFAULT_TYPE, product_id: int) -> int:
