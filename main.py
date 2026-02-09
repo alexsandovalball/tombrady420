@@ -1375,7 +1375,13 @@ async def post_init(application: Application):
     # Set the bot username in the bot_key module for use in broadcast callbacks
     # This allows enqueue_local_broadcast to filter users by bot_username without needing a context
     from utils.bot_key import set_bot_username
-    bot_username = application.bot.username if hasattr(application.bot, 'username') else None
+    try:
+        bot_username = application.bot.username
+    except (RuntimeError, AttributeError) as e:
+        # Failed to retrieve bot username - bot may not be properly initialized
+        logger.warning("Failed to retrieve bot username during post_init: %s", str(e))
+        bot_username = None
+    
     if bot_username:
         set_bot_username(bot_username)
     else:
