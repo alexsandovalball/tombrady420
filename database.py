@@ -1164,26 +1164,33 @@ class Database:
     
     async def get_user_bot_usernames(self, user_id: int) -> List[str]:
         """
-        Get list of distinct bot usernames that a user has started.
+        Get bot username that a user has most recently started.
         
         Used for fallback when delivering single-user broadcasts - if a user hasn't
-        started the current bot, we can queue the message for other bots they have started.
+        started the current bot, we can queue the message for the bot they did start.
+        
+        Note: The bot_users table has user_id as PRIMARY KEY, so each user has only
+        one row with their most recent bot_username. This returns a list for API
+        consistency, but will contain at most one element.
         
         Args:
             user_id: Telegram user ID
         
         Returns:
-            List of bot usernames (without @) that the user has started.
-            Empty list if user not found or all bot_username values are NULL.
+            List containing the user's bot_username (if not NULL), or empty list.
         """
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("""
-                SELECT DISTINCT bot_username FROM bot_users 
+                SELECT bot_username FROM bot_users 
                 WHERE user_id = ? AND bot_username IS NOT NULL
             """, (user_id,)) as cursor:
-                rows = await cursor.fetchall()
-                bot_usernames = [row[0] for row in rows]
-                logger.debug(f"[Database] get_user_bot_usernames({user_id}): found {len(bot_usernames)} bot(s): {bot_usernames}")
+                row = await cursor.fetchone()
+                if row:
+                    bot_usernames = [row[0]]
+                    logger.debug(f"[Database] get_user_bot_usernames({user_id}): found bot_username: {bot_usernames[0]}")
+                else:
+                    bot_usernames = []
+                    logger.debug(f"[Database] get_user_bot_usernames({user_id}): no bot_username found")
                 return bot_usernames
     
     async def get_bot_key_for_username(self, bot_username: str) -> Optional[str]:
