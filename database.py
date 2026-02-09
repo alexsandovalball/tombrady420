@@ -5,6 +5,7 @@ Uses SQLite with aiosqlite for async operations.
 import aiosqlite
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
+from collections import defaultdict
 import logging
 import asyncio
 from functools import lru_cache
@@ -871,7 +872,6 @@ class Database:
         Users without a bot_username are included under None key.
         Excludes admins.
         """
-        from collections import defaultdict
         from utils.helpers import get_admin_ids
         admin_ids = get_admin_ids()
         
@@ -912,7 +912,6 @@ class Database:
         Returns a dict mapping bot_username to list of user dicts.
         Users without a bot_username are included under None key.
         """
-        from collections import defaultdict
         result = defaultdict(list)
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
