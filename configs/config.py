@@ -100,13 +100,7 @@ class ConfigClass:
         self.BROADCAST_RETRY_ON_RECENT_START_SECONDS = config('BROADCAST_RETRY_ON_RECENT_START_SECONDS', default=60, cast=int)
         self.BROADCAST_RECENT_START_RETRY_DELAY_SECONDS = config('BROADCAST_RECENT_START_RETRY_DELAY_SECONDS', default=5, cast=int)
         
-        # Redis configuration for shared pause state
-        self.REDIS_HOST = config('REDIS_HOST', default='localhost')
-        self.REDIS_PORT = config('REDIS_PORT', default=6379, cast=int)
-        self.REDIS_DB = config('REDIS_DB', default=0, cast=int)
-        self.REDIS_PASSWORD = config('REDIS_PASSWORD', default=None)
-        
-        # Pause state configuration
+        # Pause state configuration (database-based)
         self.PAUSE_BUFFER_SECONDS = config('PAUSE_BUFFER_SECONDS', default=5, cast=float)
         self.DEFAULT_RETRY_AFTER_SECONDS = config('DEFAULT_RETRY_AFTER_SECONDS', default=30, cast=float)
         

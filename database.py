@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 import logging
 import asyncio
+import time
 from functools import lru_cache
 
 from configs.config import Config
@@ -2026,6 +2027,175 @@ async def clear_database_caches():
     
     logger.info("Database caches cleared")
 
+
+# ========================================
+# Database-based Pause Manager Functions
+# ========================================
+# These functions replace the Redis-based pause manager for rate-limit handling
+
+
+async def get_pause_state_db(db_path: str, bot_key: str) -> Optional[Dict[str, Any]]:
+    """
+    Get the current pause state for a bot from the database.
+    
+    Args:
+        db_path: Path to the database file
+        bot_key: Bot identifier (username or token key)
+    
+    Returns:
+        dict or None: Pause state with {paused_until, updated_at}
+                     or None if not paused or pause expired
+    """
+    try:
+        async with aiosqlite.connect(db_path) as db:
+            cursor = await db.execute("""
+                SELECT paused_until, updated_at
+                FROM bot_rate_pause_state
+                WHERE bot_key = ?
+            """, (bot_key,))
+            row = await cursor.fetchone()
+            
+            if not row:
+                return None
+            
+            paused_until, updated_at = row
+            current_time = time.time()
+            
+            # Check if pause has expired
+            if paused_until <= current_time:
+                # Clean up expired pause
+                await db.execute("""
+                    DELETE FROM bot_rate_pause_state
+                    WHERE bot_key = ?
+                """, (bot_key,))
+                await db.commit()
+                return None
+            
+            return {
+                "paused_until": paused_until,
+                "updated_at": updated_at
+            }
+    except Exception as e:
+        logger.error(f"Error getting pause state for bot {bot_key}: {e}")
+        return None
+
+
+async def get_remaining_pause_seconds_db(db_path: str, bot_key: str) -> float:
+    """
+    Get the remaining pause duration in seconds from the database.
+    
+    Args:
+        db_path: Path to the database file
+        bot_key: Bot identifier (username or token key)
+    
+    Returns:
+        float: Remaining seconds to wait, or 0 if not paused
+    """
+    pause_state = await get_pause_state_db(db_path, bot_key)
+    if not pause_state:
+        return 0.0
+    
+    paused_until = pause_state.get("paused_until", 0)
+    current_time = time.time()
+    remaining = paused_until - current_time
+    return max(0.0, remaining)
+
+
+async def is_paused_db(db_path: str, bot_key: str) -> bool:
+    """
+    Check if a bot is currently paused in the database.
+    
+    Args:
+        db_path: Path to the database file
+        bot_key: Bot identifier (username or token key)
+    
+    Returns:
+        bool: True if paused, False otherwise
+    """
+    remaining = await get_remaining_pause_seconds_db(db_path, bot_key)
+    return remaining > 0
+
+
+async def set_pause_state_db(
+    db_path: str,
+    bot_key: str,
+    retry_after_seconds: float,
+    buffer_seconds: float = 5.0
+) -> bool:
+    """
+    Set pause state for a bot in the database with extend semantics.
+    
+    Only updates the pause if the new paused_until timestamp is greater than
+    the existing one, preventing races where multiple workers try to set pause.
+    
+    Args:
+        db_path: Path to the database file
+        bot_key: Bot identifier (username or token key)
+        retry_after_seconds: Seconds to pause (from Retry-After or default)
+        buffer_seconds: Extra buffer to add (default: 5.0)
+    
+    Returns:
+        bool: True if pause was set/extended, False otherwise
+    """
+    try:
+        current_time = time.time()
+        new_paused_until = current_time + retry_after_seconds + buffer_seconds
+        
+        async with aiosqlite.connect(db_path) as db:
+            # Check existing pause
+            cursor = await db.execute("""
+                SELECT paused_until
+                FROM bot_rate_pause_state
+                WHERE bot_key = ?
+            """, (bot_key,))
+            row = await cursor.fetchone()
+            
+            # Only update if new pause is longer or doesn't exist
+            if row:
+                existing_paused_until = row[0]
+                if new_paused_until <= existing_paused_until:
+                    logger.debug(
+                        f"[PauseManager] Pause not extended for bot {bot_key}: "
+                        f"existing pause is longer"
+                    )
+                    return False
+            
+            # Set or update pause
+            await db.execute("""
+                INSERT OR REPLACE INTO bot_rate_pause_state (bot_key, paused_until, updated_at)
+                VALUES (?, ?, ?)
+            """, (bot_key, new_paused_until, current_time))
+            await db.commit()
+            
+            logger.info(
+                f"[PauseManager] Set pause for bot {bot_key}: "
+                f"paused_until={new_paused_until:.2f} ({retry_after_seconds + buffer_seconds:.1f}s)"
+            )
+            return True
+            
+    except Exception as e:
+        logger.error(f"Error setting pause state for bot {bot_key}: {e}")
+        return False
+
+
+async def clear_pause_state_db(db_path: str, bot_key: str):
+    """
+    Clear the pause state for a bot from the database (manual override).
+    
+    Args:
+        db_path: Path to the database file
+        bot_key: Bot identifier (username or token key)
+    """
+    try:
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute("""
+                DELETE FROM bot_rate_pause_state
+                WHERE bot_key = ?
+            """, (bot_key,))
+            await db.commit()
+            logger.info(f"[PauseManager] Cleared pause state for bot {bot_key}")
+    except Exception as e:
+        logger.error(f"Error clearing pause state for bot {bot_key}: {e}")
 
 
     
