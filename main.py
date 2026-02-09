@@ -1376,10 +1376,10 @@ async def post_init(application: Application):
     # This allows enqueue_local_broadcast to filter users by bot_username without needing a context
     from utils.bot_key import set_bot_username
     try:
-        bot_username = application.bot.username if hasattr(application.bot, 'username') else None
+        bot_username = application.bot.username
     except (RuntimeError, AttributeError) as e:
-        # Bot not initialized yet — set to None or handle appropriately
-        logger.warning("application.bot not initialized yet; continuing with bot_username=None: %s", str(e))
+        # Failed to retrieve bot username - bot may not be properly initialized
+        logger.warning("Failed to retrieve bot username during post_init: %s", str(e))
         bot_username = None
     
     if bot_username:
