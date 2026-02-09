@@ -265,10 +265,9 @@ class TestSingleUserFallback:
         context = {"target_user_id": 602}
         await enqueue_local_broadcast(temp_db, context, message_text)
         
-        # Verify message was queued
-        # NOTE: Since PRIMARY_BOT_USERNAME is not configured, all bots are treated as primary
-        # and get NULL bot_username users. So user 602 will be delivered via the current bot
-        # (BOT_TOKEN) rather than via last_bot_key (BOT_TOKEN_3).
+        # Verify message was queued. Note: With PRIMARY_BOT_USERNAME not configured, all bots
+        # are treated as primary and get NULL bot_username users. So user 602 is delivered via
+        # the current bot (BOT_TOKEN) rather than via last_bot_key (BOT_TOKEN_3).
         pending = await temp_db.get_pending_custom_messages(limit=100)
         assert len(pending) == 1
         assert pending[0]['user_id'] == 602

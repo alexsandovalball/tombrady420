@@ -30,7 +30,6 @@ async def temp_db():
     yield db
     
     # Cleanup
-    import os
     try:
         os.unlink(db_path)
     except:
