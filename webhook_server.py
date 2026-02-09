@@ -6,6 +6,7 @@ which is more suitable for serverless deployments like Render.com.
 import logging
 import os
 from contextlib import asynccontextmanager
+from typing import List
 from fastapi import FastAPI, Request, Response, status
 from telegram import Update
 from telegram.ext import Application
@@ -59,11 +60,11 @@ logging.getLogger('uvicorn.access').setLevel(logging.INFO)  # Keep access logs v
 # This allows the notification service to access all bot instances
 _bot_applications = []
 
-def get_bot_applications():
+def get_bot_applications() -> List[Application]:
     """Get all bot application instances."""
     return _bot_applications
 
-def get_bot_usernames():
+def get_bot_usernames() -> List[str]:
     """Get list of bot usernames for all registered bots."""
     return [bot.bot.username for bot in _bot_applications if hasattr(bot, 'bot') and hasattr(bot.bot, 'username')]
 
