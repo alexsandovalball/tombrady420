@@ -4,7 +4,7 @@ Menu and catalog handlers.
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from telegram.error import TelegramError
+from telegram.error import TelegramError, BadRequest
 from database import Database
 from utils.pagination import create_pagination_keyboard, paginate_items
 from utils.helpers import is_admin
@@ -194,7 +194,7 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
                             reply_markup=keyboard,
                             parse_mode="Markdown"
                         )
-                    except TelegramError as e:
+                    except BadRequest as e:
                         # Ignore "Message is not modified" errors as a fallback
                         if "message is not modified" in str(e).lower():
                             logger.debug(f"[Menu] Message not modified error caught for user {update.effective_user.id}")

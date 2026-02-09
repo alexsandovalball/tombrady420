@@ -1164,13 +1164,13 @@ class Database:
     
     async def get_user_bot_usernames(self, user_id: int) -> List[str]:
         """
-        Get bot username that a user has most recently started.
+        Get bot username associated with a user.
         
         Used for fallback when delivering single-user broadcasts - if a user hasn't
         started the current bot, we can queue the message for the bot they did start.
         
         Note: The bot_users table has user_id as PRIMARY KEY, so each user has only
-        one row with their most recent bot_username. This returns a list for API
+        one row with their current bot_username. This returns a list for API
         consistency, but will contain at most one element.
         
         Args:

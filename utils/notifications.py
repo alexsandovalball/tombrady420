@@ -1298,7 +1298,8 @@ async def enqueue_local_broadcast(db: Database, context: dict, message_text: str
         if bot_username:
             bot_user_ids = set(await db.get_users_by_bot(bot_username))
             # Log sample of user IDs for debugging (first 10)
-            sample_user_ids = list(bot_user_ids)[:10]
+            import itertools
+            sample_user_ids = list(itertools.islice(bot_user_ids, 10))
             logger.info(f"[BroadcastEnqueue] Found {len(bot_user_ids)} users for bot @{bot_username} (sample: {sample_user_ids}{'...' if len(bot_user_ids) > 10 else ''})")
         else:
             # Fallback: get all users if bot_username is not available

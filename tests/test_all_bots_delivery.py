@@ -312,8 +312,9 @@ class TestSingleUserFallback:
         assert pending[0]['user_id'] == 605
         assert pending[0]['message_text'] == message_text
         # When user has started the current bot, uses current bot_key (from get_bot_env_key)
-        # In test environment, this returns 'BOT_TOKEN' as fallback
-        assert pending[0]['target_bot_key'] in ['BOT_TOKEN', 'BOT_TOKEN_1']
+        # In test environment with no BOT_TOKEN env var, get_bot_env_key returns 'BOT_TOKEN' as fallback
+        # This is the expected behavior for tests
+        assert pending[0]['target_bot_key'] == 'BOT_TOKEN'
 
 
 class TestDatabaseHelpers:
