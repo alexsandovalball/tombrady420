@@ -325,12 +325,17 @@ async def send_media_message(
         uploader_bot_id: Optional bot env key that uploaded this media (e.g., 'BOT_TOKEN', 'BOT_TOKEN_1')
         db: Optional Database instance for updating file_id after successful reupload
     """
-    async def _send_media(fid):
-        """Internal helper to send media by type. Returns sent message."""
+    async def _send_media(file_id_or_input):
+        """
+        Internal helper to send media by type. Returns sent message.
+        
+        Args:
+            file_id_or_input: Either a file_id string or an InputFile object
+        """
         if file_type == "photo":
             return await context.bot.send_photo(
                 chat_id=chat_id,
-                photo=fid,
+                photo=file_id_or_input,
                 caption=caption,
                 reply_markup=reply_markup,
                 parse_mode=None
@@ -338,7 +343,7 @@ async def send_media_message(
         elif file_type == "video":
             return await context.bot.send_video(
                 chat_id=chat_id,
-                video=fid,
+                video=file_id_or_input,
                 caption=caption,
                 reply_markup=reply_markup,
                 parse_mode=None
@@ -346,7 +351,7 @@ async def send_media_message(
         elif file_type == "animation":
             return await context.bot.send_animation(
                 chat_id=chat_id,
-                animation=fid,
+                animation=file_id_or_input,
                 caption=caption,
                 reply_markup=reply_markup,
                 parse_mode=None
@@ -354,7 +359,7 @@ async def send_media_message(
         elif file_type in ["document", "audio", "voice", "video_note"]:
             return await context.bot.send_document(
                 chat_id=chat_id,
-                document=fid,
+                document=file_id_or_input,
                 caption=caption,
                 reply_markup=reply_markup,
                 parse_mode=None

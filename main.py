@@ -1406,7 +1406,7 @@ async def post_init(application: Application):
     
     if not bot_username:
         logger.warning(
-            "⚠️  Bot username not available after {max_retries} attempts. "
+            f"⚠️  Bot username not available after {max_retries} attempts. "
             "Broadcast filtering will use fallback logic (may broadcast to all users)."
         )
         # Note: enqueue_local_broadcast will handle None bot_username gracefully
