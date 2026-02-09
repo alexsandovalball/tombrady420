@@ -3,9 +3,9 @@ Webhook server for Telegram bot using FastAPI and uvicorn.
 This allows the bot to receive updates via webhooks instead of polling,
 which is more suitable for serverless deployments like Render.com.
 """
- import logging
- import os
- import asyncio
+import logging
+import os
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, status
 from telegram import Update
@@ -43,6 +43,7 @@ from telegram.ext import (
     filters
 )
 from utils.helpers import get_channel_id, get_channel_username, get_file_id_cache_size
+from utils.notifications import NOTIFICATION_TASKS_KEY
 
 # Configure logging with structured format for better visibility on Render
 logging.basicConfig(
@@ -56,7 +57,6 @@ logger = logging.getLogger(__name__)
 logging.getLogger('telegram').setLevel(logging.INFO)
 logging.getLogger('httpx').setLevel(logging.WARNING)  # Reduce noise from HTTP library
 logging.getLogger('uvicorn.access').setLevel(logging.INFO)  # Keep access logs visible
-
 
 async def setup_application(bot_token: str, bot_index: int = 0):
     """Initialize and configure a bot application.
@@ -258,6 +258,7 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down bot applications...")
     for idx, bot_app in enumerate(app.state.bot_apps):
+        cancelled_tasks = []
         try:
             # Cancel and clear asyncio tasks to prevent pickling errors
             if hasattr(bot_app, 'bot_data'):
@@ -265,12 +266,16 @@ async def lifespan(app: FastAPI):
                     if isinstance(value, asyncio.Task):
                         if not value.done():
                             value.cancel()
+                            cancelled_tasks.append(value)
                         del bot_app.bot_data[key]
-                    elif isinstance(value, list) and key == 'notification_tasks':
-                        for task in value[:]:
+                    elif key == NOTIFICATION_TASKS_KEY and isinstance(value, list):
+                        for task in value:
                             if isinstance(task, asyncio.Task) and not task.done():
                                 task.cancel()
-                            value.remove(task)
+                                cancelled_tasks.append(task)
+                        value.clear()
+            if cancelled_tasks:
+                await asyncio.gather(*cancelled_tasks, return_exceptions=True)
             await bot_app.stop()
             await bot_app.shutdown()
             logger.info(f"Bot {idx} shut down successfully")
