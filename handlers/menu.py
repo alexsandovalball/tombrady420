@@ -176,11 +176,31 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
                     parse_mode="Markdown"
                 )
             else:
-                await update.callback_query.edit_message_text(
-                    text,
-                    reply_markup=keyboard,
-                    parse_mode="Markdown"
-                )
+                # Pre-check if message would be modified to avoid "Message is not modified" error
+                current_text = message.text or ""
+                current_markup = message.reply_markup
+                
+                # Check if text or markup would change
+                text_unchanged = (current_text == text)
+                markup_unchanged = (current_markup == keyboard)
+                
+                if text_unchanged and markup_unchanged:
+                    logger.debug(f"[Menu] Message unchanged, skipping edit for user {update.effective_user.id}")
+                    await update.callback_query.answer()  # Acknowledge the callback
+                else:
+                    try:
+                        await update.callback_query.edit_message_text(
+                            text,
+                            reply_markup=keyboard,
+                            parse_mode="Markdown"
+                        )
+                    except TelegramError as e:
+                        # Ignore "Message is not modified" errors as a fallback
+                        if "message is not modified" in str(e).lower():
+                            logger.debug(f"[Menu] Message not modified error caught for user {update.effective_user.id}")
+                            await update.callback_query.answer()
+                        else:
+                            raise
         else:
             await update.message.reply_text(
                 text,

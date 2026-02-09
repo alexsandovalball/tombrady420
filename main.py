@@ -1375,17 +1375,30 @@ async def post_init(application: Application):
     # Set the bot username in the bot_key module for use in broadcast callbacks
     # This allows enqueue_local_broadcast to filter users by bot_username without needing a context
     from utils.bot_key import set_bot_username
-    try:
-        bot_username = application.bot.username
-    except (RuntimeError, AttributeError) as e:
-        # Bot not initialized yet or ExtBot properties not accessible
-        bot_username = None
-        logger.warning("application.bot not initialized yet; continuing with bot_username=None. Error: %s", str(e))
+    
+    # Try to get bot username with retry logic
+    bot_username = None
+    max_retries = 2
+    retry_delay = 1.0  # seconds
+    
+    for attempt in range(max_retries + 1):
+        try:
+            bot_username = application.bot.username
+            if bot_username:
+                logger.info(f"Bot username retrieved successfully on attempt {attempt + 1}: @{bot_username}")
+                break
+        except (RuntimeError, AttributeError) as e:
+            logger.warning(f"Attempt {attempt + 1}/{max_retries + 1}: application.bot not initialized yet. Error: {str(e)}")
+            if attempt < max_retries:
+                logger.info(f"Retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
     
     if bot_username:
         set_bot_username(bot_username)
+        logger.info(f"Bot username set successfully: @{bot_username}")
     else:
-        logger.warning("Bot username not available during post_init")
+        logger.warning("Bot username not available after retries. Broadcast filtering will use fallback logic.")
+        # Note: enqueue_local_broadcast will handle None bot_username gracefully
     
     # Set up translation service with database
     translation_service.set_database(db)

@@ -81,8 +81,11 @@ def start_listener_in_background(db: Database, enqueue_callback: Callable[[dict,
         ...     print(f"Received: {message_text}")
         >>> task = start_listener_in_background(db, handle_broadcast)
     """
+    from utils.bot_key import get_bot_username
+    
     bot_key = get_bot_env_key()
-    logger.info(f"[BroadcastForwarder] Starting broadcast listener for bot_key={bot_key} with poll_interval={POLL_INTERVAL_SECONDS}s")
+    bot_username = get_bot_username()
+    logger.info(f"[BroadcastForwarder] Starting broadcast listener for bot_key={bot_key}, bot_username=@{bot_username if bot_username else 'None'} with poll_interval={POLL_INTERVAL_SECONDS}s")
     
     # Normalize enqueue_callback to (context, message_text) signature when callers passed a function expecting (db, context, message_text)
     try:
@@ -115,7 +118,9 @@ async def _listener_loop(db: Database, enqueue_callback: Callable[[dict, str], A
         enqueue_callback: Async callback to invoke for each broadcast
         bot_key: The bot environment key for this instance
     """
-    logger.info(f"[BroadcastForwarder] Listener loop started for {bot_key}")
+    from utils.bot_key import get_bot_username
+    bot_username = get_bot_username()
+    logger.info(f"[BroadcastForwarder] Listener loop started for bot_key={bot_key}, bot_username=@{bot_username if bot_username else 'None'}")
     
     while True:
         try:

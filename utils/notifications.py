@@ -1297,7 +1297,9 @@ async def enqueue_local_broadcast(db: Database, context: dict, message_text: str
         # Get users who have started this bot (based on bot_username)
         if bot_username:
             bot_user_ids = set(await db.get_users_by_bot(bot_username))
-            logger.info(f"[BroadcastEnqueue] Found {len(bot_user_ids)} users for bot @{bot_username}")
+            # Log sample of user IDs for debugging (first 10)
+            sample_user_ids = list(bot_user_ids)[:10]
+            logger.info(f"[BroadcastEnqueue] Found {len(bot_user_ids)} users for bot @{bot_username} (sample: {sample_user_ids}{'...' if len(bot_user_ids) > 10 else ''})")
         else:
             # Fallback: get all users if bot_username is not available
             logger.warning(f"[BroadcastEnqueue] bot_username not available for {bot_key}, using all users")
@@ -1308,8 +1310,11 @@ async def enqueue_local_broadcast(db: Database, context: dict, message_text: str
         users_to_notify = []
         
         if target_user_id:
-            # Single-user send: only send to this user if they've started this bot
-            if target_user_id in bot_user_ids and target_user_id not in admin_ids_set:
+            # Single-user send: check if user has started this bot
+            if target_user_id in admin_ids_set:
+                logger.info(f"[BroadcastEnqueue] User {target_user_id} is admin, skipping")
+            elif target_user_id in bot_user_ids:
+                # User has started this bot
                 is_blocked = await db.is_user_blocked(target_user_id)
                 if not is_blocked:
                     users_to_notify.append(target_user_id)
@@ -1317,26 +1322,90 @@ async def enqueue_local_broadcast(db: Database, context: dict, message_text: str
                 else:
                     logger.info(f"[BroadcastEnqueue] User {target_user_id} is blocked, skipping")
             else:
-                logger.info(f"[BroadcastEnqueue] User {target_user_id} has not started bot @{bot_username}, skipping")
+                # User has NOT started this bot - attempt fallback
+                logger.info(f"[BroadcastEnqueue] User {target_user_id} has not started bot @{bot_username}, attempting fallback")
+                
+                # Step 1: Query for other bot usernames the user has started
+                user_bot_usernames = await db.get_user_bot_usernames(target_user_id)
+                
+                if user_bot_usernames:
+                    logger.info(f"[BroadcastEnqueue] User {target_user_id} has started {len(user_bot_usernames)} other bot(s): {user_bot_usernames}")
+                    
+                    # Queue message for each bot the user has started
+                    for other_bot_username in user_bot_usernames:
+                        # Map bot_username to bot_key
+                        other_bot_key = await db.get_bot_key_for_username(other_bot_username)
+                        
+                        if other_bot_key:
+                            logger.info(f"[BroadcastEnqueue] Queuing single-user message for user {target_user_id} to bot @{other_bot_username} (key={other_bot_key})")
+                            # Queue directly to the other bot
+                            await db.queue_custom_messages_batch_with_targets(
+                                [(target_user_id, other_bot_key)],
+                                message_text,
+                                media_type=None,
+                                media_file_id=None,
+                                reply_markup=reply_markup_json
+                            )
+                        else:
+                            logger.warning(f"[BroadcastEnqueue] Could not map @{other_bot_username} to bot_key for user {target_user_id}")
+                    
+                    # Successfully queued to other bot(s), so we're done
+                    logger.info(f"[BroadcastEnqueue] Single-user fallback completed for user {target_user_id}")
+                    return
+                else:
+                    # No bot_username rows found, try last_bot_key fallback
+                    logger.info(f"[BroadcastEnqueue] No bot_username rows found for user {target_user_id}, trying last_bot_key fallback")
+                    last_bot_key = await db.get_user_last_bot_key(target_user_id)
+                    
+                    if last_bot_key:
+                        logger.info(f"[BroadcastEnqueue] Queuing single-user message for user {target_user_id} to last_bot_key={last_bot_key}")
+                        await db.queue_custom_messages_batch_with_targets(
+                            [(target_user_id, last_bot_key)],
+                            message_text,
+                            media_type=None,
+                            media_file_id=None,
+                            reply_markup=reply_markup_json
+                        )
+                        logger.info(f"[BroadcastEnqueue] Single-user fallback to last_bot_key completed for user {target_user_id}")
+                        return
+                    else:
+                        # No bots found at all
+                        logger.info(f"[BroadcastEnqueue] No bots found for user {target_user_id} (not in bot_users table or no last_bot_key), skipping")
+                        return
         
         elif product_id:
             # Product notification: send to subscribed users who have started this bot
             subscribed_users = set(await db.get_subscribed_users())
+            skipped_not_subscribed = 0
+            skipped_blocked = 0
             for user_id in bot_user_ids:
-                if user_id in subscribed_users and user_id not in admin_ids_set:
+                if user_id in admin_ids_set:
+                    continue  # Skip admins
+                if user_id in subscribed_users:
                     is_blocked = await db.is_user_blocked(user_id)
                     if not is_blocked:
                         users_to_notify.append(user_id)
-            logger.info(f"[BroadcastEnqueue] {len(users_to_notify)} subscribed users from bot @{bot_username}")
+                    else:
+                        skipped_blocked += 1
+                else:
+                    skipped_not_subscribed += 1
+            logger.info(f"[BroadcastEnqueue] Product notification: {len(users_to_notify)} subscribed users from bot @{bot_username} (skipped: {skipped_not_subscribed} not subscribed, {skipped_blocked} blocked)")
         
         else:
             # Broadcast to all: send to all users who have started this bot
+            skipped_admin = 0
+            skipped_blocked = 0
             for user_id in bot_user_ids:
-                if user_id not in admin_ids_set:
-                    is_blocked = await db.is_user_blocked(user_id)
-                    if not is_blocked:
-                        users_to_notify.append(user_id)
-            logger.info(f"[BroadcastEnqueue] {len(users_to_notify)} eligible users from bot @{bot_username}")
+                if user_id in admin_ids_set:
+                    skipped_admin += 1
+                    continue
+                is_blocked = await db.is_user_blocked(user_id)
+                if not is_blocked:
+                    users_to_notify.append(user_id)
+                else:
+                    skipped_blocked += 1
+            logger.info(f"[BroadcastEnqueue] Broadcast to all: {len(users_to_notify)} eligible users from bot @{bot_username} (skipped: {skipped_admin} admins, {skipped_blocked} blocked)")
+
         
         if not users_to_notify:
             logger.info(f"[BroadcastEnqueue] No users to notify for bot @{bot_username}")
