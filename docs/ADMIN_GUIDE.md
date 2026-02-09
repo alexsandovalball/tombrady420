@@ -27,10 +27,10 @@ Browse products by category - available to all users
 ### `/users`
 View and manage bot users (admin only)
 - Shows 10 users per page with pagination
-- Displays: username, full name, ID, interaction count, last seen, **notification status**
+- Displays: username, full name, ID, interaction count, last seen, **notification status**, **bot username** (which bot instance they used)
 - **Toggle notifications** for individual users with one click
 - Navigate pages with ⬅️ Previous / ➡️ Next buttons
-- Useful for monitoring bot engagement and controlling who gets notifications
+- Useful for monitoring bot engagement, analytics across multiple bot instances, and controlling who gets notifications
 
 ### `/nuke`
 Delete ALL products from catalog (admin only)
@@ -85,6 +85,23 @@ Block/unblock users from using the bot (admin only)
 - `/block <user_id>` - Block a user (e.g., `/block 123456789`)
 - `/unblock <user_id>` - Unblock a user (e.g., `/unblock 123456789`)
 - Use `/users` to find user IDs
+
+### `/clearcache`
+Clear the file ID cache (admin only)
+- Clears bot-specific media file IDs from cache
+- Useful when:
+  - Adding new secondary bot instances
+  - Media stops displaying correctly
+  - After configuration changes
+- **Multi-bot setup**: When using multiple bot instances, each bot needs to cache its own file IDs
+- After clearing cache, media will be re-cached on next product view
+- **Tip**: Admins should `/start` each secondary bot to enable proper file ID caching
+
+### `/setcontact`
+Set the order contact username (admin only)
+- Interactive workflow asks for new contact username
+- Must start with `@` (e.g., `@username`)
+- This contact appears in product views for users to place orders
 
 ## New Product Workflows
 
@@ -261,11 +278,15 @@ _(No subcategories)_
 Admin IDs are configured in `.env` file:
 ```
 ADMIN_IDS=123456789,987654321
+PRIMARY_ADMIN_ID=123456789  # Optional: receives categorization requests
 ```
 
-- Comma-separated list of admin user IDs
+- **ADMIN_IDS**: Comma-separated list of admin user IDs who can use admin commands
+- **PRIMARY_ADMIN_ID**: (Optional) The admin who receives new product categorization requests
+  - If not set, the first admin in ADMIN_IDS will receive categorization requests
+  - All admins can still categorize products via `/recategorize` command
 - Get your ID from @userinfobot on Telegram
-- All listed IDs have admin privileges
+- All listed IDs in ADMIN_IDS have full admin privileges
 
 ## Translation System
 
@@ -284,3 +305,59 @@ The bot supports 7 languages with automatic translation. Key features:
 
 ### Setting Order Contact
 Use `/setcontact` to update the order contact username (default: @FLYAWAYPEP). This contact appears in welcome messages and product views across all languages.
+
+## Multi-Bot Setup and Analytics
+
+### Using Multiple Bot Instances
+
+The bot supports running multiple bot instances (primary + secondary bots) for:
+- **Load distribution** across different bot accounts
+- **Testing** new features on a secondary bot
+- **Regional deployment** with separate bots per region
+- **Analytics** to track which bot users prefer
+
+### Bot Username Tracking
+
+When using multiple bot instances, the `/users` command shows which bot each user interacted with:
+- **🤖 Bot: @botusername** - Displayed in user details
+- Helps understand user distribution across bot instances
+- Useful for analyzing which bot is more popular
+- First bot a user interacts with is recorded
+
+### Setting Up Secondary Bots
+
+**Configuration:**
+1. Add multiple bot tokens to `.env`:
+   ```
+   BOT_TOKENS=token1,token2,token3
+   ```
+2. Each bot gets its own webhook endpoint: `/webhook`, `/webhook/1`, `/webhook/2`
+
+**Important for Media Display:**
+- Telegram file IDs are bot-specific
+- **Admins must `/start` each secondary bot** to enable media caching
+- When admin starts a secondary bot, it can forward media to cache bot-specific file IDs
+- Without this, secondary bots will show text-only fallback messages
+
+**After Adding a Secondary Bot:**
+1. Send `/start` to the new bot from your admin account
+2. Use `/clearcache` to clear old cached file IDs (optional)
+3. Test by viewing products through the secondary bot
+4. Check logs for "File ID cache is empty" warnings
+
+### Troubleshooting Multi-Bot Issues
+
+**Media not displaying on secondary bot:**
+- Solution: Admin needs to `/start` the secondary bot
+- Check logs for "bot can't initiate conversation" errors
+- Use `/clearcache` to force re-caching of file IDs
+
+**Cache warnings on startup:**
+- Warning: "File ID cache is empty"
+- This is normal on first startup with multiple bots
+- Follow the guidance to `/start` each bot
+
+**Analytics not showing bot username:**
+- Bot username is recorded on first interaction
+- Only shows for users who interacted after this feature was added
+- Existing users will show bot username on their next interaction

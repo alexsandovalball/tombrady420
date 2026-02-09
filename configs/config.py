@@ -20,7 +20,9 @@ class ConfigClass:
         """Initialize and load configuration from environment variables."""
         self._loaded = False
         self.BOT_TOKEN: Optional[str] = None
+        self.BOT_TOKENS: List[str] = []  # Support for multiple bot tokens
         self.ADMIN_IDS: List[int] = []
+        self.PRIMARY_ADMIN_ID: Optional[int] = None
         self.CHANNEL_ID: Optional[int] = None
         self.CHANNEL_USERNAME: Optional[str] = None
         self.DB_PATH: str = 'catalog.db'
@@ -34,17 +36,45 @@ class ConfigClass:
         if self._loaded:
             return
         
-        # Load BOT_TOKEN
+        # Load BOT_TOKEN (primary bot)
         try:
             self.BOT_TOKEN = config('BOT_TOKEN')
         except UndefinedValueError:
             self.BOT_TOKEN = None
+        
+        # Load additional bot tokens (BOT_TOKEN_1, BOT_TOKEN_2, etc.)
+        # This allows multiple bot instances to run with separate webhook endpoints
+        bot_tokens = []
+        if self.BOT_TOKEN:
+            bot_tokens.append(self.BOT_TOKEN)
+        
+        # Try to load BOT_TOKEN_1, BOT_TOKEN_2, ... up to BOT_TOKEN_10
+        for i in range(1, 11):
+            try:
+                token = config(f'BOT_TOKEN_{i}')
+                if token:
+                    bot_tokens.append(token)
+            except UndefinedValueError:
+                # Stop searching if we hit a missing token index >= 2
+                # This assumes tokens are numbered sequentially starting from 1
+                # We allow BOT_TOKEN to exist without BOT_TOKEN_1, but if BOT_TOKEN_2
+                # is missing, we assume there are no more tokens
+                if i >= 2:
+                    break
+        
+        self.BOT_TOKENS = bot_tokens
         
         # Load ADMIN_IDS
         try:
             self.ADMIN_IDS = config('ADMIN_IDS', cast=Csv(int))
         except (UndefinedValueError, ValueError):
             self.ADMIN_IDS = []
+        
+        # Load PRIMARY_ADMIN_ID (optional - defaults to first admin if not set)
+        try:
+            self.PRIMARY_ADMIN_ID = config('PRIMARY_ADMIN_ID', default=None, cast=lambda x: int(x) if x else None)
+        except (ValueError, TypeError):
+            self.PRIMARY_ADMIN_ID = None
         
         # Load CHANNEL_ID
         try:
@@ -68,8 +98,8 @@ class ConfigClass:
         """
         errors = []
         
-        # Validate BOT_TOKEN
-        if not self.BOT_TOKEN:
+        # Validate BOT_TOKEN(s)
+        if not self.BOT_TOKEN and not self.BOT_TOKENS:
             errors.append("BOT_TOKEN is required. Get it from @BotFather on Telegram.")
         
         # Validate ADMIN_IDS
@@ -95,7 +125,11 @@ class ConfigClass:
             raise ConfigError(error_message)
         
         logger.info("✅ Configuration validation successful")
-        logger.info(f"  - Bot token: {'*' * 10}{self.BOT_TOKEN[-5:]}")
+        if self.BOT_TOKEN:
+            logger.info(f"  - Primary bot token: {'*' * 10}{self.BOT_TOKEN[-5:]}")
+        logger.info(f"  - Total bot instances: {len(self.BOT_TOKENS)}")
+        for idx, token in enumerate(self.BOT_TOKENS):
+            logger.info(f"    - Bot {idx}: {'*' * 10}{token[-5:]}")
         logger.info(f"  - Admin IDs: {len(self.ADMIN_IDS)} admin(s) configured")
         logger.info(f"  - Channel: {self.CHANNEL_ID or self.CHANNEL_USERNAME}")
         logger.info(f"  - Database: {self.DB_PATH}")

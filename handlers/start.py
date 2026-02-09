@@ -21,11 +21,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_new_user = not await db.user_exists(user.id)
     
     # Track user
+    bot_username = context.bot.username if hasattr(context.bot, 'username') else None
     await db.track_user(
         user_id=user.id,
         username=user.username,
         first_name=user.first_name,
-        last_name=user.last_name
+        last_name=user.last_name,
+        bot_username=bot_username
     )
     
     # For new users, show language selection menu
@@ -125,11 +127,13 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     # Track user
+    bot_username = context.bot.username if hasattr(context.bot, 'username') else None
     await db.track_user(
         user_id=user_id,
         username=update.effective_user.username,
         first_name=update.effective_user.first_name,
-        last_name=update.effective_user.last_name
+        last_name=update.effective_user.last_name,
+        bot_username=bot_username
     )
     
     # Get user's language preference

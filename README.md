@@ -69,6 +69,7 @@ A production-ready Telegram bot for managing and browsing a media product catalo
    BOT_TOKEN=your_bot_token_from_botfather
    CHANNEL_ID=-1001234567890
    ADMIN_IDS=123456789,987654321
+   PRIMARY_ADMIN_ID=123456789  # Optional: Admin who receives categorization requests
    ORDER_CONTACT=@yourusername
    ```
    
@@ -110,6 +111,42 @@ Perfect for free hosting with persistent storage:
    - Create a disk in Render dashboard
    - Mount to `/opt/render/project/data`
    - Set `DB_PATH=/opt/render/project/data/catalog.db`
+
+5. **Configure webhook** for your bot:
+   ```bash
+   curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://your-app-name.onrender.com/webhook"
+   ```
+
+### Multi-Bot Deployment (Single Webservice)
+
+Run multiple bot instances from the **same** Render webservice:
+
+1. **Add additional bot tokens** as environment variables:
+   ```
+   BOT_TOKEN=primary_bot_token
+   BOT_TOKEN_1=secondary_bot_1_token
+   BOT_TOKEN_2=secondary_bot_2_token
+   BOT_TOKEN_3=secondary_bot_3_token
+   ```
+
+2. **Each bot gets its own webhook endpoint**:
+   - Primary bot: `https://your-app.onrender.com/webhook`
+   - Bot 1: `https://your-app.onrender.com/webhook/1`
+   - Bot 2: `https://your-app.onrender.com/webhook/2`
+   - Bot 3: `https://your-app.onrender.com/webhook/3`
+
+3. **Configure webhooks for each bot**:
+   ```bash
+   curl "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=https://your-app.onrender.com/webhook"
+   curl "https://api.telegram.org/bot<BOT_TOKEN_1>/setWebhook?url=https://your-app.onrender.com/webhook/1"
+   curl "https://api.telegram.org/bot<BOT_TOKEN_2>/setWebhook?url=https://your-app.onrender.com/webhook/2"
+   ```
+
+4. **Benefits**:
+   - ✅ All bots share the same database
+   - ✅ Single deployment - easier to manage
+   - ✅ Lower costs - one webservice for multiple bots
+   - ✅ Easy scaling - just add more `BOT_TOKEN_N` variables
 
 See [configs/.env.example](configs/.env.example) for complete Render.com deployment notes.
 
