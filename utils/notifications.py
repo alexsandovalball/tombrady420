@@ -159,6 +159,13 @@ async def send_message_with_rate_handling(
             
             return {"success": True, "error": None, "retry_after": None}
         
+        except (Forbidden, BadRequest) as e:
+            # Permanent errors - don't retry
+            # NOTE: BadRequest inherits from NetworkError, so catch it first
+            error_msg = str(e)
+            logger.debug(f"[RateHandler] Permanent error for chat {chat_id}: {type(e).__name__}: {error_msg}")
+            return {"success": False, "error": error_msg, "retry_after": None}
+        
         except RetryAfter as e:
             retry_after = e.retry_after if hasattr(e, 'retry_after') else 30
             # Add small jitter to avoid thundering herd
@@ -203,12 +210,6 @@ async def send_message_with_rate_handling(
                     f"via bot {bot_key} (token={token_display})"
                 )
                 return {"success": False, "error": error_type, "retry_after": None}
-        
-        except (Forbidden, BadRequest) as e:
-            # Permanent errors - don't retry
-            error_msg = str(e)
-            logger.debug(f"[RateHandler] Permanent error for chat {chat_id}: {error_msg}")
-            return {"success": False, "error": error_msg, "retry_after": None}
         
         except TelegramError as e:
             error_msg = str(e)
