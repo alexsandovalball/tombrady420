@@ -195,7 +195,8 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                         caption=full_caption,
                         reply_markup=keyboard,
                         product_id=product_id,
-                        uploader_bot_id=product.get("uploader_bot_id")
+                        uploader_bot_id=product.get("uploader_bot_id"),
+                        db=db
                     )
                     await update.callback_query.answer()
                     return
@@ -266,7 +267,8 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
             caption=full_caption,
             reply_markup=None,  # Don't add keyboard to media message
             product_id=product_id,
-            uploader_bot_id=product.get("uploader_bot_id")
+            uploader_bot_id=product.get("uploader_bot_id"),
+            db=db
         )
         
         # Get order contact
