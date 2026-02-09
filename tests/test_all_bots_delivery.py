@@ -364,3 +364,74 @@ class TestDatabaseHelpers:
         # Get bot_key for non-existent bot
         bot_key = await temp_db.get_bot_key_for_username('nonexistent_bot')
         assert bot_key is None
+
+
+class TestCaseInsensitiveBotUsername:
+    """Tests for case-insensitive bot_username handling."""
+    
+    @pytest.mark.asyncio
+    async def test_bot_username_normalized_to_lowercase(self, temp_db):
+        """Test that bot_username is normalized to lowercase when stored."""
+        # Track user with mixed-case bot_username
+        await temp_db.track_user(701, 'user701', 'Test', 'User', bot_username='MixedCaseBot')
+        
+        # Verify it was stored as lowercase
+        user = await temp_db.get_user(701)
+        assert user['bot_username'] == 'mixedcasebot'
+    
+    @pytest.mark.asyncio
+    async def test_get_users_by_bot_case_insensitive(self, temp_db):
+        """Test that get_users_by_bot matches case-insensitively."""
+        # Track users with different case variations
+        await temp_db.track_user(702, 'user702', 'User', '702', bot_username='MyBot')
+        await temp_db.track_user(703, 'user703', 'User', '703', bot_username='mybot')
+        await temp_db.track_user(704, 'user704', 'User', '704', bot_username='MYBOT')
+        
+        # All should be normalized to lowercase and found with any case query
+        users = await temp_db.get_users_by_bot('mybot')
+        assert set(users) == {702, 703, 704}
+        
+        users = await temp_db.get_users_by_bot('MyBot')
+        assert set(users) == {702, 703, 704}
+        
+        users = await temp_db.get_users_by_bot('MYBOT')
+        assert set(users) == {702, 703, 704}
+    
+    @pytest.mark.asyncio
+    async def test_get_bot_key_for_username_case_insensitive(self, temp_db):
+        """Test that get_bot_key_for_username matches case-insensitively."""
+        # Track users with mixed-case bot_username
+        await temp_db.track_user(705, 'user705', 'User', '705', bot_username='TestBot')
+        await temp_db.set_last_bot_key(705, 'BOT_TOKEN_5')
+        
+        # Should find mapping regardless of case
+        bot_key = await temp_db.get_bot_key_for_username('testbot')
+        assert bot_key == 'BOT_TOKEN_5'
+        
+        bot_key = await temp_db.get_bot_key_for_username('TestBot')
+        assert bot_key == 'BOT_TOKEN_5'
+        
+        bot_key = await temp_db.get_bot_key_for_username('TESTBOT')
+        assert bot_key == 'BOT_TOKEN_5'
+    
+    @pytest.mark.asyncio
+    async def test_single_user_fallback_with_case_mismatch(self, temp_db):
+        """Test that single-user fallback works even with case mismatches."""
+        # Set up current bot
+        set_bot_username('PrimaryBot')
+        
+        # User started a different bot with different casing
+        await temp_db.track_user(706, 'user706', 'User', '706', bot_username='SecondaryBot')
+        await temp_db.set_last_bot_key(706, 'BOT_TOKEN_2')
+        
+        # Try to send via PrimaryBot - should fallback to SecondaryBot
+        message_text = "Test case-insensitive fallback"
+        context = {"target_user_id": 706}
+        await enqueue_local_broadcast(temp_db, context, message_text)
+        
+        # Verify message was queued to the secondary bot
+        # (even though bot_username was stored as lowercase 'secondarybot')
+        pending = await temp_db.get_pending_custom_messages(limit=100)
+        assert len(pending) == 1
+        assert pending[0]['user_id'] == 706
+        assert pending[0]['target_bot_key'] == 'BOT_TOKEN_2'
