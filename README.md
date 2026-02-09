@@ -6,6 +6,7 @@ A production-ready Telegram bot for managing and browsing a media product catalo
 
 - **[User Guide](docs/USER_GUIDE.md)** - Complete guide for bot users
 - **[Admin Guide](docs/ADMIN_GUIDE.md)** - Admin features and workflows
+- **[Broadcast Reliability](docs/BROADCAST_RELIABILITY.md)** - Message delivery, retry, and fallback patterns
 - **[Environment Configuration](configs/.env.example)** - All configuration options explained
 
 ## ✨ Features
