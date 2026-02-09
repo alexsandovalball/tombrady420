@@ -535,6 +535,16 @@ class Database:
         NULL users are handled dynamically by get_users_by_bot().
         """
         try:
+            # First, normalize all existing bot_usernames to lowercase
+            logger.info("Normalizing bot_usernames to lowercase for case-insensitive matching...")
+            await db.execute("""
+                UPDATE bot_users 
+                SET bot_username = LOWER(bot_username) 
+                WHERE bot_username IS NOT NULL
+            """)
+            await db.commit()
+            logger.info("✅ Successfully normalized bot_usernames to lowercase")
+            
             # Check if PRIMARY_BOT_USERNAME is configured (backward compatibility)
             primary_bot_username = getattr(Config, 'PRIMARY_BOT_USERNAME', None)
             
@@ -554,12 +564,13 @@ class Database:
             logger.info(f"Found {null_count} legacy users with NULL bot_username")
             logger.info(f"Migrating to primary bot: @{primary_bot_username}")
             
-            # Update all NULL bot_username users to primary bot
+            # Update all NULL bot_username users to primary bot (normalized to lowercase)
+            normalized_primary = primary_bot_username.lower()
             await db.execute("""
                 UPDATE bot_users 
                 SET bot_username = ? 
                 WHERE bot_username IS NULL
-            """, (primary_bot_username,))
+            """, (normalized_primary,))
             
             await db.commit()
             logger.info(f"✅ Successfully migrated {null_count} legacy users to primary bot @{primary_bot_username}")
@@ -1037,6 +1048,9 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             current_time = datetime.now()
             
+            # Normalize bot_username to lowercase for case-insensitive matching
+            normalized_bot_username = bot_username.lower() if bot_username else None
+            
             # Check if user exists
             async with db.execute("SELECT user_id FROM bot_users WHERE user_id = ?", (user_id,)) as cursor:
                 exists = await cursor.fetchone()
@@ -1049,13 +1063,13 @@ class Database:
                         last_seen = ?, interaction_count = interaction_count + 1,
                         bot_username = ?
                     WHERE user_id = ?
-                """, (username, first_name, last_name, current_time, bot_username, user_id))
+                """, (username, first_name, last_name, current_time, normalized_bot_username, user_id))
             else:
                 # Insert new user - set started_at to track when user first interacted
                 await db.execute("""
                     INSERT INTO bot_users (user_id, username, first_name, last_name, first_seen, last_seen, bot_username, started_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (user_id, username, first_name, last_name, current_time, current_time, bot_username, current_time))
+                """, (user_id, username, first_name, last_name, current_time, current_time, normalized_bot_username, current_time))
             
             await db.commit()
     
@@ -1229,6 +1243,9 @@ class Database:
         Returns:
             List of user IDs
         """
+        # Normalize bot_username to lowercase for case-insensitive matching
+        normalized_bot_username = bot_username.lower() if bot_username else None
+        
         logger.info(f"[Database] get_users_by_bot called with bot_username: @{bot_username}")
         logger.debug(f"[Database] PRIMARY_BOT_USERNAME from Config: {getattr(Config, 'PRIMARY_BOT_USERNAME', None)}")
         
@@ -1237,19 +1254,22 @@ class Database:
             # If PRIMARY_BOT_USERNAME is not set, include NULL users for all bots to maintain 
             # backwards compatibility (better to have duplicates than no notifications)
             primary_bot_username = getattr(Config, 'PRIMARY_BOT_USERNAME', None)
-            is_primary_bot = (primary_bot_username is None or 
-                            bot_username == primary_bot_username)
+            # Normalize primary bot username for comparison
+            normalized_primary = primary_bot_username.lower() if primary_bot_username else None
+            is_primary_bot = (normalized_primary is None or 
+                            normalized_bot_username == normalized_primary)
             
             logger.info(f"[Database] Is primary bot: {is_primary_bot} (PRIMARY_BOT_USERNAME={primary_bot_username})")
             
             if is_primary_bot:
                 # Primary bot gets both assigned users AND legacy NULL users
+                # Use LOWER() for case-insensitive comparison
                 query = """
                     SELECT user_id FROM bot_users 
-                    WHERE bot_username = ? OR bot_username IS NULL
+                    WHERE LOWER(bot_username) = ? OR bot_username IS NULL
                 """
-                logger.debug(f"[Database] Executing SQL (primary): {query} with params: ({bot_username},)")
-                async with db.execute(query, (bot_username,)) as cursor:
+                logger.debug(f"[Database] Executing SQL (primary): {query} with params: ({normalized_bot_username},)")
+                async with db.execute(query, (normalized_bot_username,)) as cursor:
                     rows = await cursor.fetchall()
                     user_ids = [row[0] for row in rows]
                     logger.info(f"[Database] get_users_by_bot: Returned {len(user_ids)} user IDs for primary bot @{bot_username}")
@@ -1257,9 +1277,10 @@ class Database:
                     return user_ids
             else:
                 # Secondary bots only get their explicitly assigned users
-                query = "SELECT user_id FROM bot_users WHERE bot_username = ?"
-                logger.debug(f"[Database] Executing SQL (secondary): {query} with params: ({bot_username},)")
-                async with db.execute(query, (bot_username,)) as cursor:
+                # Use LOWER() for case-insensitive comparison
+                query = "SELECT user_id FROM bot_users WHERE LOWER(bot_username) = ?"
+                logger.debug(f"[Database] Executing SQL (secondary): {query} with params: ({normalized_bot_username},)")
+                async with db.execute(query, (normalized_bot_username,)) as cursor:
                     rows = await cursor.fetchall()
                     user_ids = [row[0] for row in rows]
                     logger.info(f"[Database] get_users_by_bot: Returned {len(user_ids)} user IDs for secondary bot @{bot_username}")
@@ -1315,16 +1336,20 @@ class Database:
         Returns:
             Bot environment key (e.g., 'BOT_TOKEN', 'BOT_TOKEN_1') or None if not determinable
         """
+        # Normalize bot_username to lowercase for case-insensitive matching
+        normalized_bot_username = bot_username.lower() if bot_username else None
+        
         async with aiosqlite.connect(self.db_path) as db:
             # Find the most common last_bot_key among users who have this bot_username
+            # Use LOWER() for case-insensitive comparison
             async with db.execute("""
                 SELECT last_bot_key, COUNT(*) as count
                 FROM bot_users 
-                WHERE bot_username = ? AND last_bot_key IS NOT NULL
+                WHERE LOWER(bot_username) = ? AND last_bot_key IS NOT NULL
                 GROUP BY last_bot_key
                 ORDER BY count DESC
                 LIMIT 1
-            """, (bot_username,)) as cursor:
+            """, (normalized_bot_username,)) as cursor:
                 row = await cursor.fetchone()
                 if row:
                     bot_key = row[0]
