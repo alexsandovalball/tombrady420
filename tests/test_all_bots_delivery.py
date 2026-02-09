@@ -219,3 +219,182 @@ class TestBackwardCompatibility:
             # fall back to getting all users
         except Exception as e:
             pytest.fail(f"enqueue_local_broadcast failed with NULL bot_username: {e}")
+
+
+class TestSingleUserFallback:
+    """Test fallback behavior when single-user send targets a user who hasn't started this bot."""
+    
+    @pytest.mark.asyncio
+    async def test_single_user_fallback_to_other_bot(self, temp_db):
+        """Test that single-user sends fall back to queuing for other bots the user has started."""
+        # Set up current bot
+        set_bot_username('bot1')
+        
+        # User 601 has started bot2 but not bot1
+        await temp_db.track_user(601, 'user601', 'User', '601', bot_username='bot2')
+        await temp_db.set_last_bot_key(601, 'BOT_TOKEN_2')
+        
+        # Process a single-user send for user 601 on bot1
+        message_text = "Test single-user fallback"
+        context = {"target_user_id": 601}
+        await enqueue_local_broadcast(temp_db, context, message_text)
+        
+        # Verify message was queued with target_bot_key = BOT_TOKEN_2
+        pending = await temp_db.get_pending_custom_messages(limit=100)
+        assert len(pending) == 1
+        assert pending[0]['user_id'] == 601
+        assert pending[0]['message_text'] == message_text
+        assert pending[0]['target_bot_key'] == 'BOT_TOKEN_2'
+    
+    @pytest.mark.asyncio
+    async def test_single_user_fallback_to_last_bot_key(self, temp_db):
+        """Test fallback to last_bot_key when no bot_username rows found."""
+        # Set up current bot
+        set_bot_username('bot1')
+        
+        # User 602 has NULL bot_username but has a last_bot_key
+        await temp_db.track_user(602, 'user602', 'User', '602', bot_username=None)
+        await temp_db.set_last_bot_key(602, 'BOT_TOKEN_3')
+        
+        # Process a single-user send for user 602 on bot1
+        message_text = "Test last_bot_key fallback"
+        context = {"target_user_id": 602}
+        await enqueue_local_broadcast(temp_db, context, message_text)
+        
+        # Verify message was queued with target_bot_key = BOT_TOKEN_3
+        pending = await temp_db.get_pending_custom_messages(limit=100)
+        assert len(pending) == 1
+        assert pending[0]['user_id'] == 602
+        assert pending[0]['message_text'] == message_text
+        assert pending[0]['target_bot_key'] == 'BOT_TOKEN_3'
+    
+    @pytest.mark.asyncio
+    async def test_single_user_no_bots_found(self, temp_db):
+        """Test that single-user send is skipped when user has no bots."""
+        # Set up current bot
+        set_bot_username('bot1')
+        
+        # User 603 doesn't exist in bot_users table at all
+        # Don't track this user - they're not in the database
+        
+        # Process a single-user send for user 603 on bot1
+        message_text = "Test no bots found"
+        context = {"target_user_id": 603}
+        await enqueue_local_broadcast(temp_db, context, message_text)
+        
+        # Verify no messages were queued
+        pending = await temp_db.get_pending_custom_messages(limit=100)
+        assert len(pending) == 0
+    
+    @pytest.mark.asyncio
+    async def test_single_user_started_multiple_bots(self, temp_db):
+        """Test that single-user send queues to all bots the user has started."""
+        # Set up current bot
+        set_bot_username('bot1')
+        
+        # User 604 has started bot2 and bot3 (two separate bot_username entries)
+        # This would happen if the same user ID interacted with multiple bots
+        await temp_db.track_user(604, 'user604', 'User', '604', bot_username='bot2')
+        await temp_db.set_last_bot_key(604, 'BOT_TOKEN_2')
+        
+        # Manually insert another row for the same user with different bot_username
+        # (simulating the user starting a different bot)
+        import aiosqlite
+        async with aiosqlite.connect(temp_db.db_path) as db:
+            await db.execute("""
+                INSERT OR IGNORE INTO bot_users 
+                (user_id, username, first_name, last_name, bot_username, last_bot_key)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (604, 'user604', 'User', '604', 'bot3', 'BOT_TOKEN_3'))
+            await db.commit()
+        
+        # Process a single-user send for user 604 on bot1
+        message_text = "Test multiple bots"
+        context = {"target_user_id": 604}
+        await enqueue_local_broadcast(temp_db, context, message_text)
+        
+        # Verify messages were queued for both bot2 and bot3
+        pending = await temp_db.get_pending_custom_messages(limit=100)
+        assert len(pending) == 2
+        target_bot_keys = {msg['target_bot_key'] for msg in pending}
+        assert target_bot_keys == {'BOT_TOKEN_2', 'BOT_TOKEN_3'}
+        for msg in pending:
+            assert msg['user_id'] == 604
+            assert msg['message_text'] == message_text
+    
+    @pytest.mark.asyncio
+    async def test_single_user_current_bot_takes_precedence(self, temp_db):
+        """Test that if user has started current bot, no fallback is needed."""
+        # Set up current bot
+        set_bot_username('bot1')
+        
+        # User 605 has started bot1 (current bot)
+        await temp_db.track_user(605, 'user605', 'User', '605', bot_username='bot1')
+        await temp_db.set_last_bot_key(605, 'BOT_TOKEN_1')
+        
+        # Process a single-user send for user 605 on bot1
+        message_text = "Test current bot"
+        context = {"target_user_id": 605}
+        await enqueue_local_broadcast(temp_db, context, message_text)
+        
+        # Verify message was queued for bot1 (no fallback)
+        pending = await temp_db.get_pending_custom_messages(limit=100)
+        assert len(pending) == 1
+        assert pending[0]['user_id'] == 605
+        assert pending[0]['message_text'] == message_text
+        assert pending[0]['target_bot_key'] == 'BOT_TOKEN_1'
+
+
+class TestDatabaseHelpers:
+    """Test new database helper methods."""
+    
+    @pytest.mark.asyncio
+    async def test_get_user_bot_usernames(self, temp_db):
+        """Test get_user_bot_usernames returns all bots a user has started."""
+        # Add user with multiple bot_username entries
+        await temp_db.track_user(701, 'user701', 'User', '701', bot_username='bot1')
+        
+        import aiosqlite
+        async with aiosqlite.connect(temp_db.db_path) as db:
+            await db.execute("""
+                INSERT OR IGNORE INTO bot_users 
+                (user_id, username, first_name, last_name, bot_username)
+                VALUES (?, ?, ?, ?, ?)
+            """, (701, 'user701', 'User', '701', 'bot2'))
+            await db.commit()
+        
+        # Get bot usernames for user
+        bot_usernames = await temp_db.get_user_bot_usernames(701)
+        assert len(bot_usernames) == 2
+        assert set(bot_usernames) == {'bot1', 'bot2'}
+    
+    @pytest.mark.asyncio
+    async def test_get_user_bot_usernames_excludes_null(self, temp_db):
+        """Test that get_user_bot_usernames excludes NULL bot_username."""
+        # Add user with NULL bot_username
+        await temp_db.track_user(702, 'user702', 'User', '702', bot_username=None)
+        
+        # Get bot usernames - should be empty
+        bot_usernames = await temp_db.get_user_bot_usernames(702)
+        assert len(bot_usernames) == 0
+    
+    @pytest.mark.asyncio
+    async def test_get_bot_key_for_username(self, temp_db):
+        """Test get_bot_key_for_username maps bot_username to bot_key."""
+        # Add users who have interacted with bot1
+        await temp_db.track_user(703, 'user703', 'User', '703', bot_username='bot1')
+        await temp_db.set_last_bot_key(703, 'BOT_TOKEN_1')
+        
+        await temp_db.track_user(704, 'user704', 'User', '704', bot_username='bot1')
+        await temp_db.set_last_bot_key(704, 'BOT_TOKEN_1')
+        
+        # Get bot_key for bot1
+        bot_key = await temp_db.get_bot_key_for_username('bot1')
+        assert bot_key == 'BOT_TOKEN_1'
+    
+    @pytest.mark.asyncio
+    async def test_get_bot_key_for_username_not_found(self, temp_db):
+        """Test get_bot_key_for_username returns None when no mapping exists."""
+        # Get bot_key for non-existent bot
+        bot_key = await temp_db.get_bot_key_for_username('nonexistent_bot')
+        assert bot_key is None
