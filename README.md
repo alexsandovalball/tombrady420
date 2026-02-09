@@ -40,6 +40,8 @@ A production-ready Telegram bot for managing and browsing a media product catalo
 - 🔄 **Automatic Migration** - Database schema updates on startup
 - 📝 **Comprehensive Logging** - Structured logs for monitoring
 
+> **Note**: This repo contains `requirements.txt` and includes a `.render.yaml` to support Render.com deployments. If you change dependency management, update `.render.yaml` accordingly.
+
 ## 🚀 Quick Start
 
 ### Prerequisites
