@@ -194,6 +194,14 @@ class Database:
                 )
             """)
             
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS bot_rate_pause_state (
+                    bot_key TEXT PRIMARY KEY,
+                    paused_until REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+            """)
+            
             # Set default order contact if not exists
             await db.execute("""
                 INSERT OR IGNORE INTO bot_settings (key, value)
@@ -328,6 +336,43 @@ class Database:
                     logger.debug("Column 'target_bot_key' already exists in notification_queue table")
                 else:
                     logger.warning(f"Could not add 'target_bot_key' column to notification_queue: {e}")
+            
+            # Add rate limiting and retry support columns (2026-02-09)
+            try:
+                await db.execute("ALTER TABLE bot_users ADD COLUMN started_at TIMESTAMP")
+                logger.info("Added 'started_at' column to bot_users table")
+            except aiosqlite.OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    logger.debug("Column 'started_at' already exists in bot_users table")
+                else:
+                    logger.warning(f"Could not add 'started_at' column to bot_users: {e}")
+            
+            try:
+                await db.execute("ALTER TABLE custom_message_queue ADD COLUMN retry_count INTEGER DEFAULT 0")
+                logger.info("Added 'retry_count' column to custom_message_queue table")
+            except aiosqlite.OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    logger.debug("Column 'retry_count' already exists in custom_message_queue table")
+                else:
+                    logger.warning(f"Could not add 'retry_count' column to custom_message_queue: {e}")
+            
+            try:
+                await db.execute("ALTER TABLE custom_message_queue ADD COLUMN enqueued_at TIMESTAMP")
+                logger.info("Added 'enqueued_at' column to custom_message_queue table")
+            except aiosqlite.OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    logger.debug("Column 'enqueued_at' already exists in custom_message_queue table")
+                else:
+                    logger.warning(f"Could not add 'enqueued_at' column to custom_message_queue: {e}")
+            
+            try:
+                await db.execute("ALTER TABLE custom_message_queue ADD COLUMN scheduled_retry_at TIMESTAMP")
+                logger.info("Added 'scheduled_retry_at' column to custom_message_queue table")
+            except aiosqlite.OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    logger.debug("Column 'scheduled_retry_at' already exists in custom_message_queue table")
+                else:
+                    logger.warning(f"Could not add 'scheduled_retry_at' column to custom_message_queue: {e}")
             
             # Migrate existing media groups to populate additional_message_ids
             # For media groups created before this fix, infer message IDs from sequential ordering
@@ -966,11 +1011,11 @@ class Database:
                     WHERE user_id = ?
                 """, (username, first_name, last_name, current_time, bot_username, user_id))
             else:
-                # Insert new user
+                # Insert new user - set started_at to track when user first interacted
                 await db.execute("""
-                    INSERT INTO bot_users (user_id, username, first_name, last_name, first_seen, last_seen, bot_username)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (user_id, username, first_name, last_name, current_time, current_time, bot_username))
+                    INSERT INTO bot_users (user_id, username, first_name, last_name, first_seen, last_seen, bot_username, started_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (user_id, username, first_name, last_name, current_time, current_time, bot_username, current_time))
             
             await db.commit()
     
