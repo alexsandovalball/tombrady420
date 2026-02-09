@@ -3,8 +3,9 @@ Webhook server for Telegram bot using FastAPI and uvicorn.
 This allows the bot to receive updates via webhooks instead of polling,
 which is more suitable for serverless deployments like Render.com.
 """
-import logging
-import os
+ import logging
+ import os
+ import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, status
 from telegram import Update
@@ -258,6 +259,18 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down bot applications...")
     for idx, bot_app in enumerate(app.state.bot_apps):
         try:
+            # Cancel and clear asyncio tasks to prevent pickling errors
+            if hasattr(bot_app, 'bot_data'):
+                for key, value in list(bot_app.bot_data.items()):
+                    if isinstance(value, asyncio.Task):
+                        if not value.done():
+                            value.cancel()
+                        del bot_app.bot_data[key]
+                    elif isinstance(value, list) and key == 'notification_tasks':
+                        for task in value[:]:
+                            if isinstance(task, asyncio.Task) and not task.done():
+                                task.cancel()
+                            value.remove(task)
             await bot_app.stop()
             await bot_app.shutdown()
             logger.info(f"Bot {idx} shut down successfully")

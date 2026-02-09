@@ -223,14 +223,6 @@ class NotificationService:
             bot_username = context.bot.username if hasattr(context.bot, 'username') else 'unknown'
             logger.info(f"[Notifications] notify_users_about_product: Bot @{bot_username} processing product {product_id}")
             
-            # Check if this is the primary instance (only primary queues notifications)
-            is_primary = self._is_primary_instance(context)
-            logger.info(f"[Notifications] Primary instance check result: {is_primary}")
-            
-            if not is_primary:
-                logger.info(f"[Notifications] Skipping notification queueing - not primary instance (bot @{bot_username})")
-                return
-            
             # Get product details
             product = await self.db.get_product(product_id)
             if not product:
@@ -732,7 +724,7 @@ class NotificationService:
             
             # Spawn background task to process the queue across all bots
             # Store task in application.bot_data for resilience in webhook deployments
-            task = asyncio.create_task(self.process_custom_message_queue(context, process_all_bots=True))
+            task = asyncio.create_task(self.process_custom_message_queue(context, process_all_bots=False))
             self._store_task(context, task, "broadcast_custom_msg")
             
             logger.info(f"[Notifications] Background task created for broadcast (task_id={id(task)})")
@@ -1521,5 +1513,4 @@ def start_custom_message_processor_in_background(
     """
     task = asyncio.create_task(_custom_message_processor_loop(application, db, interval_seconds))
     return task
-
 
