@@ -1162,6 +1162,74 @@ class Database:
                     logger.debug(f"[Database] User IDs: {user_ids}")
                     return user_ids
     
+    async def get_user_bot_usernames(self, user_id: int) -> List[str]:
+        """
+        Get bot username associated with a user.
+        
+        Used for fallback when delivering single-user broadcasts - if a user hasn't
+        started the current bot, we can queue the message for the bot they did start.
+        
+        Note: The bot_users table has user_id as PRIMARY KEY, so each user has only
+        one row with their current bot_username. This returns a list for API
+        consistency, but will contain at most one element.
+        
+        Args:
+            user_id: Telegram user ID
+        
+        Returns:
+            List containing the user's bot_username (if not NULL), or empty list.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT bot_username FROM bot_users 
+                WHERE user_id = ? AND bot_username IS NOT NULL
+            """, (user_id,)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    bot_usernames = [row[0]]
+                    logger.debug(f"[Database] get_user_bot_usernames({user_id}): found bot_username: {bot_usernames[0]}")
+                else:
+                    bot_usernames = []
+                    logger.debug(f"[Database] get_user_bot_usernames({user_id}): no bot_username found")
+                return bot_usernames
+    
+    async def get_bot_key_for_username(self, bot_username: str) -> Optional[str]:
+        """
+        Map a bot username to its bot environment key (BOT_TOKEN or BOT_TOKEN_N).
+        
+        This is a best-effort mapping. The implementation strategy:
+        1. Check if this bot_username appears in bot_users with a last_bot_key
+        2. Return the most common last_bot_key for users with that bot_username
+        
+        Note: This is a heuristic approach since we don't have a central mapping table.
+        The bot_username -> bot_key association is inferred from user interactions.
+        If no mapping is found, returns None to trigger fallback to last_bot_key.
+        
+        Args:
+            bot_username: Bot username (without @)
+        
+        Returns:
+            Bot environment key (e.g., 'BOT_TOKEN', 'BOT_TOKEN_1') or None if not determinable
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            # Find the most common last_bot_key among users who have this bot_username
+            async with db.execute("""
+                SELECT last_bot_key, COUNT(*) as count
+                FROM bot_users 
+                WHERE bot_username = ? AND last_bot_key IS NOT NULL
+                GROUP BY last_bot_key
+                ORDER BY count DESC
+                LIMIT 1
+            """, (bot_username,)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    bot_key = row[0]
+                    logger.debug(f"[Database] get_bot_key_for_username(@{bot_username}): mapped to {bot_key}")
+                    return bot_key
+                else:
+                    logger.debug(f"[Database] get_bot_key_for_username(@{bot_username}): no mapping found")
+                    return None
+    
     async def queue_notification(self, user_id: int, product_id: int, target_bot_key: Optional[str] = None):
         """
         Add a notification to the queue.
