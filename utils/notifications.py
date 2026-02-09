@@ -1374,8 +1374,20 @@ def create_enqueue_local_broadcast_callback(db: Database):
         
     Returns:
         An async callback function with signature (context: dict, message_text: str) -> None
+        that can be passed to broadcast_forwarder.start_listener_in_background()
+    
+    Example:
+        >>> callback = create_enqueue_local_broadcast_callback(db)
+        >>> listener_task = broadcast_forwarder.start_listener_in_background(db, callback)
     """
     async def callback(context: dict, message_text: str) -> None:
+        """
+        Process a broadcast event and enqueue messages for local delivery.
+        
+        Args:
+            context: Dictionary with optional payload data (target_user_id, product_id, etc.)
+            message_text: The broadcast message text to send
+        """
         await enqueue_local_broadcast(db, context, message_text)
     
     return callback

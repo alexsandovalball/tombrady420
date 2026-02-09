@@ -125,10 +125,11 @@ def create_enqueue_local_broadcast_callback(db: Database):
 Used in main.py:
 
 ```python
-from utils.notifications import create_enqueue_local_broadcast_callback
+async def post_init(application: Application):
+    from utils.notifications import create_enqueue_local_broadcast_callback
 
-enqueue_callback = create_enqueue_local_broadcast_callback(db)
-listener_task = broadcast_forwarder.start_listener_in_background(db, enqueue_callback)
+    enqueue_callback = create_enqueue_local_broadcast_callback(db)
+    listener_task = broadcast_forwarder.start_listener_in_background(db, enqueue_callback)
 ```
 
 ## Behavior Changes

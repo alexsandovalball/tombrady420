@@ -9,12 +9,15 @@ import os
 import re
 import logging
 from typing import Optional
+import threading
 
 logger = logging.getLogger(__name__)
 
 # Global variable to store the bot username for this process
 # Set during application initialization via set_bot_username()
+# Thread-safe access via a lock
 _BOT_USERNAME: Optional[str] = None
+_BOT_USERNAME_LOCK = threading.Lock()
 
 
 def get_bot_env_key() -> str:
@@ -127,23 +130,27 @@ def get_bot_key_display(bot_key: str, bot_username: Optional[str] = None) -> str
 
 def set_bot_username(username: str):
     """
-    Set the bot username for this process.
+    Set the bot username for this process (thread-safe).
     
     This should be called during application initialization with the bot's
     actual Telegram username. It allows other modules to access the bot_username
     without needing a Telegram context.
     
+    Note: This should only be called once during initialization. Subsequent calls
+    will overwrite the value.
+    
     Args:
         username: The bot's Telegram username (without @)
     """
     global _BOT_USERNAME
-    _BOT_USERNAME = username
+    with _BOT_USERNAME_LOCK:
+        _BOT_USERNAME = username
     logger.info(f"[BotKey] Set bot_username to: @{username}")
 
 
 def get_bot_username() -> Optional[str]:
     """
-    Get the bot username for this process.
+    Get the bot username for this process (thread-safe).
     
     Returns the username that was set via set_bot_username() during initialization.
     Returns None if not yet initialized.
@@ -151,5 +158,6 @@ def get_bot_username() -> Optional[str]:
     Returns:
         str: The bot username (without @), or None if not set
     """
-    return _BOT_USERNAME
+    with _BOT_USERNAME_LOCK:
+        return _BOT_USERNAME
 
