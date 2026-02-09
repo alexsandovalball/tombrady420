@@ -10,7 +10,7 @@ from typing import List, Optional
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from telegram.error import TelegramError, Forbidden, BadRequest
+from telegram.error import TelegramError, Forbidden, BadRequest, TimedOut, NetworkError, RetryAfter
 
 from database import Database
 from utils.categories import get_category_display_name, get_subcategory_display_name, NOTIFICATION_EXCLUDED_CATEGORIES
@@ -1030,11 +1030,30 @@ class NotificationService:
                 logger.warning(f"[Send] BadRequest error for user {user_id} via bot @{bot_username}: {error_msg}")
                 await self.db.mark_custom_message_sent(message_id)
                 return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "bad_request"}
+        
+        except (TimedOut, NetworkError, RetryAfter) as e:
+            # Transient errors - retry with exponential backoff
+            error_type = type(e).__name__
+            if retry_count < MAX_RETRIES:
+                delay = min(RETRY_BASE_DELAY * (2 ** retry_count), 30.0)
+                logger.warning(
+                    f"[Send] {error_type} for user {user_id} via bot @{bot_username}, "
+                    f"retrying in {delay}s (attempt {retry_count + 1}/{MAX_RETRIES})"
+                )
+                await asyncio.sleep(delay)
+                return await self._send_single_custom_message(context, message, reply_markup, retry_count + 1)
+            else:
+                logger.error(
+                    f"[Send] Max retries ({MAX_RETRIES}) reached for user {user_id} "
+                    f"via bot @{bot_username} after {error_type}, giving up"
+                )
+                # Don't mark as sent, will retry in next batch
+                return {"success": False, "user_id": user_id, "message_id": message_id, "reason": f"{error_type.lower()}_max_retries"}
             
         except TelegramError as e:
             error_msg = str(e)
             
-            # Check for rate limit errors (RetryAfter)
+            # Check for rate limit errors (RetryAfter pattern in error message)
             if "Too Many Requests" in error_msg or "retry after" in error_msg.lower():
                 if retry_count < MAX_RETRIES:
                     # Exponential backoff with maximum cap to prevent excessive delays
