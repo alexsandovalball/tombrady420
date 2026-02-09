@@ -17,6 +17,7 @@ from utils.categories import get_category_display_name, get_subcategory_display_
 from translations.translator import translate_text_async
 from configs.config import Config
 from utils.bot_key import get_bot_env_key, get_bot_key_display
+from utils import broadcast_forwarder
 
 logger = logging.getLogger(__name__)
 
@@ -592,15 +593,19 @@ class NotificationService:
         message_text: str = None
     ) -> bool:
         """
-        Send a custom text message to a specific user with rate limiting.
+        Send a custom text message to a specific user via broadcast forwarder.
+        
+        This now uses the broadcast forwarder pattern so that ALL bot instances
+        that the user has started will deliver the message. This ensures the user
+        receives the message regardless of which bot they're currently using.
+        
         Text-only - media is not supported for queued/broadcast messages.
-        Queues the message and spawns background processing task.
         
         Returns:
-            bool: True if message was queued successfully, False otherwise
+            bool: True if message was published successfully, False otherwise
         """
         try:
-            logger.info(f"[Notifications] send_custom_message_to_user: Queueing text message for user {user_id}")
+            logger.info(f"[Notifications] send_custom_message_to_user: Publishing message for user {user_id} via broadcast forwarder")
             
             # Check if user is blocked
             is_blocked = await self.db.is_user_blocked(user_id)
@@ -608,21 +613,17 @@ class NotificationService:
                 logger.warning(f"[Notifications] Cannot send message to blocked user {user_id}")
                 return False
             
-            # Queue the message (text-only, media fields are None)
-            await self.db.queue_custom_message(
-                user_id, 
-                message_text,
-                media_type=None,
-                media_file_id=None
+            # Use broadcast forwarder to ensure all bot instances deliver to this user
+            # Create payload with target_user_id so each bot knows this is a single-user send
+            payload = {"target_user_id": user_id}
+            
+            broadcast_id = await broadcast_forwarder.publish_broadcast(
+                self.db, 
+                message_text, 
+                payload=payload
             )
-            logger.info(f"[Notifications] Queued custom message for user {user_id}")
             
-            # Spawn background task to process the queue
-            # Store task in application.bot_data for resilience in webhook deployments
-            task = asyncio.create_task(self.process_custom_message_queue(context))
-            self._store_task(context, task, f"custom_msg_user_{user_id}")
-            
-            logger.info(f"[Notifications] Background task created for user {user_id} (task_id={id(task)})")
+            logger.info(f"[Notifications] Published single-user message as broadcast {broadcast_id} for user {user_id}")
             
             return True
             
@@ -1160,17 +1161,18 @@ class NotificationService:
     
     async def notify_subscribers_about_product(self, context: ContextTypes.DEFAULT_TYPE, product_id: int) -> int:
         """
-        When a product is categorized, queue subscriber notifications (media + text) via queue_custom_messages_batch
-        and spawn a resilient background processing task. Returns the number of queued messages.
+        Notify subscribers about a new product via broadcast forwarder.
         
-        This function can be called from any bot instance. All bots may queue and send notifications.
+        This now uses the broadcast forwarder pattern so that ALL bot instances
+        deliver product notifications to their own subscribed users. This ensures
+        users receive notifications from all bots they've started.
         
         Args:
             context: Telegram context
             product_id: ID of the product to notify about
             
         Returns:
-            Number of messages queued
+            1 if broadcast was published successfully, 0 otherwise
         """
         try:
             # Get bot username for logging
@@ -1220,11 +1222,6 @@ class NotificationService:
             )
             
             # Build inline keyboard with product actions
-            # Row 1: View Product (callback_data to trigger product view handler)
-            # Row 2: View Catalog (callback_data to trigger categories/menu)
-            # Row 3: Toggle subscription button
-            
-            # Use callback_data instead of URL deep links so buttons work in the same bot instance
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("👁️ View Product", callback_data=f"product|{product_id}")],
                 [InlineKeyboardButton("📋 View Catalog", callback_data="categories")],
@@ -1234,75 +1231,22 @@ class NotificationService:
             # Serialize keyboard to JSON
             reply_markup_json = json.dumps(keyboard.to_dict())
             
-            # Get subscribed users
-            subscribed_users = await self.db.get_subscribed_users()
-            if not subscribed_users:
-                logger.info(f"[NotifySubscribers] No subscribed users for product {product_id}")
-                return 0
+            # Use broadcast forwarder to ensure all bot instances deliver to their subscribed users
+            # Create payload with product_id and reply_markup so each bot knows this is a product notification
+            payload = {
+                "product_id": product_id,
+                "reply_markup_json": reply_markup_json
+            }
             
-            logger.info(f"[NotifySubscribers] Found {len(subscribed_users)} subscribed users")
-            
-            # Filter out blocked users and admins
-            from utils.helpers import get_admin_ids
-            admin_ids = get_admin_ids()
-            
-            eligible_users = []
-            for user_id in subscribed_users:
-                # Skip admins
-                if user_id in admin_ids:
-                    logger.debug(f"[NotifySubscribers] Skipping admin user {user_id}")
-                    continue
-                
-                # Skip blocked users
-                is_blocked = await self.db.is_user_blocked(user_id)
-                if is_blocked:
-                    logger.debug(f"[NotifySubscribers] Skipping blocked user {user_id}")
-                    continue
-                
-                eligible_users.append(user_id)
-            
-            if not eligible_users:
-                logger.info(f"[NotifySubscribers] No eligible users after filtering for product {product_id}")
-                return 0
-            
-            logger.info(f"[NotifySubscribers] {len(eligible_users)} eligible users after filtering")
-            
-            # Get all users with their last_bot_key to route messages properly
-            all_users_data = await self.db.get_all_users()
-            user_last_bot_keys = {user["user_id"]: user.get("last_bot_key") for user in all_users_data}
-            
-            # Build list of (user_id, target_bot_key) for routing
-            current_bot_key = get_bot_env_key()
-            users_with_targets = []
-            for user_id in eligible_users:
-                # Use user's preferred bot, fallback to current process bot key
-                last_bot_key = user_last_bot_keys.get(user_id)
-                target_bot_key = last_bot_key if last_bot_key is not None else current_bot_key
-                users_with_targets.append((user_id, target_bot_key))
-            
-            # Queue text-only messages in batch with inline keyboard and target routing
-            # Media is not supported for queued/broadcast messages
-            queued_count = await self.db.queue_custom_messages_batch_with_targets(
-                users_with_targets=users_with_targets,
-                message_text=message_text,
-                media_type=None,
-                media_file_id=None,
-                reply_markup=reply_markup_json
+            broadcast_id = await broadcast_forwarder.publish_broadcast(
+                self.db, 
+                message_text, 
+                payload=payload
             )
             
-            # Log target_bot_key distribution for visibility
-            target_distribution = {}
-            for _, target_key in users_with_targets:
-                target_distribution[target_key] = target_distribution.get(target_key, 0) + 1
-            logger.info(f"[NotifySubscribers] Queued {queued_count} messages for product {product_id}. Target distribution: {target_distribution}")
+            logger.info(f"[NotifySubscribers] Published product notification as broadcast {broadcast_id} for product {product_id}")
             
-            # Spawn background task for processing
-            task = asyncio.create_task(self.process_custom_message_queue(context))
-            self._store_task(context, task, f"notify_product_{product_id}")
-            
-            logger.info(f"[NotifySubscribers] Background task spawned for product {product_id}")
-            
-            return queued_count
+            return 1
             
         except Exception as e:
             logger.error(f"[NotifySubscribers] Error notifying subscribers about product {product_id}: {e}", exc_info=True)
@@ -1310,80 +1254,141 @@ class NotificationService:
 
 
 # Module-level helper for broadcast forwarding
-async def enqueue_local_broadcast(context: dict, message_text: str) -> None:
+async def enqueue_local_broadcast(db: Database, context: dict, message_text: str) -> None:
     """
     Enqueue a broadcast message for local delivery by this bot instance.
     
     This is used by the broadcast forwarder to process broadcast events.
-    It creates a notification service and broadcasts the message to all users
-    assigned to this bot.
+    Each bot instance delivers the broadcast to ALL users who have started that bot
+    (not just users who last interacted with it).
     
     Args:
-        context: Dictionary with optional payload data (reserved for future use, currently unused)
+        db: Database instance to use for queries and queueing
+        context: Dictionary with optional payload data. Can include:
+                 - target_user_id: If set, only deliver to this specific user (if they've started this bot)
+                 - product_id: If set, only deliver to subscribers (if they've started this bot)
         message_text: The broadcast message text to send
     
     Note:
-        The context parameter is currently not utilized but is kept for API compatibility
-        and future extensibility (e.g., priority flags, metadata).
+        Changed to use bot_username instead of last_bot_key to ensure all users
+        who have ever started this bot receive the message.
     """
     try:
-        from database import Database
-        from configs.config import Config
-        
-        # Get database instance
-        db = Database(Config.DB_PATH)
-        
-        # We need a telegram context to call broadcast_custom_message
-        # Since we don't have one here, we'll use the queue directly
-        # Get all users for this bot
-        from utils.bot_key import get_bot_env_key
+        # Get this bot's environment key and username
+        from utils.bot_key import get_bot_env_key, get_bot_username
         from utils.helpers import get_admin_ids
         
         bot_key = get_bot_env_key()
-        logger.info(f"[BroadcastEnqueue] Processing broadcast for {bot_key}: {message_text[:50]}...")
+        bot_username = get_bot_username()
         
-        # Get all users
-        all_users = await db.get_all_users()
+        # Extract optional payload fields
+        target_user_id = context.get("target_user_id") if context else None
+        product_id = context.get("product_id") if context else None
+        reply_markup_json = context.get("reply_markup_json") if context else None
+        
+        logger.info(f"[BroadcastEnqueue] Processing broadcast for bot @{bot_username} (key={bot_key}): {message_text[:50]}...")
+        if target_user_id:
+            logger.info(f"[BroadcastEnqueue] Single-user target: {target_user_id}")
+        if product_id:
+            logger.info(f"[BroadcastEnqueue] Product notification: {product_id}")
+        
         admin_ids_set = set(get_admin_ids())
         
-        # Filter for this bot's users (based on last_bot_key), excluding blocked and admins
-        users_with_targets = []
-        for user in all_users:
-            user_id = user["user_id"]
-            
-            # Skip blocked users
-            if user.get("is_blocked", 0) == 1:
-                continue
-            
-            # Skip admin users
-            if user_id in admin_ids_set:
-                continue
-            
-            # Get user's preferred bot - if it matches ours (or is None/matches current), include them
-            last_bot_key = user.get("last_bot_key")
-            target_bot_key = last_bot_key if last_bot_key is not None else bot_key
-            
-            # Only queue for users assigned to this bot
-            if target_bot_key == bot_key:
-                users_with_targets.append((user_id, target_bot_key))
+        # Get users who have started this bot (based on bot_username)
+        if bot_username:
+            bot_user_ids = set(await db.get_users_by_bot(bot_username))
+            logger.info(f"[BroadcastEnqueue] Found {len(bot_user_ids)} users for bot @{bot_username}")
+        else:
+            # Fallback: get all users if bot_username is not available
+            logger.warning(f"[BroadcastEnqueue] bot_username not available for {bot_key}, using all users")
+            all_users = await db.get_all_users()
+            bot_user_ids = set(u["user_id"] for u in all_users)
         
-        if not users_with_targets:
-            logger.info(f"[BroadcastEnqueue] No users to broadcast to for {bot_key}")
+        # Build the list of users to send to
+        users_to_notify = []
+        
+        if target_user_id:
+            # Single-user send: only send to this user if they've started this bot
+            if target_user_id in bot_user_ids and target_user_id not in admin_ids_set:
+                is_blocked = await db.is_user_blocked(target_user_id)
+                if not is_blocked:
+                    users_to_notify.append(target_user_id)
+                    logger.info(f"[BroadcastEnqueue] User {target_user_id} has started bot @{bot_username}, will deliver")
+                else:
+                    logger.info(f"[BroadcastEnqueue] User {target_user_id} is blocked, skipping")
+            else:
+                logger.info(f"[BroadcastEnqueue] User {target_user_id} has not started bot @{bot_username}, skipping")
+        
+        elif product_id:
+            # Product notification: send to subscribed users who have started this bot
+            subscribed_users = set(await db.get_subscribed_users())
+            for user_id in bot_user_ids:
+                if user_id in subscribed_users and user_id not in admin_ids_set:
+                    is_blocked = await db.is_user_blocked(user_id)
+                    if not is_blocked:
+                        users_to_notify.append(user_id)
+            logger.info(f"[BroadcastEnqueue] {len(users_to_notify)} subscribed users from bot @{bot_username}")
+        
+        else:
+            # Broadcast to all: send to all users who have started this bot
+            for user_id in bot_user_ids:
+                if user_id not in admin_ids_set:
+                    is_blocked = await db.is_user_blocked(user_id)
+                    if not is_blocked:
+                        users_to_notify.append(user_id)
+            logger.info(f"[BroadcastEnqueue] {len(users_to_notify)} eligible users from bot @{bot_username}")
+        
+        if not users_to_notify:
+            logger.info(f"[BroadcastEnqueue] No users to notify for bot @{bot_username}")
             return
         
-        # Queue messages
+        # Queue messages with target_bot_key for proper routing
+        users_with_targets = [(user_id, bot_key) for user_id in users_to_notify]
         queued = await db.queue_custom_messages_batch_with_targets(
             users_with_targets,
             message_text,
             media_type=None,
-            media_file_id=None
+            media_file_id=None,
+            reply_markup=reply_markup_json
         )
         
-        logger.info(f"[BroadcastEnqueue] Queued {queued} broadcast messages for {bot_key}")
+        logger.info(f"[BroadcastEnqueue] Queued {queued} messages for bot @{bot_username}")
         
     except Exception as e:
         logger.error(f"[BroadcastEnqueue] Error enqueueing local broadcast: {e}", exc_info=True)
         # Don't raise - we want the broadcast forwarder to continue
+
+
+def create_enqueue_local_broadcast_callback(db: Database):
+    """
+    Create a callback function for enqueue_local_broadcast that has the database instance bound.
+    
+    This is used to create a callback that can be passed to the broadcast forwarder
+    while providing access to the database instance.
+    
+    Args:
+        db: Database instance to use for the callback
+        
+    Returns:
+        An async callback function with signature (context: dict, message_text: str) -> None
+        that can be passed to broadcast_forwarder.start_listener_in_background()
+    
+    Example:
+        >>> callback = create_enqueue_local_broadcast_callback(db)
+        >>> listener_task = broadcast_forwarder.start_listener_in_background(db, callback)
+    """
+    async def callback(context: dict, message_text: str) -> None:
+        """
+        Process a broadcast event and enqueue messages for local delivery.
+        
+        Args:
+            context: Dictionary with optional payload data (target_user_id, product_id, etc.)
+            message_text: The broadcast message text to send
+        """
+        await enqueue_local_broadcast(db, context, message_text)
+    
+    return callback
+
 
 
 # ===========================
