@@ -173,8 +173,8 @@ async def set_pause_state(
         current_time = time.time()
         new_paused_until = current_time + retry_after_seconds + buffer_seconds
         
-        # Use Lua script for atomic compare-and-set
-        # Only set if new paused_until > existing paused_until
+        # Try Lua script for atomic compare-and-set (won't work in fakeredis)
+        # Fallback to Python-side check if Lua fails
         lua_script = """
         local key = KEYS[1]
         local new_data = ARGV[1]
@@ -212,9 +212,36 @@ async def set_pause_state(
         # Set TTL slightly longer than pause duration to avoid premature expiry
         ttl = int(retry_after_seconds + buffer_seconds + 60)
         
-        result = await client.eval(lua_script, 1, key, pause_json, new_paused_until, ttl)
+        try:
+            result = await client.eval(lua_script, 1, key, pause_json, new_paused_until, ttl)
+            updated = (result == 1)
+        except Exception as eval_error:
+            # Lua not supported (e.g., fakeredis), fallback to Python-side check
+            logger.debug(f"Lua eval not supported, using Python-side atomic check: {eval_error}")
+            
+            # Get existing pause
+            existing_data = await client.get(key)
+            if existing_data:
+                try:
+                    existing = json.loads(existing_data)
+                    existing_paused_until = float(existing.get("paused_until", 0))
+                    
+                    # Only update if new pause is longer
+                    if new_paused_until > existing_paused_until:
+                        await client.setex(key, ttl, pause_json)
+                        updated = True
+                    else:
+                        updated = False
+                except Exception:
+                    # If parsing fails, set new pause
+                    await client.setex(key, ttl, pause_json)
+                    updated = True
+            else:
+                # No existing pause, set it
+                await client.setex(key, ttl, pause_json)
+                updated = True
         
-        if result == 1:
+        if updated:
             # Increment metrics
             _metrics["pause_set_count"] += 1
             
