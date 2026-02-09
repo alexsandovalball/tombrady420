@@ -1019,6 +1019,24 @@ class Database:
             
             await db.commit()
     
+    async def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get user data by user_id.
+        
+        Args:
+            user_id: Telegram user ID
+        
+        Returns:
+            User data dictionary or None if not found
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM bot_users WHERE user_id = ?
+            """, (user_id,)) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+    
     async def set_last_bot_key(self, user_id: int, bot_key: str):
         """
         Set the last bot environment key a user interacted with.
@@ -1592,11 +1610,12 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             # Store empty string if message_text is None for database compatibility
             text_to_store = message_text if message_text is not None else ''
+            current_time = datetime.now()
             await db.execute("""
                 INSERT INTO custom_message_queue 
-                (user_id, message_text, media_type, media_file_id, reply_markup, target_bot_key, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (user_id, text_to_store, media_type, media_file_id, reply_markup, target_bot_key, datetime.now()))
+                (user_id, message_text, media_type, media_file_id, reply_markup, target_bot_key, created_at, enqueued_at, retry_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+            """, (user_id, text_to_store, media_type, media_file_id, reply_markup, target_bot_key, current_time, current_time))
             await db.commit()
     
     async def queue_custom_messages_batch(
@@ -1638,12 +1657,12 @@ class Database:
             
             # Build batch insert with VALUES clause
             # This is much faster than individual inserts
-            values = [(uid, text_to_store, media_type, media_file_id, reply_markup, target_bot_key, current_time) for uid in user_ids]
+            values = [(uid, text_to_store, media_type, media_file_id, reply_markup, target_bot_key, current_time, current_time, 0) for uid in user_ids]
             
             await db.executemany("""
                 INSERT INTO custom_message_queue 
-                (user_id, message_text, media_type, media_file_id, reply_markup, target_bot_key, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (user_id, message_text, media_type, media_file_id, reply_markup, target_bot_key, created_at, enqueued_at, retry_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, values)
             await db.commit()
             
@@ -1680,13 +1699,13 @@ class Database:
             current_time = datetime.now()
             
             # Build batch insert with individual target_bot_key for each user
-            values = [(uid, text_to_store, media_type, media_file_id, reply_markup, target_key, current_time) 
+            values = [(uid, text_to_store, media_type, media_file_id, reply_markup, target_key, current_time, current_time, 0) 
                      for uid, target_key in users_with_targets]
             
             await db.executemany("""
                 INSERT INTO custom_message_queue 
-                (user_id, message_text, media_type, media_file_id, reply_markup, target_bot_key, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (user_id, message_text, media_type, media_file_id, reply_markup, target_bot_key, created_at, enqueued_at, retry_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, values)
             await db.commit()
             
@@ -1711,6 +1730,21 @@ class Database:
             await db.execute("""
                 UPDATE custom_message_queue SET sent_at = ? WHERE id = ?
             """, (datetime.now(), message_id))
+            await db.commit()
+    
+    async def increment_custom_message_retry_count(self, message_id: int):
+        """
+        Increment the retry count for a custom message.
+        
+        Args:
+            message_id: ID of the custom message
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE custom_message_queue 
+                SET retry_count = COALESCE(retry_count, 0) + 1
+                WHERE id = ?
+            """, (message_id,))
             await db.commit()
     
     async def get_recent_custom_messages_count(self, user_id: int, minutes: int = 60) -> int:
