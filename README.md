@@ -6,7 +6,6 @@ A production-ready Telegram bot for managing and browsing a media product catalo
 
 - **[User Guide](docs/USER_GUIDE.md)** - Complete guide for bot users
 - **[Admin Guide](docs/ADMIN_GUIDE.md)** - Admin features and workflows
-- **[Broadcast Reliability](docs/BROADCAST_RELIABILITY.md)** - Message delivery, retry, and fallback patterns
 - **[Environment Configuration](configs/.env.example)** - All configuration options explained
 
 ## ✨ Features
@@ -35,12 +34,9 @@ A production-ready Telegram bot for managing and browsing a media product catalo
 - 🔒 **Environment-based Configuration** - All settings via environment variables
 - 🌐 **Webhook Support** - Production-ready for Render.com and other platforms
 - 📦 **SQLite Database** - Lightweight, no external database required
-- 🔁 **Cross-Instance Broadcasts** - DB-backed broadcast forwarding (no Redis)
 - 🛡️ **Rate Limiting** - Anti-spam protection for notifications
 - 🔄 **Automatic Migration** - Database schema updates on startup
 - 📝 **Comprehensive Logging** - Structured logs for monitoring
-
-> **Note**: This repo contains `requirements.txt` and includes a `.render.yaml` to support Render.com deployments. If you change dependency management, update `.render.yaml` accordingly.
 
 ## 🚀 Quick Start
 
@@ -73,7 +69,6 @@ A production-ready Telegram bot for managing and browsing a media product catalo
    BOT_TOKEN=your_bot_token_from_botfather
    CHANNEL_ID=-1001234567890
    ADMIN_IDS=123456789,987654321
-   PRIMARY_ADMIN_ID=123456789  # Optional: Admin who receives categorization requests
    ORDER_CONTACT=@yourusername
    ```
    
@@ -115,65 +110,6 @@ Perfect for free hosting with persistent storage:
    - Create a disk in Render dashboard
    - Mount to `/opt/render/project/data`
    - Set `DB_PATH=/opt/render/project/data/catalog.db`
-
-5. **Configure webhook** for your bot:
-   ```bash
-   curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://your-app-name.onrender.com/webhook"
-   ```
-
-### Multi-Bot Deployment (Single Webservice)
-
-Run multiple bot instances from the **same** Render webservice:
-
-1. **Add additional bot tokens** as environment variables:
-   ```
-   BOT_TOKEN=primary_bot_token
-   BOT_TOKEN_1=secondary_bot_1_token
-   BOT_TOKEN_2=secondary_bot_2_token
-   BOT_TOKEN_3=secondary_bot_3_token
-   ```
-
-2. **Each bot gets its own webhook endpoint**:
-   - Primary bot: `https://your-app.onrender.com/webhook`
-   - Bot 1: `https://your-app.onrender.com/webhook/1`
-   - Bot 2: `https://your-app.onrender.com/webhook/2`
-   - Bot 3: `https://your-app.onrender.com/webhook/3`
-
-3. **Configure webhooks for each bot**:
-   ```bash
-   curl "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=https://your-app.onrender.com/webhook"
-   curl "https://api.telegram.org/bot<BOT_TOKEN_1>/setWebhook?url=https://your-app.onrender.com/webhook/1"
-   curl "https://api.telegram.org/bot<BOT_TOKEN_2>/setWebhook?url=https://your-app.onrender.com/webhook/2"
-   ```
-
-4. **Benefits**:
-   - ✅ All bots share the same database
-   - ✅ Single deployment - easier to manage
-   - ✅ Lower costs - one webservice for multiple bots
-   - ✅ Easy scaling - just add more `BOT_TOKEN_N` variables
-
-### Cross-Instance Broadcast Forwarding
-
-When using multiple bot instances (either via multi-bot deployment or separate servers), broadcasts sent via `/broadcast` are automatically forwarded to all bot instances using **database-backed event forwarding** (no Redis required).
-
-**How it works:**
-- Admin broadcasts create an event in the SQLite database
-- Each bot instance polls for unprocessed broadcast events (default: every 3 seconds)
-- Each bot processes broadcasts for its assigned users only
-- Events are marked as processed per-bot to prevent duplicates
-
-**Requirements:**
-- All bot instances must share the same SQLite database file
-- For multi-server deployments, use:
-  - Shared persistent disk (e.g., Render.com persistent disk)
-  - Network-attached storage (NFS, EFS)
-  - Or a centralized database (PostgreSQL - requires code modifications)
-
-**Note:** SQLite works well for multi-bot deployments on a single server. For true multi-server deployments across different hosts, consider enabling WAL mode:
-```python
-# In database.py, add after connecting:
-await db.execute("PRAGMA journal_mode=WAL")
-```
 
 See [configs/.env.example](configs/.env.example) for complete Render.com deployment notes.
 
@@ -259,14 +195,6 @@ The bot uses SQLite with automatic schema management:
 - **Persistent storage** - Use Render.com persistent disks for production
 
 Tables: products, bot_users, pagination_state, media_groups, pending_categorization, notification_queue, and more.
-
-### Recent Database Migrations
-
-**Reply Markup Support (Latest)**
-- Added `reply_markup` column to `custom_message_queue` table for inline keyboard support
-- Enables product notifications to include interactive buttons (View Product, View Catalog, Subscribe/Unsubscribe)
-- Migration is automatic on startup - no manual intervention required
-- Backward compatible - existing messages without reply_markup continue to work
 
 ## 🌐 Language Support
 

@@ -14,27 +14,6 @@ logger = logging.getLogger(__name__)
 db = Database()
 
 
-def _format_message_preview(message_text: str, media_type: str = None) -> str:
-    """
-    Format a message preview with media indicator and text truncation.
-    
-    Args:
-        message_text: The message text or caption
-        media_type: Optional media type (photo, video, etc.)
-    
-    Returns:
-        Formatted preview string
-    """
-    media_indicator = ""
-    if media_type:
-        media_indicator = f"🎬 Media Type: {media_type.upper()}\n"
-    
-    text_preview = message_text[:200] + '...' if len(message_text) > 200 else message_text
-    text_line = f"📝 Message: {text_preview if text_preview else '(no caption)'}\n"
-    
-    return media_indicator + text_line
-
-
 async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /nuke command - deletes ALL products (admin only) with double confirmation."""
     user_id = update.effective_user.id
@@ -143,12 +122,6 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
                 f"   🕐 Last seen: {last_seen}\n"
                 f"   📬 Notifications: {notif_status}"
             )
-            
-            # Add bot username if available
-            bot_username = user.get('bot_username')
-            if bot_username:
-                escaped_bot_username = escape_markdown_v1(f"@{bot_username}")
-                user_text += f"\n   🤖 Bot: {escaped_bot_username}"
             
             # Add blocked status if applicable
             if blocked_status:
@@ -507,7 +480,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     New workflow:
     1. Ask for message
-    2. Wait for message input (text only)
+    2. Wait for message input
     3. Show confirmation
     4. Send broadcast
     """
@@ -525,27 +498,22 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         "📝 **Broadcast to All Users - Step 1 of 2**\n\n"
-        "Please send the text message you want to broadcast.\n\n"
-        "**Note:** Only text messages are supported for broadcasts. "
-        "Photos, videos, and other media cannot be sent via the broadcast system.",
+        "Please enter the message you want to broadcast:",
         parse_mode="Markdown"
     )
     logger.info(f"Admin {user_id} started broadcast to all users workflow")
 
 
 async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle the multi-step broadcast workflow for admins (text-only)."""
+    """Handle the multi-step broadcast workflow for admins."""
     user_id = update.effective_user.id
+    message_text = update.message.text
     
     if not is_admin(user_id):
         return
     
     broadcast_mode = context.user_data.get('broadcast_mode')
     broadcast_step = context.user_data.get('broadcast_step')
-    
-    # Get message content (text-only, ignore any media)
-    message = update.message
-    message_text = message.text or message.caption or ""
     
     if broadcast_mode == 'single_user':
         if broadcast_step == 'awaiting_user_id':
@@ -571,7 +539,7 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 await update.message.reply_text(
                     f"📝 **Broadcast to Single User - Step 2 of 3**\n\n"
                     f"🆔 User ID: `{target_user_id}`\n\n"
-                    f"Please send the text message:",
+                    f"Please enter the message you want to send:",
                     parse_mode="Markdown"
                 )
                 logger.info(f"Admin {user_id} entered user ID: {target_user_id}")
@@ -584,7 +552,7 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 context.user_data.clear()
                 
         elif broadcast_step == 'awaiting_message':
-            # Step 2: Received message (text-only), show confirmation
+            # Step 2: Received message, show confirmation
             target_user_id = context.user_data.get('target_user_id')
             context.user_data['broadcast_message'] = message_text
             context.user_data['broadcast_step'] = 'awaiting_confirmation'
@@ -596,13 +564,10 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 [InlineKeyboardButton("❌ Cancel", callback_data="broadcast_cancel")]
             ])
             
-            # Build confirmation message using helper
-            message_preview = _format_message_preview(message_text, None)
-            
             await update.message.reply_text(
                 f"✅ **Broadcast to Single User - Confirmation**\n\n"
                 f"🆔 User ID: `{target_user_id}`\n"
-                f"{message_preview}\n"
+                f"📝 Message: {message_text[:200]}{'...' if len(message_text) > 200 else ''}\n\n"
                 f"Do you want to send this message?",
                 reply_markup=keyboard,
                 parse_mode="Markdown"
@@ -611,7 +576,7 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
             
     elif broadcast_mode == 'all_users':
         if broadcast_step == 'awaiting_message':
-            # Step 1: Received message (text-only), show confirmation
+            # Step 1: Received message, show confirmation
             context.user_data['broadcast_message'] = message_text
             context.user_data['broadcast_step'] = 'awaiting_confirmation'
             
@@ -626,19 +591,15 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 [InlineKeyboardButton("❌ Cancel", callback_data="broadcast_cancel")]
             ])
             
-            # Build confirmation message using helper
-            message_preview = _format_message_preview(message_text, None)
-            
             await update.message.reply_text(
                 f"✅ **Broadcast to All Users - Confirmation**\n\n"
-                f"{message_preview}"
+                f"📝 Message: {message_text[:200]}{'...' if len(message_text) > 200 else ''}\n"
                 f"📊 Recipients: {user_count} users\n\n"
                 f"Do you want to send this broadcast?",
                 reply_markup=keyboard,
                 parse_mode="Markdown"
             )
             logger.info(f"Admin {user_id} awaiting confirmation for broadcast to all users")
-
 
 
 async def setcontact_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -705,318 +666,6 @@ async def handle_setcontact_input(update: Update, context: ContextTypes.DEFAULT_
         parse_mode="Markdown"
     )
     logger.info(f"Admin {user_id} updated order contact to: {contact}")
-
-
-async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /clearcache command - clear the file ID cache (admin only)."""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
-    
-    try:
-        # Import the cache clearing function
-        from utils.helpers import clear_file_id_cache
-        
-        # Clear the cache
-        await clear_file_id_cache()
-        
-        await update.message.reply_text(
-            "✅ **File ID cache cleared successfully!**\n\n"
-            "Old product entries will now refresh their media on next view.\n"
-            "This is useful after adding secondary bots as channel admins.",
-            parse_mode="Markdown"
-        )
-        logger.info(f"Admin {user_id} cleared the file ID cache")
-        
-    except Exception as e:
-        logger.error(f"Error in clearcache command: {e}", exc_info=True)
-        await update.message.reply_text(
-            "❌ An error occurred while clearing the cache."
-        )
-
-
-async def diagnostic_notifications_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /diagnostic_notifications command - show notification system diagnostics (admin only)."""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
-    
-    try:
-        from configs.config import Config
-        from datetime import datetime, timedelta
-        
-        # Send initial message
-        status_msg = await update.message.reply_text(
-            "🔍 Gathering notification diagnostics...\n"
-            "This may take a moment."
-        )
-        
-        # Get database stats
-        async with aiosqlite.connect(db.db_path) as conn:
-            # Total users
-            cursor = await conn.execute("SELECT COUNT(*) FROM bot_users")
-            total_users = (await cursor.fetchone())[0]
-            
-            # Users with NULL bot_username
-            cursor = await conn.execute("SELECT COUNT(*) FROM bot_users WHERE bot_username IS NULL")
-            null_bot_users = (await cursor.fetchone())[0]
-            
-            # Users grouped by bot_username
-            cursor = await conn.execute("""
-                SELECT bot_username, COUNT(*) as count 
-                FROM bot_users 
-                WHERE bot_username IS NOT NULL 
-                GROUP BY bot_username
-            """)
-            bot_user_counts = await cursor.fetchall()
-            
-            # Pending notifications
-            cursor = await conn.execute("SELECT COUNT(*) FROM notification_queue WHERE sent_at IS NULL")
-            pending_notifications = (await cursor.fetchone())[0]
-            
-            # Sent notifications in last hour
-            cursor = await conn.execute("""
-                SELECT COUNT(*) FROM notification_queue 
-                WHERE sent_at IS NOT NULL 
-                AND datetime(sent_at) > datetime('now', '-60 minutes')
-            """)
-            sent_last_hour = (await cursor.fetchone())[0]
-            
-            # Last 5 pending notifications with details
-            cursor = await conn.execute("""
-                SELECT nq.id, nq.user_id, nq.product_id, nq.created_at
-                FROM notification_queue nq
-                WHERE nq.sent_at IS NULL
-                ORDER BY nq.created_at DESC
-                LIMIT 5
-            """)
-            last_pending = await cursor.fetchall()
-        
-        # Get current bot username
-        current_bot_username = context.bot.username if hasattr(context.bot, 'username') else 'unknown'
-        
-        # Build diagnostic message
-        lines = [
-            "📊 **Notification Diagnostics**\n",
-            "**Database Stats:**",
-            f"• Total users: {total_users}",
-            f"• Users with NULL bot_username: {null_bot_users}",
-        ]
-        
-        # Add bot-specific user counts
-        if bot_user_counts:
-            for bot_username, count in bot_user_counts:
-                lines.append(f"• Users assigned to @{bot_username}: {count}")
-        elif null_bot_users == 0 and total_users > 0:
-            # No NULL users and no assigned users means something unusual
-            lines.append(f"• No users assigned to specific bots")
-        
-        lines.extend([
-            "",
-            "**Notification Queue:**",
-            f"• Pending notifications: {pending_notifications}",
-            f"• Sent in last hour: {sent_last_hour}",
-            "",
-            "**Configuration:**",
-        ])
-        
-        # Add configuration details
-        if hasattr(Config, 'PRIMARY_BOT_USERNAME') and Config.PRIMARY_BOT_USERNAME:
-            lines.append(f"• PRIMARY_BOT_USERNAME: {Config.PRIMARY_BOT_USERNAME}")
-        
-        if Config.BOT_TOKENS:
-            lines.append(f"• Total bots configured: {len(Config.BOT_TOKENS)}")
-            primary_token_suffix = Config.BOT_TOKENS[0][-5:] if Config.BOT_TOKENS else "N/A"
-            lines.append(f"• Primary bot token: ...{primary_token_suffix}")
-        else:
-            lines.append(f"• Total bots configured: 0")
-        
-        lines.append(f"• Current bot: @{current_bot_username}")
-        
-        # Add last pending notifications
-        if last_pending:
-            lines.extend([
-                "",
-                "**Last 5 Pending Notifications:**",
-            ])
-            for nq_id, uid, pid, created_at in last_pending:
-                # Calculate time ago
-                try:
-                    created_dt = datetime.fromisoformat(created_at)
-                    # Handle both timezone-aware and timezone-naive datetimes
-                    if created_dt.tzinfo is not None:
-                        now = datetime.now(created_dt.tzinfo)
-                    else:
-                        now = datetime.now()
-                    delta = now - created_dt
-                    
-                    if delta.total_seconds() < 60:
-                        time_ago = f"{int(delta.total_seconds())} sec ago"
-                    elif delta.total_seconds() < 3600:
-                        time_ago = f"{int(delta.total_seconds() / 60)} min ago"
-                    else:
-                        time_ago = f"{int(delta.total_seconds() / 3600)} hr ago"
-                except Exception:
-                    time_ago = "unknown"
-                
-                lines.append(f"• User {uid} → Product {pid} (queued {time_ago})")
-        else:
-            lines.extend([
-                "",
-                "**Last 5 Pending Notifications:**",
-                "• No pending notifications",
-            ])
-        
-        # Add diagnostic summary
-        lines.extend([
-            "",
-            "**Diagnostic Summary:**",
-        ])
-        
-        # Check for common issues
-        primary_bot_username = getattr(Config, 'PRIMARY_BOT_USERNAME', None)
-        if null_bot_users > 0 and primary_bot_username is None:
-            lines.append("ℹ️ INFO: NULL bot_username users exist and will be handled dynamically by all bots")
-        elif null_bot_users > 0 and primary_bot_username:
-            lines.append(f"ℹ️ NULL users will be handled by primary bot (@{primary_bot_username})")
-        
-        if pending_notifications > 0 and sent_last_hour == 0:
-            lines.append("⚠️ WARNING: Pending notifications exist but none sent in last hour")
-        
-        if total_users > 0 and pending_notifications == 0 and sent_last_hour == 0:
-            lines.append("ℹ️ No recent notification activity")
-        
-        if pending_notifications > 0:
-            lines.append(f"✅ Notifications are being queued ({pending_notifications} pending)")
-        
-        message_text = "\n".join(lines)
-        
-        await status_msg.edit_text(message_text, parse_mode="Markdown")
-        logger.info(f"Admin {user_id} ran notification diagnostics")
-        
-    except Exception as e:
-        logger.error(f"Error in diagnostic_notifications command: {e}", exc_info=True)
-        await update.message.reply_text(
-            "❌ An error occurred while gathering diagnostics."
-        )
-
-
-async def debug_queues_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /debug_queues command - show queue counts and samples (admin only)."""
-    user_id = update.effective_user.id
-    
-    # Check admin permission
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
-    
-    logger.info(f"[AdminCommand] debug_queues invoked by admin user {user_id}")
-    
-    try:
-        # Send initial message
-        status_msg = await update.message.reply_text(
-            "🔍 Inspecting notification queues..."
-        )
-        
-        # Get queue counts and samples
-        async with aiosqlite.connect(db.db_path) as conn:
-            # notification_queue stats
-            cursor = await conn.execute("SELECT COUNT(*) FROM notification_queue WHERE sent_at IS NULL")
-            nq_pending = (await cursor.fetchone())[0]
-            
-            cursor = await conn.execute("SELECT COUNT(*) FROM notification_queue WHERE sent_at IS NOT NULL")
-            nq_sent = (await cursor.fetchone())[0]
-            
-            # custom_message_queue stats
-            cursor = await conn.execute("SELECT COUNT(*) FROM custom_message_queue WHERE sent_at IS NULL")
-            cmq_pending = (await cursor.fetchone())[0]
-            
-            cursor = await conn.execute("SELECT COUNT(*) FROM custom_message_queue WHERE sent_at IS NOT NULL")
-            cmq_sent = (await cursor.fetchone())[0]
-            
-            # Sample pending notification_queue rows
-            cursor = await conn.execute("""
-                SELECT id, user_id, product_id, created_at
-                FROM notification_queue
-                WHERE sent_at IS NULL
-                ORDER BY created_at DESC
-                LIMIT 5
-            """)
-            nq_samples = await cursor.fetchall()
-            
-            # Sample pending custom_message_queue rows
-            cursor = await conn.execute("""
-                SELECT id, user_id, message_text, media_type, created_at
-                FROM custom_message_queue
-                WHERE sent_at IS NULL
-                ORDER BY created_at DESC
-                LIMIT 5
-            """)
-            cmq_samples = await cursor.fetchall()
-        
-        # Build response message
-        lines = [
-            "📊 **Queue Diagnostics**\n",
-            "**notification_queue:**",
-            f"• Pending: {nq_pending}",
-            f"• Sent: {nq_sent}",
-            f"• Total: {nq_pending + nq_sent}",
-        ]
-        
-        if nq_samples:
-            lines.append("\n**Sample pending notifications (up to 5):**")
-            for row in nq_samples:
-                nq_id, uid, pid, created = row
-                # Format timestamp if present
-                created_str = created[:10] if created else 'N/A'  # Show just date
-                lines.append(f"• ID {nq_id}: user={uid}, product={pid}, created={created_str}")
-        else:
-            lines.append("\n• No pending notifications")
-        
-        lines.extend([
-            "",
-            "**custom_message_queue:**",
-            f"• Pending: {cmq_pending}",
-            f"• Sent: {cmq_sent}",
-            f"• Total: {cmq_pending + cmq_sent}",
-        ])
-        
-        if cmq_samples:
-            lines.append("\n**Sample pending custom messages (up to 5):**")
-            for row in cmq_samples:
-                cmq_id, uid, msg_text, media_type, created = row
-                # Format message preview - only add ellipsis if actually truncated
-                if msg_text and len(msg_text) > 40:
-                    msg_preview = msg_text[:40] + '...'
-                else:
-                    msg_preview = msg_text or '(no text)'
-                
-                media_info = f", media={media_type}" if media_type else ""
-                created_str = created[:10] if created else 'N/A'  # Show just date
-                lines.append(f"• ID {cmq_id}: user={uid}{media_info}, msg=\"{msg_preview}\", created={created_str}")
-        else:
-            lines.append("\n• No pending custom messages")
-        
-        message_text = "\n".join(lines)
-        
-        await status_msg.edit_text(message_text, parse_mode="Markdown")
-        logger.info(f"[AdminCommand] debug_queues completed for admin {user_id}")
-        
-    except Exception as e:
-        logger.error(f"Error in debug_queues command: {e}", exc_info=True)
-        await update.message.reply_text(
-            "❌ An error occurred while inspecting queues."
-        )
 
 
 

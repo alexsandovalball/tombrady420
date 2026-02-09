@@ -4,18 +4,15 @@ This allows the bot to receive updates via webhooks instead of polling,
 which is more suitable for serverless deployments like Render.com.
 """
 import logging
-import os
-import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, status
 from telegram import Update
-from telegram.ext import Application, PicklePersistence
+from telegram.ext import Application
 
 from configs.config import Config, ConfigError
 # Import the bot setup functions
 from main import (
     post_init,
-    setup_bot_commands,
     start_command,
     menu_command,
     language_command,
@@ -29,8 +26,6 @@ from main import (
     send_command,
     broadcast_command,
     setcontact_command,
-    clearcache_command,
-    diagnostic_notifications_command,
     channel_post_handler,
     callback_query_handler,
     message_handler,
@@ -42,8 +37,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters
 )
-from utils.helpers import get_channel_id, get_channel_username, get_file_id_cache_size
-from utils.notifications import NOTIFICATION_TASKS_KEY
+from utils.helpers import get_channel_id, get_channel_username
 
 # Configure logging with structured format for better visibility on Render
 logging.basicConfig(
@@ -58,65 +52,24 @@ logging.getLogger('telegram').setLevel(logging.INFO)
 logging.getLogger('httpx').setLevel(logging.WARNING)  # Reduce noise from HTTP library
 logging.getLogger('uvicorn.access').setLevel(logging.INFO)  # Keep access logs visible
 
-async def setup_application(bot_token: str, bot_index: int = 0):
-    """Initialize and configure a bot application.
+
+async def setup_application():
+    """Initialize and configure the bot application."""
+    # Validate configuration on startup
+    try:
+        Config.validate()
+    except ConfigError as e:
+        logger.error(str(e))
+        raise
     
-    Args:
-        bot_token: The Telegram bot token
-        bot_index: Index of the bot (0 for primary, 1+ for additional bots)
-    """
-    logger.info(f"Setting up bot application {bot_index}...")
+    # Get bot token from config
+    bot_token = Config.BOT_TOKEN
     
-    # Create persistence instance
-    persistence = PicklePersistence(filepath=f'bot_persistence_{bot_index}.pkl')
+    # Create application
+    bot_app = Application.builder().token(bot_token).build()
     
-    # Create application with persistence
-    bot_app = Application.builder().token(bot_token).persistence(persistence).build()
-    
-    # Initialize the application so application.bot is safe to access
-    await bot_app.initialize()
-    
-    # Initialize database (only once for the primary bot)
-    if bot_index == 0:
-        await post_init(bot_app)
-    else:
-        # For secondary bots, set commands and start broadcast listener
-        await setup_bot_commands(bot_app.bot)
-        
-        # Start broadcast listener for this secondary bot instance
-        try:
-            from database import Database
-            from utils import broadcast_forwarder
-            from utils.notifications import enqueue_local_broadcast
-            
-            db = Database(Config.DB_PATH)
-            listener_task = broadcast_forwarder.start_listener_in_background(db, enqueue_local_broadcast)
-            
-            # Store task to prevent garbage collection
-            if 'broadcast_listener_task' not in bot_app.bot_data:
-                bot_app.bot_data['broadcast_listener_task'] = listener_task
-            
-            logger.info(f"Broadcast listener started for secondary bot {bot_index}")
-        except Exception as e:
-            logger.error(f"Failed to start broadcast listener for bot {bot_index}: {e}", exc_info=True)
-            logger.warning("Broadcast forwarding will not work for this bot instance")
-        
-        # Start custom message processor for this secondary bot instance
-        try:
-            from utils.notifications import start_custom_message_processor_in_background
-            
-            db = Database(Config.DB_PATH)
-            
-            # Guard to prevent multiple starts
-            if 'custom_message_processor_task' not in bot_app.bot_data:
-                processor_task = start_custom_message_processor_in_background(bot_app, db, interval_seconds=3)
-                bot_app.bot_data['custom_message_processor_task'] = processor_task
-                logger.info(f"Custom message processor started for secondary bot {bot_index}")
-            else:
-                logger.debug(f"Custom message processor already running for secondary bot {bot_index}")
-        except Exception as e:
-            logger.error(f"Failed to start custom message processor for bot {bot_index}: {e}", exc_info=True)
-            logger.warning("Background message delivery may be impaired for this bot instance")
+    # Initialize database
+    await post_init(bot_app)
     
     # Register handlers
     bot_app.add_handler(CommandHandler("start", start_command))
@@ -132,39 +85,29 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     bot_app.add_handler(CommandHandler("send", send_command))
     bot_app.add_handler(CommandHandler("broadcast", broadcast_command))
     bot_app.add_handler(CommandHandler("setcontact", setcontact_command))
-    bot_app.add_handler(CommandHandler("clearcache", clearcache_command))
-    bot_app.add_handler(CommandHandler("diagnostic_notifications", diagnostic_notifications_command))
     
     # Channel post handler (for monitoring channel)
-    # Only the primary bot (bot_index == 0) should monitor the channel and send categorization requests
-    if bot_index == 0:
-        channel_id = get_channel_id()
-        channel_username = get_channel_username()
-        
-        if channel_id:
-            # Use channel ID filter
-            channel_filter = filters.Chat(chat_id=channel_id)
-        elif channel_username:
-            # Use channel username filter
-            channel_filter = filters.Chat(username=channel_username.lstrip("@"))
-        else:
-            logger.warning("No CHANNEL_ID or CHANNEL_USERNAME set. Channel monitoring disabled.")
-            channel_filter = None
-        
-        if channel_filter:
-            bot_app.add_handler(
-                MessageHandler(
-                    channel_filter & filters.ChatType.CHANNEL,
-                    channel_post_handler
-                )
-            )
-            logger.info(f"Channel monitoring enabled for primary bot: {channel_id or channel_username}")
+    channel_id = get_channel_id()
+    channel_username = get_channel_username()
+    
+    if channel_id:
+        # Use channel ID filter
+        channel_filter = filters.Chat(chat_id=channel_id)
+    elif channel_username:
+        # Use channel username filter
+        channel_filter = filters.Chat(username=channel_username.lstrip("@"))
     else:
-        logger.info(
-            f"Channel monitoring DISABLED for secondary bot {bot_index}. "
-            f"Only primary bot monitors channel for categorization prompts. "
-            f"All bots can deliver notifications to users."
+        logger.warning("No CHANNEL_ID or CHANNEL_USERNAME set. Channel monitoring disabled.")
+        channel_filter = None
+    
+    if channel_filter:
+        bot_app.add_handler(
+            MessageHandler(
+                channel_filter & filters.ChatType.CHANNEL,
+                channel_post_handler
+            )
         )
+        logger.info(f"Channel monitoring enabled for: {channel_id or channel_username}")
     
     # Callback query handler (for inline buttons)
     bot_app.add_handler(CallbackQueryHandler(callback_query_handler))
@@ -180,24 +123,23 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     # Error handler
     bot_app.add_error_handler(error_handler)
     
-    # Start the application (note: initialize was already called earlier)
+    # Initialize the application
+    await bot_app.initialize()
     await bot_app.start()
     
     # Set webhook
     webhook_url = Config.WEBHOOK_URL
     if webhook_url:
-        # Primary bot uses /webhook, additional bots use /webhook/1, /webhook/2, etc.
-        webhook_path = "/webhook" if bot_index == 0 else f"/webhook/{bot_index}"
         await bot_app.bot.set_webhook(
-            url=f"{webhook_url}{webhook_path}",
+            url=f"{webhook_url}/webhook",
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True
         )
-        logger.info(f"Webhook set for bot {bot_index}: {webhook_url}{webhook_path}")
+        logger.info(f"Webhook set to: {webhook_url}/webhook")
     else:
         logger.warning("WEBHOOK_URL not set. Webhook may not work properly.")
     
-    logger.info(f"Bot application {bot_index} initialized successfully")
+    logger.info("Bot application initialized successfully")
     return bot_app
 
 
@@ -206,84 +148,13 @@ async def lifespan(app: FastAPI):
     """Manage application lifespan - startup and shutdown."""
     # Startup
     logger.info("Starting webhook server...")
-    
-    # Validate configuration on startup
-    try:
-        Config.validate()
-    except ConfigError as e:
-        logger.error(str(e))
-        raise
-    
-    # Initialize all bot applications
-    bot_apps = []
-    bot_tokens = Config.BOT_TOKENS
-    
-    if not bot_tokens:
-        logger.error("No bot tokens configured!")
-        raise ConfigError("At least one bot token is required")
-    
-    logger.info(f"Initializing {len(bot_tokens)} bot instance(s)...")
-    
-    for idx, token in enumerate(bot_tokens):
-        try:
-            bot_app = await setup_application(token, idx)
-            bot_apps.append(bot_app)
-            logger.info(f"Bot {idx} initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize bot {idx}: {e}", exc_info=True)
-            # Clean up any previously initialized bots
-            for app in bot_apps:
-                try:
-                    await app.stop()
-                    await app.shutdown()
-                except Exception:
-                    pass
-            raise
-    
-    app.state.bot_apps = bot_apps
-    logger.info(f"All {len(bot_apps)} bot(s) initialized successfully")
-    
-    # Log cache status for multi-bot setups
-    if len(bot_apps) > 1:
-        cache_size = get_file_id_cache_size()
-        if cache_size == 0:
-            logger.warning(
-                f"File ID cache is empty. For secondary bots (bot 1-{len(bot_apps)-1}) to display media correctly, "
-                f"admins must start a conversation with each bot by sending /start. "
-                f"This allows the bots to cache bot-specific file IDs."
-            )
-        else:
-            logger.info(f"File ID cache contains {cache_size} entries")
-    
+    app.state.bot_app = await setup_application()
     yield
-    
     # Shutdown
-    logger.info("Shutting down bot applications...")
-    for idx, bot_app in enumerate(app.state.bot_apps):
-        cancelled_tasks = []
-        try:
-            # Cancel and clear asyncio tasks to prevent pickling errors
-            if hasattr(bot_app, 'bot_data'):
-                for key, value in list(bot_app.bot_data.items()):
-                    if isinstance(value, asyncio.Task):
-                        if not value.done():
-                            value.cancel()
-                            cancelled_tasks.append(value)
-                        del bot_app.bot_data[key]
-                    elif key == NOTIFICATION_TASKS_KEY and isinstance(value, list):
-                        for task in value:
-                            if isinstance(task, asyncio.Task) and not task.done():
-                                task.cancel()
-                                cancelled_tasks.append(task)
-                        value.clear()
-            if cancelled_tasks:
-                await asyncio.gather(*cancelled_tasks, return_exceptions=True)
-            await bot_app.stop()
-            await bot_app.shutdown()
-            logger.info(f"Bot {idx} shut down successfully")
-        except Exception as e:
-            logger.error(f"Error shutting down bot {idx}: {e}")
-    logger.info("All bot applications shut down successfully")
+    logger.info("Shutting down bot application...")
+    await app.state.bot_app.stop()
+    await app.state.bot_app.shutdown()
+    logger.info("Bot application shut down successfully")
 
 
 # Create FastAPI app with lifespan
@@ -297,48 +168,27 @@ app = FastAPI(
 @app.head("/")
 async def root():
     """Health check endpoint."""
-    bot_count = len(getattr(app.state, "bot_apps", []))
     return {
         "status": "running",
         "bot": "Telegram Media Catalog Bot",
-        "mode": "webhook",
-        "bot_instances": bot_count
+        "mode": "webhook"
     }
 
 
 @app.post("/webhook")
 async def webhook(request: Request):
-    """Handle incoming webhook updates from Telegram for the primary bot (bot 0)."""
-    logger.info("Received webhook request for primary bot")
+    """Handle incoming webhook updates from Telegram."""
+    logger.info("Received webhook request")
     
-    # Check if bots are initialized
-    if not hasattr(request.app.state, "bot_apps") or not request.app.state.bot_apps:
-        logger.error("Bot applications not initialized")
+    # Check if bot is initialized
+    if not hasattr(request.app.state, "bot_app") or request.app.state.bot_app is None:
+        logger.error("Bot application not initialized")
         return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
     
     try:
         # Parse the update
         json_data = await request.json()
-        # Use the first bot (primary bot at index 0)
-        bot_app = request.app.state.bot_apps[0]
-        update = Update.de_json(json_data, bot_app.bot)
-        
-        # Revalidate user when they interact with the bot
-        from database import Database
-        from utils.bot_key import get_bot_env_key
-        db = Database()
-        bot_key = 'BOT_TOKEN'  # Primary bot always uses BOT_TOKEN
-        
-        user_id = None
-        if update.message and update.message.from_user:
-            user_id = update.message.from_user.id
-        elif update.callback_query and update.callback_query.from_user:
-            user_id = update.callback_query.from_user.id
-        
-        if user_id:
-            # Mark user as valid for this bot (undo any invalidation)
-            await db.mark_user_valid(user_id, bot_key)
-            logger.debug(f"Revalidated user {user_id} for bot {bot_key}")
+        update = Update.de_json(json_data, request.app.state.bot_app.bot)
         
         # Log update details
         if update.message:
@@ -351,78 +201,12 @@ async def webhook(request: Request):
             logger.info(f"Processing update type: {update.update_id}")
         
         # Process the update
-        await bot_app.process_update(update)
+        await request.app.state.bot_app.process_update(update)
         
-        logger.info("Webhook request processed successfully for primary bot")
+        logger.info("Webhook request processed successfully")
         return Response(status_code=status.HTTP_200_OK)
     except Exception as e:
-        logger.error(f"Error processing webhook update for primary bot: {e}", exc_info=True)
-        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@app.post("/webhook/{bot_index}")
-async def webhook_indexed(request: Request, bot_index: int):
-    """Handle incoming webhook updates from Telegram for additional bot instances.
-    
-    Note: The primary bot (bot 0) is accessed via /webhook, not /webhook/0.
-    This endpoint handles bots 1, 2, 3, etc.
-    """
-    logger.info(f"Received webhook request for bot {bot_index}")
-    
-    # Check if bots are initialized
-    if not hasattr(request.app.state, "bot_apps") or not request.app.state.bot_apps:
-        logger.error("Bot applications not initialized")
-        return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
-    
-    # Validate bot index (must be >= 1 for this endpoint)
-    if bot_index >= len(request.app.state.bot_apps):
-        logger.error(f"Invalid bot index: {bot_index}. Available bots: 0-{len(request.app.state.bot_apps) - 1}")
-        return Response(status_code=status.HTTP_404_NOT_FOUND)
-    
-    if bot_index == 0:
-        logger.warning("Bot 0 should use /webhook endpoint, not /webhook/0. Redirecting...")
-        # Still process it for convenience, but log the warning
-    
-    try:
-        # Parse the update
-        json_data = await request.json()
-        bot_app = request.app.state.bot_apps[bot_index]
-        update = Update.de_json(json_data, bot_app.bot)
-        
-        # Revalidate user when they interact with the bot
-        from database import Database
-        db = Database()
-        # Determine bot_key based on index
-        bot_key = 'BOT_TOKEN' if bot_index == 0 else f'BOT_TOKEN_{bot_index}'
-        
-        user_id = None
-        if update.message and update.message.from_user:
-            user_id = update.message.from_user.id
-        elif update.callback_query and update.callback_query.from_user:
-            user_id = update.callback_query.from_user.id
-        
-        if user_id:
-            # Mark user as valid for this bot (undo any invalidation)
-            await db.mark_user_valid(user_id, bot_key)
-            logger.debug(f"Revalidated user {user_id} for bot {bot_key}")
-        
-        # Log update details
-        if update.message:
-            logger.info(f"Bot {bot_index}: Processing message update from user {update.message.from_user.id}")
-        elif update.callback_query:
-            logger.info(f"Bot {bot_index}: Processing callback query from user {update.callback_query.from_user.id}: {update.callback_query.data}")
-        elif update.channel_post:
-            logger.info(f"Bot {bot_index}: Processing channel post from chat {update.channel_post.chat.id}")
-        else:
-            logger.info(f"Bot {bot_index}: Processing update type: {update.update_id}")
-        
-        # Process the update
-        await bot_app.process_update(update)
-        
-        logger.info(f"Webhook request processed successfully for bot {bot_index}")
-        return Response(status_code=status.HTTP_200_OK)
-    except Exception as e:
-        logger.error(f"Error processing webhook update for bot {bot_index}: {e}", exc_info=True)
+        logger.error(f"Error processing webhook update: {e}", exc_info=True)
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 

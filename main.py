@@ -13,8 +13,7 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     filters,
-    ContextTypes,
-    PicklePersistence
+    ContextTypes
 )
 from telegram.error import TelegramError
 
@@ -29,8 +28,7 @@ from handlers.admin import (
     delete_product, nuke_command, recategorize_command, 
     users_command, show_users_page,
     block_command, unblock_command, send_command, broadcast_command,
-    setcontact_command, handle_setcontact_input, clearcache_command,
-    diagnostic_notifications_command, debug_queues_command
+    setcontact_command, handle_setcontact_input
 )
 from translations.language_config import is_valid_language, LANGUAGE_DISPLAY
 from translations.translator import get_translated_string_async, translation_service
@@ -46,7 +44,6 @@ from utils.helpers import (
 )
 from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES
 from utils.notifications import NotificationService
-from utils.bot_key import get_bot_env_key
 
 # Configure logging with structured format for better visibility on Render
 logging.basicConfig(
@@ -71,40 +68,8 @@ media_group_messages = {}
 media_group_timers = {}
 
 
-def format_message_preview(message_text: str, max_length: int = 100) -> str:
-    """
-    Format a message preview for display, handling None values safely.
-    
-    Args:
-        message_text: The message text to preview (can be None)
-        max_length: Maximum length of preview before truncation
-        
-    Returns:
-        Formatted message preview string
-    """
-    if not message_text:
-        return "(no caption)"
-    
-    preview = message_text[:max_length]
-    if len(message_text) > max_length:
-        preview += '...'
-    return preview
-
-
 async def notify_admins_for_categorization(context: ContextTypes.DEFAULT_TYPE, product_id: int):
-    """
-    Send categorization request to primary admin for a new product.
-    Only runs on the primary bot instance to avoid duplicate categorization prompts.
-    """
-    # Check if this is the primary bot instance
-    from utils.helpers import is_primary_bot_instance
-    if not is_primary_bot_instance(context):
-        bot_username = context.bot.username if hasattr(context.bot, 'username') else 'unknown'
-        logger.debug(
-            f"[Bot @{bot_username}] Skipping categorization prompt for product {product_id} - not primary instance"
-        )
-        return
-    
+    """Send categorization request to all admins for a new product."""
     try:
         product = await db.get_product(product_id)
         if not product:
@@ -139,27 +104,23 @@ async def notify_admins_for_categorization(context: ContextTypes.DEFAULT_TYPE, p
             f"Please select a category:"
         )
         
-        # Get primary admin ID (use PRIMARY_ADMIN_ID if configured, otherwise use first admin)
-        from configs.config import Config
-        primary_admin = Config.PRIMARY_ADMIN_ID or (admin_ids[0] if admin_ids else None)
-
-        if not primary_admin:
-            logger.warning("No primary admin configured. Product will remain uncategorized.")
-            return
-
-        # Send notification only to primary admin
-        try:
-            await context.bot.send_message(
-                chat_id=primary_admin,
-                text=message_text,
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
-            
-            logger.info(f"Sent categorization request to primary admin {primary_admin} for product {product_id}")
-            
-        except Exception as e:
-            logger.error(f"Failed to notify primary admin {primary_admin}: {e}")
+        # Send notification to each admin
+        for admin_id in admin_ids:
+            try:
+                # Send the product media with categorization keyboard
+                from utils.helpers import send_media_message
+                
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=message_text,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
+                
+                logger.info(f"Sent categorization request to admin {admin_id} for product {product_id}")
+                
+            except Exception as e:
+                logger.error(f"Failed to notify admin {admin_id}: {e}")
         
         # Mark as pending categorization
         await db.add_pending_categorization(product_id)
@@ -197,10 +158,9 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
     if not caption:
         caption = f"[Album - {len(messages)} items]"
     
-    # Collect all file IDs and message IDs
+    # Collect all file IDs
     file_ids = []
     file_types = []
-    message_ids = []
     
     for msg in messages:
         # Create a temporary update object for each message
@@ -209,7 +169,6 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
         if file_id:
             file_ids.append(file_id)
             file_types.append(file_type)
-            message_ids.append(msg.message_id)
     
     if not file_ids:
         logger.warning(f"No file IDs extracted from media group {media_group_id}")
@@ -219,18 +178,15 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
     existing_product_id = await db.get_or_create_media_group_product(media_group_id, chat_id)
     
     if existing_product_id:
-        # Update existing product with new file IDs and message IDs
+        # Update existing product with new file IDs
         additional_files = json.dumps(list(zip(file_ids[1:], file_types[1:])))
-        additional_msg_ids = json.dumps(message_ids[1:]) if len(message_ids) > 1 else None
-        await db.update_product_media(existing_product_id, additional_files, additional_msg_ids)
+        await db.update_product_media(existing_product_id, additional_files)
         logger.info(f"Updated media group product {existing_product_id} with {len(file_ids)} files")
         return
     
     # Create new product with first file as primary (NO automatic categorization)
     additional_files = json.dumps(list(zip(file_ids[1:], file_types[1:]))) if len(file_ids) > 1 else None
-    additional_msg_ids = json.dumps(message_ids[1:]) if len(message_ids) > 1 else None
     
-    # Fixed: Removed unexpected indent that was causing IndentationError
     product_id = await db.add_product(
         file_id=file_ids[0],
         file_type=file_types[0],
@@ -239,10 +195,8 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
         chat_id=chat_id,
         media_group_id=media_group_id,
         additional_file_ids=additional_files,
-        additional_message_ids=additional_msg_ids,
         category=None,  # No automatic categorization
-        subcategory=None,
-        uploader_bot_id=get_bot_env_key()
+        subcategory=None
     )
     
     if product_id > 0:
@@ -318,52 +272,23 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             message_id=message.message_id,
             chat_id=message.chat.id,
             category=None,  # No automatic categorization
-            subcategory=None,
-            uploader_bot_id=get_bot_env_key()
+            subcategory=None
         )
         
         if product_id > 0:
             logger.info(
                 f"New product saved: ID={product_id}, "
                 f"message_id={message.message_id}, "
-                f"type={file_type}, "
-                f"bot={context.bot.username}"
+                f"type={file_type}"
             )
             
             # Notify admins for categorization
-            logger.info(f"Sending categorization request for product {product_id} (bot: {context.bot.username})")
             await notify_admins_for_categorization(context, product_id)
         else:
             logger.debug(f"Product already exists for message {message.message_id}")
             
     except Exception as e:
         logger.error(f"Error handling channel post: {e}", exc_info=True)
-
-
-def _extract_callback_product_id(callback_data: str, prefix: str):
-    """
-    Extract product_id from callback_data if present.
-    
-    Args:
-        callback_data: The callback data string (e.g., "toggle_notifications|123")
-        prefix: The expected prefix (e.g., "toggle_notifications")
-    
-    Returns:
-        tuple: (matched_prefix, product_id or None)
-        - matched_prefix is the prefix that was matched (for backward compatibility)
-        - product_id is the extracted ID or None if not present
-    """
-    if callback_data == prefix:
-        return (prefix, None)
-    elif callback_data.startswith(f"{prefix}|"):
-        parts = callback_data.split("|")
-        if len(parts) >= 2:
-            try:
-                return (prefix, int(parts[1]))
-            except ValueError:
-                logger.warning(f"Invalid product_id in callback: {callback_data}")
-                return (prefix, None)
-    return (None, None)
 
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -380,9 +305,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 show_alert=True
             )
             return
-    
-    # Track user interaction
-    await db.set_last_bot_key(user_id, get_bot_env_key())
     
     await query.answer()  # Answer callback to prevent loading spinner
     
@@ -506,13 +428,19 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
     
     if callback_data.startswith("broadcast_confirm_single|"):
-        # Confirm and send single user broadcast (text-only)
+        # Confirm and send single user broadcast
         parts = callback_data.split("|")
         if len(parts) >= 2:
             target_user_id = int(parts[1])
-            message_text = context.user_data.get('broadcast_message', '')
+            message_text = context.user_data.get('broadcast_message')
             
-            # Send the message using NotificationService (imported at module level)
+            if not message_text:
+                await query.answer("❌ Message not found. Please start over.", show_alert=True)
+                context.user_data.clear()
+                return
+            
+            # Send the message
+            from utils.notifications import NotificationService
             notification_service = NotificationService(db)
             
             success = await notification_service.send_custom_message_to_user(
@@ -522,130 +450,53 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             )
             
             if success:
-                message_preview = format_message_preview(message_text)
                 await query.edit_message_text(
-                    f"✅ **Message Queued Successfully!**\n\n"
+                    f"✅ **Message Sent Successfully!**\n\n"
                     f"🆔 User ID: `{target_user_id}`\n"
-                    f"📝 Message: {message_preview}\n\n"
-                    f"🚀 Message is being delivered in the background...",
+                    f"📝 Message: {message_text[:100]}{'...' if len(message_text) > 100 else ''}",
                     parse_mode="Markdown"
                 )
-                logger.info(f"Admin {user_id} queued message for user {target_user_id}")
+                logger.info(f"Admin {user_id} sent message to user {target_user_id}")
             else:
-                await query.edit_message_text("❌ Failed to queue message. Check logs for details.")
+                await query.edit_message_text("❌ Failed to send message. Check logs for details.")
             
             context.user_data.clear()
         return
     
     if callback_data == "broadcast_confirm_all":
-        # Confirm and send broadcast to all users (text-only)
-        message_text = context.user_data.get('broadcast_message', '')
+        # Confirm and send broadcast to all users
+        message_text = context.user_data.get('broadcast_message')
         
-        # Show initial queuing message
+        if not message_text:
+            await query.answer("❌ Message not found. Please start over.", show_alert=True)
+            context.user_data.clear()
+            return
+        
+        # Send status message
         await query.edit_message_text(
-            "⏳ **Queueing broadcast...**\n\nPlease wait...",
+            "📡 **Broadcasting message...**\n\n"
+            "Please wait while the message is queued for all users.",
             parse_mode="Markdown"
         )
         
-        # Use DB-backed broadcast forwarding (no Redis)
-        # This will insert a broadcast event that all bot instances will process
-        try:
-            from utils import broadcast_forwarder
-            
-            start_time = datetime.now()
-            broadcast_id = await broadcast_forwarder.publish_broadcast(db, message_text)
-            
-            logger.info(f"Admin {user_id} published broadcast event {broadcast_id}")
-            
-            # The broadcast will be picked up by all bot instances (including this one)
-            # via their polling listeners, so we don't need to call broadcast_custom_message directly
-            
-            # Show queued confirmation
-            message_preview = format_message_preview(message_text)
-            await query.edit_message_text(
-                f"✅ **Broadcast Published Successfully!**\n\n"
-                f"📨 Broadcast ID: {broadcast_id}\n"
-                f"📝 Message: {message_preview}\n\n"
-                f"🚀 All bot instances will process this broadcast...",
-                parse_mode="Markdown"
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to publish broadcast via DB forwarder: {e}", exc_info=True)
-            
-            # Fallback to direct local broadcast if DB publish fails
-            logger.warning("Falling back to local broadcast (non-forwarded)")
-            
-            notification_service = NotificationService(db)
-            
-            start_time = datetime.now()
-            queued_count, processing_task = await notification_service.broadcast_custom_message(
-                context,
-                message_text,
-                exclude_blocked=True
-            )
-            
-            # Show queued confirmation
-            message_preview = format_message_preview(message_text)
-            await query.edit_message_text(
-                f"✅ **Broadcast Queued Successfully!**\n\n"
-                f"📨 Messages queued: {queued_count}\n"
-                f"📝 Message: {message_preview}\n\n"
-                f"🚀 Messages are being delivered now with rate-limiting...",
-                parse_mode="Markdown"
-            )
-            logger.info(f"Admin {user_id} broadcast message to {queued_count} users (local fallback)")
-            
-            # Schedule a background task to notify admin when processing completes
-            async def notify_completion():
-                try:
-                    # Wait for the processing task to complete
-                    result = await processing_task
-                    
-                    # Send completion message with final counts
-                    duration = datetime.now() - start_time
-                    sent_count = result.get("sent_count", 0)
-                    failed_count = result.get("failed_count", 0)
-                    
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text=f"✅ **Broadcast Completed!**\n\n"
-                             f"📊 Successfully delivered: {sent_count}\n"
-                             f"❌ Failed: {failed_count}\n"
-                             f"📨 Total queued: {queued_count}\n"
-                             f"⏱️ Time taken: {int(duration.total_seconds())} seconds",
-                        parse_mode="Markdown"
-                    )
-                except Exception as e:
-                    # Send error message to admin
-                    logger.error(f"Error in broadcast completion notification: {e}", exc_info=True)
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text=f"❌ **Broadcast Processing Error!**\n\n"
-                             f"An error occurred while processing the broadcast.\n"
-                             f"Check the logs for details.",
-                        parse_mode="Markdown"
-                    )
-            
-            # Store task reference to prevent garbage collection
-            if not hasattr(context, 'notification_tasks'):
-                context.notification_tasks = []
-            
-            task = asyncio.create_task(notify_completion())
-            
-            # Add exception handler to the task
-            def log_completion_task_exception(task_obj):
-                try:
-                    task_obj.result()
-                except Exception as e:
-                    logger.error(f"Error in notify_completion task: {e}", exc_info=True)
-                finally:
-                    # Clean up completed task
-                    if hasattr(context, 'notification_tasks') and task_obj in context.notification_tasks:
-                        context.notification_tasks.remove(task_obj)
-            
-            task.add_done_callback(log_completion_task_exception)
-            context.notification_tasks.append(task)
+        # Broadcast using notification service
+        from utils.notifications import NotificationService
+        notification_service = NotificationService(db)
+        
+        queued_count = await notification_service.broadcast_custom_message(
+            context,
+            message_text,
+            exclude_blocked=True
+        )
+        
+        await query.edit_message_text(
+            f"✅ **Broadcast Complete**\n\n"
+            f"📨 Messages queued: {queued_count}\n"
+            f"📝 Message: {message_text[:100]}{'...' if len(message_text) > 100 else ''}\n\n"
+            f"Messages will be delivered with rate-limiting intervals.",
+            parse_mode="Markdown"
+        )
+        logger.info(f"Admin {user_id} broadcast message to {queued_count} users")
         
         context.user_data.clear()
         return
@@ -787,14 +638,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         f"📂 {get_category_display_name(category)}"
                     )
                     logger.info(f"Product {product_id} categorized as {category} by admin {update.effective_user.id}")
-                    
-                    # Notify subscribed users about the new categorized product
-                    notification_service = NotificationService(db)
-                    try:
-                        queued = await notification_service.notify_subscribers_about_product(context, product_id)
-                        logger.info(f"Queued {queued} subscriber notifications for product {product_id} after categorization")
-                    except Exception as e:
-                        logger.error(f"Error sending notifications for product {product_id}: {e}", exc_info=True)
             else:
                 await query.answer("Invalid category data", show_alert=True)
         
@@ -868,19 +711,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     f"📂 {category_text}"
                 )
                 logger.info(f"Product {product_id} categorized as {category}/{subcategory} by admin {update.effective_user.id}")
-                logger.info(f"[CATEGORIZATION] Product {product_id} saved with category {category}/{subcategory}")
-                logger.info(f"[CATEGORIZATION] About to trigger notifications...")
                 
                 # Notify subscribed users about the new categorized product
-                logger.info(f"Triggering notifications for categorized product {product_id}")
                 notification_service = NotificationService(db)
-                
-                # IMPORTANT: Await the notification properly and keep task reference
-                try:
-                    queued = await notification_service.notify_subscribers_about_product(context, product_id)
-                    logger.info(f"Queued {queued} subscriber notifications for product {product_id} after categorization")
-                except Exception as e:
-                    logger.error(f"Error sending notifications for product {product_id}: {e}", exc_info=True)
+                await notification_service.notify_users_about_product(context, product_id)
             else:
                 await query.answer("Invalid save data", show_alert=True)
         
@@ -1060,21 +894,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await show_users_page(update, context, page)
         
         # Handle notification toggle (subscribe/unsubscribe)
-        # Supports both formats: "toggle_notifications" and "toggle_notifications|{product_id}"
-        prefix, product_id = _extract_callback_product_id(callback_data, "toggle_notifications")
-        if prefix:
+        elif callback_data == "toggle_notifications":
             user_id = update.effective_user.id
             is_subscribed = await db.is_user_subscribed(user_id)
             
             if is_subscribed:
                 # Show confirmation before unsubscribing
-                # Preserve product_id in confirmation callbacks if present
-                confirm_callback = f"confirm_unsubscribe|{product_id}" if product_id else "confirm_unsubscribe"
-                cancel_callback = f"cancel_unsubscribe|{product_id}" if product_id else "cancel_unsubscribe"
-                
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ Yes, Unsubscribe", callback_data=confirm_callback)],
-                    [InlineKeyboardButton("❌ Cancel", callback_data=cancel_callback)]
+                    [InlineKeyboardButton("✅ Yes, Unsubscribe", callback_data="confirm_unsubscribe")],
+                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_unsubscribe")]
                 ])
                 
                 await query.edit_message_reply_markup(reply_markup=keyboard)
@@ -1087,13 +915,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await db.set_user_notifications(user_id, True)
                 
                 # Replace with unsubscribe option and keep View Catalog visible
-                # Preserve product_id in toggle callback if present
-                toggle_callback = f"toggle_notifications|{product_id}" if product_id else "toggle_notifications"
-                
                 try:
                     unsubscribe_keyboard = InlineKeyboardMarkup([
                         [InlineKeyboardButton("📋 View Catalog", callback_data="categories")],
-                        [InlineKeyboardButton("🔕 Unsubscribe", callback_data=toggle_callback)]
+                        [InlineKeyboardButton("🔕 Unsubscribe", callback_data="toggle_notifications")]
                     ])
                     await query.edit_message_reply_markup(reply_markup=unsubscribe_keyboard)
                 except:
@@ -1103,20 +928,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 logger.info(f"User {user_id} subscribed via button")
         
         # Handle confirmation of unsubscribe
-        # Supports both formats: "confirm_unsubscribe" and "confirm_unsubscribe|{product_id}"
-        prefix, product_id = _extract_callback_product_id(callback_data, "confirm_unsubscribe")
-        if prefix:
+        elif callback_data == "confirm_unsubscribe":
             user_id = update.effective_user.id
             await db.set_user_notifications(user_id, False)
             
             # Replace buttons with a resubscribe option and keep View Catalog visible
-            # Preserve product_id in toggle callback if present
-            toggle_callback = f"toggle_notifications|{product_id}" if product_id else "toggle_notifications"
-            
             try:
                 resubscribe_keyboard = InlineKeyboardMarkup([
                     [InlineKeyboardButton("📋 View Catalog", callback_data="categories")],
-                    [InlineKeyboardButton("🔔 Resubscribe to Notifications", callback_data=toggle_callback)]
+                    [InlineKeyboardButton("🔔 Resubscribe to Notifications", callback_data="toggle_notifications")]
                 ])
                 await query.edit_message_reply_markup(reply_markup=resubscribe_keyboard)
             except:
@@ -1126,17 +946,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             logger.info(f"User {user_id} unsubscribed via button")
         
         # Handle cancellation of unsubscribe
-        # Supports both formats: "cancel_unsubscribe" and "cancel_unsubscribe|{product_id}"
-        prefix, product_id = _extract_callback_product_id(callback_data, "cancel_unsubscribe")
-        if prefix:
+        elif callback_data == "cancel_unsubscribe":
             # Restore original buttons with View Catalog and Unsubscribe
-            # Preserve product_id in toggle callback if present
-            toggle_callback = f"toggle_notifications|{product_id}" if product_id else "toggle_notifications"
-            
             try:
                 original_keyboard = InlineKeyboardMarkup([
                     [InlineKeyboardButton("📋 View Catalog", callback_data="categories")],
-                    [InlineKeyboardButton("🔕 Unsubscribe", callback_data=toggle_callback)]
+                    [InlineKeyboardButton("🔕 Unsubscribe", callback_data="toggle_notifications")]
                 ])
                 await query.edit_message_reply_markup(reply_markup=original_keyboard)
             except:
@@ -1282,15 +1097,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Track user
     user = update.effective_user
-    bot_username = context.bot.username if hasattr(context.bot, 'username') else None
     await db.track_user(
         user_id=user.id,
         username=user.username,
         first_name=user.first_name,
-        last_name=user.last_name,
-        bot_username=bot_username
+        last_name=user.last_name
     )
-    await db.set_last_bot_key(user.id, get_bot_env_key())
     
     # Check if user is blocked
     user_id = update.effective_user.id
@@ -1372,45 +1184,6 @@ async def post_init(application: Application):
     await db.init_db()
     logger.info("Database initialized")
     
-    # Set the bot username in the bot_key module for use in broadcast callbacks
-    # This allows enqueue_local_broadcast to filter users by bot_username without needing a context
-    from utils.bot_key import set_bot_username
-    
-    # Try to get bot username with retry logic (improved for reliability)
-    bot_username = None
-    max_retries = 3  # Increased from 2 to 3 attempts
-    retry_delay = 1.0  # seconds
-    
-    for attempt in range(max_retries):
-        try:
-            bot_username = application.bot.username
-            if bot_username:
-                set_bot_username(bot_username)
-                logger.info(
-                    f"✅ Bot username set successfully on attempt {attempt + 1}: @{bot_username}"
-                )
-                break
-            else:
-                logger.warning(
-                    f"Attempt {attempt + 1}/{max_retries}: application.bot.username is None"
-                )
-        except (RuntimeError, AttributeError) as e:
-            logger.warning(
-                f"Attempt {attempt + 1}/{max_retries}: Failed to get bot username. Error: {str(e)}"
-            )
-        
-        # Retry if not the last attempt
-        if attempt < max_retries - 1:
-            logger.info(f"Retrying in {retry_delay}s...")
-            await asyncio.sleep(retry_delay)
-    
-    if not bot_username:
-        logger.warning(
-            f"⚠️  Bot username not available after {max_retries} attempts. "
-            "Broadcast filtering will use fallback logic (may broadcast to all users)."
-        )
-        # Note: enqueue_local_broadcast will handle None bot_username gracefully
-    
     # Set up translation service with database
     translation_service.set_database(db)
     logger.info("Translation service configured with database caching")
@@ -1418,103 +1191,46 @@ async def post_init(application: Application):
     # Set bot commands for the command menu
     await setup_bot_commands(application.bot)
     
-    # Start broadcast listener for DB-backed broadcast forwarding (no Redis)
-    try:
-        from utils import broadcast_forwarder
-        from utils.notifications import create_enqueue_local_broadcast_callback
-        
-        # Create a callback that has access to the db instance
-        enqueue_callback = create_enqueue_local_broadcast_callback(db)
-        
-        listener_task = broadcast_forwarder.start_listener_in_background(db, enqueue_callback)
-        
-        # Store task to prevent garbage collection
-        if 'broadcast_listener_task' not in application.bot_data:
-            application.bot_data['broadcast_listener_task'] = listener_task
-        
-        logger.info("Broadcast listener started successfully")
-    except Exception as e:
-        logger.error(f"Failed to start broadcast listener: {e}", exc_info=True)
-        logger.warning("Broadcast forwarding will not work, but local broadcasts will still function")
-    
-    # Start custom message processor for delivery of queued messages
-    try:
-        from utils.notifications import start_custom_message_processor_in_background
-        
-        # Guard to prevent multiple starts
-        if 'custom_message_processor_task' not in application.bot_data:
-            processor_task = start_custom_message_processor_in_background(application, db, interval_seconds=3)
-            application.bot_data['custom_message_processor_task'] = processor_task
-            logger.info("Custom message processor started successfully for primary bot")
-        else:
-            logger.debug("Custom message processor already running for primary bot")
-    except Exception as e:
-        logger.error(f"Failed to start custom message processor: {e}", exc_info=True)
-        logger.warning("Background message delivery may be impaired, but direct sends will still work")
-    
     # Start cleanup task
     asyncio.create_task(cleanup_task(application))
 
 
 async def setup_bot_commands(bot):
-    """
-    Set up bot commands that appear in the Telegram command menu.
-    
-    This function configures the command menu that users see when they click the menu
-    button next to the message input field in Telegram. It sets different commands for
-    regular users vs admins.
-    
-    **IMPORTANT**: This function is called automatically during bot initialization in
-    both polling mode (main.py) and webhook mode (webhook_server.py) via post_init().
-    This ensures that ALL bot instances (primary and secondary) have consistent command
-    menus regardless of which bot token is used.
-    
-    Args:
-        bot: The Telegram bot instance
-    """
+    """Set up bot commands that appear in the Telegram command menu."""
     # Define user commands (available to all users)
-    # These appear in the command menu for all users
+    # Removed: language, subscribe, unsubscribe per requirements
     user_commands = [
         BotCommand("start", "Start the bot and select language"),
         BotCommand("menu", "Browse the product catalog"),
     ]
     
     # Define admin commands (available to admins only)
-    # These appear in the command menu ONLY for admin users
+    # Removed: block, unblock per requirements
     admin_commands = user_commands + [
         BotCommand("users", "View and manage bot users"),
         BotCommand("send", "Send a message to a specific user"),
         BotCommand("broadcast", "Send a message to all users"),
         BotCommand("setcontact", "Set order contact username"),
         BotCommand("recategorize", "Categorize uncategorized products"),
-        BotCommand("clearcache", "Clear file ID cache"),
-        BotCommand("debug_queues", "Inspect notification queue status"),
         BotCommand("nuke", "Delete all products (use with caution)"),
     ]
     
     # Set default commands for all users
-    # This updates the global command menu seen by regular users
     await bot.set_my_commands(user_commands)
-    logger.info(f"Set user commands globally: {[cmd.command for cmd in user_commands]}")
     
-    # Set admin-specific commands for each admin user
-    # This overrides the global commands for admin chat scopes
+    # Set admin commands for each admin
     admin_ids = get_admin_ids()
-    if not admin_ids:
-        logger.warning("No admin IDs configured - admin commands will not be set")
-    
     for admin_id in admin_ids:
         try:
             await bot.set_my_commands(
                 admin_commands,
                 scope=BotCommandScopeChat(chat_id=admin_id)
             )
-            logger.info(f"Set admin commands for user {admin_id}: {[cmd.command for cmd in admin_commands]}")
+            logger.info(f"Set admin commands for user {admin_id}")
         except Exception as e:
             logger.warning(f"Could not set admin commands for {admin_id}: {e}")
     
-    logger.info("Bot commands configured successfully - menu will be consistent across all bot instances")
-
+    logger.info("Bot commands configured successfully")
 
 
 def main():
@@ -1536,11 +1252,8 @@ def main():
     # Get bot token from config
     bot_token = Config.BOT_TOKEN
     
-    # Create persistence instance
-    persistence = PicklePersistence(filepath='bot_persistence.pkl')
-    
-    # Create application with persistence
-    application = Application.builder().token(bot_token).persistence(persistence).post_init(post_init).build()
+    # Create application
+    application = Application.builder().token(bot_token).post_init(post_init).build()
     
     # Register handlers
     application.add_handler(CommandHandler("start", start_command))
@@ -1556,9 +1269,6 @@ def main():
     application.add_handler(CommandHandler("send", send_command))
     application.add_handler(CommandHandler("broadcast", broadcast_command))
     application.add_handler(CommandHandler("setcontact", setcontact_command))
-    application.add_handler(CommandHandler("clearcache", clearcache_command))
-    application.add_handler(CommandHandler("diagnostic_notifications", diagnostic_notifications_command))
-    application.add_handler(CommandHandler("debug_queues", debug_queues_command))
     
     # Channel post handler (for monitoring channel)
     channel_id = get_channel_id()
