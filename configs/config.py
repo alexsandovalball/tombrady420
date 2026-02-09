@@ -89,11 +89,6 @@ class ConfigClass:
         self.WEBHOOK_URL = config('WEBHOOK_URL', default=None)
         self.ORDER_CONTACT = config('ORDER_CONTACT', default='@FLYAWAYPEP')
         
-        # Load PRIMARY_BOT_USERNAME for multi-bot setups
-        # This is used to assign legacy users (with NULL bot_username) to the primary bot
-        # If not set, we'll try to determine it at runtime or fall back to None
-        self.PRIMARY_BOT_USERNAME = config('PRIMARY_BOT_USERNAME', default=None)
-        
         # Broadcast rate limiting and retry configuration
         self.BROADCAST_MAX_SEND_RETRIES = config('BROADCAST_MAX_SEND_RETRIES', default=5, cast=int)
         self.BROADCAST_BASE_BACKOFF_SECONDS = config('BROADCAST_BASE_BACKOFF_SECONDS', default=0.5, cast=float)

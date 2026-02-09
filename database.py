@@ -420,7 +420,8 @@ class Database:
             
             # Configuration state
             logger.info(f"Configuration:")
-            logger.info(f"  • PRIMARY_BOT_USERNAME: {Config.PRIMARY_BOT_USERNAME or 'NOT SET'}")
+            if hasattr(Config, 'PRIMARY_BOT_USERNAME'):
+                logger.info(f"  • PRIMARY_BOT_USERNAME: {Config.PRIMARY_BOT_USERNAME or 'NOT SET'}")
             if Config.BOT_TOKENS:
                 logger.info(f"  • Total bots configured: {len(Config.BOT_TOKENS)}")
                 logger.info(f"  • Primary bot token: ...{Config.BOT_TOKENS[0][-5:]} (first in list)")
@@ -530,12 +531,12 @@ class Database:
         Migrate legacy users with NULL bot_username to the primary bot.
         
         This is a one-time migration for users created before multi-bot support was added.
-        If PRIMARY_BOT_USERNAME is configured, assigns NULL users to that bot.
-        Otherwise, migration is skipped and NULL users are handled dynamically by get_users_by_bot().
+        This migration is now optional and skipped since PRIMARY_BOT_USERNAME is no longer required.
+        NULL users are handled dynamically by get_users_by_bot().
         """
         try:
-            # Check if PRIMARY_BOT_USERNAME is configured
-            primary_bot_username = Config.PRIMARY_BOT_USERNAME
+            # Check if PRIMARY_BOT_USERNAME is configured (backward compatibility)
+            primary_bot_username = getattr(Config, 'PRIMARY_BOT_USERNAME', None)
             
             if not primary_bot_username:
                 logger.info("PRIMARY_BOT_USERNAME not configured - skipping bot_username migration")
@@ -1191,16 +1192,17 @@ class Database:
             List of user IDs
         """
         logger.info(f"[Database] get_users_by_bot called with bot_username: @{bot_username}")
-        logger.debug(f"[Database] PRIMARY_BOT_USERNAME from Config: {Config.PRIMARY_BOT_USERNAME}")
+        logger.debug(f"[Database] PRIMARY_BOT_USERNAME from Config: {getattr(Config, 'PRIMARY_BOT_USERNAME', None)}")
         
         async with aiosqlite.connect(self.db_path) as db:
             # Check if this is the primary bot (or if PRIMARY_BOT_USERNAME is not configured)
             # If PRIMARY_BOT_USERNAME is not set, include NULL users for all bots to maintain 
             # backwards compatibility (better to have duplicates than no notifications)
-            is_primary_bot = (Config.PRIMARY_BOT_USERNAME is None or 
-                            bot_username == Config.PRIMARY_BOT_USERNAME)
+            primary_bot_username = getattr(Config, 'PRIMARY_BOT_USERNAME', None)
+            is_primary_bot = (primary_bot_username is None or 
+                            bot_username == primary_bot_username)
             
-            logger.info(f"[Database] Is primary bot: {is_primary_bot} (PRIMARY_BOT_USERNAME={Config.PRIMARY_BOT_USERNAME})")
+            logger.info(f"[Database] Is primary bot: {is_primary_bot} (PRIMARY_BOT_USERNAME={primary_bot_username})")
             
             if is_primary_bot:
                 # Primary bot gets both assigned users AND legacy NULL users

@@ -829,8 +829,8 @@ async def diagnostic_notifications_command(update: Update, context: ContextTypes
         ])
         
         # Add configuration details
-        primary_bot = Config.PRIMARY_BOT_USERNAME or "NOT SET"
-        lines.append(f"• PRIMARY_BOT_USERNAME: {primary_bot}")
+        if hasattr(Config, 'PRIMARY_BOT_USERNAME') and Config.PRIMARY_BOT_USERNAME:
+            lines.append(f"• PRIMARY_BOT_USERNAME: {Config.PRIMARY_BOT_USERNAME}")
         
         if Config.BOT_TOKENS:
             lines.append(f"• Total bots configured: {len(Config.BOT_TOKENS)}")
@@ -882,10 +882,11 @@ async def diagnostic_notifications_command(update: Update, context: ContextTypes
         ])
         
         # Check for common issues
-        if null_bot_users > 0 and Config.PRIMARY_BOT_USERNAME is None:
-            lines.append("⚠️ WARNING: NULL bot_username users exist but PRIMARY_BOT_USERNAME is not set")
-        elif null_bot_users > 0 and Config.PRIMARY_BOT_USERNAME:
-            lines.append(f"ℹ️ NULL users will be handled by primary bot (@{Config.PRIMARY_BOT_USERNAME})")
+        primary_bot_username = getattr(Config, 'PRIMARY_BOT_USERNAME', None)
+        if null_bot_users > 0 and primary_bot_username is None:
+            lines.append("ℹ️ INFO: NULL bot_username users exist and will be handled dynamically by all bots")
+        elif null_bot_users > 0 and primary_bot_username:
+            lines.append(f"ℹ️ NULL users will be handled by primary bot (@{primary_bot_username})")
         
         if pending_notifications > 0 and sent_last_hour == 0:
             lines.append("⚠️ WARNING: Pending notifications exist but none sent in last hour")

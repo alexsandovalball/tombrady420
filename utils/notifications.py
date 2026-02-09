@@ -1425,7 +1425,7 @@ class NotificationService:
                     pause_set = False
                     if bot_username and retry_after:
                         try:
-                             pause_set = await set_pause_state_db(
+                            pause_set = await set_pause_state_db(
                                 db_path=Config.DB_PATH,
                                 bot_key=bot_username,
                                 retry_after_seconds=retry_after,
