@@ -89,24 +89,13 @@ class ConfigClass:
         self.WEBHOOK_URL = config('WEBHOOK_URL', default=None)
         self.ORDER_CONTACT = config('ORDER_CONTACT', default='@FLYAWAYPEP')
         
-        # Load PRIMARY_BOT_USERNAME for multi-bot setups
-        # This is used to assign legacy users (with NULL bot_username) to the primary bot
-        # If not set, we'll try to determine it at runtime or fall back to None
-        self.PRIMARY_BOT_USERNAME = config('PRIMARY_BOT_USERNAME', default=None)
-        
         # Broadcast rate limiting and retry configuration
         self.BROADCAST_MAX_SEND_RETRIES = config('BROADCAST_MAX_SEND_RETRIES', default=5, cast=int)
         self.BROADCAST_BASE_BACKOFF_SECONDS = config('BROADCAST_BASE_BACKOFF_SECONDS', default=0.5, cast=float)
         self.BROADCAST_RETRY_ON_RECENT_START_SECONDS = config('BROADCAST_RETRY_ON_RECENT_START_SECONDS', default=60, cast=int)
         self.BROADCAST_RECENT_START_RETRY_DELAY_SECONDS = config('BROADCAST_RECENT_START_RETRY_DELAY_SECONDS', default=5, cast=int)
         
-        # Redis configuration for shared pause state
-        self.REDIS_HOST = config('REDIS_HOST', default='localhost')
-        self.REDIS_PORT = config('REDIS_PORT', default=6379, cast=int)
-        self.REDIS_DB = config('REDIS_DB', default=0, cast=int)
-        self.REDIS_PASSWORD = config('REDIS_PASSWORD', default=None)
-        
-        # Pause state configuration
+        # Pause state configuration (database-based)
         self.PAUSE_BUFFER_SECONDS = config('PAUSE_BUFFER_SECONDS', default=5, cast=float)
         self.DEFAULT_RETRY_AFTER_SECONDS = config('DEFAULT_RETRY_AFTER_SECONDS', default=30, cast=float)
         

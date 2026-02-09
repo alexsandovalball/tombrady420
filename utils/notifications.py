@@ -21,7 +21,14 @@ from configs.config import Config
 from utils.bot_key import get_bot_env_key, get_bot_key_display
 from utils import broadcast_forwarder
 from utils import rate_limiter
-from utils import redis_pause_manager
+# Redis pause manager removed - using database-based pause management
+from database import (
+    get_pause_state_db, 
+    get_remaining_pause_seconds_db, 
+    is_paused_db, 
+    set_pause_state_db,
+    clear_pause_state_db
+)
 
 logger = logging.getLogger(__name__)
 
@@ -140,9 +147,9 @@ async def send_message_with_rate_handling(
     
     while retry_count <= max_retries:
         try:
-            # Check if bot is paused in Redis (shared pause state)
+            # Check if bot is paused in database (shared pause state)
             if bot_username:
-                remaining_pause = await redis_pause_manager.get_remaining_pause_seconds(bot_username)
+                remaining_pause = await get_remaining_pause_seconds_db(Config.DB_PATH, bot_username)
                 if remaining_pause > 0:
                     logger.info(f"[RateHandler] Bot @{bot_username} (token={token_display}) paused for {remaining_pause:.1f}s, waiting...")
                     await asyncio.sleep(remaining_pause)
@@ -191,19 +198,18 @@ async def send_message_with_rate_handling(
                 f"retry_after={retry_after}s"
             )
             
-            # Set shared pause state in Redis so all workers wait
+            # Set shared pause state in database so all workers wait
             if bot_username:
                 try:
-                    await redis_pause_manager.set_pause_state(
-                        bot_username=bot_username,
+                    await set_pause_state_db(
+                        db_path=Config.DB_PATH,
+                        bot_key=bot_username,
                         retry_after_seconds=retry_after,
-                        reason="rate_limit_retry_after",
-                        set_by=f"send_message@{bot_key}",
-                        retry_after_header=str(retry_after)
+                        buffer_seconds=getattr(Config, 'PAUSE_BUFFER_SECONDS', 5.0)
                     )
                 except Exception as pause_error:
-                    logger.error(f"[RateHandler] Failed to set pause in Redis: {pause_error}")
-                    # Fallback to database pause
+                    logger.error(f"[RateHandler] Failed to set pause in database: {pause_error}")
+                    # Fallback to rate_limiter pause
                     jitter = random.uniform(0, min(retry_after * 0.1, 5.0))
                     pause_duration = retry_after + jitter
                     pause_until = time.time() + pause_duration
@@ -271,18 +277,17 @@ async def send_message_with_rate_handling(
                 
                 last_retry_after = retry_after_extracted
                 
-                # Set pause in Redis
+                # Set pause in database
                 if bot_username and retry_after_extracted:
                     try:
-                        await redis_pause_manager.set_pause_state(
-                            bot_username=bot_username,
+                        await set_pause_state_db(
+                            db_path=Config.DB_PATH,
+                            bot_key=bot_username,
                             retry_after_seconds=retry_after_extracted,
-                            reason="rate_limit_429",
-                            set_by=f"send_message@{bot_key}",
-                            retry_after_header=str(retry_after_extracted)
+                            buffer_seconds=getattr(Config, 'PAUSE_BUFFER_SECONDS', 5.0)
                         )
                     except Exception as pause_error:
-                        logger.error(f"[RateHandler] Failed to set pause in Redis: {pause_error}")
+                        logger.error(f"[RateHandler] Failed to set pause in database: {pause_error}")
                 
                 # Treat as transient rate limit error with retry
                 if retry_count < max_retries:
@@ -1037,15 +1042,13 @@ class NotificationService:
         
         # Check if bot is paused due to rate limiting
         if bot_username:
-            is_paused = await redis_pause_manager.is_paused(bot_username)
+            is_paused = await is_paused_db(Config.DB_PATH, bot_username)
             if is_paused:
-                remaining = await redis_pause_manager.get_remaining_pause_seconds(bot_username)
+                remaining = await get_remaining_pause_seconds_db(Config.DB_PATH, bot_username)
                 logger.info(
                     f"[{bot_display}] Bot is paused due to rate limiting, "
                     f"remaining: {remaining:.1f}s - skipping processing"
                 )
-                # Increment pause skipped metric
-                await redis_pause_manager.increment_pause_skipped_metric(bot_username)
                 return {
                     "sent_count": 0,
                     "failed_count": 0,
@@ -1418,16 +1421,15 @@ class NotificationService:
                 if "RetryAfter" in error or retry_after or "Too Many Requests" in error or "retry after" in error.lower() or "rate_limit" in error.lower() or "429" in error:
                     logger.warning(f"[Send] Rate limited for user {user_id}: {error}, retry_after={retry_after}")
                     
-                    # Set pause state in Redis for this bot
+                    # Set pause state in database for this bot
                     pause_set = False
                     if bot_username and retry_after:
                         try:
-                            pause_set = await redis_pause_manager.set_pause_state(
-                                bot_username=bot_username,
+                            pause_set = await set_pause_state_db(
+                                db_path=Config.DB_PATH,
+                                bot_key=bot_username,
                                 retry_after_seconds=retry_after,
-                                reason="rate_limit_429",
-                                set_by=f"message_processor@{current_bot_key}",
-                                retry_after_header=str(retry_after)
+                                buffer_seconds=getattr(Config, 'PAUSE_BUFFER_SECONDS', 5.0)
                             )
                             if pause_set:
                                 buffer_seconds = getattr(Config, 'PAUSE_BUFFER_SECONDS', 5.0)
