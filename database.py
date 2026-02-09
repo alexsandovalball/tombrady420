@@ -2199,7 +2199,3 @@ async def clear_pause_state_db(db_path: str, bot_key: str):
     except Exception as e:
         logger.error(f"Error clearing pause state for bot {bot_key}: {e}")
 
-
-    
-
-
