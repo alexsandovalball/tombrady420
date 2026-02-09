@@ -80,6 +80,27 @@ class NotificationService:
     
     def __init__(self, db: Database):
         self.db = db
+        self._bot_apps_cache = None  # Cache for bot applications
+        self._bot_apps_cache_time = None  # Timestamp of last cache
+        self._cache_ttl = 60  # Cache TTL in seconds
+    
+    def _get_bot_applications(self) -> List[Application]:
+        """
+        Get bot applications with caching to avoid repeated imports.
+        Cache is refreshed every 60 seconds.
+        """
+        from datetime import datetime
+        
+        # Check if cache is valid
+        if (self._bot_apps_cache is not None and 
+            self._bot_apps_cache_time is not None and
+            (datetime.now() - self._bot_apps_cache_time).total_seconds() < self._cache_ttl):
+            return self._bot_apps_cache
+        
+        # Refresh cache
+        self._bot_apps_cache = get_bot_applications()
+        self._bot_apps_cache_time = datetime.now()
+        return self._bot_apps_cache
     
     def _is_primary_instance(self, context: ContextTypes.DEFAULT_TYPE) -> bool:
         """
@@ -289,8 +310,8 @@ class NotificationService:
         """
         sent_count = 0
         
-        # Get all available bot applications
-        bot_apps = get_bot_applications()
+        # Get all available bot applications (cached)
+        bot_apps = self._get_bot_applications()
         
         if not bot_apps:
             logger.warning("No bot applications available for multi-bot delivery, falling back to single bot")
@@ -582,8 +603,8 @@ class NotificationService:
         """
         sent_count = 0
         
-        # Get all available bot applications
-        bot_apps = get_bot_applications()
+        # Get all available bot applications (cached)
+        bot_apps = self._get_bot_applications()
         
         if not bot_apps:
             logger.warning("No bot applications available for multi-bot delivery")
