@@ -8,6 +8,7 @@ This module tests the updated notification delivery system where:
 """
 import os
 import sys
+import logging
 import pytest
 import pytest_asyncio
 import asyncio
@@ -23,6 +24,8 @@ from utils import broadcast_forwarder
 from utils.notifications import enqueue_local_broadcast
 from utils.bot_key import set_bot_username, get_bot_username
 
+logger = logging.getLogger(__name__)
+
 
 @pytest_asyncio.fixture
 async def temp_db():
@@ -35,11 +38,15 @@ async def temp_db():
     
     yield db
     
-    # Cleanup
+    # Cleanup - remove temporary database file
     try:
         os.unlink(db_path)
-    except OSError:
+    except FileNotFoundError:
+        # File already deleted, which is fine
         pass
+    except OSError as e:
+        # Log other file operation errors but don't fail the test
+        logger.warning(f"Failed to cleanup temp database: {e}")
 
 
 class TestBotUsernameFiltering:

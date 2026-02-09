@@ -17,6 +17,7 @@ from utils.categories import get_category_display_name, get_subcategory_display_
 from translations.translator import translate_text_async
 from configs.config import Config
 from utils.bot_key import get_bot_env_key, get_bot_key_display
+from utils import broadcast_forwarder
 
 logger = logging.getLogger(__name__)
 
@@ -613,8 +614,6 @@ class NotificationService:
                 return False
             
             # Use broadcast forwarder to ensure all bot instances deliver to this user
-            from utils import broadcast_forwarder
-            
             # Create payload with target_user_id so each bot knows this is a single-user send
             payload = {"target_user_id": user_id}
             
@@ -1233,8 +1232,6 @@ class NotificationService:
             reply_markup_json = json.dumps(keyboard.to_dict())
             
             # Use broadcast forwarder to ensure all bot instances deliver to their subscribed users
-            from utils import broadcast_forwarder
-            
             # Create payload with product_id and reply_markup so each bot knows this is a product notification
             payload = {
                 "product_id": product_id,

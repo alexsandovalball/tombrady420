@@ -13,11 +13,10 @@ import threading
 
 logger = logging.getLogger(__name__)
 
-# Global variable to store the bot username for this process
-# Set during application initialization via set_bot_username()
-# Thread-safe access via a lock
-_BOT_USERNAME: Optional[str] = None
-_BOT_USERNAME_LOCK = threading.Lock()
+# Thread-local storage for bot username
+# This provides better isolation between different bot instances in tests
+# Each thread gets its own bot_username value
+_thread_local = threading.local()
 
 
 def get_bot_env_key() -> str:
@@ -130,34 +129,28 @@ def get_bot_key_display(bot_key: str, bot_username: Optional[str] = None) -> str
 
 def set_bot_username(username: str):
     """
-    Set the bot username for this process (thread-safe).
+    Set the bot username for this thread.
     
     This should be called during application initialization with the bot's
-    actual Telegram username. It allows other modules to access the bot_username
-    without needing a Telegram context.
-    
-    Note: This should only be called once during initialization. Subsequent calls
-    will overwrite the value.
+    actual Telegram username. Uses thread-local storage for better isolation
+    in testing and multi-bot scenarios.
     
     Args:
         username: The bot's Telegram username (without @)
     """
-    global _BOT_USERNAME
-    with _BOT_USERNAME_LOCK:
-        _BOT_USERNAME = username
+    _thread_local.bot_username = username
     logger.info(f"[BotKey] Set bot_username to: @{username}")
 
 
 def get_bot_username() -> Optional[str]:
     """
-    Get the bot username for this process (thread-safe).
+    Get the bot username for this thread.
     
     Returns the username that was set via set_bot_username() during initialization.
-    Returns None if not yet initialized.
+    Returns None if not yet initialized for this thread.
     
     Returns:
         str: The bot username (without @), or None if not set
     """
-    with _BOT_USERNAME_LOCK:
-        return _BOT_USERNAME
+    return getattr(_thread_local, 'bot_username', None)
 
