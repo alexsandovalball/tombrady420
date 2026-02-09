@@ -213,8 +213,25 @@ async def send_message_with_rate_handling(
         
         except TelegramError as e:
             error_msg = str(e)
-            logger.error(f"[RateHandler] TelegramError for chat {chat_id} via bot {bot_key} (token={token_display}): {error_msg}")
-            return {"success": False, "error": error_msg, "retry_after": None}
+            # Check for rate limit errors in generic TelegramError messages
+            if "Too Many Requests" in error_msg or "retry after" in error_msg.lower():
+                # Treat as transient rate limit error with retry
+                if retry_count < max_retries:
+                    delay = min(base_backoff * (2 ** retry_count), 30.0)
+                    logger.warning(
+                        f"[RateHandler] Rate limit (TelegramError) for chat {chat_id} via bot {bot_key} (token={token_display}), "
+                        f"retrying in {delay}s (attempt {retry_count + 1}/{max_retries})"
+                    )
+                    await asyncio.sleep(delay)
+                    retry_count += 1
+                    last_error = "rate_limited"
+                else:
+                    logger.error(f"[RateHandler] Max retries ({max_retries}) reached after rate limit for chat {chat_id} via bot {bot_key} (token={token_display})")
+                    return {"success": False, "error": "rate_limit_max_retries", "retry_after": None}
+            else:
+                # Other Telegram errors
+                logger.error(f"[RateHandler] TelegramError for chat {chat_id} via bot {bot_key} (token={token_display}): {error_msg}")
+                return {"success": False, "error": error_msg, "retry_after": None}
         
         except Exception as e:
             error_msg = str(e)
@@ -1261,7 +1278,7 @@ class NotificationService:
                 retry_after = result.get("retry_after")
                 
                 # Check for permanent errors that should mark message as sent
-                if "Forbidden" in error or "bot was blocked" in error:
+                if "Forbidden" in error or "blocked" in error.lower() or "bot was blocked" in error.lower():
                     logger.info(f"[Send] User {user_id} blocked bot @{bot_username}, marking as blocked")
                     await self.db.block_user(user_id)
                     await self.db.mark_custom_message_sent(message_id)
@@ -1273,12 +1290,20 @@ class NotificationService:
                     await self.db.mark_custom_message_sent(message_id)
                     return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "chat_not_found", "retry_after": retry_after}
                 
-                if "BadRequest" in error or "message too long" in error.lower() or "can't parse" in error.lower():
+                if "BadRequest" in error or "message too long" in error.lower() or "can't parse" in error.lower() or "Message is too long" in error:
                     logger.warning(f"[Send] BadRequest error for user {user_id} via bot @{bot_username}: {error}")
                     await self.db.mark_custom_message_sent(message_id)
                     return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "bad_request", "retry_after": retry_after}
                 
-                # Transient errors (RetryAfter, TimedOut, NetworkError) - don't mark as sent, will retry later
+                # RetryAfter is transient - check for it
+                if "RetryAfter" in error or retry_after or "Too Many Requests" in error or "retry after" in error.lower() or "rate_limit" in error.lower():
+                    logger.warning(f"[Send] Rate limited for user {user_id}: {error}")
+                    # Don't mark as sent - will retry in next batch
+                    # Preserve the reason from send_message_with_rate_handling
+                    reason = "rate_limit_max_retries" if "max_retries" in error.lower() else "rate_limited"
+                    return {"success": False, "user_id": user_id, "message_id": message_id, "reason": reason, "retry_after": retry_after}
+                
+                # Other transient errors (TimedOut, NetworkError) - don't mark as sent, will retry later
                 logger.warning(f"[Send] Transient error for user {user_id} via bot @{bot_username}: {error}")
                 return {"success": False, "user_id": user_id, "message_id": message_id, "reason": "transient_error", "retry_after": retry_after}
             
