@@ -1257,7 +1257,7 @@ class NotificationService:
 
 
 # Module-level helper for broadcast forwarding
-async def enqueue_local_broadcast(context: dict, message_text: str) -> None:
+async def enqueue_local_broadcast(db: Database, context: dict, message_text: str) -> None:
     """
     Enqueue a broadcast message for local delivery by this bot instance.
     
@@ -1266,6 +1266,7 @@ async def enqueue_local_broadcast(context: dict, message_text: str) -> None:
     (not just users who last interacted with it).
     
     Args:
+        db: Database instance to use for queries and queueing
         context: Dictionary with optional payload data. Can include:
                  - target_user_id: If set, only deliver to this specific user (if they've started this bot)
                  - product_id: If set, only deliver to subscribers (if they've started this bot)
@@ -1276,14 +1277,7 @@ async def enqueue_local_broadcast(context: dict, message_text: str) -> None:
         who have ever started this bot receive the message.
     """
     try:
-        from database import Database
-        from configs.config import Config
-        
-        # Get database instance
-        db = Database(Config.DB_PATH)
-        
         # Get this bot's environment key and username
-        # We need the bot_username to filter users by which bot they've started
         from utils.bot_key import get_bot_env_key, get_bot_username
         from utils.helpers import get_admin_ids
         
@@ -1366,6 +1360,26 @@ async def enqueue_local_broadcast(context: dict, message_text: str) -> None:
     except Exception as e:
         logger.error(f"[BroadcastEnqueue] Error enqueueing local broadcast: {e}", exc_info=True)
         # Don't raise - we want the broadcast forwarder to continue
+
+
+def create_enqueue_local_broadcast_callback(db: Database):
+    """
+    Create a callback function for enqueue_local_broadcast that has the database instance bound.
+    
+    This is used to create a callback that can be passed to the broadcast forwarder
+    while providing access to the database instance.
+    
+    Args:
+        db: Database instance to use for the callback
+        
+    Returns:
+        An async callback function with signature (context: dict, message_text: str) -> None
+    """
+    async def callback(context: dict, message_text: str) -> None:
+        await enqueue_local_broadcast(db, context, message_text)
+    
+    return callback
+
 
 
 # ===========================
