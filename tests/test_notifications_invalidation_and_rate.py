@@ -190,7 +190,7 @@ class TestBotScopedInvalidation:
         # Mark user invalid
         await temp_db.mark_user_invalid(user_id, bot_id=bot_id, reason=reason)
         
-        # Get invalidation record
+        # Get invalidation record with bot_id
         record = await temp_db.get_user_invalidation_record(user_id, bot_id=bot_id)
         
         # Verify record details
@@ -200,6 +200,12 @@ class TestBotScopedInvalidation:
         assert record["reason"] == reason
         assert record["is_active"] == 1
         assert "created_at" in record
+        
+        # Also test getting record without bot_id (should return the same record)
+        record_no_bot = await temp_db.get_user_invalidation_record(user_id)
+        assert record_no_bot is not None
+        assert record_no_bot["user_id"] == user_id
+        assert record_no_bot["bot_id"] == bot_id
     
     @pytest.mark.asyncio
     async def test_mark_user_invalid_without_bot_id_creates_global_block(self, temp_db):

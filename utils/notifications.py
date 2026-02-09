@@ -1122,7 +1122,12 @@ class NotificationService:
                 is_blocked = await self.db.is_user_blocked(user_id)
                 if is_blocked:
                     # Log invalidation record details for debugging
-                    invalidation_record = await self.db.get_user_invalidation_record(user_id)
+                    # First try to get bot-specific invalidation, then fall back to any active invalidation
+                    invalidation_record = await self.db.get_user_invalidation_record(user_id, bot_id=current_bot_key)
+                    if not invalidation_record:
+                        # Try without bot_id to get any active invalidation
+                        invalidation_record = await self.db.get_user_invalidation_record(user_id)
+                    
                     if invalidation_record:
                         logger.info(
                             f"[{bot_display}] User {user_id} is blocked - active invalidation: "
@@ -1151,9 +1156,9 @@ class NotificationService:
                 
                 if recent_count >= MAX_CUSTOM_MESSAGES_PER_HOUR:
                     logger.info(
-                        f"[{bot_display}] User {user_id} hit rate limit: recent_count={recent_count} "
-                        f">= MAX_CUSTOM_MESSAGES_PER_HOUR={MAX_CUSTOM_MESSAGES_PER_HOUR} "
-                        f"(last 60 minutes), skipping {len(messages)} message(s)"
+                        f"[{bot_display}] User {user_id} hit rate limit: "
+                        f"recent_count ({recent_count}) >= MAX_CUSTOM_MESSAGES_PER_HOUR ({MAX_CUSTOM_MESSAGES_PER_HOUR}) "
+                        f"in last 60 minutes, skipping {len(messages)} message(s)"
                     )
                     failed_count += len(messages)
                     failure_reasons["rate_limited"] = failure_reasons.get("rate_limited", 0) + len(messages)
