@@ -451,7 +451,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 return
             
             # Send the message
-            from utils.notifications import NotificationService
             notification_service = NotificationService(db)
             
             success = await notification_service.send_custom_message_to_user(
@@ -491,7 +490,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         )
         
         # Broadcast using notification service
-        from utils.notifications import NotificationService
         notification_service = NotificationService(db)
         
         queued_count = await notification_service.broadcast_custom_message(
