@@ -205,7 +205,8 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
         additional_file_ids=additional_files,
         additional_message_ids=additional_msg_ids,
         category=None,  # No automatic categorization
-        subcategory=None
+        subcategory=None,
+        bot_username=context.bot.username
     )
     
     if product_id > 0:
@@ -281,7 +282,8 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             message_id=message.message_id,
             chat_id=message.chat.id,
             category=None,  # No automatic categorization
-            subcategory=None
+            subcategory=None,
+            bot_username=context.bot.username
         )
         
         if product_id > 0:
@@ -932,7 +934,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         [InlineKeyboardButton("🔕 Unsubscribe", callback_data="toggle_notifications")]
                     ])
                     await query.edit_message_reply_markup(reply_markup=unsubscribe_keyboard)
-                except:
+                except Exception as e:
+                    logger.debug(f"Could not edit message markup: {e}")
                     pass  # Message may not have markup to edit
                 
                 await query.answer("✅ You have been subscribed to notifications successfully! You will now receive updates about new products.", show_alert=True)
@@ -950,7 +953,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     [InlineKeyboardButton("🔔 Resubscribe to Notifications", callback_data="toggle_notifications")]
                 ])
                 await query.edit_message_reply_markup(reply_markup=resubscribe_keyboard)
-            except:
+            except Exception as e:
+                logger.debug(f"Could not edit message markup: {e}")
                 pass  # Message may not have markup to edit
             
             await query.answer("✅ You have been unsubscribed from notifications successfully. You can resubscribe anytime using the 'Resubscribe to Notifications' button or /subscribe command.", show_alert=True)
@@ -965,7 +969,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     [InlineKeyboardButton("🔕 Unsubscribe", callback_data="toggle_notifications")]
                 ])
                 await query.edit_message_reply_markup(reply_markup=original_keyboard)
-            except:
+            except Exception as e:
+                logger.debug(f"Could not edit message markup: {e}")
                 pass  # Message may not have markup to edit
             
             await query.answer("✅ Unsubscribe cancelled", show_alert=False)
@@ -1177,7 +1182,8 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=update.effective_chat.id,
                 text="❌ An unexpected error occurred. Please try again later."
             )
-        except:
+        except Exception as e:
+            logger.debug(f"Could not send error message to user: {e}")
             pass
 
 

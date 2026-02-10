@@ -30,6 +30,15 @@ class Database:
     def __init__(self, db_path: str = None):
         self.db_path = db_path or Config.DB_PATH
     
+    def get_connection(self):
+        """Get a database connection context manager."""
+        return aiosqlite.connect(self.db_path)
+    
+    @staticmethod
+    def normalize_bot_username(bot_username: Optional[str]) -> Optional[str]:
+        """Normalize bot username to lowercase for consistent database lookups."""
+        return bot_username.lower() if bot_username else None
+    
     async def init_db(self):
         """Initialize database with schema."""
         async with aiosqlite.connect(self.db_path) as db:
@@ -156,6 +165,22 @@ class Database:
                 )
             """)
             
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS bot_file_id_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_chat_id INTEGER NOT NULL,
+                    source_message_id INTEGER NOT NULL,
+                    file_index INTEGER DEFAULT 0,
+                    file_type TEXT NOT NULL,
+                    bot_username TEXT NOT NULL,
+                    file_id TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    use_count INTEGER DEFAULT 1,
+                    UNIQUE(source_chat_id, source_message_id, file_index, bot_username)
+                )
+            """)
+            
             # Set default order contact if not exists
             await db.execute("""
                 INSERT OR IGNORE INTO bot_settings (key, value)
@@ -199,6 +224,11 @@ class Database:
                 pass
             
             try:
+                await db.execute("ALTER TABLE products ADD COLUMN bot_username TEXT")
+            except aiosqlite.OperationalError:
+                pass
+            
+            try:
                 await db.execute("ALTER TABLE bot_users ADD COLUMN language TEXT DEFAULT 'en'")
                 logger.info("Added 'language' column to bot_users table")
             except aiosqlite.OperationalError as e:
@@ -220,6 +250,10 @@ class Database:
             # For media groups created before this fix, infer message IDs from sequential ordering
             logger.info("Checking for media groups needing message ID migration...")
             await self._migrate_existing_media_groups(db)
+            
+            # Check for products without bot_username
+            logger.info("Checking for products needing bot_username migration...")
+            await self._migrate_bot_username_for_existing_products(db)
             
             # Create performance-critical indexes
             logger.info("Creating database indexes...")
@@ -309,6 +343,32 @@ class Database:
         except Exception as e:
             logger.error(f"Error during media group migration: {e}")
     
+    async def _migrate_bot_username_for_existing_products(self, db):
+        """
+        Migrate existing products to populate bot_username.
+        For products created before this fix, we set bot_username to None
+        which will trigger bot-specific file ID resolution on first access.
+        """
+        try:
+            # Count products without bot_username
+            cursor = await db.execute("""
+                SELECT COUNT(*) FROM products
+                WHERE bot_username IS NULL
+            """)
+            row = await cursor.fetchone()
+            count = row[0] if row else 0
+            
+            if count == 0:
+                logger.info("All products already have bot_username populated")
+                return
+            
+            logger.info(f"Found {count} products without bot_username - they will use fallback file ID resolution")
+            # Note: We don't need to do anything here - products with NULL bot_username
+            # will automatically trigger bot-specific file ID resolution when accessed
+            
+        except Exception as e:
+            logger.error(f"Error checking bot_username migration: {e}")
+    
     async def add_product(
         self,
         file_id: str,
@@ -320,20 +380,22 @@ class Database:
         additional_file_ids: Optional[str] = None,
         additional_message_ids: Optional[str] = None,
         category: Optional[str] = None,
-        subcategory: Optional[str] = None
+        subcategory: Optional[str] = None,
+        bot_username: Optional[str] = None
     ) -> int:
         """Add a new product to the database."""
         async with aiosqlite.connect(self.db_path) as db:
             try:
                 cursor = await db.execute("""
                     INSERT INTO products (file_id, file_type, caption, message_id, chat_id, 
-                                        media_group_id, additional_file_ids, additional_message_ids, category, subcategory, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        media_group_id, additional_file_ids, additional_message_ids, category, subcategory, bot_username, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (file_id, file_type, caption or "", message_id, chat_id, 
-                      media_group_id, additional_file_ids, additional_message_ids, category, subcategory, datetime.now()))
+                      media_group_id, additional_file_ids, additional_message_ids, category, subcategory, 
+                      self.normalize_bot_username(bot_username), datetime.now()))
                 await db.commit()
                 product_id = cursor.lastrowid
-                logger.info(f"Product added: ID={product_id}, message_id={message_id}, category={category}")
+                logger.info(f"Product added: ID={product_id}, message_id={message_id}, category={category}, bot={bot_username}")
                 return product_id
             except aiosqlite.IntegrityError:
                 logger.warning(f"Product already exists: message_id={message_id}, chat_id={chat_id}")
@@ -1209,6 +1271,62 @@ class Database:
         # Invalidate cache
         async with _cache_lock:
             _order_contact_cache = (contact, datetime.now())
+    
+    async def get_bot_file_id(
+        self,
+        source_chat_id: int,
+        source_message_id: int,
+        file_index: int,
+        bot_username: str
+    ) -> Optional[str]:
+        """Get cached bot-specific file ID from database."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT file_id FROM bot_file_id_cache
+                WHERE source_chat_id = ? AND source_message_id = ? 
+                  AND file_index = ? AND bot_username = ?
+            """, (source_chat_id, source_message_id, file_index, bot_username.lower())) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    # Update usage stats
+                    await db.execute("""
+                        UPDATE bot_file_id_cache
+                        SET last_used = ?, use_count = use_count + 1
+                        WHERE source_chat_id = ? AND source_message_id = ? 
+                          AND file_index = ? AND bot_username = ?
+                    """, (datetime.now(), source_chat_id, source_message_id, file_index, bot_username.lower()))
+                    await db.commit()
+                    return row[0]
+                return None
+    
+    async def cache_bot_file_id(
+        self,
+        source_chat_id: int,
+        source_message_id: int,
+        file_index: int,
+        file_type: str,
+        bot_username: str,
+        file_id: str
+    ):
+        """Cache a bot-specific file ID in database."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT OR REPLACE INTO bot_file_id_cache 
+                (source_chat_id, source_message_id, file_index, file_type, bot_username, file_id, created_at, last_used, use_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+            """, (source_chat_id, source_message_id, file_index, file_type, 
+                  self.normalize_bot_username(bot_username), file_id, datetime.now(), datetime.now()))
+            await db.commit()
+            logger.debug(f"Cached file ID for bot {bot_username}: msg={source_message_id}, idx={file_index}")
+    
+    async def clear_bot_file_id_cache(self):
+        """Clear all bot-specific file ID caches (for admin /clearcache command)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("DELETE FROM bot_file_id_cache")
+            deleted = cursor.rowcount
+            await db.commit()
+            logger.info(f"Cleared {deleted} bot file ID cache entries")
+            return deleted
 
 
 async def clear_database_caches():

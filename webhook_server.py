@@ -221,7 +221,7 @@ async def lifespan(app: FastAPI):
     
     # Log cache status for multi-bot setups
     if len(bot_apps) > 1:
-        cache_size = get_file_id_cache_size()
+        cache_size = await get_file_id_cache_size()
         if cache_size == 0:
             logger.warning(
                 f"File ID cache is empty. For secondary bots (bot 1-{len(bot_apps)-1}) to display media correctly, "

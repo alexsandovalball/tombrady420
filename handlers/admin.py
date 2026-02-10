@@ -689,20 +689,22 @@ async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         from utils.helpers import clear_file_id_cache
         
         # Clear the cache
-        await clear_file_id_cache()
+        deleted_count = await clear_file_id_cache()
         
         await update.message.reply_text(
-            "✅ **File ID cache cleared successfully!**\n\n"
-            "Old product entries will now refresh their media on next view.\n"
-            "This is useful after adding secondary bots as channel admins.",
+            f"✅ **File ID cache cleared successfully!**\n\n"
+            f"Removed {deleted_count} cached file ID entries.\n"
+            f"Old product entries will now refresh their media on next view.\n"
+            f"This is useful after adding secondary bots as channel admins.",
             parse_mode="Markdown"
         )
-        logger.info(f"Admin {user_id} cleared the file ID cache")
+        logger.info(f"Admin {user_id} cleared the file ID cache ({deleted_count} entries)")
         
     except Exception as e:
         logger.error(f"Error in clearcache command: {e}", exc_info=True)
         await update.message.reply_text(
             "❌ An error occurred while clearing the cache."
         )
+
 
 

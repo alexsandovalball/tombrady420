@@ -3,7 +3,6 @@ Helper utilities for the bot.
 """
 import logging
 import json
-import asyncio
 from typing import List, Optional, Dict, Tuple
 from telegram import Update, User
 from telegram.ext import ContextTypes
@@ -12,11 +11,6 @@ from telegram.error import Forbidden
 from configs.config import Config
 
 logger = logging.getLogger(__name__)
-
-# Cache for bot-specific file IDs to avoid redundant forwarding
-# Format: {(source_chat_id, source_message_id, file_index): file_id}
-_file_id_cache: Dict[Tuple[int, int, int], str] = {}
-_file_id_cache_lock = asyncio.Lock()
 
 # Admin commands fallback text constant
 ADMIN_COMMANDS_FALLBACK = (
@@ -236,6 +230,8 @@ async def get_bot_specific_file_id(
     This is necessary when a secondary bot needs to display media that was
     originally posted to a channel using a different bot.
     
+    Uses persistent database cache to survive bot restarts.
+    
     Args:
         context: Bot context
         source_chat_id: ID of the source chat (usually the channel)
@@ -246,13 +242,28 @@ async def get_bot_specific_file_id(
     Returns:
         Bot-specific file ID or None if forwarding fails
     """
-    # Check cache first (with lock for thread safety)
-    cache_key = (source_chat_id, source_message_id, file_index)
-    async with _file_id_cache_lock:
-        if cache_key in _file_id_cache:
-            logger.debug(f"Using cached file ID for message {source_message_id}, index {file_index}")
-            return _file_id_cache[cache_key]
+    from database import Database
+    db = Database()
     
+    # Get current bot username
+    bot_username = context.bot.username
+    if not bot_username:
+        logger.error("Bot username not available - cannot cache file ID")
+        return None
+    
+    # Check persistent database cache first
+    cached_file_id = await db.get_bot_file_id(
+        source_chat_id,
+        source_message_id,
+        file_index,
+        bot_username
+    )
+    
+    if cached_file_id:
+        logger.debug(f"Using cached file ID for bot {bot_username}, message {source_message_id}, index {file_index}")
+        return cached_file_id
+    
+    # Cache miss - need to get bot-specific file ID by forwarding
     try:
         # Forward the message to get the bot-specific file ID
         # We forward to one of the admin users (they have permission to receive)
@@ -289,10 +300,16 @@ async def get_bot_specific_file_id(
             file_id = forwarded.voice.file_id
         
         if file_id:
-            # Cache the result (with lock for thread safety)
-            async with _file_id_cache_lock:
-                _file_id_cache[cache_key] = file_id
-            logger.debug(f"Cached bot-specific file ID for message {source_message_id}, index {file_index}")
+            # Cache the result in database for persistence
+            await db.cache_bot_file_id(
+                source_chat_id,
+                source_message_id,
+                file_index,
+                file_type,
+                bot_username,
+                file_id
+            )
+            logger.info(f"Cached bot-specific file ID for {bot_username}: msg={source_message_id}, idx={file_index}")
             
             # Delete the forwarded message to avoid cluttering admin chat
             try:
@@ -337,11 +354,18 @@ async def get_bot_specific_file_id(
 
 async def clear_file_id_cache():
     """Clear the bot-specific file ID cache (useful for forcing refresh of old entries)."""
-    async with _file_id_cache_lock:
-        _file_id_cache.clear()
-    logger.info("File ID cache cleared")
+    from database import Database
+    db = Database()
+    deleted = await db.clear_bot_file_id_cache()
+    logger.info(f"File ID cache cleared: {deleted} entries removed from database")
+    return deleted
 
 
-def get_file_id_cache_size() -> int:
+async def get_file_id_cache_size() -> int:
     """Get the current size of the file ID cache."""
-    return len(_file_id_cache)
+    from database import Database
+    db = Database()
+    async with db.get_connection() as conn:
+        async with conn.execute("SELECT COUNT(*) FROM bot_file_id_cache") as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
