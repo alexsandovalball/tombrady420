@@ -6,6 +6,7 @@ which is more suitable for serverless deployments like Render.com.
 import logging
 import os
 from contextlib import asynccontextmanager
+from typing import List
 from fastapi import FastAPI, Request, Response, status
 from telegram import Update
 from telegram.ext import Application
@@ -54,6 +55,18 @@ logger = logging.getLogger(__name__)
 logging.getLogger('telegram').setLevel(logging.INFO)
 logging.getLogger('httpx').setLevel(logging.WARNING)  # Reduce noise from HTTP library
 logging.getLogger('uvicorn.access').setLevel(logging.INFO)  # Keep access logs visible
+
+# Global registry for bot applications
+# This allows the notification service to access all bot instances
+_bot_applications = []
+
+def get_bot_applications() -> List[Application]:
+    """Get all bot application instances."""
+    return _bot_applications
+
+def get_bot_usernames() -> List[str]:
+    """Get list of bot usernames for all registered bots."""
+    return [bot.bot.username for bot in _bot_applications if hasattr(bot, 'bot') and hasattr(bot.bot, 'username')]
 
 
 async def setup_application(bot_token: str, bot_index: int = 0):
@@ -157,6 +170,8 @@ async def setup_application(bot_token: str, bot_index: int = 0):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan - startup and shutdown."""
+    global _bot_applications
+    
     # Startup
     logger.info("Starting webhook server...")
     
@@ -193,8 +208,16 @@ async def lifespan(app: FastAPI):
                     pass
             raise
     
+    # Store in global registry for notification service access
+    _bot_applications = bot_apps
+    
     app.state.bot_apps = bot_apps
     logger.info(f"All {len(bot_apps)} bot(s) initialized successfully")
+    
+    # Log bot usernames for debugging
+    for idx, bot_app in enumerate(bot_apps):
+        if hasattr(bot_app, 'bot') and hasattr(bot_app.bot, 'username'):
+            logger.info(f"  Bot {idx}: @{bot_app.bot.username}")
     
     # Log cache status for multi-bot setups
     if len(bot_apps) > 1:
@@ -219,6 +242,9 @@ async def lifespan(app: FastAPI):
             logger.info(f"Bot {idx} shut down successfully")
         except Exception as e:
             logger.error(f"Error shutting down bot {idx}: {e}")
+    
+    # Clear global registry
+    _bot_applications.clear()
     logger.info("All bot applications shut down successfully")
 
 

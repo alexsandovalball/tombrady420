@@ -1,13 +1,14 @@
 """
 Notification service for sending product notifications to users.
 Implements rate limiting to respect Telegram's anti-spam policies.
+Supports multi-bot delivery - sends messages through the bot each user started.
 """
 import logging
 import asyncio
-from typing import List
+from typing import List, Dict, Optional
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes
+from telegram.ext import ContextTypes, Application
 from telegram.error import TelegramError, Forbidden
 
 from database import Database
@@ -33,16 +34,76 @@ CUSTOM_MESSAGE_BATCH_SIZE = 5  # Send custom messages in smaller batches
 CUSTOM_MESSAGE_DELAY_SECONDS = 5  # Longer delay for custom messages
 
 
+def get_bot_applications() -> List[Application]:
+    """
+    Get all bot application instances from the webhook server.
+    This allows multi-bot delivery.
+    """
+    try:
+        from webhook_server import get_bot_applications as get_apps
+        return get_apps()
+    except ImportError:
+        logger.debug("webhook_server not available, returning empty list")
+        return []
+
+
+def get_bot_username(bot_app: Application) -> str:
+    """
+    Get the username of a bot application.
+    Returns 'unknown' if username is not available.
+    """
+    if hasattr(bot_app, 'bot') and hasattr(bot_app.bot, 'username'):
+        return bot_app.bot.username
+    return 'unknown'
+
+
+def get_bot_by_username(username: str) -> Optional[Application]:
+    """
+    Get a bot application by username.
+    Returns None if bot not found.
+    """
+    if not username:
+        return None
+    
+    # Normalize username (remove @ if present, lowercase)
+    username = username.lstrip('@').lower()
+    
+    bot_apps = get_bot_applications()
+    for bot_app in bot_apps:
+        if get_bot_username(bot_app).lower() == username:
+            return bot_app
+    return None
+
+
 class NotificationService:
     """Service for managing and sending product notifications."""
     
     def __init__(self, db: Database):
         self.db = db
+        self._bot_apps_cache = None  # Cache for bot applications
+        self._bot_apps_cache_time = None  # Timestamp of last cache
+        self._cache_ttl = 60  # Cache TTL in seconds
+    
+    def _get_bot_applications(self) -> List[Application]:
+        """
+        Get bot applications with caching to avoid repeated imports.
+        Cache is refreshed every 60 seconds.
+        """
+        # Check if cache is valid
+        if (self._bot_apps_cache is not None and 
+            self._bot_apps_cache_time is not None and
+            (datetime.now() - self._bot_apps_cache_time).total_seconds() < self._cache_ttl):
+            return self._bot_apps_cache
+        
+        # Refresh cache
+        self._bot_apps_cache = get_bot_applications()
+        self._bot_apps_cache_time = datetime.now()
+        return self._bot_apps_cache
     
     def _is_primary_instance(self, context: ContextTypes.DEFAULT_TYPE) -> bool:
         """
         Check if this is the primary bot instance.
-        Only the primary bot (first token in BOT_TOKENS) should process notifications.
+        Only the primary bot (first token in BOT_TOKENS) should create notification queues.
         
         Args:
             context: Telegram context with bot information
@@ -139,13 +200,8 @@ class NotificationService:
         """
         Process pending notifications from the queue with rate limiting and staggered delivery.
         Groups users and sends notifications at staggered intervals to avoid spam flags.
-        Only runs on the primary bot instance to avoid duplicate notifications.
+        Uses multi-bot delivery - sends via the bot each user started.
         """
-        # Check if this is the primary bot instance
-        if not self._is_primary_instance(context):
-            logger.debug("Skipping notification queue processing - not primary instance")
-            return
-        
         try:
             pending = await self.db.get_pending_notifications(limit=100)
             
@@ -182,7 +238,7 @@ class NotificationService:
                 logger.info("No eligible users after rate limiting")
                 return
             
-            # Implement staggered delivery by groups
+            # Implement staggered delivery by groups with multi-bot support
             sent_count = 0
             
             if ENABLE_STAGGERED_DELIVERY and len(eligible_users) >= STAGGER_GROUP_SIZE:
@@ -205,7 +261,7 @@ class NotificationService:
                     # Send notifications in smaller batches within the group
                     for i in range(0, len(group_batch), NOTIFICATION_BATCH_SIZE):
                         batch = group_batch[i:i + NOTIFICATION_BATCH_SIZE]
-                        sent = await self._send_notification_batch(context, batch)
+                        sent = await self._send_notification_batch_multibot(batch)
                         sent_count += sent
                         
                         # Small delay between batches within a group
@@ -226,14 +282,14 @@ class NotificationService:
                     
                     # Send in batches to avoid overwhelming Telegram
                     if len(batch) >= NOTIFICATION_BATCH_SIZE:
-                        sent = await self._send_notification_batch(context, batch)
+                        sent = await self._send_notification_batch_multibot(batch)
                         sent_count += sent
                         batch = []
                         await asyncio.sleep(BATCH_DELAY_SECONDS)
                 
                 # Send remaining batch
                 if batch:
-                    sent = await self._send_notification_batch(context, batch)
+                    sent = await self._send_notification_batch_multibot(batch)
                     sent_count += sent
             
             logger.info(f"Sent {sent_count} notifications successfully")
@@ -241,99 +297,158 @@ class NotificationService:
         except Exception as e:
             logger.error(f"Error processing notification queue: {e}", exc_info=True)
     
-    async def _send_notification_batch(
+    async def _send_notification_batch_multibot(
         self,
-        context: ContextTypes.DEFAULT_TYPE,
         notifications: List[dict]
     ) -> int:
         """
-        Send a batch of notifications.
+        Send a batch of notifications using multi-bot delivery.
+        Each notification is sent via the bot that the user started.
         Returns the number of successfully sent notifications.
         """
         sent_count = 0
         
+        # Get all available bot applications (cached)
+        bot_apps = self._get_bot_applications()
+        
+        if not bot_apps:
+            logger.warning("No bot applications available for multi-bot delivery, falling back to single bot")
+            # This shouldn't happen in production, but handle gracefully
+            return 0
+        
+        # Group notifications by user's bot_username for efficient delivery
+        users_by_bot: Dict[str, List[dict]] = {}
+        
         for notification in notifications:
-            try:
-                user_id = notification["user_id"]
-                product_id = notification["product_id"]
-                notification_id = notification["id"]
-                
-                # Get product details
-                product = await self.db.get_product(product_id)
-                
-                if not product:
-                    # Product deleted, mark notification as sent
-                    await self.db.mark_notification_sent(notification_id)
-                    continue
-                
-                # Get user's language preference
-                user_lang = await self.db.get_user_language(user_id)
-                
-                # Prepare notification message
-                category = product.get("category", "Unknown")
-                subcategory = product.get("subcategory")
-                
-                category_text = get_category_display_name(category)
-                if subcategory:
-                    translated_subcategory = get_subcategory_display_name(subcategory, user_lang)
-                    category_text += f" • {translated_subcategory}"
-                
-                caption = product.get("caption", "")
-                
-                # Translate caption if user language is not English
-                if user_lang and user_lang not in ["en", "en-US"] and caption:
-                    try:
-                        caption = await translate_text_async(caption, user_lang)
-                    except Exception as e:
-                        logger.error(f"Error translating caption for notification: {e}")
-                        # Keep original caption if translation fails
-                
-                caption_preview = caption[:100] + "..." if len(caption) > 100 else caption
-                
-                message_text = (
-                    f"🆕 **New Product Available!**\n\n"
-                    f"📂 Category: {category_text}\n"
-                    f"📝 {caption_preview}\n\n"
-                    f"Use /menu to browse the catalog!"
-                )
-                
-                # Create inline keyboard with view product button
-                keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("👁️ View Product", callback_data=f"product|{product_id}")],
-                    [InlineKeyboardButton("📋 View Catalog", callback_data="categories")],
-                    [InlineKeyboardButton("🔕 Unsubscribe", callback_data="unsubscribe_notifications")]
-                ])
-                
-                # Send notification
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=message_text,
-                    parse_mode="Markdown",
-                    reply_markup=keyboard
-                )
-                
-                # Mark as sent
-                await self.db.mark_notification_sent(notification_id)
-                sent_count += 1
-                
-                logger.debug(f"Sent notification to user {user_id} for product {product_id}")
-                
-            except Forbidden:
-                # User blocked the bot, disable notifications
-                logger.info(f"User {user_id} blocked the bot, disabling notifications")
-                await self.db.set_user_notifications(user_id, False)
-                await self.db.mark_notification_sent(notification_id)
-                
-            except TelegramError as e:
-                logger.error(f"Telegram error sending notification to {user_id}: {e}")
-                # Don't mark as sent, will retry later
-                
-            except Exception as e:
-                logger.error(f"Error sending notification to {user_id}: {e}")
-                # Mark as sent to avoid infinite retries
-                await self.db.mark_notification_sent(notification_id)
+            user_id = notification["user_id"]
+            
+            # Get user's bot_username from database
+            user = await self.db.get_user_by_id(user_id)
+            if not user:
+                # User not found, mark notification as sent and skip
+                # This will be handled by _send_single_notification, but we skip grouping
+                logger.debug(f"User {user_id} not found, will mark notification as sent")
+                await self.db.mark_notification_sent(notification["id"])
+                continue
+            
+            bot_username = user.get("bot_username")
+            if bot_username not in users_by_bot:
+                users_by_bot[bot_username] = []
+            users_by_bot[bot_username].append(notification)
+        
+        # Send notifications through each bot
+        for bot_username, bot_notifications in users_by_bot.items():
+            # Get the appropriate bot application
+            bot_app = get_bot_by_username(bot_username) if bot_username else bot_apps[0]
+            
+            if not bot_app:
+                logger.warning(f"Bot @{bot_username} not found, using primary bot")
+                bot_app = bot_apps[0]
+            
+            logger.info(f"Sending {len(bot_notifications)} notifications via bot @{get_bot_username(bot_app)}")
+            
+            # Send each notification
+            for notification in bot_notifications:
+                try:
+                    success = await self._send_single_notification(bot_app, notification)
+                    if success:
+                        sent_count += 1
+                except Exception as e:
+                    logger.error(f"Error sending notification {notification['id']}: {e}")
         
         return sent_count
+    
+    async def _send_single_notification(
+        self,
+        bot_app: Application,
+        notification: dict
+    ) -> bool:
+        """
+        Send a single notification through the specified bot.
+        Returns True if sent successfully, False otherwise.
+        """
+        try:
+            user_id = notification["user_id"]
+            product_id = notification["product_id"]
+            notification_id = notification["id"]
+            
+            # Get product details
+            product = await self.db.get_product(product_id)
+            
+            if not product:
+                # Product deleted, mark notification as sent
+                await self.db.mark_notification_sent(notification_id)
+                return False
+            
+            # Get user's language preference
+            user_lang = await self.db.get_user_language(user_id)
+            
+            # Prepare notification message
+            category = product.get("category", "Unknown")
+            subcategory = product.get("subcategory")
+            
+            category_text = get_category_display_name(category)
+            if subcategory:
+                translated_subcategory = get_subcategory_display_name(subcategory, user_lang)
+                category_text += f" • {translated_subcategory}"
+            
+            caption = product.get("caption", "")
+            
+            # Translate caption if user language is not English
+            if user_lang and user_lang not in ["en", "en-US"] and caption:
+                try:
+                    caption = await translate_text_async(caption, user_lang)
+                except Exception as e:
+                    logger.error(f"Error translating caption for notification: {e}")
+                    # Keep original caption if translation fails
+            
+            caption_preview = caption[:100] + "..." if len(caption) > 100 else caption
+            
+            message_text = (
+                f"🆕 **New Product Available!**\n\n"
+                f"📂 Category: {category_text}\n"
+                f"📝 {caption_preview}\n\n"
+                f"Use /menu to browse the catalog!"
+            )
+            
+            # Create inline keyboard with view product button
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("👁️ View Product", callback_data=f"product|{product_id}")],
+                [InlineKeyboardButton("📋 View Catalog", callback_data="categories")],
+                [InlineKeyboardButton("🔕 Unsubscribe", callback_data="unsubscribe_notifications")]
+            ])
+            
+            # Send notification using the bot application
+            await bot_app.bot.send_message(
+                chat_id=user_id,
+                text=message_text,
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+            
+            # Mark as sent
+            await self.db.mark_notification_sent(notification_id)
+            
+            logger.debug(f"Sent notification to user {user_id} for product {product_id} via bot @{get_bot_username(bot_app)}")
+            return True
+            
+        except Forbidden:
+            # User blocked the bot, disable notifications
+            logger.info(f"User {user_id} blocked the bot, disabling notifications")
+            await self.db.set_user_notifications(user_id, False)
+            await self.db.mark_notification_sent(notification_id)
+            return False
+            
+        except TelegramError as e:
+            logger.error(f"Telegram error sending notification to {user_id}: {e}")
+            # Don't mark as sent, will retry later
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error sending notification to {user_id}: {e}")
+            # Mark as sent to avoid infinite retries
+            await self.db.mark_notification_sent(notification_id)
+            return False
     
     async def send_custom_message_to_user(
         self,
@@ -413,13 +528,8 @@ class NotificationService:
     async def process_custom_message_queue(self, context: ContextTypes.DEFAULT_TYPE):
         """
         Process pending custom messages from the queue with rate limiting.
-        Only runs on the primary bot instance to avoid duplicate messages.
+        Uses multi-bot delivery - sends via the bot each user started.
         """
-        # Check if this is the primary bot instance
-        if not self._is_primary_instance(context):
-            logger.debug("Skipping custom message queue processing - not primary instance")
-            return
-        
         try:
             pending = await self.db.get_pending_custom_messages(limit=100)
             
@@ -465,14 +575,14 @@ class NotificationService:
                     
                     # Send in batches to avoid overwhelming Telegram
                     if len(batch) >= CUSTOM_MESSAGE_BATCH_SIZE:
-                        sent = await self._send_custom_message_batch(context, batch)
+                        sent = await self._send_custom_message_batch_multibot(batch)
                         sent_count += sent
                         batch = []
                         await asyncio.sleep(CUSTOM_MESSAGE_DELAY_SECONDS)
             
             # Send remaining batch
             if batch:
-                sent = await self._send_custom_message_batch(context, batch)
+                sent = await self._send_custom_message_batch_multibot(batch)
                 sent_count += sent
             
             logger.info(f"Sent {sent_count} custom messages successfully")
@@ -480,57 +590,97 @@ class NotificationService:
         except Exception as e:
             logger.error(f"Error processing custom message queue: {e}", exc_info=True)
     
-    async def _send_custom_message_batch(
+    async def _send_custom_message_batch_multibot(
         self,
-        context: ContextTypes.DEFAULT_TYPE,
         messages: List[dict]
     ) -> int:
         """
-        Send a batch of custom messages.
+        Send a batch of custom messages using multi-bot delivery.
+        Each message is sent via the bot that the user started.
         Returns the number of successfully sent messages.
         """
         sent_count = 0
         
+        # Get all available bot applications (cached)
+        bot_apps = self._get_bot_applications()
+        
+        if not bot_apps:
+            logger.warning("No bot applications available for multi-bot delivery")
+            return 0
+        
+        # Group messages by user's bot_username for efficient delivery
+        users_by_bot: Dict[str, List[dict]] = {}
+        
         for message in messages:
-            try:
-                user_id = message["user_id"]
-                message_text = message["message_text"]
-                message_id = message["id"]
-                
-                # Check if user is blocked
-                is_blocked = await self.db.is_user_blocked(user_id)
-                if is_blocked:
-                    # Mark as sent to remove from queue
+            user_id = message["user_id"]
+            
+            # Get user's bot_username from database
+            user = await self.db.get_user_by_id(user_id)
+            if not user:
+                # User not found, mark message as sent and skip
+                logger.debug(f"User {user_id} not found, will mark custom message as sent")
+                await self.db.mark_custom_message_sent(message["id"])
+                continue
+            
+            bot_username = user.get("bot_username")
+            if bot_username not in users_by_bot:
+                users_by_bot[bot_username] = []
+            users_by_bot[bot_username].append(message)
+        
+        # Send messages through each bot
+        for bot_username, bot_messages in users_by_bot.items():
+            # Get the appropriate bot application
+            bot_app = get_bot_by_username(bot_username) if bot_username else bot_apps[0]
+            
+            if not bot_app:
+                logger.warning(f"Bot @{bot_username} not found, using primary bot")
+                bot_app = bot_apps[0]
+            
+            logger.info(f"Sending {len(bot_messages)} custom messages via bot @{get_bot_username(bot_app)}")
+            
+            # Send each message
+            for message in bot_messages:
+                try:
+                    user_id = message["user_id"]
+                    message_text = message["message_text"]
+                    message_id = message["id"]
+                    
+                    # Check if user is blocked
+                    is_blocked = await self.db.is_user_blocked(user_id)
+                    if is_blocked:
+                        # Mark as sent to remove from queue
+                        await self.db.mark_custom_message_sent(message_id)
+                        continue
+                    
+                    # Send custom message using the bot application
+                    await bot_app.bot.send_message(
+                        chat_id=user_id,
+                        text=message_text,
+                        parse_mode="Markdown"
+                    )
+                    
+                    # Mark as sent
                     await self.db.mark_custom_message_sent(message_id)
-                    continue
-                
-                # Send custom message
-                await context.bot.send_message(
-                    chat_id=user_id,
-                    text=message_text,
-                    parse_mode="Markdown"
-                )
-                
-                # Mark as sent
-                await self.db.mark_custom_message_sent(message_id)
-                sent_count += 1
-                
-                logger.debug(f"Sent custom message to user {user_id}")
-                
-            except Forbidden:
-                # User blocked the bot, block them in our system
-                logger.info(f"User {user_id} blocked the bot, marking as blocked")
-                await self.db.block_user(user_id)
-                await self.db.mark_custom_message_sent(message_id)
-                
-            except TelegramError as e:
-                logger.error(f"Telegram error sending custom message to {user_id}: {e}")
-                # Don't mark as sent, will retry later
-                
-            except Exception as e:
-                logger.error(f"Error sending custom message to {user_id}: {e}")
-                # Mark as sent to avoid infinite retries
-                await self.db.mark_custom_message_sent(message_id)
+                    sent_count += 1
+                    
+                    logger.debug(f"Sent custom message to user {user_id} via bot @{get_bot_username(bot_app)}")
+                    
+                except Forbidden:
+                    # User blocked the bot, block them in our system
+                    logger.info(f"User {user_id} blocked the bot, marking as blocked")
+                    await self.db.block_user(user_id)
+                    await self.db.mark_custom_message_sent(message_id)
+                    
+                except TelegramError as e:
+                    logger.error(f"Telegram error sending custom message to {user_id}: {e}")
+                    # Don't mark as sent, will retry later
+                    
+                except Exception as e:
+                    logger.error(f"Error sending custom message to {user_id}: {e}")
+                    # Mark as sent to avoid infinite retries
+                    await self.db.mark_custom_message_sent(message_id)
         
         return sent_count
+    
+
 

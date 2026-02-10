@@ -5,6 +5,7 @@ Uses SQLite with aiosqlite for async operations.
 import aiosqlite
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
+from collections import defaultdict
 import logging
 import asyncio
 from functools import lru_cache
@@ -799,6 +800,16 @@ class Database:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
     
+    async def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Get user details by user ID."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM bot_users WHERE user_id = ?
+            """, (user_id,)) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+    
     async def user_exists(self, user_id: int) -> bool:
         """Check if a user exists in the database."""
         async with aiosqlite.connect(self.db_path) as db:
@@ -853,6 +864,65 @@ class Database:
             async with db.execute(query, admin_ids) as cursor:
                 rows = await cursor.fetchall()
                 return [row[0] for row in rows]
+    
+    async def get_subscribed_users_by_bot(self) -> Dict[str, List[int]]:
+        """
+        Get list of user IDs with notifications enabled, grouped by bot_username.
+        Returns a dict mapping bot_username to list of user_ids.
+        Users without a bot_username are included under None key.
+        Excludes admins.
+        """
+        from utils.helpers import get_admin_ids
+        admin_ids = get_admin_ids()
+        
+        result = defaultdict(list)
+        
+        if not admin_ids:
+            # No admins to filter, simple query
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("""
+                    SELECT user_id, bot_username FROM bot_users 
+                    WHERE notifications_enabled = 1
+                """) as cursor:
+                    rows = await cursor.fetchall()
+                    for row in rows:
+                        result[row['bot_username']].append(row['user_id'])
+                    return dict(result)
+        
+        # Filter admins in SQL for better performance
+        num_admins = len(admin_ids)
+        placeholders = ','.join(['?'] * num_admins)
+        query = f"""
+            SELECT user_id, bot_username FROM bot_users 
+            WHERE notifications_enabled = 1 
+            AND user_id NOT IN ({placeholders})
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(query, admin_ids) as cursor:
+                rows = await cursor.fetchall()
+                for row in rows:
+                    result[row['bot_username']].append(row['user_id'])
+                return dict(result)
+    
+    async def get_all_users_by_bot(self) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Get all users grouped by bot_username.
+        Returns a dict mapping bot_username to list of user dicts.
+        Users without a bot_username are included under None key.
+        """
+        result = defaultdict(list)
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM bot_users ORDER BY last_seen DESC
+            """) as cursor:
+                rows = await cursor.fetchall()
+                for row in rows:
+                    user_dict = dict(row)
+                    result[user_dict.get('bot_username')].append(user_dict)
+                return dict(result)
     
     async def queue_notification(self, user_id: int, product_id: int):
         """Add a notification to the queue."""
