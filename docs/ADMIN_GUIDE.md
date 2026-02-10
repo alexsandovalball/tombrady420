@@ -87,15 +87,18 @@ Block/unblock users from using the bot (admin only)
 - Use `/users` to find user IDs
 
 ### `/clearcache`
-Clear the file ID cache (admin only)
-- Clears bot-specific media file IDs from cache
+Clear the bot-specific file ID cache (admin only)
+- Clears all cached bot-specific media file IDs from persistent database
+- **New in latest version**: Cache is now persistent across bot restarts
+- Shows count of cleared entries
 - Useful when:
   - Adding new secondary bot instances
   - Media stops displaying correctly
   - After configuration changes
-- **Multi-bot setup**: When using multiple bot instances, each bot needs to cache its own file IDs
-- After clearing cache, media will be re-cached on next product view
-- **Tip**: Admins should `/start` each secondary bot to enable proper file ID caching
+  - Testing media file resolution
+- **Multi-bot setup**: Each bot automatically caches its own file IDs when viewing products
+- After clearing cache, media will be automatically re-cached on next product view
+- **Important**: Admins should `/start` each secondary bot to enable proper file ID caching via message forwarding
 
 ### `/setcontact`
 Set the order contact username (admin only)
@@ -318,39 +321,57 @@ The bot supports running multiple bot instances (primary + secondary bots) for:
 
 ### Bot Username Tracking
 
-When using multiple bot instances, the `/users` command shows which bot each user interacted with:
+When using multiple bot instances, the bot automatically tracks which bot posted each product:
+- **Products remember their source bot** - stored in database with `bot_username` field
+- **Automatic file ID resolution** - when viewing from a different bot, file IDs are automatically converted
+- **Persistent cache** - bot-specific file IDs are cached in the database (survives restarts)
+- **First bot a user interacts with is recorded** in user tracking
+
+The `/users` command shows which bot each user interacted with:
 - **🤖 Bot: @botusername** - Displayed in user details
 - Helps understand user distribution across bot instances
 - Useful for analyzing which bot is more popular
-- First bot a user interacts with is recorded
 
 ### Setting Up Secondary Bots
 
 **Configuration:**
 1. Add multiple bot tokens to `.env`:
    ```
-   BOT_TOKENS=token1,token2,token3
+   BOT_TOKEN=primary_bot_token
+   BOT_TOKEN_1=secondary_bot_token_1
+   BOT_TOKEN_2=secondary_bot_token_2
    ```
 2. Each bot gets its own webhook endpoint: `/webhook`, `/webhook/1`, `/webhook/2`
 
 **Important for Media Display:**
-- Telegram file IDs are bot-specific
-- **Admins must `/start` each secondary bot** to enable media caching
-- When admin starts a secondary bot, it can forward media to cache bot-specific file IDs
-- Without this, secondary bots will show text-only fallback messages
+- Telegram file IDs are **bot-specific** (a file ID from Bot A won't work with Bot B)
+- **New products automatically save the posting bot's username**
+- When viewing products from a different bot, file IDs are **automatically converted**
+- **Admins must `/start` each secondary bot** to enable file ID caching via message forwarding
+- Conversion happens transparently - users won't notice any difference
+- File ID cache is **persistent** in database and survives bot restarts
 
 **After Adding a Secondary Bot:**
-1. Send `/start` to the new bot from your admin account
-2. Use `/clearcache` to clear old cached file IDs (optional)
+1. Send `/start` to the new bot from your admin account (required for file ID forwarding)
+2. Add the bot as admin to your channel (if posting new products)
 3. Test by viewing products through the secondary bot
-4. Check logs for "File ID cache is empty" warnings
+4. Use `/clearcache` if you experience any media display issues
 
 ### Troubleshooting Multi-Bot Issues
 
 **Media not displaying on secondary bot:**
-- Solution: Admin needs to `/start` the secondary bot
+- **Most common cause**: Admin hasn't `/start`ed the secondary bot yet
+- **Solution**: Send `/start` to the secondary bot from your admin account
 - Check logs for "bot can't initiate conversation" errors
-- Use `/clearcache` to force re-caching of file IDs
+- Use `/clearcache` to force re-caching of file IDs if needed
+
+**File ID Resolution Process:**
+1. User views product through Bot B (product was posted by Bot A)
+2. Bot B detects file ID is from Bot A (checks `bot_username` in database)
+3. Bot B checks its persistent cache for a cached file ID
+4. If not cached, Bot B forwards the original message to admin to get Bot B's file ID
+5. Bot B caches the new file ID in database for future use
+6. Bot B displays the media using its own file ID
 
 **Cache warnings on startup:**
 - Warning: "File ID cache is empty"

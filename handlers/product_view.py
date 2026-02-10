@@ -166,7 +166,11 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                     # No message IDs - need bot-specific resolution if different bot
                     if needs_bot_specific_ids:
                         # We need message IDs for bot-specific resolution
-                        logger.info(f"Product {product_id} has no additional_message_ids - will try bot-specific IDs")
+                        # Estimate sequential message IDs (may not be accurate for all cases)
+                        logger.warning(
+                            f"Product {product_id} has no stored message IDs - estimating sequential IDs. "
+                            f"This may fail if messages weren't sent sequentially."
+                        )
                         # Build message ID list from the first message ID
                         message_ids = [product["message_id"]] + [product["message_id"] + i + 1 for i in range(len(file_data))]
                         use_bot_specific_ids = True
