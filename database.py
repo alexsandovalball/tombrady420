@@ -246,6 +246,10 @@ class Database:
             logger.info("Checking for media groups needing message ID migration...")
             await self._migrate_existing_media_groups(db)
             
+            # Check for products without bot_username
+            logger.info("Checking for products needing bot_username migration...")
+            await self._migrate_bot_username_for_existing_products(db)
+            
             # Create performance-critical indexes
             logger.info("Creating database indexes...")
             
@@ -333,6 +337,32 @@ class Database:
             
         except Exception as e:
             logger.error(f"Error during media group migration: {e}")
+    
+    async def _migrate_bot_username_for_existing_products(self, db):
+        """
+        Migrate existing products to populate bot_username.
+        For products created before this fix, we set bot_username to None
+        which will trigger bot-specific file ID resolution on first access.
+        """
+        try:
+            # Count products without bot_username
+            cursor = await db.execute("""
+                SELECT COUNT(*) FROM products
+                WHERE bot_username IS NULL
+            """)
+            row = await cursor.fetchone()
+            count = row[0] if row else 0
+            
+            if count == 0:
+                logger.info("All products already have bot_username populated")
+                return
+            
+            logger.info(f"Found {count} products without bot_username - they will use fallback file ID resolution")
+            # Note: We don't need to do anything here - products with NULL bot_username
+            # will automatically trigger bot-specific file ID resolution when accessed
+            
+        except Exception as e:
+            logger.error(f"Error checking bot_username migration: {e}")
     
     async def add_product(
         self,
