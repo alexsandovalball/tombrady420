@@ -3,7 +3,7 @@ Product view handler.
 """
 import logging
 import json
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, InputMediaDocument
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo
 from telegram.ext import ContextTypes
 from database import Database
 from utils.helpers import send_media_message, is_admin, get_bot_specific_file_id

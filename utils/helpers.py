@@ -3,7 +3,6 @@ Helper utilities for the bot.
 """
 import logging
 import json
-import asyncio
 from typing import List, Optional, Dict, Tuple
 from telegram import Update, User
 from telegram.ext import ContextTypes
@@ -12,11 +11,6 @@ from telegram.error import Forbidden
 from configs.config import Config
 
 logger = logging.getLogger(__name__)
-
-# Cache for bot-specific file IDs to avoid redundant forwarding
-# Format: {(source_chat_id, source_message_id, file_index): file_id}
-_file_id_cache: Dict[Tuple[int, int, int], str] = {}
-_file_id_cache_lock = asyncio.Lock()
 
 # Admin commands fallback text constant
 ADMIN_COMMANDS_FALLBACK = (
