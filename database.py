@@ -30,6 +30,10 @@ class Database:
     def __init__(self, db_path: str = None):
         self.db_path = db_path or Config.DB_PATH
     
+    def get_connection(self):
+        """Get a database connection context manager."""
+        return aiosqlite.connect(self.db_path)
+    
     async def init_db(self):
         """Initialize database with schema."""
         async with aiosqlite.connect(self.db_path) as db:
@@ -156,6 +160,22 @@ class Database:
                 )
             """)
             
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS bot_file_id_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_chat_id INTEGER NOT NULL,
+                    source_message_id INTEGER NOT NULL,
+                    file_index INTEGER DEFAULT 0,
+                    file_type TEXT NOT NULL,
+                    bot_username TEXT NOT NULL,
+                    file_id TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    use_count INTEGER DEFAULT 1,
+                    UNIQUE(source_chat_id, source_message_id, file_index, bot_username)
+                )
+            """)
+            
             # Set default order contact if not exists
             await db.execute("""
                 INSERT OR IGNORE INTO bot_settings (key, value)
@@ -195,6 +215,11 @@ class Database:
             
             try:
                 await db.execute("ALTER TABLE bot_users ADD COLUMN is_blocked INTEGER DEFAULT 0")
+            except aiosqlite.OperationalError:
+                pass
+            
+            try:
+                await db.execute("ALTER TABLE products ADD COLUMN bot_username TEXT")
             except aiosqlite.OperationalError:
                 pass
             
@@ -320,20 +345,21 @@ class Database:
         additional_file_ids: Optional[str] = None,
         additional_message_ids: Optional[str] = None,
         category: Optional[str] = None,
-        subcategory: Optional[str] = None
+        subcategory: Optional[str] = None,
+        bot_username: Optional[str] = None
     ) -> int:
         """Add a new product to the database."""
         async with aiosqlite.connect(self.db_path) as db:
             try:
                 cursor = await db.execute("""
                     INSERT INTO products (file_id, file_type, caption, message_id, chat_id, 
-                                        media_group_id, additional_file_ids, additional_message_ids, category, subcategory, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        media_group_id, additional_file_ids, additional_message_ids, category, subcategory, bot_username, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (file_id, file_type, caption or "", message_id, chat_id, 
-                      media_group_id, additional_file_ids, additional_message_ids, category, subcategory, datetime.now()))
+                      media_group_id, additional_file_ids, additional_message_ids, category, subcategory, bot_username, datetime.now()))
                 await db.commit()
                 product_id = cursor.lastrowid
-                logger.info(f"Product added: ID={product_id}, message_id={message_id}, category={category}")
+                logger.info(f"Product added: ID={product_id}, message_id={message_id}, category={category}, bot={bot_username}")
                 return product_id
             except aiosqlite.IntegrityError:
                 logger.warning(f"Product already exists: message_id={message_id}, chat_id={chat_id}")
@@ -1209,6 +1235,61 @@ class Database:
         # Invalidate cache
         async with _cache_lock:
             _order_contact_cache = (contact, datetime.now())
+    
+    async def get_bot_file_id(
+        self,
+        source_chat_id: int,
+        source_message_id: int,
+        file_index: int,
+        bot_username: str
+    ) -> Optional[str]:
+        """Get cached bot-specific file ID from database."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT file_id FROM bot_file_id_cache
+                WHERE source_chat_id = ? AND source_message_id = ? 
+                  AND file_index = ? AND bot_username = ?
+            """, (source_chat_id, source_message_id, file_index, bot_username.lower())) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    # Update usage stats
+                    await db.execute("""
+                        UPDATE bot_file_id_cache
+                        SET last_used = ?, use_count = use_count + 1
+                        WHERE source_chat_id = ? AND source_message_id = ? 
+                          AND file_index = ? AND bot_username = ?
+                    """, (datetime.now(), source_chat_id, source_message_id, file_index, bot_username.lower()))
+                    await db.commit()
+                    return row[0]
+                return None
+    
+    async def cache_bot_file_id(
+        self,
+        source_chat_id: int,
+        source_message_id: int,
+        file_index: int,
+        file_type: str,
+        bot_username: str,
+        file_id: str
+    ):
+        """Cache a bot-specific file ID in database."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT OR REPLACE INTO bot_file_id_cache 
+                (source_chat_id, source_message_id, file_index, file_type, bot_username, file_id, created_at, last_used, use_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+            """, (source_chat_id, source_message_id, file_index, file_type, bot_username.lower(), file_id, datetime.now(), datetime.now()))
+            await db.commit()
+            logger.debug(f"Cached file ID for bot {bot_username}: msg={source_message_id}, idx={file_index}")
+    
+    async def clear_bot_file_id_cache(self):
+        """Clear all bot-specific file ID caches (for admin /clearcache command)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("DELETE FROM bot_file_id_cache")
+            deleted = cursor.rowcount
+            await db.commit()
+            logger.info(f"Cleared {deleted} bot file ID cache entries")
+            return deleted
 
 
 async def clear_database_caches():

@@ -205,7 +205,8 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
         additional_file_ids=additional_files,
         additional_message_ids=additional_msg_ids,
         category=None,  # No automatic categorization
-        subcategory=None
+        subcategory=None,
+        bot_username=context.bot.username
     )
     
     if product_id > 0:
@@ -281,7 +282,8 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             message_id=message.message_id,
             chat_id=message.chat.id,
             category=None,  # No automatic categorization
-            subcategory=None
+            subcategory=None,
+            bot_username=context.bot.username
         )
         
         if product_id > 0:
