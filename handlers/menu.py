@@ -92,16 +92,33 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 parse_mode="Markdown"
             )
             
-    except Exception as e:
-        logger.error(f"Error showing category menu: {e}")
-        # Get user's language preference for error message
-        user_id = update.effective_user.id
-        user_lang = await db.get_user_language(user_id)
-        error_text = await get_translated_string_async("error_occurred", user_lang)
+    except TelegramError as e:
+        # Handle Telegram-specific errors (timeouts, network issues)
+        logger.error(f"Telegram error showing category menu: {e}")
         if update.callback_query:
-            await update.callback_query.answer(error_text, show_alert=True)
+            try:
+                await update.callback_query.answer("⚠️ Request timed out. Please try again.", show_alert=True)
+            except Exception:
+                pass  # If we can't even show the error, just log it
         else:
-            await update.message.reply_text(error_text)
+            try:
+                await update.message.reply_text("⚠️ Request timed out. Please try again.")
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error(f"Error showing category menu: {e}", exc_info=True)
+        # Get user's language preference for error message
+        try:
+            user_id = update.effective_user.id
+            user_lang = await db.get_user_language(user_id)
+            error_text = await get_translated_string_async("error_occurred", user_lang)
+            if update.callback_query:
+                await update.callback_query.answer(error_text, show_alert=True)
+            else:
+                await update.message.reply_text(error_text)
+        except Exception:
+            # If even error handling fails, just pass
+            logger.error("Failed to send error message to user")
 
 
 async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str):
@@ -190,14 +207,30 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
                 parse_mode="Markdown"
             )
             
-    except Exception as e:
-        logger.error(f"Error showing subcategory menu: {e}")
-        user_lang = await db.get_user_language(update.effective_user.id)
-        error_text = await get_translated_string_async("error_occurred", user_lang)
+    except TelegramError as e:
+        # Handle Telegram-specific errors (timeouts, network issues)
+        logger.error(f"Telegram error showing subcategory menu: {e}")
         if update.callback_query:
-            await update.callback_query.answer(error_text, show_alert=True)
+            try:
+                await update.callback_query.answer("⚠️ Request timed out. Please try again.", show_alert=True)
+            except Exception:
+                pass
         else:
-            await update.message.reply_text(error_text)
+            try:
+                await update.message.reply_text("⚠️ Request timed out. Please try again.")
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error(f"Error showing subcategory menu: {e}", exc_info=True)
+        try:
+            user_lang = await db.get_user_language(update.effective_user.id)
+            error_text = await get_translated_string_async("error_occurred", user_lang)
+            if update.callback_query:
+                await update.callback_query.answer(error_text, show_alert=True)
+            else:
+                await update.message.reply_text(error_text)
+        except Exception:
+            logger.error("Failed to send error message to user")
 
 
 async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1, category: str = None, subcategory: str = None):
@@ -371,14 +404,30 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 parse_mode="Markdown"
             )
             
-    except Exception as e:
-        logger.error(f"Error showing catalog page: {e}")
-        user_lang = await db.get_user_language(update.effective_user.id)
-        error_text = await get_translated_string_async("error_occurred", user_lang)
+    except TelegramError as e:
+        # Handle Telegram-specific errors (timeouts, network issues)
+        logger.error(f"Telegram error showing catalog page: {e}")
         if update.callback_query:
-            await update.callback_query.answer(error_text, show_alert=True)
+            try:
+                await update.callback_query.answer("⚠️ Request timed out. Please try again.", show_alert=True)
+            except Exception:
+                pass
         else:
-            await update.message.reply_text(error_text)
+            try:
+                await update.message.reply_text("⚠️ Request timed out. Please try again.")
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error(f"Error showing catalog page: {e}", exc_info=True)
+        try:
+            user_lang = await db.get_user_language(update.effective_user.id)
+            error_text = await get_translated_string_async("error_occurred", user_lang)
+            if update.callback_query:
+                await update.callback_query.answer(error_text, show_alert=True)
+            else:
+                await update.message.reply_text(error_text)
+        except Exception:
+            logger.error("Failed to send error message to user")
 
 
 async def handle_catalog_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int, category: str = None, subcategory: str = None):

@@ -249,6 +249,10 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Error shutting down bot {idx}: {e}")
     
+    # Close database connections
+    from database import Database
+    await Database.close_all_connections()
+    
     # Clear global registry
     _bot_applications.clear()
     logger.info("All bot applications shut down successfully")
