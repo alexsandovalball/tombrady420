@@ -263,15 +263,17 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 # 2. Send non-group media (documents, animations, etc.) separately
                 if non_group_media:
                     logger.info(f"Sending {len(non_group_media)} non-group media items for product {product_id}")
-                for idx, (file_id, file_type, caption) in enumerate(non_group_media):
-                    await send_media_message(
-                        context,
-                        update.effective_chat.id,
-                        file_id,
-                        file_type,
-                        caption=caption if idx == 0 and not media_list else None,  # Only use caption if it wasn't used in media group
-                        reply_markup=None  # Don't add keyboard to each media
-                    )
+                    for idx, (file_id, file_type, caption) in enumerate(non_group_media):
+                        # Add caption to first non-group media only if it wasn't used in media group
+                        should_add_caption = idx == 0 and not media_list
+                        await send_media_message(
+                            context,
+                            update.effective_chat.id,
+                            file_id,
+                            file_type,
+                            caption=caption if should_add_caption else None,
+                            reply_markup=None  # Don't add keyboard to each media
+                        )
                 
                 # Get order contact
                 order_contact = await db.get_order_contact()
