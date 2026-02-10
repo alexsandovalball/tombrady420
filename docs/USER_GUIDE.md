@@ -120,7 +120,7 @@ Use `/subscribe` to receive notifications when:
 
 - **Rate limited** - Maximum 5 notifications per hour to prevent spam
 - **User controlled** - Use `/unsubscribe` to opt out anytime
-- **Category filtering** - Some categories (Dated Proofs, Client Touchdowns) don't trigger notifications
+- **All categories** - All product categories trigger notifications
 - **Instant delivery** - Notifications sent immediately when products are added
 
 ### Notification Content
