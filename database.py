@@ -27,44 +27,8 @@ CACHE_TTL_SECONDS = 300  # 5 minutes
 class Database:
     """Database manager for product catalog."""
     
-    # Class-level connection pool to share connections across instances
-    _connection_pool: Dict[str, aiosqlite.Connection] = {}
-    _pool_lock = asyncio.Lock()
-    
     def __init__(self, db_path: str = None):
         self.db_path = db_path or Config.DB_PATH
-    
-    async def get_connection(self):
-        """Get a shared database connection with connection pooling.
-        
-        Returns a cached connection for this database path, creating one if needed.
-        This dramatically reduces connection overhead from 67+ connections per request
-        to reusing a single connection.
-        """
-        async with self._pool_lock:
-            if self.db_path not in self._connection_pool:
-                # Create new connection
-                conn = await aiosqlite.connect(self.db_path)
-                # Enable WAL mode for better concurrent performance
-                await conn.execute("PRAGMA journal_mode=WAL")
-                # Set a busy timeout to handle concurrent writes
-                await conn.execute("PRAGMA busy_timeout=5000")
-                conn.row_factory = aiosqlite.Row
-                self._connection_pool[self.db_path] = conn
-                logger.info(f"Created new database connection pool for {self.db_path}")
-            return self._connection_pool[self.db_path]
-    
-    @classmethod
-    async def close_all_connections(cls):
-        """Close all pooled database connections. Call this on application shutdown."""
-        async with cls._pool_lock:
-            for db_path, conn in cls._connection_pool.items():
-                try:
-                    await conn.close()
-                    logger.info(f"Closed database connection for {db_path}")
-                except Exception as e:
-                    logger.error(f"Error closing connection for {db_path}: {e}")
-            cls._connection_pool.clear()
     
     @staticmethod
     def normalize_bot_username(bot_username: Optional[str]) -> Optional[str]:
