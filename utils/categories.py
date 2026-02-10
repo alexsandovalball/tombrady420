@@ -43,9 +43,8 @@ CATEGORY_DISPLAY = {
 EXCLUDED_FROM_ALL_PRODUCTS = ["DATEDPROOFS", "CLIENTTOUCHDOWNS", "ANNOUNCEMENTS"]
 
 # Categories to exclude from triggering notifications
-# Note: ANNOUNCEMENTS is NOT in this list - it will trigger notifications
-#       even though it's excluded from "All Products" view
-NOTIFICATION_EXCLUDED_CATEGORIES = ["DATEDPROOFS", "CLIENTTOUCHDOWNS"]
+# All categories now trigger notifications
+NOTIFICATION_EXCLUDED_CATEGORIES = []
 
 
 

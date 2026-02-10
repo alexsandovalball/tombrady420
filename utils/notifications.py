@@ -159,8 +159,8 @@ class NotificationService:
                 logger.debug(f"Product {product_id} not categorized, skipping notification")
                 return
             
-            # Skip notifications for excluded categories (DATEDPROOFS, CLIENTTOUCHDOWNS)
-            # Note: ANNOUNCEMENTS is NOT excluded from notifications
+            # Check if category should be excluded from notifications
+            # (Currently all categories trigger notifications)
             category = product.get("category")
             if category in NOTIFICATION_EXCLUDED_CATEGORIES:
                 logger.info(f"Product {product_id} is in excluded category '{category}', skipping notification")
