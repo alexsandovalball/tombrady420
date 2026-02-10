@@ -78,8 +78,14 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     """
     logger.info(f"Setting up bot application {bot_index}...")
     
-    # Create application
-    bot_app = Application.builder().token(bot_token).build()
+    # Create application with optimized timeouts to prevent hanging requests
+    bot_app = (Application.builder()
+               .token(bot_token)
+               .connect_timeout(10.0)      # 10s to establish connection
+               .read_timeout(10.0)         # 10s to receive response
+               .write_timeout(10.0)        # 10s to send data
+               .pool_timeout(5.0)          # 5s to get connection from pool
+               .build())
     
     # Initialize database (only once for the primary bot)
     if bot_index == 0:

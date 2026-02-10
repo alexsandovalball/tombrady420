@@ -23,12 +23,15 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show category selection menu."""
     try:
-        # Get user's language preference
+        # Get user's language preference and all menu data in one optimized query
         user_id = update.effective_user.id
-        user_lang = await db.get_user_language(user_id)
         
-        # Get all category counts in a single query (optimized)
-        category_counts = await db.get_all_category_counts()
+        # OPTIMIZED: Get all data in single database connection (3+ queries -> 1 connection)
+        menu_data = await db.get_menu_data(user_id, EXCLUDED_FROM_ALL_PRODUCTS)
+        user_lang = menu_data['user_lang']
+        category_counts = menu_data['category_counts']
+        total_count = menu_data['total_count']
+        
         category_buttons = []
         
         for category in get_all_categories():
@@ -56,8 +59,7 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 InlineKeyboardButton(button_text, callback_data=callback_data)
             ])
         
-        # Add "All Products" option
-        total_count = await db.count_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
+        # Add "All Products" option (count already fetched in menu_data)
         all_products_text = await get_translated_string_async("all_products", user_lang)
         category_buttons.insert(0, [
             InlineKeyboardButton(f"{all_products_text} ({total_count})", callback_data="menu|1")
@@ -105,9 +107,8 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str):
     """Show subcategory selection menu for a given category."""
     try:
-        # Get user's language preference
+        # Get user's language preference and subcategory data in one optimized query
         user_id = update.effective_user.id
-        user_lang = await db.get_user_language(user_id)
         
         # Get subcategories for this category
         subcategories = get_subcategories(category)
@@ -117,9 +118,11 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
             await show_catalog_page(update, context, page=1, category=category)
             return
         
-        # Get subcategory counts from database
-        subcategory_counts = await db.get_subcategories_with_counts(category)
-        count_dict = {item["subcategory"]: item["count"] for item in subcategory_counts}
+        # OPTIMIZED: Get all data in single database connection (3 queries -> 1 connection)
+        menu_data = await db.get_subcategory_menu_data(user_id, category)
+        user_lang = menu_data['user_lang']
+        count_dict = menu_data['subcategory_counts']
+        all_count = menu_data['category_total']
         
         # Build subcategory buttons
         subcategory_buttons = []
@@ -133,8 +136,7 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
                 InlineKeyboardButton(button_text, callback_data=f"subcategory|{category}|{subcat}|1")
             ])
         
-        # Add "All in Category" option
-        all_count = await db.count_products_by_category(category)
+        # Add "All in Category" option (count already fetched in menu_data)
         # Translate category name
         category_key = f"category_{category.lower()}"
         translated_category = await get_translated_string_async(category_key, user_lang)

@@ -27,12 +27,32 @@ CACHE_TTL_SECONDS = 300  # 5 minutes
 class Database:
     """Database manager for product catalog."""
     
+    # Class-level connection pool to share connections across instances
+    _connection_pool: Dict[str, aiosqlite.Connection] = {}
+    _pool_lock = asyncio.Lock()
+    
     def __init__(self, db_path: str = None):
         self.db_path = db_path or Config.DB_PATH
     
-    def get_connection(self):
-        """Get a database connection context manager."""
-        return aiosqlite.connect(self.db_path)
+    async def get_connection(self):
+        """Get a shared database connection with connection pooling.
+        
+        Returns a cached connection for this database path, creating one if needed.
+        This dramatically reduces connection overhead from 67+ connections per request
+        to reusing a single connection.
+        """
+        async with self._pool_lock:
+            if self.db_path not in self._connection_pool:
+                # Create new connection
+                conn = await aiosqlite.connect(self.db_path)
+                # Enable WAL mode for better concurrent performance
+                await conn.execute("PRAGMA journal_mode=WAL")
+                # Set a busy timeout to handle concurrent writes
+                await conn.execute("PRAGMA busy_timeout=5000")
+                conn.row_factory = aiosqlite.Row
+                self._connection_pool[self.db_path] = conn
+                logger.info(f"Created new database connection pool for {self.db_path}")
+            return self._connection_pool[self.db_path]
     
     @staticmethod
     def normalize_bot_username(bot_username: Optional[str]) -> Optional[str]:
@@ -42,6 +62,12 @@ class Database:
     async def init_db(self):
         """Initialize database with schema."""
         async with aiosqlite.connect(self.db_path) as db:
+            # Enable WAL mode for better concurrent read/write performance
+            # This allows multiple readers even when a writer is active
+            await db.execute("PRAGMA journal_mode=WAL")
+            # Set busy timeout to 5 seconds to handle concurrent access
+            await db.execute("PRAGMA busy_timeout=5000")
+            
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS products (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -699,6 +725,89 @@ class Database:
             """) as cursor:
                 rows = await cursor.fetchall()
                 return {row[0]: row[1] for row in rows}
+    
+    async def get_menu_data(self, user_id: int, excluded_categories: List[str]) -> Dict[str, Any]:
+        """
+        Optimized: Get all data needed for category menu in a single database connection.
+        This combines user_language, category_counts, and all_products_count queries.
+        Reduces connection overhead from 3+ connections to 1.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            # Get user language
+            async with db.execute(
+                "SELECT language FROM bot_users WHERE user_id = ?", (user_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                user_lang = row[0] if row else 'en'
+            
+            # Get category counts
+            async with db.execute("""
+                SELECT category, COUNT(*) as count 
+                FROM products 
+                WHERE category IS NOT NULL 
+                GROUP BY category
+            """) as cursor:
+                rows = await cursor.fetchall()
+                category_counts = {row[0]: row[1] for row in rows}
+            
+            # Get total products count (excluding specified categories)
+            if not excluded_categories:
+                async with db.execute("SELECT COUNT(*) FROM products") as cursor:
+                    row = await cursor.fetchone()
+                    total_count = row[0] if row else 0
+            else:
+                placeholders = ','.join('?' * len(excluded_categories))
+                query = f"""
+                    SELECT COUNT(*) FROM products 
+                    WHERE (category IS NULL OR category = '') OR category NOT IN ({placeholders})
+                """
+                async with db.execute(query, excluded_categories) as cursor:
+                    row = await cursor.fetchone()
+                    total_count = row[0] if row else 0
+            
+            return {
+                'user_lang': user_lang,
+                'category_counts': category_counts,
+                'total_count': total_count
+            }
+    
+    async def get_subcategory_menu_data(self, user_id: int, category: str) -> Dict[str, Any]:
+        """
+        Optimized: Get all data needed for subcategory menu in a single database connection.
+        Combines user_language, subcategory_counts, and category_total queries.
+        Reduces connection overhead from 3 connections to 1.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            # Get user language
+            async with db.execute(
+                "SELECT language FROM bot_users WHERE user_id = ?", (user_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                user_lang = row[0] if row else 'en'
+            
+            # Get subcategory counts
+            async with db.execute("""
+                SELECT subcategory, COUNT(*) as count
+                FROM products
+                WHERE category = ? AND subcategory IS NOT NULL
+                GROUP BY subcategory
+                ORDER BY subcategory
+            """, (category,)) as cursor:
+                rows = await cursor.fetchall()
+                subcategory_counts = {row[0]: row[1] for row in rows}
+            
+            # Get total count for this category
+            async with db.execute(
+                "SELECT COUNT(*) FROM products WHERE category = ?", (category,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                category_total = row[0] if row else 0
+            
+            return {
+                'user_lang': user_lang,
+                'subcategory_counts': subcategory_counts,
+                'category_total': category_total
+            }
     
     async def get_all_categories(self) -> List[str]:
         """Get list of all unique categories."""
