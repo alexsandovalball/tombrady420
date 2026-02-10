@@ -66,6 +66,7 @@ user_last_message = {}
 # Media group collection (temporary storage for grouping messages)
 media_group_messages = {}
 media_group_timers = {}
+media_group_locks = {}  # Locks to prevent race conditions in media group processing
 
 
 def _is_primary_instance(context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -178,11 +179,17 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
     """Process collected media group messages after a short delay."""
     await asyncio.sleep(0.5)  # Wait for all messages in the group to arrive
     
-    if media_group_id not in media_group_messages:
-        return
+    # Get or create a lock for this media group to prevent race conditions
+    if media_group_id not in media_group_locks:
+        media_group_locks[media_group_id] = asyncio.Lock()
     
-    messages = media_group_messages.pop(media_group_id, [])
-    media_group_timers.pop(media_group_id, None)
+    async with media_group_locks[media_group_id]:
+        if media_group_id not in media_group_messages:
+            return
+        
+        messages = media_group_messages.pop(media_group_id, [])
+        media_group_timers.pop(media_group_id, None)
+        media_group_locks.pop(media_group_id, None)  # Clean up the lock
     
     if not messages:
         return
@@ -1229,7 +1236,14 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cleanup_task(context: ContextTypes.DEFAULT_TYPE):
-    """Periodic cleanup task for old pagination states."""
+    """Periodic cleanup task for old pagination states.
+    Only runs on the primary bot instance to avoid duplicate cleanup.
+    """
+    # Check if this is the primary bot instance
+    if not _is_primary_instance(context):
+        logger.info("Cleanup task disabled - not primary instance")
+        return
+    
     while True:
         try:
             await asyncio.sleep(600)  # Run every 10 minutes
