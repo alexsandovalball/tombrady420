@@ -68,8 +68,49 @@ media_group_messages = {}
 media_group_timers = {}
 
 
+def _is_primary_instance(context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Check if this is the primary bot instance.
+    Only the primary bot (first token in BOT_TOKENS) should create notification queues.
+    
+    Args:
+        context: Telegram context with bot information
+        
+    Returns:
+        True if this is the primary instance, False otherwise
+    """
+    if not hasattr(context, 'bot') or not hasattr(context.bot, 'token'):
+        # If we can't determine, assume it's primary to maintain backward compatibility
+        logger.warning("Unable to determine bot instance, assuming primary")
+        return True
+    
+    current_token = context.bot.token
+    bot_tokens = Config.BOT_TOKENS
+    
+    # Validate BOT_TOKENS is a non-empty list
+    if not bot_tokens or not isinstance(bot_tokens, list) or len(bot_tokens) == 0:
+        # No tokens configured or invalid configuration, assume primary
+        return True
+    
+    # Primary bot is the first token in the list (index 0)
+    is_primary = current_token == bot_tokens[0]
+    
+    if not is_primary:
+        logger.debug(f"Skipping operation - not primary instance (bot token: ...{current_token[-5:]})")
+    
+    return is_primary
+
+
+
 async def notify_admins_for_categorization(context: ContextTypes.DEFAULT_TYPE, product_id: int):
-    """Send categorization request to all admins for a new product."""
+    """Send categorization request to all admins for a new product.
+    Only runs on the primary bot instance to avoid duplicate notifications.
+    """
+    # Check if this is the primary bot instance
+    if not _is_primary_instance(context):
+        logger.info(f"Skipping categorization notification for product {product_id} - not primary instance")
+        return
+    
     try:
         product = await db.get_product(product_id)
         if not product:

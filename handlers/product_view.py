@@ -246,10 +246,19 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                                 f"(have {len(message_ids)} IDs, need {len(file_data)+1})"
                             )
                     
+                    # Add media to the list based on type
+                    # Note: Telegram media groups only support photos and videos
+                    # Other types (document, animation, etc.) will be skipped with a warning
                     if file_type == "photo":
                         media_list.append(InputMediaPhoto(media=file_id))
                     elif file_type == "video":
                         media_list.append(InputMediaVideo(media=file_id))
+                    else:
+                        # Telegram media groups don't support other types
+                        logger.warning(
+                            f"Skipping {file_type} in media group for product {product_id} "
+                            f"(Telegram media groups only support photos and videos)"
+                        )
                 
                 # Send media group
                 await context.bot.send_media_group(
