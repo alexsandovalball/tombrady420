@@ -145,7 +145,12 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 # Check if we need bot-specific file ID resolution
                 product_bot = product.get("bot_username")
                 current_bot = context.bot.username
-                needs_bot_specific_ids = (product_bot is None or product_bot.lower() != current_bot.lower())
+                # Handle None values for bot usernames
+                needs_bot_specific_ids = (
+                    product_bot is None or 
+                    current_bot is None or 
+                    product_bot.lower() != current_bot.lower()
+                )
                 
                 # Parse additional message IDs if available
                 additional_message_ids_json = product.get("additional_message_ids")
@@ -171,8 +176,9 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                             f"Product {product_id} has no stored message IDs - estimating sequential IDs. "
                             f"This may fail if messages weren't sent sequentially."
                         )
-                        # Build message ID list from the first message ID
-                        message_ids = [product["message_id"]] + [product["message_id"] + i + 1 for i in range(len(file_data))]
+                        # Build message ID list from the first message ID with correct sequential numbering
+                        # message_ids[0] = base, message_ids[1] = base+1, message_ids[2] = base+2, etc.
+                        message_ids = [product["message_id"] + i for i in range(len(file_data) + 1)]
                         use_bot_specific_ids = True
                     else:
                         use_bot_specific_ids = False
@@ -277,7 +283,10 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         current_bot = context.bot.username
         file_id_to_use = product["file_id"]
         
-        if product_bot is None or product_bot.lower() != current_bot.lower():
+        # Handle None values for bot usernames
+        if (product_bot is None or 
+            current_bot is None or 
+            product_bot.lower() != current_bot.lower()):
             # Try to get bot-specific file ID for single media
             bot_specific_id = await get_bot_specific_file_id(
                 context,

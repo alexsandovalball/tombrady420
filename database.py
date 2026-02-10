@@ -34,6 +34,11 @@ class Database:
         """Get a database connection context manager."""
         return aiosqlite.connect(self.db_path)
     
+    @staticmethod
+    def normalize_bot_username(bot_username: Optional[str]) -> Optional[str]:
+        """Normalize bot username to lowercase for consistent database lookups."""
+        return bot_username.lower() if bot_username else None
+    
     async def init_db(self):
         """Initialize database with schema."""
         async with aiosqlite.connect(self.db_path) as db:
@@ -379,8 +384,6 @@ class Database:
         bot_username: Optional[str] = None
     ) -> int:
         """Add a new product to the database."""
-        # Normalize bot_username to lowercase for consistency
-        bot_username_normalized = bot_username.lower() if bot_username else None
         async with aiosqlite.connect(self.db_path) as db:
             try:
                 cursor = await db.execute("""
@@ -388,10 +391,11 @@ class Database:
                                         media_group_id, additional_file_ids, additional_message_ids, category, subcategory, bot_username, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (file_id, file_type, caption or "", message_id, chat_id, 
-                      media_group_id, additional_file_ids, additional_message_ids, category, subcategory, bot_username_normalized, datetime.now()))
+                      media_group_id, additional_file_ids, additional_message_ids, category, subcategory, 
+                      self.normalize_bot_username(bot_username), datetime.now()))
                 await db.commit()
                 product_id = cursor.lastrowid
-                logger.info(f"Product added: ID={product_id}, message_id={message_id}, category={category}, bot={bot_username_normalized}")
+                logger.info(f"Product added: ID={product_id}, message_id={message_id}, category={category}, bot={bot_username}")
                 return product_id
             except aiosqlite.IntegrityError:
                 logger.warning(f"Product already exists: message_id={message_id}, chat_id={chat_id}")
@@ -1305,14 +1309,13 @@ class Database:
         file_id: str
     ):
         """Cache a bot-specific file ID in database."""
-        # Normalize bot_username to lowercase for consistency
-        bot_username_normalized = bot_username.lower() if bot_username else None
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 INSERT OR REPLACE INTO bot_file_id_cache 
                 (source_chat_id, source_message_id, file_index, file_type, bot_username, file_id, created_at, last_used, use_count)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-            """, (source_chat_id, source_message_id, file_index, file_type, bot_username_normalized, file_id, datetime.now(), datetime.now()))
+            """, (source_chat_id, source_message_id, file_index, file_type, 
+                  self.normalize_bot_username(bot_username), file_id, datetime.now(), datetime.now()))
             await db.commit()
             logger.debug(f"Cached file ID for bot {bot_username}: msg={source_message_id}, idx={file_index}")
     
