@@ -309,7 +309,7 @@ async def get_bot_specific_file_id(
                 bot_username,
                 file_id
             )
-            logger.info(f"Cached bot-specific file ID for {bot_username}: msg={source_message_id}, idx={file_index}")
+            logger.debug(f"Cached bot-specific file ID for {bot_username}: msg={source_message_id}, idx={file_index}")  # Changed to debug to reduce log noise
             
             # Delete the forwarded message to avoid cluttering admin chat
             try:

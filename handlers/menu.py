@@ -23,12 +23,15 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show category selection menu."""
     try:
-        # Get user's language preference
+        # Get user's language preference and all menu data in one optimized query
         user_id = update.effective_user.id
-        user_lang = await db.get_user_language(user_id)
         
-        # Get all category counts in a single query (optimized)
-        category_counts = await db.get_all_category_counts()
+        # OPTIMIZED: Get all data in single database connection (3+ queries -> 1 connection)
+        menu_data = await db.get_menu_data(user_id, EXCLUDED_FROM_ALL_PRODUCTS)
+        user_lang = menu_data['user_lang']
+        category_counts = menu_data['category_counts']
+        total_count = menu_data['total_count']
+        
         category_buttons = []
         
         for category in get_all_categories():
@@ -56,8 +59,7 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 InlineKeyboardButton(button_text, callback_data=callback_data)
             ])
         
-        # Add "All Products" option
-        total_count = await db.count_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
+        # Add "All Products" option (count already fetched in menu_data)
         all_products_text = await get_translated_string_async("all_products", user_lang)
         category_buttons.insert(0, [
             InlineKeyboardButton(f"{all_products_text} ({total_count})", callback_data="menu|1")
@@ -90,24 +92,40 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 parse_mode="Markdown"
             )
             
-    except Exception as e:
-        logger.error(f"Error showing category menu: {e}")
-        # Get user's language preference for error message
-        user_id = update.effective_user.id
-        user_lang = await db.get_user_language(user_id)
-        error_text = await get_translated_string_async("error_occurred", user_lang)
+    except TelegramError as e:
+        # Handle Telegram-specific errors (timeouts, network issues)
+        logger.error(f"Telegram error showing category menu: {e}")
         if update.callback_query:
-            await update.callback_query.answer(error_text, show_alert=True)
+            try:
+                await update.callback_query.answer("⚠️ Request timed out. Please try again.", show_alert=True)
+            except Exception:
+                pass  # If we can't even show the error, just log it
         else:
-            await update.message.reply_text(error_text)
+            try:
+                await update.message.reply_text("⚠️ Request timed out. Please try again.")
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error(f"Error showing category menu: {e}", exc_info=True)
+        # Get user's language preference for error message
+        try:
+            user_id = update.effective_user.id
+            user_lang = await db.get_user_language(user_id)
+            error_text = await get_translated_string_async("error_occurred", user_lang)
+            if update.callback_query:
+                await update.callback_query.answer(error_text, show_alert=True)
+            else:
+                await update.message.reply_text(error_text)
+        except Exception:
+            # If even error handling fails, just pass
+            logger.error("Failed to send error message to user")
 
 
 async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str):
     """Show subcategory selection menu for a given category."""
     try:
-        # Get user's language preference
+        # Get user's language preference and subcategory data in one optimized query
         user_id = update.effective_user.id
-        user_lang = await db.get_user_language(user_id)
         
         # Get subcategories for this category
         subcategories = get_subcategories(category)
@@ -117,9 +135,11 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
             await show_catalog_page(update, context, page=1, category=category)
             return
         
-        # Get subcategory counts from database
-        subcategory_counts = await db.get_subcategories_with_counts(category)
-        count_dict = {item["subcategory"]: item["count"] for item in subcategory_counts}
+        # OPTIMIZED: Get all data in single database connection (3 queries -> 1 connection)
+        menu_data = await db.get_subcategory_menu_data(user_id, category)
+        user_lang = menu_data['user_lang']
+        count_dict = menu_data['subcategory_counts']
+        all_count = menu_data['category_total']
         
         # Build subcategory buttons
         subcategory_buttons = []
@@ -133,8 +153,7 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
                 InlineKeyboardButton(button_text, callback_data=f"subcategory|{category}|{subcat}|1")
             ])
         
-        # Add "All in Category" option
-        all_count = await db.count_products_by_category(category)
+        # Add "All in Category" option (count already fetched in menu_data)
         # Translate category name
         category_key = f"category_{category.lower()}"
         translated_category = await get_translated_string_async(category_key, user_lang)
@@ -188,14 +207,30 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
                 parse_mode="Markdown"
             )
             
-    except Exception as e:
-        logger.error(f"Error showing subcategory menu: {e}")
-        user_lang = await db.get_user_language(update.effective_user.id)
-        error_text = await get_translated_string_async("error_occurred", user_lang)
+    except TelegramError as e:
+        # Handle Telegram-specific errors (timeouts, network issues)
+        logger.error(f"Telegram error showing subcategory menu: {e}")
         if update.callback_query:
-            await update.callback_query.answer(error_text, show_alert=True)
+            try:
+                await update.callback_query.answer("⚠️ Request timed out. Please try again.", show_alert=True)
+            except Exception:
+                pass
         else:
-            await update.message.reply_text(error_text)
+            try:
+                await update.message.reply_text("⚠️ Request timed out. Please try again.")
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error(f"Error showing subcategory menu: {e}", exc_info=True)
+        try:
+            user_lang = await db.get_user_language(update.effective_user.id)
+            error_text = await get_translated_string_async("error_occurred", user_lang)
+            if update.callback_query:
+                await update.callback_query.answer(error_text, show_alert=True)
+            else:
+                await update.message.reply_text(error_text)
+        except Exception:
+            logger.error("Failed to send error message to user")
 
 
 async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1, category: str = None, subcategory: str = None):
@@ -369,14 +404,30 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 parse_mode="Markdown"
             )
             
-    except Exception as e:
-        logger.error(f"Error showing catalog page: {e}")
-        user_lang = await db.get_user_language(update.effective_user.id)
-        error_text = await get_translated_string_async("error_occurred", user_lang)
+    except TelegramError as e:
+        # Handle Telegram-specific errors (timeouts, network issues)
+        logger.error(f"Telegram error showing catalog page: {e}")
         if update.callback_query:
-            await update.callback_query.answer(error_text, show_alert=True)
+            try:
+                await update.callback_query.answer("⚠️ Request timed out. Please try again.", show_alert=True)
+            except Exception:
+                pass
         else:
-            await update.message.reply_text(error_text)
+            try:
+                await update.message.reply_text("⚠️ Request timed out. Please try again.")
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error(f"Error showing catalog page: {e}", exc_info=True)
+        try:
+            user_lang = await db.get_user_language(update.effective_user.id)
+            error_text = await get_translated_string_async("error_occurred", user_lang)
+            if update.callback_query:
+                await update.callback_query.answer(error_text, show_alert=True)
+            else:
+                await update.message.reply_text(error_text)
+        except Exception:
+            logger.error("Failed to send error message to user")
 
 
 async def handle_catalog_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int, category: str = None, subcategory: str = None):
