@@ -44,20 +44,13 @@
 - Active bots: ✅ @BotName (X users)
 - Inactive bots: ⚠️ @BotName (X users - INACTIVE)
 - User IDs displayed in monospace with backticks (tap to copy)
-
-#### /prunebots
+- **Individual user deletion** - Delete button for each user
+- **Bulk deletion** - Delete all users from a specific bot instance
 - Preview mode: `/prunebots` (shows what would be deleted)
 - Execute mode: `/prunebots confirm` (actually deletes)
 - Callback button: "✅ Yes, Prune Now"
 - Reports: users, products, notifications, custom messages deleted
-
-#### /deleteuser <user_id>
-- Works with users from any bot (active or inactive)
-- Confirmation dialog before deletion
-- Returns to bot user list after deletion
-- User IDs are monospace/copyable
-
-### 4. Migration Script
+#### /prunebots
 
 **Location:** `scripts/migrate_prune_inactive_bots.py`
 
@@ -126,7 +119,7 @@ python scripts/migrate_prune_inactive_bots.py --confirm
 - `/prunebots` - Run after replacing bot tokens
 
 **Individual Users:**
-- `/deleteuser <id>` - Remove specific problematic users
+- Use `/botusers` to delete specific users via inline buttons
 
 ---
 
@@ -214,12 +207,11 @@ tombrady420/
 All requirements from the problem statement have been addressed:
 
 1. ✅ Remove/exclude old bot users - DONE
-2. ✅ Fix /botusers command - DONE
-3. ✅ Fix /deleteuser command - DONE
-4. ✅ Prune notification queue - DONE (automatic)
-5. ✅ Code consistency - DONE
-6. ✅ Logging improvements - DONE
-7. ✅ Tests - DONE (5/5 passing)
-8. ✅ Security - DONE (CodeQL clean)
+2. ✅ Fix /botusers command - DONE (with inline delete functionality)
+3. ✅ Prune notification queue - DONE (automatic)
+4. ✅ Code consistency - DONE
+5. ✅ Logging improvements - DONE
+6. ✅ Tests - DONE (5/5 passing)
+7. ✅ Security - DONE (CodeQL clean)
 
 **Ready for deployment!**

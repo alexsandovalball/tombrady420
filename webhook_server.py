@@ -10,6 +10,7 @@ from typing import List
 from fastapi import FastAPI, Request, Response, status
 from telegram import Update
 from telegram.ext import Application
+from telegram.request import HTTPXRequest
 
 from configs.config import Config, ConfigError
 # Import the bot setup functions
@@ -35,7 +36,7 @@ from main import (
     message_handler,
     error_handler
 )
-from handlers.admin import botusers_command, deleteuser_command, prunebots_command
+from handlers.admin import botusers_command, prunebots_command
 from telegram.ext import (
     CommandHandler,
     MessageHandler,
@@ -79,8 +80,16 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     """
     logger.info(f"Setting up bot application {bot_index}...")
     
-    # Create application
-    bot_app = Application.builder().token(bot_token).build()
+    # Create application with optimized timeout settings
+    request = HTTPXRequest(
+        connection_pool_size=8,
+        connect_timeout=10.0,
+        read_timeout=10.0,
+        write_timeout=10.0,
+        pool_timeout=5.0
+    )
+    
+    bot_app = Application.builder().token(bot_token).request(request).build()
     
     # Register handlers
     bot_app.add_handler(CommandHandler("start", start_command))
@@ -98,7 +107,6 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     bot_app.add_handler(CommandHandler("setcontact", setcontact_command))
     bot_app.add_handler(CommandHandler("clearcache", clearcache_command))
     bot_app.add_handler(CommandHandler("botusers", botusers_command))
-    bot_app.add_handler(CommandHandler("deleteuser", deleteuser_command))
     bot_app.add_handler(CommandHandler("prunebots", prunebots_command))
     
     # Channel post handler (for monitoring channel)

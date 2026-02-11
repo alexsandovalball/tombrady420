@@ -42,6 +42,10 @@ class Database:
     async def init_db(self):
         """Initialize database with schema."""
         async with aiosqlite.connect(self.db_path) as db:
+            # Enable WAL mode for better concurrent read/write performance
+            await db.execute("PRAGMA journal_mode=WAL")
+            logger.info("Enabled WAL mode for database")
+            
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS products (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

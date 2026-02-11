@@ -29,7 +29,7 @@ from handlers.admin import (
     users_command, show_users_page,
     block_command, unblock_command, send_command, broadcast_command,
     setcontact_command, handle_setcontact_input, clearcache_command,
-    botusers_command, deleteuser_command, prunebots_command
+    botusers_command, prunebots_command
 )
 from translations.language_config import is_valid_language, LANGUAGE_DISPLAY
 from translations.translator import get_translated_string_async, translation_service
@@ -1327,11 +1327,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             else:
                 await query.answer("Invalid data", show_alert=True)
         
-        # Handle cancel delete user
-        elif parts[0] == "cancel_deleteuser":
-            await query.edit_message_text("❌ User deletion cancelled.")
-            await query.answer()
-        
         # Handle delete all users from a bot
         elif parts[0] == "deleteallbot":
             if not is_admin(update.effective_user.id):
@@ -1634,12 +1629,12 @@ async def setup_bot_commands(bot):
     admin_commands = user_commands + [
         BotCommand("users", "View and manage bot users"),
         BotCommand("botusers", "View users grouped by bot instance"),
-        BotCommand("deleteuser", "Delete a specific user from database"),
         BotCommand("send", "Send a message to a specific user"),
         BotCommand("broadcast", "Send a message to all users"),
         BotCommand("setcontact", "Set order contact username"),
         BotCommand("recategorize", "Categorize uncategorized products"),
         BotCommand("clearcache", "Clear file ID cache"),
+        BotCommand("prunebots", "Prune users from inactive bots"),
         BotCommand("nuke", "Delete all products (use with caution)"),
     ]
     
@@ -1698,7 +1693,6 @@ def main():
     application.add_handler(CommandHandler("recategorize", recategorize_command))
     application.add_handler(CommandHandler("users", users_command))
     application.add_handler(CommandHandler("botusers", botusers_command))
-    application.add_handler(CommandHandler("deleteuser", deleteuser_command))
     application.add_handler(CommandHandler("prunebots", prunebots_command))
     application.add_handler(CommandHandler("subscribe", subscribe_command))
     application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
