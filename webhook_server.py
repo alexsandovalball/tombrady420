@@ -10,6 +10,7 @@ from typing import List
 from fastapi import FastAPI, Request, Response, status
 from telegram import Update
 from telegram.ext import Application
+from telegram.request import HTTPXRequest
 
 from configs.config import Config, ConfigError
 # Import the bot setup functions
@@ -80,8 +81,6 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     logger.info(f"Setting up bot application {bot_index}...")
     
     # Create application with optimized timeout settings
-    from telegram.request import HTTPXRequest
-    
     request = HTTPXRequest(
         connection_pool_size=8,
         connect_timeout=10.0,
