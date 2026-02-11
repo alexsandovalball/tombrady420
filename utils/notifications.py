@@ -234,7 +234,7 @@ class NotificationService:
                     user_notifications[user_id].append(notification)
                 
                 # Check if all users in this batch were already rate-limited
-                # Check if user_notifications is not empty before checking rate limits 
+                # Check if user_notifications is not empty before checking rate limits
                 # to avoid incorrectly breaking when there are no users in the batch
                 if user_notifications and all(uid in rate_limited_users for uid in user_notifications.keys()):
                     logger.info(f"All {len(user_notifications)} users in batch {batch_number} were previously rate-limited, stopping")

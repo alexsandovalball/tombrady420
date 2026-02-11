@@ -1225,8 +1225,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await query.answer("❌ Only admins can view users.", show_alert=True)
                 return
             
-            from handlers.admin import botusers_command
-            # Simulate the command call
+            # Display the bot list inline (duplicates botusers_command logic for callback context)
             await query.answer()
             
             bot_usernames = await db.get_bot_usernames()
@@ -1239,7 +1238,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     InlineKeyboardButton(display_text, callback_data=f"viewbotusers|{bot_username}|1")
                 ])
             
-            untracked_count = await db.get_users_count_by_bot(None)
+            untracked_count = await db.get_users_count_by_bot("_untracked_")
             if untracked_count > 0:
                 keyboard_buttons.append([
                     InlineKeyboardButton(f"Untracked Users ({untracked_count})", callback_data="viewbotusers|_untracked_|1")
