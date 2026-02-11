@@ -139,10 +139,12 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     bot_app.add_error_handler(error_handler)
     
     # Initialize the application
+    # IMPORTANT: Must be called before any bot API methods (like set_my_commands)
     await bot_app.initialize()
     await bot_app.start()
     
     # Initialize database and set bot commands (only once for the primary bot)
+    # NOTE: This must happen AFTER bot_app.initialize() to avoid "Frozen_method_invalid" errors
     if bot_index == 0:
         await post_init(bot_app)
     else:
