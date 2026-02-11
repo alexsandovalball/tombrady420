@@ -1545,7 +1545,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle errors."""
-    logger.error(f"Update {update} caused error {context.error}")
+    # Log error with full context and traceback
+    update_info = "unknown"
+    if update:
+        if update.effective_user:
+            update_info = f"user {update.effective_user.id}"
+        elif update.effective_chat:
+            update_info = f"chat {update.effective_chat.id}"
+        update_info += f" (update_id: {update.update_id})"
+    
+    logger.error(f"Update from {update_info} caused error: {context.error}", exc_info=True)
     
     if isinstance(context.error, TelegramError):
         if "message is not modified" in str(context.error).lower():

@@ -9,7 +9,7 @@ from typing import List, Dict, Optional
 from datetime import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, Application
-from telegram.error import TelegramError, Forbidden
+from telegram.error import TelegramError, Forbidden, BadRequest
 
 from database import Database
 from utils.categories import get_category_display_name, get_subcategory_display_name, NOTIFICATION_EXCLUDED_CATEGORIES
@@ -454,12 +454,25 @@ class NotificationService:
             ])
             
             # Send notification using the bot application
-            await bot_app.bot.send_message(
-                chat_id=user_id,
-                text=message_text,
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
+            try:
+                await bot_app.bot.send_message(
+                    chat_id=user_id,
+                    text=message_text,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
+            except BadRequest as e:
+                # Handle markdown parse errors by retrying without parse_mode
+                if "parse" in str(e).lower() or "markdown" in str(e).lower() or "can't parse" in str(e).lower():
+                    logger.warning(f"Markdown parse error for user {user_id}, retrying without parse_mode: {e}")
+                    await bot_app.bot.send_message(
+                        chat_id=user_id,
+                        text=message_text,
+                        reply_markup=keyboard
+                    )
+                else:
+                    # Re-raise other BadRequest errors to be handled below
+                    raise
             
             # Mark as sent
             await self.db.mark_notification_sent(notification_id)
@@ -494,14 +507,14 @@ class NotificationService:
                 await self.db.mark_notification_sent(notification_id)
                 return False
             else:
-                logger.error(f"Telegram error sending notification to {user_id}: {e}")
+                logger.error(f"Telegram error sending notification to {user_id}: {e}", exc_info=True)
                 # Don't mark as sent, will retry later for temporary errors
                 return False
             
         except Exception as e:
-            logger.error(f"Error sending notification to {user_id}: {e}")
-            # Mark as sent to avoid infinite retries
-            await self.db.mark_notification_sent(notification_id)
+            logger.error(f"Unexpected error sending notification to {user_id}: {e}", exc_info=True)
+            # Don't mark as sent for unexpected errors - they should be investigated
+            # Only mark as sent for known telegram errors above
             return False
     
     async def send_custom_message_to_user(
@@ -725,11 +738,23 @@ class NotificationService:
                         continue
                     
                     # Send custom message using the bot application
-                    await bot_app.bot.send_message(
-                        chat_id=user_id,
-                        text=message_text,
-                        parse_mode="Markdown"
-                    )
+                    try:
+                        await bot_app.bot.send_message(
+                            chat_id=user_id,
+                            text=message_text,
+                            parse_mode="Markdown"
+                        )
+                    except BadRequest as e:
+                        # Handle markdown parse errors by retrying without parse_mode
+                        if "parse" in str(e).lower() or "markdown" in str(e).lower() or "can't parse" in str(e).lower():
+                            logger.warning(f"Markdown parse error for custom message to user {user_id}, retrying without parse_mode: {e}")
+                            await bot_app.bot.send_message(
+                                chat_id=user_id,
+                                text=message_text
+                            )
+                        else:
+                            # Re-raise other BadRequest errors to be handled below
+                            raise
                     
                     # Mark as sent
                     await self.db.mark_custom_message_sent(message_id)
@@ -760,13 +785,13 @@ class NotificationService:
                         await self.db.block_user(user_id)
                         await self.db.mark_custom_message_sent(message_id)
                     else:
-                        logger.error(f"Telegram error sending custom message to {user_id}: {e}")
+                        logger.error(f"Telegram error sending custom message to {user_id}: {e}", exc_info=True)
                         # Don't mark as sent, will retry later for temporary errors
                     
                 except Exception as e:
-                    logger.error(f"Error sending custom message to {user_id}: {e}")
-                    # Mark as sent to avoid infinite retries
-                    await self.db.mark_custom_message_sent(message_id)
+                    logger.error(f"Unexpected error sending custom message to {user_id}: {e}", exc_info=True)
+                    # Don't mark as sent for unexpected errors - they should be investigated
+                    # Only mark as sent for known telegram errors above
         
         return sent_count
     
