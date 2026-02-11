@@ -467,17 +467,36 @@ class NotificationService:
             logger.debug(f"Sent notification to user {user_id} for product {product_id} via bot @{get_bot_username(bot_app)}")
             return True
             
-        except Forbidden:
+        except Forbidden as e:
             # User blocked the bot, disable notifications
-            logger.info(f"User {user_id} blocked the bot, disabling notifications")
-            await self.db.set_user_notifications(user_id, False)
+            error_msg = str(e).lower()
+            if "chat not found" in error_msg or "user not found" in error_msg:
+                logger.warning(f"User {user_id} chat/account not found (deleted or never started bot), disabling notifications and deleting user")
+                # User's account was deleted or never started the bot - remove completely
+                await self.db.delete_user(user_id)
+            else:
+                logger.info(f"User {user_id} blocked the bot, disabling notifications")
+                await self.db.set_user_notifications(user_id, False)
             await self.db.mark_notification_sent(notification_id)
             return False
             
         except TelegramError as e:
-            logger.error(f"Telegram error sending notification to {user_id}: {e}")
-            # Don't mark as sent, will retry later
-            return False
+            error_msg = str(e).lower()
+            # Check for permanent failure conditions
+            if "chat not found" in error_msg or "user not found" in error_msg or "user is deactivated" in error_msg:
+                logger.warning(f"User {user_id} permanently unreachable (error: {e}), deleting user")
+                await self.db.delete_user(user_id)
+                await self.db.mark_notification_sent(notification_id)
+                return False
+            elif "bot was blocked by the user" in error_msg:
+                logger.info(f"User {user_id} blocked the bot, disabling notifications")
+                await self.db.set_user_notifications(user_id, False)
+                await self.db.mark_notification_sent(notification_id)
+                return False
+            else:
+                logger.error(f"Telegram error sending notification to {user_id}: {e}")
+                # Don't mark as sent, will retry later for temporary errors
+                return False
             
         except Exception as e:
             logger.error(f"Error sending notification to {user_id}: {e}")
@@ -718,15 +737,31 @@ class NotificationService:
                     
                     logger.debug(f"Sent custom message to user {user_id} via bot @{get_bot_username(bot_app)}")
                     
-                except Forbidden:
-                    # User blocked the bot, block them in our system
-                    logger.info(f"User {user_id} blocked the bot, marking as blocked")
-                    await self.db.block_user(user_id)
+                except Forbidden as e:
+                    # User blocked the bot or chat not found
+                    error_msg = str(e).lower()
+                    if "chat not found" in error_msg or "user not found" in error_msg:
+                        logger.warning(f"User {user_id} chat/account not found (deleted or never started bot), deleting user")
+                        await self.db.delete_user(user_id)
+                    else:
+                        logger.info(f"User {user_id} blocked the bot, marking as blocked")
+                        await self.db.block_user(user_id)
                     await self.db.mark_custom_message_sent(message_id)
                     
                 except TelegramError as e:
-                    logger.error(f"Telegram error sending custom message to {user_id}: {e}")
-                    # Don't mark as sent, will retry later
+                    error_msg = str(e).lower()
+                    # Check for permanent failure conditions
+                    if "chat not found" in error_msg or "user not found" in error_msg or "user is deactivated" in error_msg:
+                        logger.warning(f"User {user_id} permanently unreachable (error: {e}), deleting user")
+                        await self.db.delete_user(user_id)
+                        await self.db.mark_custom_message_sent(message_id)
+                    elif "bot was blocked by the user" in error_msg:
+                        logger.info(f"User {user_id} blocked the bot, marking as blocked")
+                        await self.db.block_user(user_id)
+                        await self.db.mark_custom_message_sent(message_id)
+                    else:
+                        logger.error(f"Telegram error sending custom message to {user_id}: {e}")
+                        # Don't mark as sent, will retry later for temporary errors
                     
                 except Exception as e:
                     logger.error(f"Error sending custom message to {user_id}: {e}")

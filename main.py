@@ -29,7 +29,7 @@ from handlers.admin import (
     users_command, show_users_page,
     block_command, unblock_command, send_command, broadcast_command,
     setcontact_command, handle_setcontact_input, clearcache_command,
-    botusers_command, deleteuser_command
+    botusers_command, deleteuser_command, prunebots_command
 )
 from translations.language_config import is_valid_language, LANGUAGE_DISPLAY
 from translations.translator import get_translated_string_async, translation_service
@@ -1416,6 +1416,54 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             else:
                 await query.answer("Invalid data", show_alert=True)
         
+        # Handle confirm prune bots
+        elif parts[0] == "confirm_prunebots":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can prune bots.", show_alert=True)
+                return
+            
+            # Get active bot usernames from webhook server
+            from webhook_server import get_bot_usernames
+            active_bots = get_bot_usernames()
+            
+            if not active_bots:
+                await query.answer("⚠️ No active bots found!", show_alert=True)
+                return
+            
+            # Perform pruning
+            stats = await db.prune_inactive_bot_users(active_bots, dry_run=False)
+            
+            if stats['users'] == 0:
+                await query.edit_message_text(
+                    "✅ **No Changes Made**\n\n"
+                    "No users found associated with inactive bots.",
+                    parse_mode="Markdown"
+                )
+            else:
+                await query.edit_message_text(
+                    f"✅ **Pruning Complete**\n\n"
+                    f"Deleted:\n"
+                    f"• Users: {stats['users']}\n"
+                    f"• Products: {stats['products']}\n"
+                    f"• Pending Notifications: {stats['notifications']}\n"
+                    f"• Custom Messages: {stats['custom_messages']}\n\n"
+                    f"Remaining active bots ({len(active_bots)}):\n"
+                    f"• " + "\n• ".join(f"@{bot}" for bot in sorted(active_bots)),
+                    parse_mode="Markdown"
+                )
+                logger.info(f"Admin {update.effective_user.id} pruned inactive bot users: {stats}")
+            
+            await query.answer("✅ Pruning complete", show_alert=False)
+        
+        # Handle cancel prune bots
+        elif parts[0] == "cancel_prunebots":
+            await query.edit_message_text(
+                "❌ **Pruning Cancelled**\n\n"
+                "No changes were made.",
+                parse_mode="Markdown"
+            )
+            await query.answer("Cancelled", show_alert=False)
+        
         else:
             await query.answer("Unknown action", show_alert=True)
             
@@ -1651,6 +1699,7 @@ def main():
     application.add_handler(CommandHandler("users", users_command))
     application.add_handler(CommandHandler("botusers", botusers_command))
     application.add_handler(CommandHandler("deleteuser", deleteuser_command))
+    application.add_handler(CommandHandler("prunebots", prunebots_command))
     application.add_handler(CommandHandler("subscribe", subscribe_command))
     application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
     application.add_handler(CommandHandler("block", block_command))

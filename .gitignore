@@ -1,9 +1,51 @@
+# Database files
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Python cache
 *.pyc
 __pycache__/
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Virtual environments
 .env
 .venv
 venv/
 env/
-*.log
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/

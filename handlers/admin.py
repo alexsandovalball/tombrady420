@@ -718,6 +718,12 @@ async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
+        # Get active bot usernames from webhook server
+        from webhook_server import get_bot_usernames
+        active_bots = get_bot_usernames()
+        active_bots_lower = [bot.lower() for bot in active_bots]
+        
+        # Get all bot usernames from database
         bot_usernames = await db.get_bot_usernames()
         
         if not bot_usernames:
@@ -728,12 +734,30 @@ async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # Create keyboard with bot instances
-        keyboard_buttons = []
+        # Separate active and inactive bots
+        active_bot_list = []
+        inactive_bot_list = []
         
         for bot_username in bot_usernames:
             count = await db.get_users_count_by_bot(bot_username)
-            display_text = f"@{bot_username} ({count} users)"
+            if bot_username.lower() in active_bots_lower:
+                active_bot_list.append((bot_username, count))
+            else:
+                inactive_bot_list.append((bot_username, count))
+        
+        # Create keyboard with bot instances
+        keyboard_buttons = []
+        
+        # Add active bots first
+        for bot_username, count in active_bot_list:
+            display_text = f"✅ @{bot_username} ({count} users)"
+            keyboard_buttons.append([
+                InlineKeyboardButton(display_text, callback_data=f"viewbotusers|{bot_username}|1")
+            ])
+        
+        # Add inactive bots with warning
+        for bot_username, count in inactive_bot_list:
+            display_text = f"⚠️ @{bot_username} ({count} users - INACTIVE)"
             keyboard_buttons.append([
                 InlineKeyboardButton(display_text, callback_data=f"viewbotusers|{bot_username}|1")
             ])
@@ -749,11 +773,17 @@ async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         total_users = await db.get_users_count_by_bot()
         
+        message = f"📊 **Bot Users by Instance**\n\n"
+        message += f"Total Users: {total_users}\n"
+        message += f"Active Bot Instances: {len(active_bot_list)}\n"
+        
+        if inactive_bot_list:
+            message += f"⚠️ Inactive Bots: {len(inactive_bot_list)} (users should be pruned)\n"
+        
+        message += f"\nSelect a bot to view its users:"
+        
         await update.message.reply_text(
-            f"📊 **Bot Users by Instance**\n\n"
-            f"Total Users: {total_users}\n"
-            f"Bot Instances: {len(bot_usernames)}\n\n"
-            f"Select a bot to view its users:",
+            message,
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
@@ -907,6 +937,96 @@ async def deleteuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         parse_mode="Markdown"
     )
     logger.info(f"Admin {user_id} requested deletion of user {target_user_id}")
+
+
+async def prunebots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /prunebots command - prune users from inactive/deleted bots (admin only)."""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            "❌ This command is only available for administrators."
+        )
+        return
+    
+    try:
+        # Get active bot usernames from webhook server
+        from webhook_server import get_bot_usernames
+        active_bots = get_bot_usernames()
+        
+        if not active_bots:
+            await update.message.reply_text(
+                "⚠️ **Warning**: No active bots found!\n\n"
+                "Cannot proceed with pruning.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Check if this is a dry run (default) or actual pruning
+        dry_run = True
+        if context.args and context.args[0].lower() == "confirm":
+            dry_run = False
+        
+        # Perform pruning
+        stats = await db.prune_inactive_bot_users(active_bots, dry_run=dry_run)
+        
+        if dry_run:
+            if stats['users'] == 0:
+                await update.message.reply_text(
+                    "✅ **All Good!**\n\n"
+                    f"No users found associated with inactive bots.\n"
+                    f"Active bots: {len(active_bots)}\n"
+                    f"• " + "\n• ".join(f"@{bot}" for bot in sorted(active_bots)),
+                    parse_mode="Markdown"
+                )
+            else:
+                # Create confirmation keyboard
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Yes, Prune Now", callback_data="confirm_prunebots")],
+                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_prunebots")]
+                ])
+                
+                await update.message.reply_text(
+                    f"🔍 **Inactive Bot Users Found**\n\n"
+                    f"The following would be deleted:\n"
+                    f"• Users: {stats['users']}\n"
+                    f"• Products: {stats['products']}\n"
+                    f"• Pending Notifications: {stats['notifications']}\n"
+                    f"• Custom Messages: {stats['custom_messages']}\n\n"
+                    f"Active bots ({len(active_bots)}):\n"
+                    f"• " + "\n• ".join(f"@{bot}" for bot in sorted(active_bots)) + "\n\n"
+                    f"⚠️ This action cannot be undone!\n\n"
+                    f"To confirm, use: `/prunebots confirm`",
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
+                )
+                logger.info(f"Admin {user_id} previewed bot pruning: {stats}")
+        else:
+            if stats['users'] == 0:
+                await update.message.reply_text(
+                    "✅ **No Changes Made**\n\n"
+                    "No users found associated with inactive bots.",
+                    parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text(
+                    f"✅ **Pruning Complete**\n\n"
+                    f"Deleted:\n"
+                    f"• Users: {stats['users']}\n"
+                    f"• Products: {stats['products']}\n"
+                    f"• Pending Notifications: {stats['notifications']}\n"
+                    f"• Custom Messages: {stats['custom_messages']}\n\n"
+                    f"Remaining active bots ({len(active_bots)}):\n"
+                    f"• " + "\n• ".join(f"@{bot}" for bot in sorted(active_bots)),
+                    parse_mode="Markdown"
+                )
+                logger.info(f"Admin {user_id} pruned inactive bot users: {stats}")
+        
+    except Exception as e:
+        logger.error(f"Error in prunebots command: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ An error occurred while pruning bot users."
+        )
 
 
 

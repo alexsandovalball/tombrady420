@@ -35,6 +35,7 @@ from main import (
     message_handler,
     error_handler
 )
+from handlers.admin import botusers_command, deleteuser_command, prunebots_command
 from telegram.ext import (
     CommandHandler,
     MessageHandler,
@@ -96,6 +97,9 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     bot_app.add_handler(CommandHandler("broadcast", broadcast_command))
     bot_app.add_handler(CommandHandler("setcontact", setcontact_command))
     bot_app.add_handler(CommandHandler("clearcache", clearcache_command))
+    bot_app.add_handler(CommandHandler("botusers", botusers_command))
+    bot_app.add_handler(CommandHandler("deleteuser", deleteuser_command))
+    bot_app.add_handler(CommandHandler("prunebots", prunebots_command))
     
     # Channel post handler (for monitoring channel)
     # Only the primary bot (bot_index == 0) should monitor the channel and send categorization requests
