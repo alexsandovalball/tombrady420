@@ -11,8 +11,86 @@ from telegram.error import BadRequest
 from database import Database
 from utils.helpers import is_admin, get_channel_id, get_channel_username, escape_markdown_v1
 
+from webhook_server import get_bot_usernames
+
 logger = logging.getLogger(__name__)
 db = Database()
+
+
+async def build_users_bot_selection_menu():
+    """
+    Build bot selection menu for user management.
+    Returns tuple of (keyboard, message_text, message_text_no_md, has_bots)
+    """
+    # Get active bot usernames from webhook server
+    active_bots = get_bot_usernames()
+    active_bots_lower = [bot.lower() for bot in active_bots]
+    
+    # Get all bot usernames from database
+    bot_usernames = await db.get_bot_usernames()
+    
+    if not bot_usernames:
+        return None, None, None, False
+    
+    # Separate active and inactive bots
+    active_bot_list = []
+    inactive_bot_list = []
+    
+    for bot_username in bot_usernames:
+        count = await db.get_users_count_by_bot(bot_username)
+        if bot_username.lower() in active_bots_lower:
+            active_bot_list.append((bot_username, count))
+        else:
+            inactive_bot_list.append((bot_username, count))
+    
+    # Create keyboard with bot instances
+    keyboard_buttons = []
+    
+    # Add active bots first
+    for bot_username, count in active_bot_list:
+        display_text = f"✅ @{bot_username} ({count} users)"
+        keyboard_buttons.append([
+            InlineKeyboardButton(display_text, callback_data=f"viewusers|{bot_username}|1")
+        ])
+    
+    # Add inactive bots with warning
+    for bot_username, count in inactive_bot_list:
+        display_text = f"⚠️ @{bot_username} ({count} users - INACTIVE)"
+        keyboard_buttons.append([
+            InlineKeyboardButton(display_text, callback_data=f"viewusers|{bot_username}|1")
+        ])
+    
+    # Add option to view users without bot_username
+    untracked_count = await db.get_users_count_by_bot("_untracked_")
+    if untracked_count > 0:
+        keyboard_buttons.append([
+            InlineKeyboardButton(f"Untracked Users ({untracked_count})", callback_data="viewusers|_untracked_|1")
+        ])
+    
+    keyboard = InlineKeyboardMarkup(keyboard_buttons)
+    
+    total_users = await db.get_users_count_by_bot()
+    
+    message = f"📊 **User Management by Bot Instance**\n\n"
+    message += f"Total Users: {total_users}\n"
+    message += f"Active Bot Instances: {len(active_bot_list)}\n"
+    
+    if inactive_bot_list:
+        message += f"⚠️ Inactive Bots: {len(inactive_bot_list)} (users should be pruned)\n"
+    
+    message += f"\nSelect a bot to manage its users:"
+    
+    # Non-markdown version
+    message_no_md = f"📊 User Management by Bot Instance\n\n"
+    message_no_md += f"Total Users: {total_users}\n"
+    message_no_md += f"Active Bot Instances: {len(active_bot_list)}\n"
+    
+    if inactive_bot_list:
+        message_no_md += f"⚠️ Inactive Bots: {len(inactive_bot_list)} (users should be pruned)\n"
+    
+    message_no_md += f"\nSelect a bot to manage its users:"
+    
+    return keyboard, message, message_no_md, True
 
 
 async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -64,15 +142,10 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        # Get active bot usernames from webhook server
-        from webhook_server import get_bot_usernames
-        active_bots = get_bot_usernames()
-        active_bots_lower = [bot.lower() for bot in active_bots]
+        # Build bot selection menu
+        keyboard, message, message_no_md, has_bots = await build_users_bot_selection_menu()
         
-        # Get all bot usernames from database
-        bot_usernames = await db.get_bot_usernames()
-        
-        if not bot_usernames:
+        if not has_bots:
             try:
                 await update.message.reply_text(
                     "📊 **User Management**\n\n"
@@ -87,54 +160,6 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             return
         
-        # Separate active and inactive bots
-        active_bot_list = []
-        inactive_bot_list = []
-        
-        for bot_username in bot_usernames:
-            count = await db.get_users_count_by_bot(bot_username)
-            if bot_username.lower() in active_bots_lower:
-                active_bot_list.append((bot_username, count))
-            else:
-                inactive_bot_list.append((bot_username, count))
-        
-        # Create keyboard with bot instances
-        keyboard_buttons = []
-        
-        # Add active bots first
-        for bot_username, count in active_bot_list:
-            display_text = f"✅ @{bot_username} ({count} users)"
-            keyboard_buttons.append([
-                InlineKeyboardButton(display_text, callback_data=f"viewusers|{bot_username}|1")
-            ])
-        
-        # Add inactive bots with warning
-        for bot_username, count in inactive_bot_list:
-            display_text = f"⚠️ @{bot_username} ({count} users - INACTIVE)"
-            keyboard_buttons.append([
-                InlineKeyboardButton(display_text, callback_data=f"viewusers|{bot_username}|1")
-            ])
-        
-        # Add option to view users without bot_username
-        untracked_count = await db.get_users_count_by_bot("_untracked_")
-        if untracked_count > 0:
-            keyboard_buttons.append([
-                InlineKeyboardButton(f"Untracked Users ({untracked_count})", callback_data="viewusers|_untracked_|1")
-            ])
-        
-        keyboard = InlineKeyboardMarkup(keyboard_buttons)
-        
-        total_users = await db.get_users_count_by_bot()
-        
-        message = f"📊 **User Management by Bot Instance**\n\n"
-        message += f"Total Users: {total_users}\n"
-        message += f"Active Bot Instances: {len(active_bot_list)}\n"
-        
-        if inactive_bot_list:
-            message += f"⚠️ Inactive Bots: {len(inactive_bot_list)} (users should be pruned)\n"
-        
-        message += f"\nSelect a bot to manage its users:"
-        
         try:
             await update.message.reply_text(
                 message,
@@ -143,16 +168,6 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except BadRequest as e:
             logger.warning(f"Markdown parse error in users_command, retrying without parse_mode: {e}")
-            # Remove markdown formatting for fallback
-            message_no_md = f"📊 User Management by Bot Instance\n\n"
-            message_no_md += f"Total Users: {total_users}\n"
-            message_no_md += f"Active Bot Instances: {len(active_bot_list)}\n"
-            
-            if inactive_bot_list:
-                message_no_md += f"⚠️ Inactive Bots: {len(inactive_bot_list)} (users should be pruned)\n"
-            
-            message_no_md += f"\nSelect a bot to manage its users:"
-            
             await update.message.reply_text(
                 message_no_md,
                 reply_markup=keyboard
@@ -238,9 +253,9 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
             
             # Only show bot username if not already filtering by bot
             if not bot_username:
-                user_bot_username = user.get('bot_username')
-                if user_bot_username:
-                    escaped_bot_username = escape_markdown_v1(f"@{user_bot_username}")
+                current_user_bot = user.get('bot_username')
+                if current_user_bot:
+                    escaped_bot_username = escape_markdown_v1(f"@{current_user_bot}")
                     user_text += f"\n   🤖 Bot: {escaped_bot_username}"
             
             # Add blocked status if applicable

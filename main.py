@@ -26,7 +26,7 @@ from handlers.product_view import show_product, handle_product_callback
 from handlers.language import language_command, handle_language_callback
 from handlers.admin import (
     delete_product, nuke_command, recategorize_command, 
-    users_command, show_users_page,
+    users_command, show_users_page, build_users_bot_selection_menu,
     block_command, unblock_command, send_command, broadcast_command,
     setcontact_command, handle_setcontact_input, clearcache_command,
     botusers_command, prunebots_command
@@ -1049,61 +1049,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             
             await query.answer()
             
-            # Recreate the bot selection menu (same as users_command)
-            from webhook_server import get_bot_usernames
-            active_bots = get_bot_usernames()
-            active_bots_lower = [bot.lower() for bot in active_bots]
+            # Build bot selection menu using helper function
+            keyboard, message, message_no_md, has_bots = await build_users_bot_selection_menu()
             
-            bot_usernames = await db.get_bot_usernames()
-            
-            if not bot_usernames:
+            if not has_bots:
                 await query.edit_message_text("No bot usernames found.")
                 return
-            
-            # Separate active and inactive bots
-            active_bot_list = []
-            inactive_bot_list = []
-            
-            for bot_username_item in bot_usernames:
-                count = await db.get_users_count_by_bot(bot_username_item)
-                if bot_username_item.lower() in active_bots_lower:
-                    active_bot_list.append((bot_username_item, count))
-                else:
-                    inactive_bot_list.append((bot_username_item, count))
-            
-            # Create keyboard with bot instances
-            keyboard_buttons = []
-            
-            for bot_username_item, count in active_bot_list:
-                display_text = f"✅ @{bot_username_item} ({count} users)"
-                keyboard_buttons.append([
-                    InlineKeyboardButton(display_text, callback_data=f"viewusers|{bot_username_item}|1")
-                ])
-            
-            for bot_username_item, count in inactive_bot_list:
-                display_text = f"⚠️ @{bot_username_item} ({count} users - INACTIVE)"
-                keyboard_buttons.append([
-                    InlineKeyboardButton(display_text, callback_data=f"viewusers|{bot_username_item}|1")
-                ])
-            
-            untracked_count = await db.get_users_count_by_bot("_untracked_")
-            if untracked_count > 0:
-                keyboard_buttons.append([
-                    InlineKeyboardButton(f"Untracked Users ({untracked_count})", callback_data="viewusers|_untracked_|1")
-                ])
-            
-            keyboard = InlineKeyboardMarkup(keyboard_buttons)
-            
-            total_users = await db.get_users_count_by_bot()
-            
-            message = f"📊 **User Management by Bot Instance**\n\n"
-            message += f"Total Users: {total_users}\n"
-            message += f"Active Bot Instances: {len(active_bot_list)}\n"
-            
-            if inactive_bot_list:
-                message += f"⚠️ Inactive Bots: {len(inactive_bot_list)} (users should be pruned)\n"
-            
-            message += f"\nSelect a bot to manage its users:"
             
             try:
                 await query.edit_message_text(
@@ -1113,15 +1064,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 )
             except BadRequest as e:
                 logger.warning(f"Markdown parse error in users_back_to_bots, retrying without parse_mode: {e}")
-                message_no_md = f"📊 User Management by Bot Instance\n\n"
-                message_no_md += f"Total Users: {total_users}\n"
-                message_no_md += f"Active Bot Instances: {len(active_bot_list)}\n"
-                
-                if inactive_bot_list:
-                    message_no_md += f"⚠️ Inactive Bots: {len(inactive_bot_list)} (users should be pruned)\n"
-                
-                message_no_md += f"\nSelect a bot to manage its users:"
-                
                 await query.edit_message_text(
                     message_no_md,
                     reply_markup=keyboard
