@@ -79,8 +79,18 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     """
     logger.info(f"Setting up bot application {bot_index}...")
     
-    # Create application
-    bot_app = Application.builder().token(bot_token).build()
+    # Create application with optimized timeout settings
+    from telegram.request import HTTPXRequest
+    
+    request = HTTPXRequest(
+        connection_pool_size=8,
+        connect_timeout=10.0,
+        read_timeout=10.0,
+        write_timeout=10.0,
+        pool_timeout=5.0
+    )
+    
+    bot_app = Application.builder().token(bot_token).request(request).build()
     
     # Register handlers
     bot_app.add_handler(CommandHandler("start", start_command))
