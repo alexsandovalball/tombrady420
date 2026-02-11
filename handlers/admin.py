@@ -20,7 +20,8 @@ db = Database()
 async def build_users_bot_selection_menu():
     """
     Build bot selection menu for user management.
-    Returns tuple of (keyboard, message_text, message_text_no_md, has_bots)
+    Returns tuple of (keyboard, message_text, message_text_no_md, has_bots, bot_list)
+    where bot_list is a list of (bot_username, count) tuples for single-bot auto-selection
     """
     # Get active bot usernames from webhook server
     active_bots = get_bot_usernames()
@@ -30,7 +31,7 @@ async def build_users_bot_selection_menu():
     bot_usernames = await db.get_bot_usernames()
     
     if not bot_usernames:
-        return None, None, None, False
+        return None, None, None, False, []
     
     # Separate active and inactive bots
     active_bot_list = []
@@ -42,6 +43,15 @@ async def build_users_bot_selection_menu():
             active_bot_list.append((bot_username, count))
         else:
             inactive_bot_list.append((bot_username, count))
+    
+    # Check for untracked users
+    untracked_count = await db.get_users_count_by_bot("_untracked_")
+    has_untracked = untracked_count > 0
+    
+    # Create complete bot list for auto-selection logic
+    all_bots = active_bot_list + inactive_bot_list
+    if has_untracked:
+        all_bots.append(("_untracked_", untracked_count))
     
     # Create keyboard with bot instances
     keyboard_buttons = []
@@ -61,8 +71,7 @@ async def build_users_bot_selection_menu():
         ])
     
     # Add option to view users without bot_username
-    untracked_count = await db.get_users_count_by_bot("_untracked_")
-    if untracked_count > 0:
+    if has_untracked:
         keyboard_buttons.append([
             InlineKeyboardButton(f"Untracked Users ({untracked_count})", callback_data="viewusers|_untracked_|1")
         ])
@@ -90,7 +99,7 @@ async def build_users_bot_selection_menu():
     
     message_no_md += f"\nSelect a bot to manage its users:"
     
-    return keyboard, message, message_no_md, True
+    return keyboard, message, message_no_md, True, all_bots
 
 
 async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -143,7 +152,7 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         # Build bot selection menu
-        keyboard, message, message_no_md, has_bots = await build_users_bot_selection_menu()
+        keyboard, message, message_no_md, has_bots, bot_list = await build_users_bot_selection_menu()
         
         if not has_bots:
             try:
@@ -160,6 +169,13 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             return
         
+        # If only one bot/group exists, auto-select it for better UX
+        if len(bot_list) == 1:
+            bot_username = bot_list[0][0]
+            await show_users_page(update, context, page=1, bot_username=bot_username)
+            return
+        
+        # Show selection menu when multiple bots exist
         try:
             await update.message.reply_text(
                 message,

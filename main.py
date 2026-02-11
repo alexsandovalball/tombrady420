@@ -1050,7 +1050,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await query.answer()
             
             # Build bot selection menu using helper function
-            keyboard, message, message_no_md, has_bots = await build_users_bot_selection_menu()
+            keyboard, message, message_no_md, has_bots, bot_list = await build_users_bot_selection_menu()
             
             if not has_bots:
                 await query.edit_message_text("No bot usernames found.")
