@@ -681,7 +681,7 @@ class NotificationService:
                 if not pending:
                     break
                 
-                logger.info(f"Processing batch of {len(pending)} pending custom messages (total processed: {total_processed})")
+                logger.info(f"Processing batch of {len(pending)} pending custom messages (total processed so far: {total_processed})")
                 
                 # Group messages by user for rate limiting
                 user_messages = {}
