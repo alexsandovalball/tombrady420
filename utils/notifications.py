@@ -841,8 +841,7 @@ class NotificationService:
                         await self.db.block_user(user_id)
                         stats["blocked"] += 1
                     await self.db.mark_custom_message_sent(message_id)
-                    if not markdown_error_occurred:
-                        stats["failed"] += 1
+                    # Don't increment failed - already counted in specific category
                     
                 except TelegramError as e:
                     error_msg = str(e).lower()
@@ -852,20 +851,17 @@ class NotificationService:
                         await self.db.delete_user(user_id)
                         await self.db.mark_custom_message_sent(message_id)
                         stats["not_found"] += 1
-                        if not markdown_error_occurred:
-                            stats["failed"] += 1
+                        # Don't increment failed - already counted in specific category
                     elif "bot was blocked by the user" in error_msg:
                         logger.info(f"User {user_id} blocked the bot, marking as blocked")
                         await self.db.block_user(user_id)
                         await self.db.mark_custom_message_sent(message_id)
                         stats["blocked"] += 1
-                        if not markdown_error_occurred:
-                            stats["failed"] += 1
+                        # Don't increment failed - already counted in specific category
                     else:
                         logger.error(f"Telegram error sending custom message to {user_id}: {e}")
                         # Don't mark as sent, will retry later for temporary errors
-                        if not markdown_error_occurred:
-                            stats["failed"] += 1
+                        # Don't count as failed either - will be retried
                     
                 except Exception as e:
                     logger.error(f"Unexpected error sending custom message to {user_id}: {e}", exc_info=True)
@@ -873,8 +869,7 @@ class NotificationService:
                     # Note: Messages are not auto-retried on schedule, only when explicitly triggered
                     # This ensures we don't lose messages due to transient issues
                     stats["unexpected_errors"] += 1
-                    if not markdown_error_occurred:
-                        stats["failed"] += 1
+                    # Don't increment failed - already counted in unexpected_errors
         
         return stats["sent"]
     
@@ -892,12 +887,17 @@ class NotificationService:
             skipped_blocked = stats.get("skipped_blocked", 0)
             skipped_admin = stats.get("skipped_admin", 0)
             
+            # Calculate total delivery attempts (successful + all failure categories)
+            total_attempted = sent + blocked + not_found + unexpected_errors
+            
             # Build summary message
             summary = f"📊 **{operation.title()} Complete**\n\n"
             summary += f"✅ **Successfully Sent:** {sent}\n"
             
-            if failed > 0:
-                summary += f"❌ **Failed:** {failed}\n"
+            # Show total failed count (sum of all failure categories)
+            total_failed = blocked + not_found + unexpected_errors
+            if total_failed > 0:
+                summary += f"❌ **Failed:** {total_failed}\n"
             
             if total_queued > 0:
                 summary += f"\n📝 **Queued:** {total_queued}\n"
@@ -908,21 +908,20 @@ class NotificationService:
             if skipped_admin > 0:
                 summary += f"👨‍💼 **Skipped (admins):** {skipped_admin}\n"
             
-            if blocked > 0 or not_found > 0 or rate_limited > 0 or markdown_errors > 0:
-                summary += f"\n**Failure Breakdown:**\n"
+            if blocked > 0 or not_found > 0 or rate_limited > 0 or markdown_errors > 0 or unexpected_errors > 0:
+                summary += f"\n**Delivery Details:**\n"
                 if blocked > 0:
                     summary += f"• Blocked by user: {blocked}\n"
                 if not_found > 0:
                     summary += f"• Chat/user not found: {not_found}\n"
                 if rate_limited > 0:
-                    summary += f"• Rate limited: {rate_limited}\n"
+                    summary += f"• Rate limited (queued): {rate_limited}\n"
                 if markdown_errors > 0:
                     summary += f"• Markdown errors (sent as plain text): {markdown_errors}\n"
                 if unexpected_errors > 0:
-                    summary += f"• Unexpected errors: {unexpected_errors}\n"
+                    summary += f"• Unexpected errors (will retry): {unexpected_errors}\n"
             
-            # Calculate success rate
-            total_attempted = sent + failed
+            # Calculate success rate based on delivery attempts (not including rate-limited)
             if total_attempted > 0:
                 success_rate = (sent / total_attempted) * 100
                 summary += f"\n📈 **Success Rate:** {success_rate:.1f}%"
