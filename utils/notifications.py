@@ -673,7 +673,7 @@ class NotificationService:
             # Track rate-limited users to prevent double-counting stats within this run
             # Note: Rate-limited messages stay in queue and will be processed in next scheduled run
             rate_limited_users = set()
-            total_processed = 0
+            total_fetched = 0
             
             # Loop until all pending messages are processed or no progress can be made
             while True:
@@ -682,7 +682,7 @@ class NotificationService:
                 if not pending:
                     break
                 
-                logger.info(f"Processing batch of {len(pending)} pending custom messages (total processed so far: {total_processed})")
+                logger.info(f"Processing batch of {len(pending)} pending custom messages (total fetched so far: {total_fetched})")
                 
                 # Group messages by user for rate limiting
                 user_messages = {}
@@ -743,7 +743,7 @@ class NotificationService:
                 if batch:
                     batch_stats = await self._send_custom_message_batch_multibot(batch, stats)
                 
-                total_processed += len(pending)
+                total_fetched += len(pending)
                 
                 # If no messages were actually sent in this batch (all blocked or rate-limited),
                 # break to avoid infinite loop within this run
