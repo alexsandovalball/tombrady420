@@ -7,6 +7,7 @@ import aiosqlite
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
+from telegram.error import BadRequest
 from database import Database
 from utils.helpers import is_admin, get_channel_id, get_channel_username, escape_markdown_v1
 
@@ -32,14 +33,24 @@ async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     total_count = await db.count_products()
     
-    await update.message.reply_text(
-        f"⚠️ **NUKE WARNING**\n\n"
-        f"You are about to delete **{total_count}** product(s) from the catalog.\n\n"
-        f"This action cannot be undone!\n\n"
-        f"Are you sure you want to continue?",
-        reply_markup=keyboard,
-        parse_mode="Markdown"
-    )
+    try:
+        await update.message.reply_text(
+            f"⚠️ **NUKE WARNING**\n\n"
+            f"You are about to delete **{total_count}** product(s) from the catalog.\n\n"
+            f"This action cannot be undone!\n\n"
+            f"Are you sure you want to continue?",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+    except BadRequest as e:
+        logger.warning(f"Markdown parse error in nuke_command, retrying without parse_mode: {e}")
+        await update.message.reply_text(
+            f"⚠️ NUKE WARNING\n\n"
+            f"You are about to delete {total_count} product(s) from the catalog.\n\n"
+            f"This action cannot be undone!\n\n"
+            f"Are you sure you want to continue?",
+            reply_markup=keyboard
+        )
 
 
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -183,17 +194,31 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
         
         # Send or edit message
         if update.callback_query:
-            await update.callback_query.edit_message_text(
-                message_text,
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
+            try:
+                await update.callback_query.edit_message_text(
+                    message_text,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
+            except BadRequest as e:
+                logger.warning(f"Markdown parse error in show_users_page, retrying without parse_mode: {e}")
+                await update.callback_query.edit_message_text(
+                    message_text,
+                    reply_markup=keyboard
+                )
         else:
-            await update.message.reply_text(
-                message_text,
-                parse_mode="Markdown",
-                reply_markup=keyboard
-            )
+            try:
+                await update.message.reply_text(
+                    message_text,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
+            except BadRequest as e:
+                logger.warning(f"Markdown parse error in show_users_page, retrying without parse_mode: {e}")
+                await update.message.reply_text(
+                    message_text,
+                    reply_markup=keyboard
+                )
         
         logger.info(f"Displayed users page {page}/{total_pages}")
         
@@ -333,7 +358,20 @@ async def recategorize_command(update: Update, context: ContextTypes.DEFAULT_TYP
         if len(uncategorized) > 10:
             text += f"\n\n⚠️ Only sent notifications for first 10 uncategorized products.\nRun command again to process more."
         
-        await status_msg.edit_text(text, parse_mode="Markdown")
+        try:
+            await status_msg.edit_text(text, parse_mode="Markdown")
+        except BadRequest as e:
+            logger.warning(f"Markdown parse error in recategorize_command, retrying without parse_mode: {e}")
+            text_no_md = (
+                f"📊 Categorization Status\n\n"
+                f"📦 Total products: {len(all_products)}\n"
+                f"✅ Categorized: {categorized_count}\n"
+                f"❓ Uncategorized: {len(uncategorized)}\n"
+                f"📤 Notifications sent: {notified}"
+            )
+            if len(uncategorized) > 10:
+                text_no_md += f"\n\n⚠️ Only sent notifications for first 10 uncategorized products.\nRun command again to process more."
+            await status_msg.edit_text(text_no_md)
         logger.info(f"Admin {user_id} triggered recategorization - sent {notified} notifications")
         
     except Exception as e:
@@ -359,13 +397,22 @@ async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Check arguments
     if not context.args or len(context.args) < 1:
-        await update.message.reply_text(
-            "❌ **Invalid format**\n\n"
-            "**Usage:** `/block <user_id>`\n\n"
-            "**Example:** `/block 123456789`\n\n"
-            "💡 Tip: Use `/users` to find user IDs",
-            parse_mode="Markdown"
-        )
+        try:
+            await update.message.reply_text(
+                "❌ **Invalid format**\n\n"
+                "**Usage:** `/block <user_id>`\n\n"
+                "**Example:** `/block 123456789`\n\n"
+                "💡 Tip: Use `/users` to find user IDs",
+                parse_mode="Markdown"
+            )
+        except BadRequest as e:
+            logger.warning(f"Markdown parse error in block_command (invalid format), retrying without parse_mode: {e}")
+            await update.message.reply_text(
+                "❌ Invalid format\n\n"
+                "Usage: /block <user_id>\n\n"
+                "Example: /block 123456789\n\n"
+                "💡 Tip: Use /users to find user IDs"
+            )
         return
     
     try:
@@ -381,13 +428,22 @@ async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Block the user
         await db.block_user(target_user_id)
         
-        await update.message.reply_text(
-            f"✅ **User Blocked**\n\n"
-            f"🆔 User ID: `{target_user_id}`\n\n"
-            f"This user can no longer use the bot.\n"
-            f"Use `/unblock {target_user_id}` to unblock.",
-            parse_mode="Markdown"
-        )
+        try:
+            await update.message.reply_text(
+                f"✅ **User Blocked**\n\n"
+                f"🆔 User ID: `{target_user_id}`\n\n"
+                f"This user can no longer use the bot.\n"
+                f"Use `/unblock {target_user_id}` to unblock.",
+                parse_mode="Markdown"
+            )
+        except BadRequest as e:
+            logger.warning(f"Markdown parse error in block_command (success), retrying without parse_mode: {e}")
+            await update.message.reply_text(
+                f"✅ User Blocked\n\n"
+                f"🆔 User ID: {target_user_id}\n\n"
+                f"This user can no longer use the bot.\n"
+                f"Use /unblock {target_user_id} to unblock."
+            )
         logger.info(f"Admin {user_id} blocked user {target_user_id}")
         
     except ValueError:
@@ -417,12 +473,20 @@ async def unblock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Check arguments
     if not context.args or len(context.args) < 1:
-        await update.message.reply_text(
-            "❌ **Invalid format**\n\n"
-            "**Usage:** `/unblock <user_id>`\n\n"
-            "**Example:** `/unblock 123456789`",
-            parse_mode="Markdown"
-        )
+        try:
+            await update.message.reply_text(
+                "❌ **Invalid format**\n\n"
+                "**Usage:** `/unblock <user_id>`\n\n"
+                "**Example:** `/unblock 123456789`",
+                parse_mode="Markdown"
+            )
+        except BadRequest as e:
+            logger.warning(f"Markdown parse error in unblock_command (invalid format), retrying without parse_mode: {e}")
+            await update.message.reply_text(
+                "❌ Invalid format\n\n"
+                "Usage: /unblock <user_id>\n\n"
+                "Example: /unblock 123456789"
+            )
         return
     
     try:
@@ -431,12 +495,20 @@ async def unblock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Unblock the user
         await db.unblock_user(target_user_id)
         
-        await update.message.reply_text(
-            f"✅ **User Unblocked**\n\n"
-            f"🆔 User ID: `{target_user_id}`\n\n"
-            f"This user can now use the bot again.",
-            parse_mode="Markdown"
-        )
+        try:
+            await update.message.reply_text(
+                f"✅ **User Unblocked**\n\n"
+                f"🆔 User ID: `{target_user_id}`\n\n"
+                f"This user can now use the bot again.",
+                parse_mode="Markdown"
+            )
+        except BadRequest as e:
+            logger.warning(f"Markdown parse error in unblock_command (success), retrying without parse_mode: {e}")
+            await update.message.reply_text(
+                f"✅ User Unblocked\n\n"
+                f"🆔 User ID: {target_user_id}\n\n"
+                f"This user can now use the bot again."
+            )
         logger.info(f"Admin {user_id} unblocked user {target_user_id}")
         
     except ValueError:
@@ -473,11 +545,18 @@ async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['broadcast_mode'] = 'single_user'
     context.user_data['broadcast_step'] = 'awaiting_user_id'
     
-    await update.message.reply_text(
-        "📝 **Broadcast to Single User - Step 1 of 3**\n\n"
-        "Please enter the user ID:",
-        parse_mode="Markdown"
-    )
+    try:
+        await update.message.reply_text(
+            "📝 **Broadcast to Single User - Step 1 of 3**\n\n"
+            "Please enter the user ID:",
+            parse_mode="Markdown"
+        )
+    except BadRequest as e:
+        logger.warning(f"Markdown parse error in send_command, retrying without parse_mode: {e}")
+        await update.message.reply_text(
+            "📝 Broadcast to Single User - Step 1 of 3\n\n"
+            "Please enter the user ID:"
+        )
     logger.info(f"Admin {user_id} started single user broadcast workflow")
 
 
@@ -502,11 +581,18 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['broadcast_mode'] = 'all_users'
     context.user_data['broadcast_step'] = 'awaiting_message'
     
-    await update.message.reply_text(
-        "📝 **Broadcast to All Users - Step 1 of 2**\n\n"
-        "Please enter the message you want to broadcast:",
-        parse_mode="Markdown"
-    )
+    try:
+        await update.message.reply_text(
+            "📝 **Broadcast to All Users - Step 1 of 2**\n\n"
+            "Please enter the message you want to broadcast:",
+            parse_mode="Markdown"
+        )
+    except BadRequest as e:
+        logger.warning(f"Markdown parse error in broadcast_command, retrying without parse_mode: {e}")
+        await update.message.reply_text(
+            "📝 Broadcast to All Users - Step 1 of 2\n\n"
+            "Please enter the message you want to broadcast:"
+        )
     logger.info(f"Admin {user_id} started broadcast to all users workflow")
 
 
@@ -530,11 +616,18 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 # Check if user exists and is not blocked
                 is_blocked = await db.is_user_blocked(target_user_id)
                 if is_blocked:
-                    await update.message.reply_text(
-                        f"❌ Cannot send message to blocked user `{target_user_id}`.\n\n"
-                        "Broadcast cancelled. Use /send to start again.",
-                        parse_mode="Markdown"
-                    )
+                    try:
+                        await update.message.reply_text(
+                            f"❌ Cannot send message to blocked user `{target_user_id}`.\n\n"
+                            "Broadcast cancelled. Use /send to start again.",
+                            parse_mode="Markdown"
+                        )
+                    except BadRequest as e:
+                        logger.warning(f"Markdown parse error in handle_broadcast_workflow (blocked), retrying without parse_mode: {e}")
+                        await update.message.reply_text(
+                            f"❌ Cannot send message to blocked user {target_user_id}.\n\n"
+                            "Broadcast cancelled. Use /send to start again."
+                        )
                     context.user_data.clear()
                     return
                 
@@ -542,12 +635,20 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 context.user_data['target_user_id'] = target_user_id
                 context.user_data['broadcast_step'] = 'awaiting_message'
                 
-                await update.message.reply_text(
-                    f"📝 **Broadcast to Single User - Step 2 of 3**\n\n"
-                    f"🆔 User ID: `{target_user_id}`\n\n"
-                    f"Please enter the message you want to send:",
-                    parse_mode="Markdown"
-                )
+                try:
+                    await update.message.reply_text(
+                        f"📝 **Broadcast to Single User - Step 2 of 3**\n\n"
+                        f"🆔 User ID: `{target_user_id}`\n\n"
+                        f"Please enter the message you want to send:",
+                        parse_mode="Markdown"
+                    )
+                except BadRequest as e:
+                    logger.warning(f"Markdown parse error in handle_broadcast_workflow (step 2), retrying without parse_mode: {e}")
+                    await update.message.reply_text(
+                        f"📝 Broadcast to Single User - Step 2 of 3\n\n"
+                        f"🆔 User ID: {target_user_id}\n\n"
+                        f"Please enter the message you want to send:"
+                    )
                 logger.info(f"Admin {user_id} entered user ID: {target_user_id}")
                 
             except ValueError:
@@ -570,14 +671,32 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 [InlineKeyboardButton("❌ Cancel", callback_data="broadcast_cancel")]
             ])
             
-            await update.message.reply_text(
-                f"✅ **Broadcast to Single User - Confirmation**\n\n"
-                f"🆔 User ID: `{target_user_id}`\n"
-                f"📝 Message: {message_text[:200]}{'...' if len(message_text) > 200 else ''}\n\n"
-                f"Do you want to send this message?",
-                reply_markup=keyboard,
-                parse_mode="Markdown"
-            )
+            # Truncate message before escaping
+            truncated_message = message_text[:200]
+            if len(message_text) > 200:
+                truncated_message += "..."
+            
+            # Escape message preview for Markdown
+            message_preview = escape_markdown_v1(truncated_message)
+            
+            try:
+                await update.message.reply_text(
+                    f"✅ **Broadcast to Single User - Confirmation**\n\n"
+                    f"🆔 User ID: `{target_user_id}`\n"
+                    f"📝 Message: {message_preview}\n\n"
+                    f"Do you want to send this message?",
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
+                )
+            except BadRequest as e:
+                logger.warning(f"Markdown parse error in broadcast confirmation (single), retrying without parse_mode: {e}")
+                await update.message.reply_text(
+                    f"✅ Broadcast to Single User - Confirmation\n\n"
+                    f"🆔 User ID: {target_user_id}\n"
+                    f"📝 Message: {truncated_message}\n\n"
+                    f"Do you want to send this message?",
+                    reply_markup=keyboard
+                )
             logger.info(f"Admin {user_id} awaiting confirmation for single user broadcast")
             
     elif broadcast_mode == 'all_users':
@@ -597,14 +716,32 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 [InlineKeyboardButton("❌ Cancel", callback_data="broadcast_cancel")]
             ])
             
-            await update.message.reply_text(
-                f"✅ **Broadcast to All Users - Confirmation**\n\n"
-                f"📝 Message: {message_text[:200]}{'...' if len(message_text) > 200 else ''}\n"
-                f"📊 Recipients: {user_count} users\n\n"
-                f"Do you want to send this broadcast?",
-                reply_markup=keyboard,
-                parse_mode="Markdown"
-            )
+            # Truncate message before escaping
+            truncated_message = message_text[:200]
+            if len(message_text) > 200:
+                truncated_message += "..."
+            
+            # Escape message preview for Markdown
+            message_preview = escape_markdown_v1(truncated_message)
+            
+            try:
+                await update.message.reply_text(
+                    f"✅ **Broadcast to All Users - Confirmation**\n\n"
+                    f"📝 Message: {message_preview}\n"
+                    f"📊 Recipients: {user_count} users\n\n"
+                    f"Do you want to send this broadcast?",
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
+                )
+            except BadRequest as e:
+                logger.warning(f"Markdown parse error in broadcast confirmation (all), retrying without parse_mode: {e}")
+                await update.message.reply_text(
+                    f"✅ Broadcast to All Users - Confirmation\n\n"
+                    f"📝 Message: {truncated_message}\n"
+                    f"📊 Recipients: {user_count} users\n\n"
+                    f"Do you want to send this broadcast?",
+                    reply_markup=keyboard
+                )
             logger.info(f"Admin {user_id} awaiting confirmation for broadcast to all users")
 
 
@@ -624,12 +761,20 @@ async def setcontact_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Escape the current contact for markdown v1
     escaped_contact = escape_markdown_v1(current_contact) if current_contact else "Not set"
     
-    await update.message.reply_text(
-        f"📝 **Set Order Contact**\n\n"
-        f"Current contact: {escaped_contact}\n\n"
-        f"Please enter the new contact username (e.g., @username):",
-        parse_mode="Markdown"
-    )
+    try:
+        await update.message.reply_text(
+            f"📝 **Set Order Contact**\n\n"
+            f"Current contact: {escaped_contact}\n\n"
+            f"Please enter the new contact username (e.g., @username):",
+            parse_mode="Markdown"
+        )
+    except BadRequest as e:
+        logger.warning(f"Markdown parse error in setcontact_command, retrying without parse_mode: {e}")
+        await update.message.reply_text(
+            f"📝 Set Order Contact\n\n"
+            f"Current contact: {current_contact if current_contact else 'Not set'}\n\n"
+            f"Please enter the new contact username (e.g., @username):"
+        )
     
     # Store state for next message
     context.user_data['awaiting_contact'] = True
@@ -665,12 +810,20 @@ async def handle_setcontact_input(update: Update, context: ContextTypes.DEFAULT_
     # Escape contact for markdown v1
     escaped_contact = escape_markdown_v1(contact)
     
-    await update.message.reply_text(
-        f"✅ Order contact updated successfully!\n\n"
-        f"New contact: {escaped_contact}\n\n"
-        f"All users will now be directed to DM {escaped_contact} to place orders.",
-        parse_mode="Markdown"
-    )
+    try:
+        await update.message.reply_text(
+            f"✅ Order contact updated successfully!\n\n"
+            f"New contact: {escaped_contact}\n\n"
+            f"All users will now be directed to DM {escaped_contact} to place orders.",
+            parse_mode="Markdown"
+        )
+    except BadRequest as e:
+        logger.warning(f"Markdown parse error in handle_setcontact_input, retrying without parse_mode: {e}")
+        await update.message.reply_text(
+            f"✅ Order contact updated successfully!\n\n"
+            f"New contact: {contact}\n\n"
+            f"All users will now be directed to DM {contact} to place orders."
+        )
     logger.info(f"Admin {user_id} updated order contact to: {contact}")
 
 
@@ -691,13 +844,22 @@ async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Clear the cache
         deleted_count = await clear_file_id_cache()
         
-        await update.message.reply_text(
-            f"✅ **File ID cache cleared successfully!**\n\n"
-            f"Removed {deleted_count} cached file ID entries.\n"
-            f"Old product entries will now refresh their media on next view.\n"
-            f"This is useful after adding secondary bots as channel admins.",
-            parse_mode="Markdown"
-        )
+        try:
+            await update.message.reply_text(
+                f"✅ **File ID cache cleared successfully!**\n\n"
+                f"Removed {deleted_count} cached file ID entries.\n"
+                f"Old product entries will now refresh their media on next view.\n"
+                f"This is useful after adding secondary bots as channel admins.",
+                parse_mode="Markdown"
+            )
+        except BadRequest as e:
+            logger.warning(f"Markdown parse error in clearcache_command, retrying without parse_mode: {e}")
+            await update.message.reply_text(
+                f"✅ File ID cache cleared successfully!\n\n"
+                f"Removed {deleted_count} cached file ID entries.\n"
+                f"Old product entries will now refresh their media on next view.\n"
+                f"This is useful after adding secondary bots as channel admins."
+            )
         logger.info(f"Admin {user_id} cleared the file ID cache ({deleted_count} entries)")
         
     except Exception as e:
@@ -727,11 +889,18 @@ async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot_usernames = await db.get_bot_usernames()
         
         if not bot_usernames:
-            await update.message.reply_text(
-                "📊 **Bot Users Summary**\n\n"
-                "No bot usernames found. Users may not have bot_username tracked yet.",
-                parse_mode="Markdown"
-            )
+            try:
+                await update.message.reply_text(
+                    "📊 **Bot Users Summary**\n\n"
+                    "No bot usernames found. Users may not have bot_username tracked yet.",
+                    parse_mode="Markdown"
+                )
+            except BadRequest as e:
+                logger.warning(f"Markdown parse error in botusers_command (no bots), retrying without parse_mode: {e}")
+                await update.message.reply_text(
+                    "📊 Bot Users Summary\n\n"
+                    "No bot usernames found. Users may not have bot_username tracked yet."
+                )
             return
         
         # Separate active and inactive bots
@@ -782,11 +951,28 @@ async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         message += f"\nSelect a bot to view its users:"
         
-        await update.message.reply_text(
-            message,
-            reply_markup=keyboard,
-            parse_mode="Markdown"
-        )
+        try:
+            await update.message.reply_text(
+                message,
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+        except BadRequest as e:
+            logger.warning(f"Markdown parse error in botusers_command, retrying without parse_mode: {e}")
+            # Remove markdown formatting for fallback
+            message_no_md = f"📊 Bot Users by Instance\n\n"
+            message_no_md += f"Total Users: {total_users}\n"
+            message_no_md += f"Active Bot Instances: {len(active_bot_list)}\n"
+            
+            if inactive_bot_list:
+                message_no_md += f"⚠️ Inactive Bots: {len(inactive_bot_list)} (users should be pruned)\n"
+            
+            message_no_md += f"\nSelect a bot to view its users:"
+            
+            await update.message.reply_text(
+                message_no_md,
+                reply_markup=keyboard
+            )
         
     except Exception as e:
         logger.error(f"Error in botusers command: {e}", exc_info=True)
@@ -814,11 +1000,18 @@ async def show_bot_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE
             display_name = f"@{bot_username}"
         
         if not users:
-            await query.edit_message_text(
-                f"📊 **{display_name}**\n\n"
-                f"No users found.",
-                parse_mode="Markdown"
-            )
+            try:
+                await query.edit_message_text(
+                    f"📊 **{display_name}**\n\n"
+                    f"No users found.",
+                    parse_mode="Markdown"
+                )
+            except BadRequest as e:
+                logger.warning(f"Markdown parse error in show_bot_users_page (no users), retrying without parse_mode: {e}")
+                await query.edit_message_text(
+                    f"📊 {display_name}\n\n"
+                    f"No users found."
+                )
             return
         
         # Calculate total pages
@@ -837,18 +1030,30 @@ async def show_bot_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE
             last_name = user.get("last_name", "")
             name = f"{first_name} {last_name}".strip()
             
+            # Escape user-provided strings for Markdown
+            escaped_username = escape_markdown_v1(username) if username != "N/A" else "N/A"
+            escaped_name = escape_markdown_v1(name)
+            
             notif_status = "🔔" if user.get("notifications_enabled", 0) else "🔕"
             block_status = " [BLOCKED]" if user.get("is_blocked", 0) else ""
             
             message += f"• ID: `{user_id}`\n"
-            message += f"  User: @{username if username != 'N/A' else 'none'}\n"
-            message += f"  Name: {name}\n"
+            message += f"  User: @{escaped_username if username != 'N/A' else 'none'}\n"
+            message += f"  Name: {escaped_name}\n"
             message += f"  Status: {notif_status}{block_status}\n"
+            
+            # Determine delete button label - show username or name instead of user_id
+            if username != "N/A":
+                delete_label = f"🗑️ Delete @{username}"
+            elif name:
+                delete_label = f"🗑️ Delete {name}"
+            else:
+                delete_label = f"🗑️ Delete {user_id}"
             
             # Add delete button for each user
             keyboard_buttons.append([
                 InlineKeyboardButton(
-                    f"🗑️ Delete User {user_id}",
+                    delete_label,
                     callback_data=f"deleteuser|{user_id}|{bot_username}|{page}"
                 )
             ])
@@ -875,11 +1080,18 @@ async def show_bot_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         keyboard = InlineKeyboardMarkup(keyboard_buttons)
         
-        await query.edit_message_text(
-            message,
-            reply_markup=keyboard,
-            parse_mode="Markdown"
-        )
+        try:
+            await query.edit_message_text(
+                message,
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+        except BadRequest as e:
+            logger.warning(f"Markdown parse error in show_bot_users_page, retrying without parse_mode: {e}")
+            await query.edit_message_text(
+                message,
+                reply_markup=keyboard
+            )
         
     except Exception as e:
         logger.error(f"Error showing bot users page: {e}", exc_info=True)
@@ -902,11 +1114,18 @@ async def prunebots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         active_bots = get_bot_usernames()
         
         if not active_bots:
-            await update.message.reply_text(
-                "⚠️ **Warning**: No active bots found!\n\n"
-                "Cannot proceed with pruning.",
-                parse_mode="Markdown"
-            )
+            try:
+                await update.message.reply_text(
+                    "⚠️ **Warning**: No active bots found!\n\n"
+                    "Cannot proceed with pruning.",
+                    parse_mode="Markdown"
+                )
+            except BadRequest as e:
+                logger.warning(f"Markdown parse error in prunebots_command (no bots), retrying without parse_mode: {e}")
+                await update.message.reply_text(
+                    "⚠️ Warning: No active bots found!\n\n"
+                    "Cannot proceed with pruning."
+                )
             return
         
         # Check if this is a dry run (default) or actual pruning
@@ -919,13 +1138,24 @@ async def prunebots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if dry_run:
             if stats['users'] == 0:
-                await update.message.reply_text(
-                    "✅ **All Good!**\n\n"
-                    f"No users found associated with inactive bots.\n"
-                    f"Active bots: {len(active_bots)}\n"
-                    f"• " + "\n• ".join(f"@{bot}" for bot in sorted(active_bots)),
-                    parse_mode="Markdown"
-                )
+                # Escape bot usernames for Markdown
+                escaped_bots = "\n• ".join(f"@{escape_markdown_v1(bot)}" for bot in sorted(active_bots))
+                try:
+                    await update.message.reply_text(
+                        "✅ **All Good!**\n\n"
+                        f"No users found associated with inactive bots.\n"
+                        f"Active bots: {len(active_bots)}\n"
+                        f"• {escaped_bots}",
+                        parse_mode="Markdown"
+                    )
+                except BadRequest as e:
+                    logger.warning(f"Markdown parse error in prunebots_command (all good), retrying without parse_mode: {e}")
+                    await update.message.reply_text(
+                        "✅ All Good!\n\n"
+                        f"No users found associated with inactive bots.\n"
+                        f"Active bots: {len(active_bots)}\n"
+                        f"• " + "\n• ".join(f"@{bot}" for bot in sorted(active_bots))
+                    )
             else:
                 # Create confirmation keyboard
                 keyboard = InlineKeyboardMarkup([
@@ -933,40 +1163,80 @@ async def prunebots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("❌ Cancel", callback_data="cancel_prunebots")]
                 ])
                 
-                await update.message.reply_text(
-                    f"🔍 **Inactive Bot Users Found**\n\n"
-                    f"The following would be deleted:\n"
-                    f"• Users: {stats['users']}\n"
-                    f"• Products: {stats['products']}\n"
-                    f"• Pending Notifications: {stats['notifications']}\n"
-                    f"• Custom Messages: {stats['custom_messages']}\n\n"
-                    f"Active bots ({len(active_bots)}):\n"
-                    f"• " + "\n• ".join(f"@{bot}" for bot in sorted(active_bots)) + "\n\n"
-                    f"⚠️ This action cannot be undone!\n\n"
-                    f"To confirm, use: `/prunebots confirm`",
-                    reply_markup=keyboard,
-                    parse_mode="Markdown"
-                )
+                # Escape bot usernames for Markdown
+                escaped_bots = "\n• ".join(f"@{escape_markdown_v1(bot)}" for bot in sorted(active_bots))
+                try:
+                    await update.message.reply_text(
+                        f"🔍 **Inactive Bot Users Found**\n\n"
+                        f"The following would be deleted:\n"
+                        f"• Users: {stats['users']}\n"
+                        f"• Products: {stats['products']}\n"
+                        f"• Pending Notifications: {stats['notifications']}\n"
+                        f"• Custom Messages: {stats['custom_messages']}\n\n"
+                        f"Active bots ({len(active_bots)}):\n"
+                        f"• {escaped_bots}\n\n"
+                        f"⚠️ This action cannot be undone!\n\n"
+                        f"To confirm, use: `/prunebots confirm`",
+                        reply_markup=keyboard,
+                        parse_mode="Markdown"
+                    )
+                except BadRequest as e:
+                    logger.warning(f"Markdown parse error in prunebots_command (preview), retrying without parse_mode: {e}")
+                    await update.message.reply_text(
+                        f"🔍 Inactive Bot Users Found\n\n"
+                        f"The following would be deleted:\n"
+                        f"• Users: {stats['users']}\n"
+                        f"• Products: {stats['products']}\n"
+                        f"• Pending Notifications: {stats['notifications']}\n"
+                        f"• Custom Messages: {stats['custom_messages']}\n\n"
+                        f"Active bots ({len(active_bots)}):\n"
+                        f"• " + "\n• ".join(f"@{bot}" for bot in sorted(active_bots)) + "\n\n"
+                        f"⚠️ This action cannot be undone!\n\n"
+                        f"To confirm, use: /prunebots confirm",
+                        reply_markup=keyboard
+                    )
                 logger.info(f"Admin {user_id} previewed bot pruning: {stats}")
         else:
             if stats['users'] == 0:
-                await update.message.reply_text(
-                    "✅ **No Changes Made**\n\n"
-                    "No users found associated with inactive bots.",
-                    parse_mode="Markdown"
-                )
+                try:
+                    await update.message.reply_text(
+                        "✅ **No Changes Made**\n\n"
+                        "No users found associated with inactive bots.",
+                        parse_mode="Markdown"
+                    )
+                except BadRequest as e:
+                    logger.warning(f"Markdown parse error in prunebots_command (no changes), retrying without parse_mode: {e}")
+                    await update.message.reply_text(
+                        "✅ No Changes Made\n\n"
+                        "No users found associated with inactive bots."
+                    )
             else:
-                await update.message.reply_text(
-                    f"✅ **Pruning Complete**\n\n"
-                    f"Deleted:\n"
-                    f"• Users: {stats['users']}\n"
-                    f"• Products: {stats['products']}\n"
-                    f"• Pending Notifications: {stats['notifications']}\n"
-                    f"• Custom Messages: {stats['custom_messages']}\n\n"
-                    f"Remaining active bots ({len(active_bots)}):\n"
-                    f"• " + "\n• ".join(f"@{bot}" for bot in sorted(active_bots)),
-                    parse_mode="Markdown"
-                )
+                # Escape bot usernames for Markdown
+                escaped_bots = "\n• ".join(f"@{escape_markdown_v1(bot)}" for bot in sorted(active_bots))
+                try:
+                    await update.message.reply_text(
+                        f"✅ **Pruning Complete**\n\n"
+                        f"Deleted:\n"
+                        f"• Users: {stats['users']}\n"
+                        f"• Products: {stats['products']}\n"
+                        f"• Pending Notifications: {stats['notifications']}\n"
+                        f"• Custom Messages: {stats['custom_messages']}\n\n"
+                        f"Remaining active bots ({len(active_bots)}):\n"
+                        f"• {escaped_bots}",
+                        parse_mode="Markdown"
+                    )
+                except BadRequest as e:
+                    logger.warning(f"Markdown parse error in prunebots_command (complete), retrying without parse_mode: {e}")
+                    await update.message.reply_text(
+                        f"✅ Pruning Complete\n\n"
+                        f"Deleted:\n"
+                        f"• Users: {stats['users']}\n"
+                        f"• Products: {stats['products']}\n"
+                        f"• Pending Notifications: {stats['notifications']}\n"
+                        f"• Custom Messages: {stats['custom_messages']}\n\n"
+                        f"Remaining active bots ({len(active_bots)}):\n"
+                        f"• " + "\n• ".join(f"@{bot}" for bot in sorted(active_bots))
+                    )
                 logger.info(f"Admin {user_id} pruned inactive bot users: {stats}")
         
     except Exception as e:
