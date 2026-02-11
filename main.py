@@ -15,7 +15,7 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
-from telegram.error import TelegramError
+from telegram.error import TelegramError, BadRequest
 
 from configs.config import Config, ConfigError
 from database import Database
@@ -1209,6 +1209,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     except ValueError as e:
         logger.error(f"Invalid callback data format: {callback_data}, error: {e}")
         await query.answer("Invalid action", show_alert=True)
+    except BadRequest as e:
+        # Handle "Message is not modified" error silently
+        if "message is not modified" in str(e).lower():
+            logger.debug(f"Message not modified for callback {callback_data}: {e}")
+            await query.answer()  # Silent acknowledgment
+        else:
+            logger.error(f"BadRequest error handling callback query: {e}", exc_info=True)
+            await query.answer("An error occurred", show_alert=True)
     except Exception as e:
         logger.error(f"Error handling callback query: {e}", exc_info=True)
         await query.answer("An error occurred", show_alert=True)
