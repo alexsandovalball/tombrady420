@@ -89,15 +89,19 @@ The bot will:
 
 ## 🌐 Deployment on Render.com
 
-Perfect for free hosting with persistent storage:
+Perfect for free hosting with persistent storage. This repository includes `render.yaml` for automatic configuration.
+
+> **⚠️ Deployment Issues?** See [Deployment Troubleshooting Guide](docs/DEPLOYMENT_TROUBLESHOOTING.md)
 
 1. **Fork this repository** to your GitHub account
 
 2. **Create a new Web Service** on [Render.com](https://render.com)
-   - Connect your GitHub repository
-   - Select "Python" environment
-   - Build command: `pip install -r requirements.txt`
-   - Start command: `python webhook_server.py`
+   - Connect your GitHub repository (ensure it points to the correct repository)
+   - Render will automatically detect `render.yaml` for configuration
+   - Or manually set:
+     - Environment: Python
+     - Build command: `pip install --upgrade pip && pip install -r requirements.txt`
+     - Start command: `python webhook_server.py`
 
 3. **Set environment variables** in Render dashboard:
    ```

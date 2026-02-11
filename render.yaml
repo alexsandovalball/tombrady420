@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: tombrady420-bot
+    runtime: python
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: python webhook_server.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.5
+      - key: USE_WEBHOOK
+        value: true
+      - key: PORT
+        value: 10000
+    # The following environment variables should be set in Render dashboard:
+    # BOT_TOKEN (required) - Your Telegram bot token from @BotFather
+    # CHANNEL_ID (required) - Your Telegram channel ID (e.g., -1001234567890)
+    # ADMIN_IDS (required) - Comma-separated admin user IDs (e.g., 123456789,987654321)
+    # WEBHOOK_URL (required) - Your Render app URL (e.g., https://your-app-name.onrender.com)
+    # ORDER_CONTACT (optional) - Contact info for users (e.g., @yourusername)
+    # PRIMARY_ADMIN_ID (optional) - Admin who receives categorization requests
+    # DB_PATH (optional) - Database file path if using persistent disk
