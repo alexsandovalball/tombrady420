@@ -1343,7 +1343,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 # Get count
                 if bot_username == "_untracked_":
-                    count = await db.get_users_count_by_bot(None)
+                    count = await db.get_users_count_by_bot("_untracked_")
                     display_name = "Untracked Users"
                 else:
                     count = await db.get_users_count_by_bot(bot_username)
@@ -1395,7 +1395,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         InlineKeyboardButton(display_text, callback_data=f"viewbotusers|{bot_username_item}|1")
                     ])
                 
-                untracked_count = await db.get_users_count_by_bot(None)
+                untracked_count = await db.get_users_count_by_bot("_untracked_")
                 if untracked_count > 0:
                     keyboard_buttons.append([
                         InlineKeyboardButton(f"Untracked Users ({untracked_count})", callback_data="viewbotusers|_untracked_|1")

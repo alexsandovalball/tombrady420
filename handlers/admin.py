@@ -739,7 +739,7 @@ async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         
         # Add option to view users without bot_username
-        untracked_count = await db.get_users_count_by_bot(None)
+        untracked_count = await db.get_users_count_by_bot("_untracked_")
         if untracked_count > 0:
             keyboard_buttons.append([
                 InlineKeyboardButton(f"Untracked Users ({untracked_count})", callback_data="viewbotusers|_untracked_|1")

@@ -1113,7 +1113,7 @@ class Database:
                 rows = await cursor.fetchall()
                 return [row[0] for row in rows]
     
-    async def get_users_count_by_bot(self, bot_username: str = None) -> int:
+    async def get_users_count_by_bot(self, bot_username: Optional[str] = None) -> int:
         """
         Get count of users for a specific bot or all users if bot_username is None.
         Use bot_username="_untracked_" to get count of users without bot_username.
@@ -1138,7 +1138,18 @@ class Database:
                     return row[0] if row else 0
     
     async def get_users_by_bot_paginated(self, bot_username: str, limit: int = 10, offset: int = 0):
-        """Get users for a specific bot with pagination."""
+        """
+        Get users for a specific bot with pagination.
+        
+        Args:
+            bot_username: Bot username to filter by, or "_untracked_" for users without bot_username
+            limit: Number of users per page (default: 10)
+            offset: Offset for pagination (default: 0)
+        
+        Returns:
+            tuple: (total_count, users_list) where total_count is the total number of users
+                   and users_list is a list of user dictionaries for the current page
+        """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             
