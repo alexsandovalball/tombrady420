@@ -670,11 +670,12 @@ class NotificationService:
         }
         
         try:
-            # Track rate-limited users to prevent infinite loops
+            # Track rate-limited users to prevent double-counting stats within this run
+            # Note: Rate-limited messages stay in queue and will be processed in next scheduled run
             rate_limited_users = set()
             total_processed = 0
             
-            # Loop until all pending messages are processed
+            # Loop until all pending messages are processed or no progress can be made
             while True:
                 pending = await self.db.get_pending_custom_messages(limit=100)
                 
@@ -699,21 +700,24 @@ class NotificationService:
                     # Check if user is blocked
                     is_blocked = await self.db.is_user_blocked(user_id)
                     if is_blocked:
-                        # Mark as sent to remove from queue
+                        # Mark as sent to remove from queue (blocked users won't receive messages)
                         for msg in messages:
                             await self.db.mark_custom_message_sent(msg["id"])
                         stats["blocked"] += len(messages)
                         continue
                     
                     # Check if user was previously rate-limited in this run
+                    # We skip to avoid double-counting stats and wasting rate limit checks
+                    # Messages remain in queue for next scheduled run when rate limits may have reset
                     if user_id in rate_limited_users:
-                        # Skip but don't increment rate_limited counter again
                         continue
                     
                     # Check rate limit for this user
                     recent_count = await self.db.get_recent_custom_messages_count(user_id, minutes=60)
                     
                     if recent_count >= MAX_CUSTOM_MESSAGES_PER_HOUR:
+                        # User at rate limit - count their messages and skip them
+                        # Messages stay in queue for next scheduled run
                         logger.debug(f"User {user_id} reached custom message rate limit, skipping")
                         stats["rate_limited"] += len(messages)
                         rate_limited_users.add(user_id)
@@ -723,6 +727,8 @@ class NotificationService:
                     remaining = MAX_CUSTOM_MESSAGES_PER_HOUR - recent_count
                     
                     # Send only the allowed number of messages
+                    # Messages beyond 'remaining' stay in queue and will be picked up in next iteration
+                    # or next scheduled run (if user then hits rate limit)
                     for message in messages[:remaining]:
                         batch.append(message)
                         batch_has_messages = True
@@ -740,7 +746,8 @@ class NotificationService:
                 total_processed += len(pending)
                 
                 # If no messages were actually sent in this batch (all blocked or rate-limited),
-                # break to avoid infinite loop
+                # break to avoid infinite loop within this run
+                # Unsent messages remain in queue for next scheduled run
                 if not batch_has_messages:
                     logger.info(f"No more messages can be sent in this run (all blocked or rate-limited)")
                     break
