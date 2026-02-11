@@ -368,9 +368,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             )
             return
     
-    await query.answer()  # Answer callback to prevent loading spinner
-    
     callback_data = query.data
+    
+    # Don't answer callback query upfront for long-running operations
+    # These callbacks will answer the query themselves to avoid timeout errors
+    long_running_callbacks = ["broadcast_confirm_all"]
+    
+    if callback_data not in long_running_callbacks:
+        await query.answer()  # Answer callback to prevent loading spinner
     
     # Handle language selection callbacks from /language command
     if callback_data.startswith("setlang|"):
@@ -525,11 +530,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
     
     if callback_data == "broadcast_confirm_all":
+        # Answer query immediately to prevent timeout during long operation
+        await query.answer()
+        
         # Confirm and send broadcast to all users
         message_text = context.user_data.get('broadcast_message')
         
         if not message_text:
-            await query.answer("❌ Message not found. Please start over.", show_alert=True)
+            await query.edit_message_text("❌ Message not found. Please start over.")
             context.user_data.clear()
             return
         

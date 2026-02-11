@@ -651,6 +651,7 @@ class NotificationService:
         Uses multi-bot delivery - sends via the bot each user started.
         Only runs on the primary bot instance to avoid duplicate processing.
         Returns statistics about the delivery.
+        Processes all pending messages in batches until the queue is empty.
         """
         # Check if this is the primary bot instance
         if not self._is_primary_instance(context):
@@ -669,58 +670,80 @@ class NotificationService:
         }
         
         try:
-            pending = await self.db.get_pending_custom_messages(limit=100)
+            # Track rate-limited users to prevent infinite loops
+            rate_limited_users = set()
+            total_processed = 0
             
-            if not pending:
-                return stats
-            
-            logger.info(f"Processing {len(pending)} pending custom messages")
-            
-            # Group messages by user for rate limiting
-            user_messages = {}
-            for message in pending:
-                user_id = message["user_id"]
-                if user_id not in user_messages:
-                    user_messages[user_id] = []
-                user_messages[user_id].append(message)
-            
-            # Process messages in batches
-            batch = []
-            
-            for user_id, messages in user_messages.items():
-                # Check if user is blocked
-                is_blocked = await self.db.is_user_blocked(user_id)
-                if is_blocked:
-                    # Mark as sent to remove from queue
-                    for msg in messages:
-                        await self.db.mark_custom_message_sent(msg["id"])
-                    stats["blocked"] += len(messages)
-                    continue
+            # Loop until all pending messages are processed
+            while True:
+                pending = await self.db.get_pending_custom_messages(limit=100)
                 
-                # Check rate limit for this user
-                recent_count = await self.db.get_recent_custom_messages_count(user_id, minutes=60)
+                if not pending:
+                    break
                 
-                if recent_count >= MAX_CUSTOM_MESSAGES_PER_HOUR:
-                    logger.debug(f"User {user_id} reached custom message rate limit, skipping")
-                    stats["rate_limited"] += len(messages)
-                    continue
+                logger.info(f"Processing batch of {len(pending)} pending custom messages (total processed: {total_processed})")
                 
-                # Calculate how many more messages we can send to this user
-                remaining = MAX_CUSTOM_MESSAGES_PER_HOUR - recent_count
+                # Group messages by user for rate limiting
+                user_messages = {}
+                for message in pending:
+                    user_id = message["user_id"]
+                    if user_id not in user_messages:
+                        user_messages[user_id] = []
+                    user_messages[user_id].append(message)
                 
-                # Send only the allowed number of messages
-                for message in messages[:remaining]:
-                    batch.append(message)
+                # Process messages in batches
+                batch = []
+                batch_has_messages = False
+                
+                for user_id, messages in user_messages.items():
+                    # Check if user is blocked
+                    is_blocked = await self.db.is_user_blocked(user_id)
+                    if is_blocked:
+                        # Mark as sent to remove from queue
+                        for msg in messages:
+                            await self.db.mark_custom_message_sent(msg["id"])
+                        stats["blocked"] += len(messages)
+                        continue
                     
-                    # Send in batches to avoid overwhelming Telegram
-                    if len(batch) >= CUSTOM_MESSAGE_BATCH_SIZE:
-                        batch_stats = await self._send_custom_message_batch_multibot(batch, stats)
-                        batch = []
-                        await asyncio.sleep(CUSTOM_MESSAGE_DELAY_SECONDS)
-            
-            # Send remaining batch
-            if batch:
-                batch_stats = await self._send_custom_message_batch_multibot(batch, stats)
+                    # Check if user was previously rate-limited in this run
+                    if user_id in rate_limited_users:
+                        # Skip but don't increment rate_limited counter again
+                        continue
+                    
+                    # Check rate limit for this user
+                    recent_count = await self.db.get_recent_custom_messages_count(user_id, minutes=60)
+                    
+                    if recent_count >= MAX_CUSTOM_MESSAGES_PER_HOUR:
+                        logger.debug(f"User {user_id} reached custom message rate limit, skipping")
+                        stats["rate_limited"] += len(messages)
+                        rate_limited_users.add(user_id)
+                        continue
+                    
+                    # Calculate how many more messages we can send to this user
+                    remaining = MAX_CUSTOM_MESSAGES_PER_HOUR - recent_count
+                    
+                    # Send only the allowed number of messages
+                    for message in messages[:remaining]:
+                        batch.append(message)
+                        batch_has_messages = True
+                        
+                        # Send in batches to avoid overwhelming Telegram
+                        if len(batch) >= CUSTOM_MESSAGE_BATCH_SIZE:
+                            batch_stats = await self._send_custom_message_batch_multibot(batch, stats)
+                            batch = []
+                            await asyncio.sleep(CUSTOM_MESSAGE_DELAY_SECONDS)
+                
+                # Send remaining batch
+                if batch:
+                    batch_stats = await self._send_custom_message_batch_multibot(batch, stats)
+                
+                total_processed += len(pending)
+                
+                # If no messages were actually sent in this batch (all blocked or rate-limited),
+                # break to avoid infinite loop
+                if not batch_has_messages and len(batch) == 0:
+                    logger.info(f"No more messages can be sent in this run (all blocked or rate-limited)")
+                    break
             
             logger.info(f"Custom message queue processed: {stats['sent']} sent, {stats['failed']} failed, "
                        f"{stats['blocked']} blocked, {stats['not_found']} not found, "
