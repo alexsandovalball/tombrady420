@@ -1216,7 +1216,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await query.answer()  # Silent acknowledgment
         else:
             logger.error(f"BadRequest error handling callback query: {e}", exc_info=True)
-            await query.answer("An error occurred", show_alert=True)
+            await query.answer("Unable to process this action. Please try again.", show_alert=True)
     except Exception as e:
         logger.error(f"Error handling callback query: {e}", exc_info=True)
         await query.answer("An error occurred", show_alert=True)
