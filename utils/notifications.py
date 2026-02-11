@@ -36,6 +36,9 @@ MAX_CUSTOM_MESSAGES_PER_HOUR = 3  # Maximum custom messages per user per hour
 CUSTOM_MESSAGE_BATCH_SIZE = 5  # Send custom messages in smaller batches
 CUSTOM_MESSAGE_DELAY_SECONDS = 5  # Longer delay for custom messages
 
+# Queue processing safety limits
+MAX_QUEUE_PROCESSING_ITERATIONS = 50  # Maximum iterations to prevent infinite loops (50 batches * 100 = 5000 messages max per run)
+
 
 def get_bot_applications() -> List[Application]:
     """
@@ -674,15 +677,19 @@ class NotificationService:
             # Note: Rate-limited messages stay in queue and will be processed in next scheduled run
             rate_limited_users = set()
             total_fetched = 0
+            iteration_count = 0
             
             # Loop until all pending messages are processed or no progress can be made
-            while True:
+            while iteration_count < MAX_QUEUE_PROCESSING_ITERATIONS:
+                iteration_count += 1
+                
                 pending = await self.db.get_pending_custom_messages(limit=100)
                 
                 if not pending:
                     break
                 
-                logger.info(f"Processing batch of {len(pending)} pending custom messages (total fetched so far: {total_fetched})")
+                total_fetched += len(pending)
+                logger.info(f"Processing batch {iteration_count} of {len(pending)} pending custom messages (total fetched: {total_fetched})")
                 
                 # Group messages by user for rate limiting
                 user_messages = {}
@@ -743,14 +750,17 @@ class NotificationService:
                 if batch:
                     batch_stats = await self._send_custom_message_batch_multibot(batch, stats)
                 
-                total_fetched += len(pending)
-                
                 # If no messages were actually sent in this batch (all blocked or rate-limited),
                 # break to avoid infinite loop within this run
                 # Unsent messages remain in queue for next scheduled run
                 if not batch_has_messages:
                     logger.info(f"No more messages can be sent in this run (all blocked or rate-limited)")
                     break
+            
+            # Log warning if we hit the iteration limit
+            if iteration_count >= MAX_QUEUE_PROCESSING_ITERATIONS:
+                logger.warning(f"Reached maximum queue processing iterations ({MAX_QUEUE_PROCESSING_ITERATIONS}). "
+                              f"Remaining messages will be processed in next run.")
             
             logger.info(f"Custom message queue processed: {stats['sent']} sent, {stats['failed']} failed, "
                        f"{stats['blocked']} blocked, {stats['not_found']} not found, "
