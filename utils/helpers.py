@@ -42,6 +42,10 @@ def escape_markdown_v1(text: str) -> str:
     Returns:
         Escaped text safe for Markdown v1
     """
+    # Handle None or empty string
+    if not text:
+        return ""
+    
     # Escape special Markdown v1 characters
     # Note: We don't escape backslash itself as user names typically don't contain them,
     # and escaping backslash would require escaping it first to avoid double-escaping

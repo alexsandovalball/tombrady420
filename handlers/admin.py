@@ -1025,9 +1025,9 @@ async def show_bot_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         for user in users:
             user_id = user["user_id"]
-            username = user.get("username", "N/A")
-            first_name = user.get("first_name", "Unknown")
-            last_name = user.get("last_name", "")
+            username = user.get("username") or "N/A"
+            first_name = user.get("first_name") or "Unknown"
+            last_name = user.get("last_name") or ""
             name = f"{first_name} {last_name}".strip()
             
             # Escape user-provided strings for Markdown
