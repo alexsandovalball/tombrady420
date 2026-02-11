@@ -32,6 +32,31 @@ View and manage bot users (admin only)
 - Navigate pages with ⬅️ Previous / ➡️ Next buttons
 - Useful for monitoring bot engagement, analytics across multiple bot instances, and controlling who gets notifications
 
+### `/botusers`
+View users grouped by bot instance (admin only)
+- Shows users organized by which bot instance they interacted with
+- Active bots marked with ✅
+- Inactive/deleted bots marked with ⚠️ (users should be pruned)
+- **Individual user management**:
+  - Delete individual users with confirmation
+  - View user details (ID, username, name, notification status, block status)
+- **Bulk operations**:
+  - Delete all users from a specific bot instance
+- **Pagination**: 10 users per page
+- **Use case**: Clean up users from old/deleted bot instances
+
+### `/prunebots`
+Prune users from inactive/deleted bots (admin only)
+- **Preview mode** (default): Shows what would be deleted without actually deleting
+- **Execute mode**: Use confirmation button to actually delete
+- Automatically removes:
+  - Users from inactive bot instances
+  - Products posted by inactive bots
+  - Pending notifications for those users
+  - Queued custom messages
+- **Safety**: Preserves all data from active bots
+- **Use case**: Run after replacing or removing bot tokens
+
 ### `/nuke`
 Delete ALL products from catalog (admin only)
 - **Double confirmation required!**

@@ -24,7 +24,8 @@ A production-ready Telegram bot for managing and browsing a media product catalo
 ### For Admins
 - 🤖 **Automatic Product Detection** - Monitors channel and captures new media automatically
 - 🏷️ **Category Management** - Interactive categorization with subcategory support
-- 👥 **User Management** - View users, manage notifications, block/unblock
+- 👥 **User Management** - View users, manage notifications, block/unblock, delete users
+- 🔧 **Multi-Bot Management** - Group users by bot instance, prune inactive bots
 - 💬 **Custom Messaging** - Send messages to specific users or broadcast to all
 - 🔄 **Recategorization** - Find and categorize uncategorized products
 - 🗑️ **Product Management** - Delete individual products or bulk delete (with confirmation)
@@ -33,10 +34,11 @@ A production-ready Telegram bot for managing and browsing a media product catalo
 - ⚡ **Async/Await Architecture** - High performance with asyncio and aiosqlite
 - 🔒 **Environment-based Configuration** - All settings via environment variables
 - 🌐 **Webhook Support** - Production-ready for Render.com and other platforms
-- 📦 **SQLite Database** - Lightweight, no external database required
+- 📦 **SQLite Database** - Lightweight, no external database required (WAL mode enabled)
 - 🛡️ **Rate Limiting** - Anti-spam protection for notifications
 - 🔄 **Automatic Migration** - Database schema updates on startup
 - 📝 **Comprehensive Logging** - Structured logs for monitoring
+- ⚙️ **Optimized Performance** - 10-second API timeouts, connection pooling
 
 ## 🚀 Quick Start
 
