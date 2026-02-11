@@ -79,7 +79,9 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
     # Delete the language selection message
     try:
         await query.delete_message()
-    except:
+    except Exception as e:
+        # Message may already be deleted or inaccessible
+        logger.debug(f"Could not delete language selection message: {e}")
         pass
     
     # Show welcome message in the new language (return to start page)
