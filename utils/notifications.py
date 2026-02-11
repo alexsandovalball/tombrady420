@@ -95,13 +95,13 @@ class NotificationService:
         """
         error_str = str(error).lower()
         # Check for common markdown parse error indicators
+        # Note: We check specific error patterns to avoid false positives
         return any(keyword in error_str for keyword in [
-            "parse",
-            "markdown",
             "can't parse",
+            "parse entities",
+            "markdown",
             "entities",
-            "offset",
-            "invalid"
+            "offset"
         ])
     
     def _get_bot_applications(self) -> List[Application]:
@@ -531,7 +531,8 @@ class NotificationService:
         except Exception as e:
             logger.error(f"Unexpected error sending notification to {user_id}: {e}", exc_info=True)
             # Don't mark as sent for unexpected errors - they should be investigated
-            # Only mark as sent for known telegram errors above
+            # Note: Messages are not auto-retried on schedule, only when explicitly triggered
+            # This ensures we don't lose messages due to transient issues
             return False
     
     async def send_custom_message_to_user(
@@ -808,7 +809,8 @@ class NotificationService:
                 except Exception as e:
                     logger.error(f"Unexpected error sending custom message to {user_id}: {e}", exc_info=True)
                     # Don't mark as sent for unexpected errors - they should be investigated
-                    # Only mark as sent for known telegram errors above
+                    # Note: Messages are not auto-retried on schedule, only when explicitly triggered
+                    # This ensures we don't lose messages due to transient issues
         
         return sent_count
     
