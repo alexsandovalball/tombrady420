@@ -458,7 +458,13 @@ class NotificationService:
     ):
         """
         Send a custom message to a specific user with rate limiting.
+        Only runs on the primary bot instance to avoid duplicate sends.
         """
+        # Check if this is the primary bot instance
+        if not self._is_primary_instance(context):
+            logger.info(f"Skipping custom message to user {user_id} - not primary instance")
+            return False
+        
         try:
             # Check if user is blocked
             is_blocked = await self.db.is_user_blocked(user_id)
@@ -486,7 +492,13 @@ class NotificationService:
     ):
         """
         Broadcast a custom message to all users with rate limiting.
+        Only runs on the primary bot instance to avoid duplicate queuing.
         """
+        # Check if this is the primary bot instance
+        if not self._is_primary_instance(context):
+            logger.info(f"Skipping broadcast - not primary instance")
+            return 0
+        
         try:
             # Get all users
             all_users = await self.db.get_all_users()
@@ -529,7 +541,13 @@ class NotificationService:
         """
         Process pending custom messages from the queue with rate limiting.
         Uses multi-bot delivery - sends via the bot each user started.
+        Only runs on the primary bot instance to avoid duplicate processing.
         """
+        # Check if this is the primary bot instance
+        if not self._is_primary_instance(context):
+            logger.info(f"Skipping custom message queue processing - not primary instance")
+            return
+        
         try:
             pending = await self.db.get_pending_custom_messages(limit=100)
             

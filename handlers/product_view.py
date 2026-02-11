@@ -185,8 +185,9 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 
                 # Prepare media list
                 media_list = []
+                non_group_media = []  # Media that can't be in a group (documents, animations, etc.)
                 
-                # Add first media (with caption)
+                # Add first media
                 first_type = product["file_type"]
                 first_id = product["file_id"]
                 chat_id = product["chat_id"]
@@ -203,22 +204,15 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                     # Use bot-specific ID if available, otherwise fall back to original
                     first_id = bot_specific_id or first_id
                 
+                # Check if first media can be in a media group
                 if first_type == "photo":
                     media_list.append(InputMediaPhoto(media=first_id, caption=full_caption))
                 elif first_type == "video":
                     media_list.append(InputMediaVideo(media=first_id, caption=full_caption))
                 else:
-                    # For other types, fall back to single message
-                    await send_media_message(
-                        context,
-                        update.effective_chat.id,
-                        first_id,
-                        first_type,
-                        caption=full_caption,
-                        reply_markup=keyboard
-                    )
-                    await update.callback_query.answer()
-                    return
+                    # First media is not photo/video, add to non-group media
+                    # We'll send caption with this media
+                    non_group_media.append((first_id, first_type, full_caption))
                 
                 # Add additional media with bot-specific file IDs if available
                 for idx, (file_id, file_type) in enumerate(file_data, start=1):
@@ -246,16 +240,40 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                                 f"(have {len(message_ids)} IDs, need {len(file_data)+1})"
                             )
                     
+                    # Add media to the list based on type
+                    # Telegram media groups only support photos and videos
+                    # Other types will be sent as separate messages
                     if file_type == "photo":
                         media_list.append(InputMediaPhoto(media=file_id))
                     elif file_type == "video":
                         media_list.append(InputMediaVideo(media=file_id))
+                    else:
+                        # This media type can't be in a group, send separately
+                        non_group_media.append((file_id, file_type, None))
                 
-                # Send media group
-                await context.bot.send_media_group(
-                    chat_id=update.effective_chat.id,
-                    media=media_list
-                )
+                # Now send the media
+                # 1. Send media group if we have photos/videos
+                if media_list:
+                    logger.info(f"Sending media group with {len(media_list)} items for product {product_id}")
+                    await context.bot.send_media_group(
+                        chat_id=update.effective_chat.id,
+                        media=media_list
+                    )
+                
+                # 2. Send non-group media (documents, animations, etc.) separately
+                if non_group_media:
+                    logger.info(f"Sending {len(non_group_media)} non-group media items for product {product_id}")
+                    for idx, (file_id, file_type, caption) in enumerate(non_group_media):
+                        # Add caption to first non-group media only if it wasn't used in media group
+                        should_add_caption = idx == 0 and not media_list
+                        await send_media_message(
+                            context,
+                            update.effective_chat.id,
+                            file_id,
+                            file_type,
+                            caption=caption if should_add_caption else None,
+                            reply_markup=None  # Don't add keyboard to each media
+                        )
                 
                 # Get order contact
                 order_contact = await db.get_order_contact()
@@ -263,7 +281,7 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 # Get translated DM to order message
                 dm_message = await get_translated_string_async("dm_to_order", user_lang, contact=order_contact)
                 
-                # Send keyboard in a separate message since media groups can't have keyboards
+                # Send keyboard in a separate message
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text=dm_message,

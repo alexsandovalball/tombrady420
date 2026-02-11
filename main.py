@@ -66,10 +66,52 @@ user_last_message = {}
 # Media group collection (temporary storage for grouping messages)
 media_group_messages = {}
 media_group_timers = {}
+media_group_locks = {}  # Locks to prevent race conditions in media group processing
+
+
+def _is_primary_instance(context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Check if this is the primary bot instance.
+    Only the primary bot (first token in BOT_TOKENS) should create notification queues.
+    
+    Args:
+        context: Telegram context with bot information
+        
+    Returns:
+        True if this is the primary instance, False otherwise
+    """
+    if not hasattr(context, 'bot') or not hasattr(context.bot, 'token'):
+        # If we can't determine, assume it's primary to maintain backward compatibility
+        logger.warning("Unable to determine bot instance, assuming primary")
+        return True
+    
+    current_token = context.bot.token
+    bot_tokens = Config.BOT_TOKENS
+    
+    # Validate BOT_TOKENS is a non-empty list
+    if not bot_tokens or not isinstance(bot_tokens, list) or len(bot_tokens) == 0:
+        # No tokens configured or invalid configuration, assume primary
+        return True
+    
+    # Primary bot is the first token in the list (index 0)
+    is_primary = current_token == bot_tokens[0]
+    
+    if not is_primary:
+        logger.debug(f"Skipping operation - not primary instance (bot token: ...{current_token[-5:]})")
+    
+    return is_primary
+
 
 
 async def notify_admins_for_categorization(context: ContextTypes.DEFAULT_TYPE, product_id: int):
-    """Send categorization request to all admins for a new product."""
+    """Send categorization request to all admins for a new product.
+    Only runs on the primary bot instance to avoid duplicate notifications.
+    """
+    # Check if this is the primary bot instance
+    if not _is_primary_instance(context):
+        logger.info(f"Skipping categorization notification for product {product_id} - not primary instance")
+        return
+    
     try:
         product = await db.get_product(product_id)
         if not product:
@@ -137,11 +179,17 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
     """Process collected media group messages after a short delay."""
     await asyncio.sleep(0.5)  # Wait for all messages in the group to arrive
     
-    if media_group_id not in media_group_messages:
-        return
+    # Get or create a lock for this media group to prevent race conditions
+    if media_group_id not in media_group_locks:
+        media_group_locks[media_group_id] = asyncio.Lock()
     
-    messages = media_group_messages.pop(media_group_id, [])
-    media_group_timers.pop(media_group_id, None)
+    async with media_group_locks[media_group_id]:
+        if media_group_id not in media_group_messages:
+            return
+        
+        messages = media_group_messages.pop(media_group_id, [])
+        media_group_timers.pop(media_group_id, None)
+        media_group_locks.pop(media_group_id, None)  # Clean up the lock
     
     if not messages:
         return
@@ -642,13 +690,30 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         reply_markup=keyboard
                     )
                 else:
-                    # No subcategories, save directly
+                    # No subcategories, save directly and ask for notification confirmation
                     await db.update_product_category(product_id, category, None)
+                    
+                    # Translate category name
+                    category_key = f"category_{category.lower()}"
+                    translated_category = await get_translated_string_async(category_key, user_lang)
+                    if translated_category == category_key:
+                        translated_category = get_category_display_name(category)
+                    
+                    # Ask admin if they want to send notifications
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("✅ Yes, send notifications", callback_data=f"send_notif_yes|{product_id}")],
+                        [InlineKeyboardButton("❌ No, skip notifications", callback_data=f"send_notif_no|{product_id}")]
+                    ])
+                    
                     await query.edit_message_text(
                         f"✅ Product #{product_id} categorized as:\n"
-                        f"📂 {get_category_display_name(category)}"
+                        f"📂 {translated_category}\n\n"
+                        f"📢 **Send notifications to subscribed users?**\n"
+                        f"Choose whether to notify users about this product:",
+                        reply_markup=keyboard,
+                        parse_mode="Markdown"
                     )
-                    logger.info(f"Product {product_id} categorized as {category} by admin {update.effective_user.id}")
+                    logger.info(f"Product {product_id} categorized as {category} by admin {update.effective_user.id}, awaiting notification decision")
             else:
                 await query.answer("Invalid category data", show_alert=True)
         
@@ -717,19 +782,70 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 success_msg = await get_translated_string_async("product_categorized_successfully", user_lang, product_id=product_id)
                 
+                # Ask admin if they want to send notifications for this product
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Yes, send notifications", callback_data=f"send_notif_yes|{product_id}")],
+                    [InlineKeyboardButton("❌ No, skip notifications", callback_data=f"send_notif_no|{product_id}")]
+                ])
+                
                 await query.edit_message_text(
                     f"{success_msg}\n\n"
-                    f"📂 {category_text}"
+                    f"📂 {category_text}\n\n"
+                    f"📢 **Send notifications to subscribed users?**\n"
+                    f"Choose whether to notify users about this product:",
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
                 )
-                logger.info(f"Product {product_id} categorized as {category}/{subcategory} by admin {update.effective_user.id}")
-                
-                # Notify subscribed users about the new categorized product
-                logger.info(f"Triggering notifications for categorized product {product_id}")
-                notification_service = NotificationService(db)
-                await notification_service.notify_users_about_product(context, product_id)
-                logger.info(f"Notification service called for product {product_id}")
+                logger.info(f"Product {product_id} categorized as {category}/{subcategory} by admin {update.effective_user.id}, awaiting notification decision")
             else:
                 await query.answer("Invalid save data", show_alert=True)
+        
+        # Handle notification confirmation - YES
+        elif parts[0] == "send_notif_yes":
+            if len(parts) >= 2:
+                product_id = int(parts[1])
+                
+                # Check if user is admin
+                if not is_admin(update.effective_user.id):
+                    await query.answer("❌ Only admins can manage notifications.", show_alert=True)
+                    return
+                
+                # Send notifications
+                logger.info(f"Admin approved notifications for product {product_id}")
+                await query.edit_message_text(
+                    f"✅ **Notifications sent!**\n\n"
+                    f"📢 Subscribed users are being notified about product #{product_id}.\n\n"
+                    f"Notifications are being sent in batches to avoid spam limits.",
+                    parse_mode="Markdown"
+                )
+                
+                # Trigger notifications
+                notification_service = NotificationService(db)
+                await notification_service.notify_users_about_product(context, product_id)
+                logger.info(f"Notification service triggered for product {product_id}")
+            else:
+                await query.answer("Invalid notification data", show_alert=True)
+        
+        # Handle notification confirmation - NO
+        elif parts[0] == "send_notif_no":
+            if len(parts) >= 2:
+                product_id = int(parts[1])
+                
+                # Check if user is admin
+                if not is_admin(update.effective_user.id):
+                    await query.answer("❌ Only admins can manage notifications.", show_alert=True)
+                    return
+                
+                # Skip notifications
+                logger.info(f"Admin skipped notifications for product {product_id}")
+                await query.edit_message_text(
+                    f"✅ **Categorization complete**\n\n"
+                    f"📂 Product #{product_id} has been categorized.\n"
+                    f"🔕 No notifications will be sent for this product.",
+                    parse_mode="Markdown"
+                )
+            else:
+                await query.answer("Invalid notification data", show_alert=True)
         
         # Handle category browsing
         elif parts[0] == "category":
@@ -1188,7 +1304,14 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cleanup_task(context: ContextTypes.DEFAULT_TYPE):
-    """Periodic cleanup task for old pagination states."""
+    """Periodic cleanup task for old pagination states.
+    Only runs on the primary bot instance to avoid duplicate cleanup.
+    """
+    # Check if this is the primary bot instance
+    if not _is_primary_instance(context):
+        logger.info("Cleanup task disabled - not primary instance")
+        return
+    
     while True:
         try:
             await asyncio.sleep(600)  # Run every 10 minutes
