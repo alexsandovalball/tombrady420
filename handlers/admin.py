@@ -707,4 +707,206 @@ async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 
+async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /botusers command - view users grouped by bot username (admin only)."""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            "❌ This command is only available for administrators."
+        )
+        return
+    
+    try:
+        bot_usernames = await db.get_bot_usernames()
+        
+        if not bot_usernames:
+            await update.message.reply_text(
+                "📊 **Bot Users Summary**\n\n"
+                "No bot usernames found. Users may not have bot_username tracked yet.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Create keyboard with bot instances
+        keyboard_buttons = []
+        
+        for bot_username in bot_usernames:
+            count = await db.get_users_count_by_bot(bot_username)
+            display_text = f"@{bot_username} ({count} users)"
+            keyboard_buttons.append([
+                InlineKeyboardButton(display_text, callback_data=f"viewbotusers|{bot_username}|1")
+            ])
+        
+        # Add option to view users without bot_username
+        untracked_count = await db.get_users_count_by_bot(None)
+        if untracked_count > 0:
+            keyboard_buttons.append([
+                InlineKeyboardButton(f"Untracked Users ({untracked_count})", callback_data="viewbotusers|_untracked_|1")
+            ])
+        
+        keyboard = InlineKeyboardMarkup(keyboard_buttons)
+        
+        total_users = await db.get_users_count_by_bot()
+        
+        await update.message.reply_text(
+            f"📊 **Bot Users by Instance**\n\n"
+            f"Total Users: {total_users}\n"
+            f"Bot Instances: {len(bot_usernames)}\n\n"
+            f"Select a bot to view its users:",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in botusers command: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ An error occurred while retrieving bot users."
+        )
+
+
+async def show_bot_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, bot_username: str, page: int = 1):
+    """Display users for a specific bot with delete options."""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        # Pagination settings
+        per_page = 10
+        offset = (page - 1) * per_page
+        
+        # Get users for this bot using the new paginated method
+        total_count, users = await db.get_users_by_bot_paginated(bot_username, limit=per_page, offset=offset)
+        
+        if bot_username == "_untracked_":
+            display_name = "Untracked Users"
+        else:
+            display_name = f"@{bot_username}"
+        
+        if not users:
+            await query.edit_message_text(
+                f"📊 **{display_name}**\n\n"
+                f"No users found.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Calculate total pages
+        total_pages = (total_count + per_page - 1) // per_page
+        
+        # Build user list message
+        message = f"📊 **{display_name}** (Page {page}/{total_pages})\n"
+        message += f"Total: {total_count} users\n\n"
+        
+        keyboard_buttons = []
+        
+        for user in users:
+            user_id = user["user_id"]
+            username = user.get("username", "N/A")
+            first_name = user.get("first_name", "Unknown")
+            last_name = user.get("last_name", "")
+            name = f"{first_name} {last_name}".strip()
+            
+            notif_status = "🔔" if user.get("notifications_enabled", 0) else "🔕"
+            block_status = " [BLOCKED]" if user.get("is_blocked", 0) else ""
+            
+            message += f"• ID: `{user_id}`\n"
+            message += f"  User: @{username if username != 'N/A' else 'none'}\n"
+            message += f"  Name: {name}\n"
+            message += f"  Status: {notif_status}{block_status}\n"
+            
+            # Add delete button for each user
+            keyboard_buttons.append([
+                InlineKeyboardButton(
+                    f"🗑️ Delete User {user_id}",
+                    callback_data=f"deleteuser|{user_id}|{bot_username}|{page}"
+                )
+            ])
+            
+            message += "\n"
+        
+        # Add bulk delete button
+        keyboard_buttons.append([
+            InlineKeyboardButton(
+                f"⚠️ Delete All {total_count} Users from {display_name}",
+                callback_data=f"deleteallbot|{bot_username}"
+            )
+        ])
+        
+        # Add pagination buttons
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"viewbotusers|{bot_username}|{page-1}"))
+        nav_buttons.append(InlineKeyboardButton("🔙 Back to Bots", callback_data="backto_botlist"))
+        if page < total_pages:
+            nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"viewbotusers|{bot_username}|{page+1}"))
+        
+        keyboard_buttons.append(nav_buttons)
+        
+        keyboard = InlineKeyboardMarkup(keyboard_buttons)
+        
+        await query.edit_message_text(
+            message,
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error showing bot users page: {e}", exc_info=True)
+        await query.answer("An error occurred", show_alert=True)
+
+
+async def deleteuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /deleteuser command - delete a specific user from database (admin only)."""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            "❌ This command is only available for administrators."
+        )
+        return
+    
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text(
+            "❌ Please provide a user ID.\n\n"
+            "Usage: `/deleteuser <user_id>`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    target_user_id = int(context.args[0])
+    
+    # Get user info before deletion
+    user = await db.get_user_by_id(target_user_id)
+    
+    if not user:
+        await update.message.reply_text(
+            f"❌ User with ID `{target_user_id}` not found.",
+            parse_mode="Markdown"
+        )
+        return
+    
+    username = user.get("username", "N/A")
+    first_name = user.get("first_name", "Unknown")
+    
+    # Create confirmation keyboard
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Yes, Delete", callback_data=f"confirm_deleteuser|{target_user_id}")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_deleteuser")]
+    ])
+    
+    await update.message.reply_text(
+        f"⚠️ **Delete User Confirmation**\n\n"
+        f"User ID: `{target_user_id}`\n"
+        f"Username: @{username if username != 'N/A' else 'none'}\n"
+        f"Name: {first_name}\n\n"
+        f"This will completely remove the user from the database.\n"
+        f"The user can restart the bot to be re-added as a fresh user.\n\n"
+        f"Are you sure?",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+    logger.info(f"Admin {user_id} requested deletion of user {target_user_id}")
+
+
 

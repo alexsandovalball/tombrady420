@@ -1052,6 +1052,133 @@ class Database:
                 row = await cursor.fetchone()
                 return row[0] == 1 if row else False
     
+    async def delete_user(self, user_id: int):
+        """
+        Delete a user completely from the database.
+        This is different from blocking - the user can restart the bot and be re-added.
+        Deletes user record and all associated data (notifications, etc.).
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            # Delete from bot_users (cascade will handle related records)
+            await db.execute("DELETE FROM bot_users WHERE user_id = ?", (user_id,))
+            # Also delete any pending notifications for this user
+            await db.execute("DELETE FROM notification_queue WHERE user_id = ?", (user_id,))
+            # Delete any custom message queue entries
+            await db.execute("DELETE FROM custom_message_queue WHERE user_id = ?", (user_id,))
+            await db.commit()
+    
+    async def delete_users_by_bot(self, bot_username: str):
+        """
+        Delete all users associated with a specific bot.
+        This allows bulk cleanup of users from a particular bot instance.
+        Use bot_username="_untracked_" to delete all users without bot_username.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            # First get the user IDs to delete their related data
+            if bot_username == "_untracked_":
+                async with db.execute("""
+                    SELECT user_id FROM bot_users 
+                    WHERE bot_username IS NULL OR bot_username = ''
+                """) as cursor:
+                    user_ids = [row[0] for row in await cursor.fetchall()]
+            else:
+                async with db.execute("""
+                    SELECT user_id FROM bot_users WHERE LOWER(bot_username) = LOWER(?)
+                """, (bot_username,)) as cursor:
+                    user_ids = [row[0] for row in await cursor.fetchall()]
+            
+            if user_ids:
+                # Delete notifications for these users
+                placeholders = ','.join('?' * len(user_ids))
+                await db.execute(f"DELETE FROM notification_queue WHERE user_id IN ({placeholders})", user_ids)
+                await db.execute(f"DELETE FROM custom_message_queue WHERE user_id IN ({placeholders})", user_ids)
+                
+                # Delete the users themselves
+                if bot_username == "_untracked_":
+                    await db.execute("DELETE FROM bot_users WHERE bot_username IS NULL OR bot_username = ''")
+                else:
+                    await db.execute("DELETE FROM bot_users WHERE LOWER(bot_username) = LOWER(?)", (bot_username,))
+                await db.commit()
+            
+            return len(user_ids)
+    
+    async def get_bot_usernames(self) -> List[str]:
+        """Get list of unique bot usernames that have users."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT DISTINCT bot_username FROM bot_users 
+                WHERE bot_username IS NOT NULL AND bot_username != ''
+                ORDER BY bot_username
+            """) as cursor:
+                rows = await cursor.fetchall()
+                return [row[0] for row in rows]
+    
+    async def get_users_count_by_bot(self, bot_username: str = None) -> int:
+        """
+        Get count of users for a specific bot or all users if bot_username is None.
+        Use bot_username="_untracked_" to get count of users without bot_username.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            if bot_username == "_untracked_":
+                async with db.execute("""
+                    SELECT COUNT(*) FROM bot_users 
+                    WHERE bot_username IS NULL OR bot_username = ''
+                """) as cursor:
+                    row = await cursor.fetchone()
+                    return row[0] if row else 0
+            elif bot_username:
+                async with db.execute("""
+                    SELECT COUNT(*) FROM bot_users WHERE LOWER(bot_username) = LOWER(?)
+                """, (bot_username,)) as cursor:
+                    row = await cursor.fetchone()
+                    return row[0] if row else 0
+            else:
+                async with db.execute("SELECT COUNT(*) FROM bot_users") as cursor:
+                    row = await cursor.fetchone()
+                    return row[0] if row else 0
+    
+    async def get_users_by_bot_paginated(self, bot_username: str, limit: int = 10, offset: int = 0):
+        """Get users for a specific bot with pagination."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            
+            if bot_username == "_untracked_":
+                # Get users without bot_username
+                async with db.execute("""
+                    SELECT * FROM bot_users 
+                    WHERE bot_username IS NULL OR bot_username = ''
+                    ORDER BY last_seen DESC
+                    LIMIT ? OFFSET ?
+                """, (limit, offset)) as cursor:
+                    rows = await cursor.fetchall()
+                    users = [dict(row) for row in rows]
+                
+                async with db.execute("""
+                    SELECT COUNT(*) FROM bot_users 
+                    WHERE bot_username IS NULL OR bot_username = ''
+                """) as cursor:
+                    row = await cursor.fetchone()
+                    total_count = row[0] if row else 0
+            else:
+                # Get users for specific bot
+                async with db.execute("""
+                    SELECT * FROM bot_users 
+                    WHERE LOWER(bot_username) = LOWER(?)
+                    ORDER BY last_seen DESC
+                    LIMIT ? OFFSET ?
+                """, (bot_username, limit, offset)) as cursor:
+                    rows = await cursor.fetchall()
+                    users = [dict(row) for row in rows]
+                
+                async with db.execute("""
+                    SELECT COUNT(*) FROM bot_users 
+                    WHERE LOWER(bot_username) = LOWER(?)
+                """, (bot_username,)) as cursor:
+                    row = await cursor.fetchone()
+                    total_count = row[0] if row else 0
+            
+            return total_count, users
+    
     async def queue_custom_message(self, user_id: int, message_text: str):
         """Queue a custom message for a user."""
         async with aiosqlite.connect(self.db_path) as db:

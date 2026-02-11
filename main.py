@@ -28,7 +28,8 @@ from handlers.admin import (
     delete_product, nuke_command, recategorize_command, 
     users_command, show_users_page,
     block_command, unblock_command, send_command, broadcast_command,
-    setcontact_command, handle_setcontact_input, clearcache_command
+    setcontact_command, handle_setcontact_input, clearcache_command,
+    botusers_command, deleteuser_command
 )
 from translations.language_config import is_valid_language, LANGUAGE_DISPLAY
 from translations.translator import get_translated_string_async, translation_service
@@ -1203,6 +1204,219 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             else:
                 await query.answer("Invalid data", show_alert=True)
         
+        # Handle view bot users
+        elif parts[0] == "viewbotusers":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can view users.", show_alert=True)
+                return
+            
+            if len(parts) >= 2:
+                bot_username = parts[1]
+                page = int(parts[2]) if len(parts) > 2 else 1
+                
+                from handlers.admin import show_bot_users_page
+                await show_bot_users_page(update, context, bot_username, page)
+            else:
+                await query.answer("Invalid data", show_alert=True)
+        
+        # Handle back to bot list
+        elif parts[0] == "backto_botlist":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can view users.", show_alert=True)
+                return
+            
+            from handlers.admin import botusers_command
+            # Simulate the command call
+            await query.answer()
+            
+            bot_usernames = await db.get_bot_usernames()
+            keyboard_buttons = []
+            
+            for bot_username in bot_usernames:
+                count = await db.get_users_count_by_bot(bot_username)
+                display_text = f"@{bot_username} ({count} users)"
+                keyboard_buttons.append([
+                    InlineKeyboardButton(display_text, callback_data=f"viewbotusers|{bot_username}|1")
+                ])
+            
+            untracked_count = await db.get_users_count_by_bot(None)
+            if untracked_count > 0:
+                keyboard_buttons.append([
+                    InlineKeyboardButton(f"Untracked Users ({untracked_count})", callback_data="viewbotusers|_untracked_|1")
+                ])
+            
+            keyboard = InlineKeyboardMarkup(keyboard_buttons)
+            total_users = await db.get_users_count_by_bot()
+            
+            await query.edit_message_text(
+                f"📊 **Bot Users by Instance**\n\n"
+                f"Total Users: {total_users}\n"
+                f"Bot Instances: {len(bot_usernames)}\n\n"
+                f"Select a bot to view its users:",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+        
+        # Handle delete single user
+        elif parts[0] == "deleteuser":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can delete users.", show_alert=True)
+                return
+            
+            if len(parts) >= 4:
+                target_user_id = int(parts[1])
+                bot_username = parts[2]
+                page = int(parts[3])
+                
+                # Get user info before deletion
+                user = await db.get_user_by_id(target_user_id)
+                
+                if not user:
+                    await query.answer("User not found", show_alert=True)
+                    return
+                
+                username = user.get("username", "N/A")
+                first_name = user.get("first_name", "Unknown")
+                
+                # Create confirmation keyboard
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Yes, Delete", callback_data=f"confirm_deleteuser|{target_user_id}|{bot_username}|{page}")],
+                    [InlineKeyboardButton("❌ Cancel", callback_data=f"viewbotusers|{bot_username}|{page}")]
+                ])
+                
+                await query.edit_message_text(
+                    f"⚠️ **Delete User Confirmation**\n\n"
+                    f"User ID: `{target_user_id}`\n"
+                    f"Username: @{username if username != 'N/A' else 'none'}\n"
+                    f"Name: {first_name}\n\n"
+                    f"This will completely remove the user from the database.\n"
+                    f"The user can restart the bot to be re-added as a fresh user.\n\n"
+                    f"Are you sure?",
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
+                )
+                await query.answer()
+            else:
+                await query.answer("Invalid data", show_alert=True)
+        
+        # Handle confirm delete user
+        elif parts[0] == "confirm_deleteuser":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can delete users.", show_alert=True)
+                return
+            
+            if len(parts) >= 2:
+                target_user_id = int(parts[1])
+                bot_username = parts[2] if len(parts) > 2 else None
+                page = int(parts[3]) if len(parts) > 3 else 1
+                
+                # Delete the user
+                await db.delete_user(target_user_id)
+                
+                await query.answer("✅ User deleted successfully", show_alert=True)
+                logger.info(f"Admin {update.effective_user.id} deleted user {target_user_id}")
+                
+                # If we have bot_username, go back to that page, otherwise close
+                if bot_username:
+                    from handlers.admin import show_bot_users_page
+                    await show_bot_users_page(update, context, bot_username, page)
+                else:
+                    await query.edit_message_text(
+                        f"✅ User `{target_user_id}` has been deleted successfully.",
+                        parse_mode="Markdown"
+                    )
+            else:
+                await query.answer("Invalid data", show_alert=True)
+        
+        # Handle cancel delete user
+        elif parts[0] == "cancel_deleteuser":
+            await query.edit_message_text("❌ User deletion cancelled.")
+            await query.answer()
+        
+        # Handle delete all users from a bot
+        elif parts[0] == "deleteallbot":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can delete users.", show_alert=True)
+                return
+            
+            if len(parts) >= 2:
+                bot_username = parts[1]
+                
+                # Get count
+                if bot_username == "_untracked_":
+                    count = await db.get_users_count_by_bot(None)
+                    display_name = "Untracked Users"
+                else:
+                    count = await db.get_users_count_by_bot(bot_username)
+                    display_name = f"@{bot_username}"
+                
+                # Create confirmation keyboard
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Yes, Delete All", callback_data=f"confirm_deleteallbot|{bot_username}")],
+                    [InlineKeyboardButton("❌ Cancel", callback_data=f"viewbotusers|{bot_username}|1")]
+                ])
+                
+                await query.edit_message_text(
+                    f"⚠️ **BULK DELETE WARNING**\n\n"
+                    f"You are about to delete **{count}** user(s) from {display_name}.\n\n"
+                    f"This will completely remove all these users from the database.\n"
+                    f"Users can restart the bot to be re-added as fresh users.\n\n"
+                    f"This action cannot be undone!\n\n"
+                    f"Are you sure?",
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
+                )
+                await query.answer()
+            else:
+                await query.answer("Invalid data", show_alert=True)
+        
+        # Handle confirm delete all users from bot
+        elif parts[0] == "confirm_deleteallbot":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can delete users.", show_alert=True)
+                return
+            
+            if len(parts) >= 2:
+                bot_username = parts[1]
+                
+                # Delete all users from this bot
+                deleted_count = await db.delete_users_by_bot(bot_username)
+                
+                await query.answer(f"✅ Deleted {deleted_count} users", show_alert=True)
+                logger.info(f"Admin {update.effective_user.id} deleted {deleted_count} users from bot {bot_username}")
+                
+                # Go back to bot list
+                bot_usernames = await db.get_bot_usernames()
+                keyboard_buttons = []
+                
+                for bot_username_item in bot_usernames:
+                    count = await db.get_users_count_by_bot(bot_username_item)
+                    display_text = f"@{bot_username_item} ({count} users)"
+                    keyboard_buttons.append([
+                        InlineKeyboardButton(display_text, callback_data=f"viewbotusers|{bot_username_item}|1")
+                    ])
+                
+                untracked_count = await db.get_users_count_by_bot(None)
+                if untracked_count > 0:
+                    keyboard_buttons.append([
+                        InlineKeyboardButton(f"Untracked Users ({untracked_count})", callback_data="viewbotusers|_untracked_|1")
+                    ])
+                
+                keyboard = InlineKeyboardMarkup(keyboard_buttons)
+                total_users = await db.get_users_count_by_bot()
+                
+                await query.edit_message_text(
+                    f"📊 **Bot Users by Instance**\n\n"
+                    f"Total Users: {total_users}\n"
+                    f"Bot Instances: {len(bot_usernames)}\n\n"
+                    f"✅ Deleted {deleted_count} users successfully.\n\n"
+                    f"Select a bot to view its users:",
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
+                )
+            else:
+                await query.answer("Invalid data", show_alert=True)
+        
         else:
             await query.answer("Unknown action", show_alert=True)
             
@@ -1372,6 +1586,8 @@ async def setup_bot_commands(bot):
     # These appear in the command menu ONLY for admin users
     admin_commands = user_commands + [
         BotCommand("users", "View and manage bot users"),
+        BotCommand("botusers", "View users grouped by bot instance"),
+        BotCommand("deleteuser", "Delete a specific user from database"),
         BotCommand("send", "Send a message to a specific user"),
         BotCommand("broadcast", "Send a message to all users"),
         BotCommand("setcontact", "Set order contact username"),
@@ -1434,6 +1650,8 @@ def main():
     application.add_handler(CommandHandler("nuke", nuke_command))
     application.add_handler(CommandHandler("recategorize", recategorize_command))
     application.add_handler(CommandHandler("users", users_command))
+    application.add_handler(CommandHandler("botusers", botusers_command))
+    application.add_handler(CommandHandler("deleteuser", deleteuser_command))
     application.add_handler(CommandHandler("subscribe", subscribe_command))
     application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
     application.add_handler(CommandHandler("block", block_command))
