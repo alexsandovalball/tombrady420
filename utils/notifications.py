@@ -87,6 +87,23 @@ class NotificationService:
         self._bot_apps_cache_time = None  # Timestamp of last cache
         self._cache_ttl = 60  # Cache TTL in seconds
     
+    @staticmethod
+    def _is_markdown_parse_error(error: BadRequest) -> bool:
+        """
+        Check if a BadRequest error is caused by markdown parsing.
+        Returns True if the error is related to markdown parsing, False otherwise.
+        """
+        error_str = str(error).lower()
+        # Check for common markdown parse error indicators
+        return any(keyword in error_str for keyword in [
+            "parse",
+            "markdown",
+            "can't parse",
+            "entities",
+            "offset",
+            "invalid"
+        ])
+    
     def _get_bot_applications(self) -> List[Application]:
         """
         Get bot applications with caching to avoid repeated imports.
@@ -463,7 +480,7 @@ class NotificationService:
                 )
             except BadRequest as e:
                 # Handle markdown parse errors by retrying without parse_mode
-                if "parse" in str(e).lower() or "markdown" in str(e).lower() or "can't parse" in str(e).lower():
+                if self._is_markdown_parse_error(e):
                     logger.warning(f"Markdown parse error for user {user_id}, retrying without parse_mode: {e}")
                     await bot_app.bot.send_message(
                         chat_id=user_id,
@@ -746,7 +763,7 @@ class NotificationService:
                         )
                     except BadRequest as e:
                         # Handle markdown parse errors by retrying without parse_mode
-                        if "parse" in str(e).lower() or "markdown" in str(e).lower() or "can't parse" in str(e).lower():
+                        if self._is_markdown_parse_error(e):
                             logger.warning(f"Markdown parse error for custom message to user {user_id}, retrying without parse_mode: {e}")
                             await bot_app.bot.send_message(
                                 chat_id=user_id,
