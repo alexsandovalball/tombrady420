@@ -1465,6 +1465,186 @@ class Database:
             await db.commit()
             logger.info(f"Cleared {deleted} bot file ID cache entries")
             return deleted
+    
+    async def get_users_with_inactive_bots(self, active_bot_usernames: List[str]) -> List[Dict[str, Any]]:
+        """
+        Get all users associated with bots that are no longer in the active pool.
+        
+        Args:
+            active_bot_usernames: List of currently active bot usernames
+            
+        Returns:
+            List of user dictionaries with bot_username not in active list
+        """
+        if not active_bot_usernames:
+            # If no active bots, return all users with bot_username set
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("""
+                    SELECT * FROM bot_users 
+                    WHERE bot_username IS NOT NULL AND bot_username != ''
+                    ORDER BY last_seen DESC
+                """) as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(row) for row in rows]
+        
+        # Normalize active bot usernames for comparison
+        normalized_active = [self.normalize_bot_username(name) for name in active_bot_usernames]
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            # Build a query that excludes active bots
+            placeholders = ','.join('?' * len(normalized_active))
+            query = f"""
+                SELECT * FROM bot_users 
+                WHERE bot_username IS NOT NULL 
+                AND bot_username != ''
+                AND LOWER(bot_username) NOT IN ({placeholders})
+                ORDER BY last_seen DESC
+            """
+            async with db.execute(query, normalized_active) as cursor:
+                rows = await cursor.fetchall()
+                users = [dict(row) for row in rows]
+                
+            logger.info(f"Found {len(users)} users associated with inactive bots")
+            return users
+    
+    async def get_products_with_inactive_bots(self, active_bot_usernames: List[str]) -> List[Dict[str, Any]]:
+        """
+        Get all products associated with bots that are no longer in the active pool.
+        
+        Args:
+            active_bot_usernames: List of currently active bot usernames
+            
+        Returns:
+            List of product dictionaries with bot_username not in active list
+        """
+        if not active_bot_usernames:
+            # If no active bots, return all products with bot_username set
+            async with aiosqlite.connect(self.db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("""
+                    SELECT * FROM products 
+                    WHERE bot_username IS NOT NULL AND bot_username != ''
+                    ORDER BY created_at DESC
+                """) as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(row) for row in rows]
+        
+        # Normalize active bot usernames for comparison
+        normalized_active = [self.normalize_bot_username(name) for name in active_bot_usernames]
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            # Build a query that excludes active bots
+            placeholders = ','.join('?' * len(normalized_active))
+            query = f"""
+                SELECT * FROM products 
+                WHERE bot_username IS NOT NULL 
+                AND bot_username != ''
+                AND LOWER(bot_username) NOT IN ({placeholders})
+                ORDER BY created_at DESC
+            """
+            async with db.execute(query, normalized_active) as cursor:
+                rows = await cursor.fetchall()
+                products = [dict(row) for row in rows]
+                
+            logger.info(f"Found {len(products)} products associated with inactive bots")
+            return products
+    
+    async def prune_inactive_bot_users(self, active_bot_usernames: List[str], dry_run: bool = True) -> Dict[str, int]:
+        """
+        Prune users and products associated with inactive/deleted bots.
+        
+        Args:
+            active_bot_usernames: List of currently active bot usernames
+            dry_run: If True, only report what would be deleted without actually deleting
+            
+        Returns:
+            Dictionary with counts of users, products, notifications, and messages that were (or would be) deleted
+        """
+        stats = {
+            'users': 0,
+            'products': 0,
+            'notifications': 0,
+            'custom_messages': 0
+        }
+        
+        # Get users with inactive bots
+        inactive_users = await self.get_users_with_inactive_bots(active_bot_usernames)
+        
+        if not inactive_users:
+            logger.info("No users with inactive bots found")
+            return stats
+        
+        user_ids = [user['user_id'] for user in inactive_users]
+        inactive_bot_usernames = set(user.get('bot_username') for user in inactive_users if user.get('bot_username'))
+        
+        logger.info(f"{'[DRY RUN] ' if dry_run else ''}Found {len(user_ids)} users from {len(inactive_bot_usernames)} inactive bots: {', '.join(sorted(inactive_bot_usernames))}")
+        
+        if dry_run:
+            # Count what would be deleted
+            async with aiosqlite.connect(self.db_path) as db:
+                # Count notifications
+                placeholders = ','.join('?' * len(user_ids))
+                async with db.execute(f"SELECT COUNT(*) FROM notification_queue WHERE user_id IN ({placeholders})", user_ids) as cursor:
+                    row = await cursor.fetchone()
+                    stats['notifications'] = row[0] if row else 0
+                
+                # Count custom messages
+                async with db.execute(f"SELECT COUNT(*) FROM custom_message_queue WHERE user_id IN ({placeholders})", user_ids) as cursor:
+                    row = await cursor.fetchone()
+                    stats['custom_messages'] = row[0] if row else 0
+            
+            # Count products
+            inactive_products = await self.get_products_with_inactive_bots(active_bot_usernames)
+            stats['products'] = len(inactive_products)
+            stats['users'] = len(user_ids)
+            
+            logger.info(f"[DRY RUN] Would delete: {stats['users']} users, {stats['products']} products, "
+                       f"{stats['notifications']} notifications, {stats['custom_messages']} custom messages")
+        else:
+            # Actually delete
+            async with aiosqlite.connect(self.db_path) as db:
+                # Delete notifications for these users
+                placeholders = ','.join('?' * len(user_ids))
+                cursor = await db.execute(f"DELETE FROM notification_queue WHERE user_id IN ({placeholders})", user_ids)
+                stats['notifications'] = cursor.rowcount
+                
+                # Delete custom messages for these users
+                cursor = await db.execute(f"DELETE FROM custom_message_queue WHERE user_id IN ({placeholders})", user_ids)
+                stats['custom_messages'] = cursor.rowcount
+                
+                # Delete users from inactive bots
+                for bot_username in inactive_bot_usernames:
+                    cursor = await db.execute("DELETE FROM bot_users WHERE LOWER(bot_username) = LOWER(?)", (bot_username,))
+                    stats['users'] += cursor.rowcount
+                
+                # Delete products from inactive bots
+                normalized_active = [self.normalize_bot_username(name) for name in active_bot_usernames]
+                if normalized_active:
+                    placeholders = ','.join('?' * len(normalized_active))
+                    cursor = await db.execute(f"""
+                        DELETE FROM products 
+                        WHERE bot_username IS NOT NULL 
+                        AND bot_username != ''
+                        AND LOWER(bot_username) NOT IN ({placeholders})
+                    """, normalized_active)
+                    stats['products'] = cursor.rowcount
+                else:
+                    cursor = await db.execute("""
+                        DELETE FROM products 
+                        WHERE bot_username IS NOT NULL AND bot_username != ''
+                    """)
+                    stats['products'] = cursor.rowcount
+                
+                await db.commit()
+                
+            logger.info(f"Pruned: {stats['users']} users, {stats['products']} products, "
+                       f"{stats['notifications']} notifications, {stats['custom_messages']} custom messages "
+                       f"from inactive bots: {', '.join(sorted(inactive_bot_usernames))}")
+        
+        return stats
 
 
 async def clear_database_caches():
