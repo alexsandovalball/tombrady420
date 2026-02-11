@@ -551,7 +551,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         )
         
         # Note: The detailed summary is sent separately by the notification service
-        logger.info(f"Admin {user_id} broadcast message: {stats.get('sent', 0)} sent, {stats.get('failed', 0)} failed")
+        total_failures = stats.get('blocked', 0) + stats.get('not_found', 0) + stats.get('unexpected_errors', 0)
+        logger.info(f"Admin {user_id} broadcast complete: {stats.get('sent', 0)} sent, {total_failures} failed")
         
         context.user_data.clear()
         return

@@ -99,8 +99,8 @@ class NotificationService:
         return any(keyword in error_str for keyword in [
             "can't parse",
             "parse entities",
-            "markdown",
-            "entities"
+            "can't parse entities",
+            "markdown"
         ])
     
     def _get_bot_applications(self) -> List[Application]:
@@ -530,7 +530,9 @@ class NotificationService:
         except Exception as e:
             logger.error(f"Unexpected error sending notification to {user_id}: {e}", exc_info=True)
             # Don't mark as sent for unexpected errors - they should be investigated
-            # Note: Messages are not auto-retried on schedule, only when explicitly triggered
+            # Note: Messages remain in queue and will be retried when:
+            #  - Product categorization triggers notification queue processing
+            #  - Admin manually triggers notification processing (future feature)
             # This ensures we don't lose messages due to transient issues
             return False
     
@@ -744,8 +746,14 @@ class NotificationService:
         Returns the number of successfully sent messages.
         """
         if stats is None:
-            stats = {"sent": 0, "failed": 0, "blocked": 0, "not_found": 0, 
-                    "markdown_errors": 0, "unexpected_errors": 0}
+            stats = {
+                "sent": 0, 
+                "blocked": 0, 
+                "not_found": 0, 
+                "rate_limited": 0,
+                "markdown_errors": 0, 
+                "unexpected_errors": 0
+            }
         
         # Get all available bot applications (cached)
         bot_apps = self._get_bot_applications()
@@ -841,7 +849,6 @@ class NotificationService:
                         await self.db.block_user(user_id)
                         stats["blocked"] += 1
                     await self.db.mark_custom_message_sent(message_id)
-                    # Don't increment failed - already counted in specific category
                     
                 except TelegramError as e:
                     error_msg = str(e).lower()
@@ -851,25 +858,20 @@ class NotificationService:
                         await self.db.delete_user(user_id)
                         await self.db.mark_custom_message_sent(message_id)
                         stats["not_found"] += 1
-                        # Don't increment failed - already counted in specific category
                     elif "bot was blocked by the user" in error_msg:
                         logger.info(f"User {user_id} blocked the bot, marking as blocked")
                         await self.db.block_user(user_id)
                         await self.db.mark_custom_message_sent(message_id)
                         stats["blocked"] += 1
-                        # Don't increment failed - already counted in specific category
                     else:
                         logger.error(f"Telegram error sending custom message to {user_id}: {e}")
-                        # Don't mark as sent, will retry later for temporary errors
-                        # Don't count as failed either - will be retried
+                        # Don't mark as sent - temporary error, will be retried
                     
                 except Exception as e:
                     logger.error(f"Unexpected error sending custom message to {user_id}: {e}", exc_info=True)
                     # Don't mark as sent for unexpected errors - they should be investigated
-                    # Note: Messages are not auto-retried on schedule, only when explicitly triggered
-                    # This ensures we don't lose messages due to transient issues
+                    # Messages remain in queue and will be retried on next broadcast/send operation
                     stats["unexpected_errors"] += 1
-                    # Don't increment failed - already counted in unexpected_errors
         
         return stats["sent"]
     
@@ -887,17 +889,19 @@ class NotificationService:
             skipped_blocked = stats.get("skipped_blocked", 0)
             skipped_admin = stats.get("skipped_admin", 0)
             
-            # Calculate total delivery attempts (successful + all failure categories)
-            total_attempted = sent + blocked + not_found + unexpected_errors
+            # Calculate totals
+            # Note: markdown_errors are already included in 'sent' count (sent as plain text)
+            # Total attempted = sent (including markdown_errors) + permanent failures
+            total_permanent_failures = blocked + not_found
+            total_attempted = sent + total_permanent_failures
             
             # Build summary message
             summary = f"📊 **{operation.title()} Complete**\n\n"
             summary += f"✅ **Successfully Sent:** {sent}\n"
             
-            # Show total failed count (sum of all failure categories)
-            total_failed = blocked + not_found + unexpected_errors
-            if total_failed > 0:
-                summary += f"❌ **Failed:** {total_failed}\n"
+            # Show total permanent failures
+            if total_permanent_failures > 0:
+                summary += f"❌ **Permanent Failures:** {total_permanent_failures}\n"
             
             if total_queued > 0:
                 summary += f"\n📝 **Queued:** {total_queued}\n"
@@ -921,7 +925,7 @@ class NotificationService:
                 if unexpected_errors > 0:
                     summary += f"• Unexpected errors (will retry): {unexpected_errors}\n"
             
-            # Calculate success rate based on delivery attempts (not including rate-limited)
+            # Calculate success rate based on delivery attempts (excluding rate-limited and unexpected)
             if total_attempted > 0:
                 success_rate = (sent / total_attempted) * 100
                 summary += f"\n📈 **Success Rate:** {success_rate:.1f}%"
