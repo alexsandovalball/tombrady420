@@ -886,59 +886,6 @@ async def show_bot_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.answer("An error occurred", show_alert=True)
 
 
-async def deleteuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /deleteuser command - delete a specific user from database (admin only)."""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
-    
-    if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text(
-            "❌ Please provide a user ID.\n\n"
-            "Usage: `/deleteuser <user_id>`",
-            parse_mode="Markdown"
-        )
-        return
-    
-    target_user_id = int(context.args[0])
-    
-    # Get user info before deletion
-    user = await db.get_user_by_id(target_user_id)
-    
-    if not user:
-        await update.message.reply_text(
-            f"❌ User with ID `{target_user_id}` not found.",
-            parse_mode="Markdown"
-        )
-        return
-    
-    username = user.get("username", "N/A")
-    first_name = user.get("first_name", "Unknown")
-    
-    # Create confirmation keyboard
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Yes, Delete", callback_data=f"confirm_deleteuser|{target_user_id}")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_deleteuser")]
-    ])
-    
-    await update.message.reply_text(
-        f"⚠️ **Delete User Confirmation**\n\n"
-        f"User ID: `{target_user_id}`\n"
-        f"Username: @{username if username != 'N/A' else 'none'}\n"
-        f"Name: {first_name}\n\n"
-        f"This will completely remove the user from the database.\n"
-        f"The user can restart the bot to be re-added as a fresh user.\n\n"
-        f"Are you sure?",
-        reply_markup=keyboard,
-        parse_mode="Markdown"
-    )
-    logger.info(f"Admin {user_id} requested deletion of user {target_user_id}")
-
-
 async def prunebots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /prunebots command - prune users from inactive/deleted bots (admin only)."""
     user_id = update.effective_user.id
