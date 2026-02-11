@@ -11,8 +11,6 @@ from telegram.error import BadRequest
 from database import Database
 from utils.helpers import is_admin, get_channel_id, get_channel_username, escape_markdown_v1
 
-from webhook_server import get_bot_usernames
-
 logger = logging.getLogger(__name__)
 db = Database()
 
@@ -24,6 +22,7 @@ async def build_users_bot_selection_menu():
     where bot_list is a list of (bot_username, count) tuples for single-bot auto-selection
     """
     # Get active bot usernames from webhook server
+    from webhook_server import get_bot_usernames
     active_bots = get_bot_usernames()
     active_bots_lower = [bot.lower() for bot in active_bots]
     
