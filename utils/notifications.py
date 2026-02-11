@@ -99,7 +99,6 @@ class NotificationService:
         return any(keyword in error_str for keyword in [
             "can't parse",
             "parse entities",
-            "can't parse entities",
             "markdown"
         ])
     
@@ -890,8 +889,10 @@ class NotificationService:
             skipped_admin = stats.get("skipped_admin", 0)
             
             # Calculate totals
-            # Note: markdown_errors are already included in 'sent' count (sent as plain text)
-            # Total attempted = sent (including markdown_errors) + permanent failures
+            # Note: 'sent' count includes messages sent successfully with markdown AND
+            # messages that had markdown errors but were sent as plain text.
+            # markdown_errors is tracked separately to show how many needed the fallback.
+            # Total attempted = sent (including those with markdown errors) + permanent failures
             total_permanent_failures = blocked + not_found
             total_attempted = sent + total_permanent_failures
             
