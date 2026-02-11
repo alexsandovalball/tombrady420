@@ -81,13 +81,6 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     # Create application
     bot_app = Application.builder().token(bot_token).build()
     
-    # Initialize database (only once for the primary bot)
-    if bot_index == 0:
-        await post_init(bot_app)
-    else:
-        # For secondary bots, set commands
-        await setup_bot_commands(bot_app.bot)
-    
     # Register handlers
     bot_app.add_handler(CommandHandler("start", start_command))
     bot_app.add_handler(CommandHandler("menu", menu_command))
@@ -148,6 +141,13 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     # Initialize the application
     await bot_app.initialize()
     await bot_app.start()
+    
+    # Initialize database and set bot commands (only once for the primary bot)
+    if bot_index == 0:
+        await post_init(bot_app)
+    else:
+        # For secondary bots, set commands
+        await setup_bot_commands(bot_app.bot)
     
     # Set webhook
     webhook_url = Config.WEBHOOK_URL
