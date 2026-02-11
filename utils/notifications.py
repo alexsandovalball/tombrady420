@@ -206,6 +206,7 @@ class NotificationService:
         try:
             total_sent_count = 0
             batch_number = 0
+            rate_limited_users = set()  # Track users who hit rate limits in this run
             
             # Process notifications in batches until queue is empty
             while True:
@@ -229,14 +230,25 @@ class NotificationService:
                         user_notifications[user_id] = []
                     user_notifications[user_id].append(notification)
                 
+                # Check if all users in this batch were already rate-limited
+                all_previously_rate_limited = all(uid in rate_limited_users for uid in user_notifications.keys())
+                if all_previously_rate_limited:
+                    logger.info(f"All {len(user_notifications)} users in batch {batch_number} were previously rate-limited, stopping")
+                    break
+                
                 # Filter users who haven't exceeded rate limits
                 eligible_users = []
                 for user_id, notifications in user_notifications.items():
+                    # Skip if already known to be rate-limited
+                    if user_id in rate_limited_users:
+                        continue
+                    
                     # Check rate limit for this user
                     recent_count = await self.db.get_recent_notifications_count(user_id, minutes=60)
                     
                     if recent_count >= MAX_NOTIFICATIONS_PER_HOUR:
                         logger.debug(f"User {user_id} reached rate limit, skipping")
+                        rate_limited_users.add(user_id)
                         continue
                     
                     # Calculate how many more notifications we can send to this user
@@ -247,8 +259,10 @@ class NotificationService:
                 
                 if not eligible_users:
                     logger.info(f"No eligible users after rate limiting in batch {batch_number}")
-                    # Continue to next batch - there might be other users
-                    continue
+                    # All users in this batch are rate-limited
+                    # If we continue, we'll fetch the same notifications again (infinite loop)
+                    # So we break here - these will be retried in the next scheduled run
+                    break
                 
                 # Implement staggered delivery by groups with multi-bot support
                 sent_count = 0
