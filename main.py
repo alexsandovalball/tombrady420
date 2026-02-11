@@ -530,16 +530,16 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
     
     if callback_data == "broadcast_confirm_all":
-        # Answer query immediately to prevent timeout during long operation
-        await query.answer()
-        
         # Confirm and send broadcast to all users
         message_text = context.user_data.get('broadcast_message')
         
         if not message_text:
-            await query.edit_message_text("❌ Message not found. Please start over.")
+            await query.answer("❌ Message not found. Please start over.", show_alert=True)
             context.user_data.clear()
             return
+        
+        # Answer query immediately to prevent timeout during long operation
+        await query.answer()
         
         # Send status message
         await query.edit_message_text(

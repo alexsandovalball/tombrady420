@@ -741,7 +741,7 @@ class NotificationService:
                 
                 # If no messages were actually sent in this batch (all blocked or rate-limited),
                 # break to avoid infinite loop
-                if not batch_has_messages and len(batch) == 0:
+                if not batch_has_messages:
                     logger.info(f"No more messages can be sent in this run (all blocked or rate-limited)")
                     break
             
