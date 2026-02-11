@@ -25,12 +25,14 @@ Browse products by category - available to all users
 - Click category to view filtered products
 
 ### `/users`
-View and manage bot users (admin only)
-- Shows 10 users per page with pagination
-- Displays: username, full name, ID, interaction count, last seen, **notification status**, **bot username** (which bot instance they used)
+View and manage bot users grouped by bot instance (admin only)
+- **Multi-bot setups**: Shows bot selection menu, choose which bot's users to manage
+- **Single-bot setups**: Automatically shows users (no selection needed)
+- Displays: username, full name, ID, interaction count, last seen, notification status
 - **Toggle notifications** for individual users with one click
+- **Block/unblock users** to prevent/allow bot access
 - Navigate pages with ⬅️ Previous / ➡️ Next buttons
-- Useful for monitoring bot engagement, analytics across multiple bot instances, and controlling who gets notifications
+- Useful for monitoring bot engagement and controlling who gets notifications
 
 ### `/botusers`
 View users grouped by bot instance (admin only)

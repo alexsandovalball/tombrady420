@@ -26,7 +26,7 @@ from handlers.product_view import show_product, handle_product_callback
 from handlers.language import language_command, handle_language_callback
 from handlers.admin import (
     delete_product, nuke_command, recategorize_command, 
-    users_command, show_users_page,
+    users_command, show_users_page, build_users_bot_selection_menu,
     block_command, unblock_command, send_command, broadcast_command,
     setcontact_command, handle_setcontact_input, clearcache_command,
     botusers_command, prunebots_command
@@ -536,27 +536,25 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Send status message
         await query.edit_message_text(
             "📡 **Broadcasting message...**\n\n"
-            "Please wait while the message is queued for all users.",
+            "Please wait while the message is queued and delivered to all users.",
             parse_mode="Markdown"
         )
         
         # Broadcast using notification service
         notification_service = NotificationService(db)
         
-        queued_count = await notification_service.broadcast_custom_message(
+        stats = await notification_service.broadcast_custom_message(
             context,
             message_text,
-            exclude_blocked=True
+            exclude_blocked=True,
+            admin_user_id=user_id
         )
         
-        await query.edit_message_text(
-            f"✅ **Broadcast Complete**\n\n"
-            f"📨 Messages queued: {queued_count}\n"
-            f"📝 Message: {message_text[:100]}{'...' if len(message_text) > 100 else ''}\n\n"
-            f"Messages will be delivered with rate-limiting intervals.",
-            parse_mode="Markdown"
-        )
-        logger.info(f"Admin {user_id} broadcast message to {queued_count} users")
+        # Note: The detailed summary is sent separately by the notification service
+        # Failure count = permanent failures (blocked + not_found + unexpected_errors)
+        # Excludes markdown_errors (successfully sent as plain text) and rate_limited (queued for later)
+        total_failures = stats.get('blocked', 0) + stats.get('not_found', 0) + stats.get('unexpected_errors', 0)
+        logger.info(f"Admin {user_id} broadcast complete: {stats.get('sent', 0)} sent, {total_failures} failed")
         
         context.user_data.clear()
         return
@@ -946,6 +944,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             if len(parts) >= 2:
                 target_user_id = int(parts[1])
                 page = int(parts[2]) if len(parts) > 2 else 1
+                bot_username = parts[3] if len(parts) > 3 else None
                 
                 # Get current status
                 is_subscribed = await db.is_user_subscribed(target_user_id)
@@ -959,16 +958,17 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 # Replace with confirmation buttons
                 try:
+                    bot_param = f"|{bot_username}" if bot_username else ""
                     confirmation_keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton(f"✅ Yes, {action_text.title()} Notifications", callback_data=f"confirm_toggle_notif|{target_user_id}|{page}|{int(is_subscribed)}")],
-                        [InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_toggle_notif|{page}")]
+                        [InlineKeyboardButton(f"✅ Yes, {action_text.title()} Notifications", callback_data=f"confirm_toggle_notif|{target_user_id}|{page}|{int(is_subscribed)}{bot_param}")],
+                        [InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_toggle_notif|{page}{bot_param}")]
                     ])
                     await query.edit_message_reply_markup(reply_markup=confirmation_keyboard)
                 except Exception as e:
                     logger.error(f"Error showing notification toggle confirmation: {e}")
                     # Fallback to just toggling
                     await db.set_user_notifications(target_user_id, not is_subscribed)
-                    await show_users_page(update, context, page)
+                    await show_users_page(update, context, page, bot_username)
                     status_text = "disabled" if is_subscribed else "enabled"
                     await query.answer(f"✅ Notifications {status_text} for user", show_alert=False)
                     logger.info(f"Admin {update.effective_user.id} toggled notifications for user {target_user_id} to {not is_subscribed}")
@@ -985,12 +985,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 target_user_id = int(parts[1])
                 page = int(parts[2])
                 was_subscribed = bool(int(parts[3])) if len(parts) > 3 else False
+                bot_username = parts[4] if len(parts) > 4 else None
                 
                 # Toggle notifications
                 await db.set_user_notifications(target_user_id, not was_subscribed)
                 
                 # Refresh the users page
-                await show_users_page(update, context, page)
+                await show_users_page(update, context, page, bot_username)
                 
                 status_text = "disabled" if was_subscribed else "enabled"
                 await query.answer(f"✅ Notifications {status_text} for user successfully", show_alert=True)
@@ -1006,9 +1007,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             
             if len(parts) >= 1:
                 page = int(parts[1]) if len(parts) > 1 else 1
+                bot_username = parts[2] if len(parts) > 2 else None
                 
                 # Refresh the users page
-                await show_users_page(update, context, page)
+                await show_users_page(update, context, page, bot_username)
                 
                 await query.answer("✅ Toggle cancelled", show_alert=False)
             else:
@@ -1021,7 +1023,51 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 return
             
             page = int(parts[1]) if len(parts) > 1 else 1
-            await show_users_page(update, context, page)
+            bot_username = parts[2] if len(parts) > 2 else None
+            await show_users_page(update, context, page, bot_username)
+        
+        # Handle viewusers callback (view users for specific bot)
+        elif parts[0] == "viewusers":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can view users.", show_alert=True)
+                return
+            
+            if len(parts) >= 2:
+                bot_username = parts[1]
+                page = int(parts[2]) if len(parts) > 2 else 1
+                
+                await query.answer()
+                await show_users_page(update, context, page, bot_username)
+            else:
+                await query.answer("Invalid data", show_alert=True)
+        
+        # Handle back to bot list from users view
+        elif callback_data == "users_back_to_bots":
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can view users.", show_alert=True)
+                return
+            
+            await query.answer()
+            
+            # Build bot selection menu using helper function
+            keyboard, message, message_no_md, has_bots, bot_list = await build_users_bot_selection_menu()
+            
+            if not has_bots:
+                await query.edit_message_text("No bot usernames found.")
+                return
+            
+            try:
+                await query.edit_message_text(
+                    message,
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
+                )
+            except BadRequest as e:
+                logger.warning(f"Markdown parse error in users_back_to_bots, retrying without parse_mode: {e}")
+                await query.edit_message_text(
+                    message_no_md,
+                    reply_markup=keyboard
+                )
         
         # Handle notification toggle (subscribe/unsubscribe)
         elif callback_data == "toggle_notifications":
@@ -1116,6 +1162,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             if len(parts) >= 2:
                 target_user_id = int(parts[1])
                 page = int(parts[2]) if len(parts) > 2 else 1
+                bot_username = parts[3] if len(parts) > 3 else None
                 
                 # Prevent blocking admins
                 if is_admin(target_user_id):
@@ -1131,16 +1178,17 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Replace the block button with confirmation buttons
                 try:
                     # Update the message to show confirmation buttons
+                    bot_param = f"|{bot_username}" if bot_username else ""
                     confirmation_keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("✅ Yes, Block User", callback_data=f"confirm_block|{target_user_id}|{page}")],
-                        [InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_block|{page}")]
+                        [InlineKeyboardButton("✅ Yes, Block User", callback_data=f"confirm_block|{target_user_id}|{page}{bot_param}")],
+                        [InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_block|{page}{bot_param}")]
                     ])
                     await query.edit_message_reply_markup(reply_markup=confirmation_keyboard)
                 except Exception as e:
                     logger.error(f"Error showing block confirmation: {e}")
                     # Fallback to just blocking
                     await db.block_user(target_user_id)
-                    await show_users_page(update, context, page)
+                    await show_users_page(update, context, page, bot_username)
                     await query.answer("🚫 User blocked", show_alert=False)
                     logger.info(f"Admin {update.effective_user.id} blocked user {target_user_id}")
             else:
@@ -1155,12 +1203,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             if len(parts) >= 2:
                 target_user_id = int(parts[1])
                 page = int(parts[2]) if len(parts) > 2 else 1
+                bot_username = parts[3] if len(parts) > 3 else None
                 
                 # Block the user
                 await db.block_user(target_user_id)
                 
                 # Refresh the users page
-                await show_users_page(update, context, page)
+                await show_users_page(update, context, page, bot_username)
                 
                 await query.answer("✅ User has been blocked successfully", show_alert=True)
                 logger.info(f"Admin {update.effective_user.id} blocked user {target_user_id}")
@@ -1175,9 +1224,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             
             if len(parts) >= 1:
                 page = int(parts[1]) if len(parts) > 1 else 1
+                bot_username = parts[2] if len(parts) > 2 else None
                 
                 # Refresh the users page
-                await show_users_page(update, context, page)
+                await show_users_page(update, context, page, bot_username)
                 
                 await query.answer("✅ Block cancelled", show_alert=False)
             else:
@@ -1192,12 +1242,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             if len(parts) >= 2:
                 target_user_id = int(parts[1])
                 page = int(parts[2]) if len(parts) > 2 else 1
+                bot_username = parts[3] if len(parts) > 3 else None
                 
                 # Unblock the user
                 await db.unblock_user(target_user_id)
                 
                 # Refresh the users page
-                await show_users_page(update, context, page)
+                await show_users_page(update, context, page, bot_username)
                 
                 await query.answer("✅ User has been unblocked successfully", show_alert=True)
                 logger.info(f"Admin {update.effective_user.id} unblocked user {target_user_id}")
@@ -1545,7 +1596,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle errors."""
-    logger.error(f"Update {update} caused error {context.error}")
+    # Log error with full context and traceback
+    update_info = "unknown"
+    if update:
+        if update.effective_user:
+            update_info = f"user {update.effective_user.id}"
+        elif update.effective_chat:
+            update_info = f"chat {update.effective_chat.id}"
+        update_info += f" (update_id: {update.update_id})"
+    
+    logger.error(f"Update from {update_info} caused error: {context.error}", exc_info=True)
     
     if isinstance(context.error, TelegramError):
         if "message is not modified" in str(context.error).lower():

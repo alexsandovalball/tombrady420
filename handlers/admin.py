@@ -11,8 +11,95 @@ from telegram.error import BadRequest
 from database import Database
 from utils.helpers import is_admin, get_channel_id, get_channel_username, escape_markdown_v1
 
+from webhook_server import get_bot_usernames
+
 logger = logging.getLogger(__name__)
 db = Database()
+
+
+async def build_users_bot_selection_menu():
+    """
+    Build bot selection menu for user management.
+    Returns tuple of (keyboard, message_text, message_text_no_md, has_bots, bot_list)
+    where bot_list is a list of (bot_username, count) tuples for single-bot auto-selection
+    """
+    # Get active bot usernames from webhook server
+    active_bots = get_bot_usernames()
+    active_bots_lower = [bot.lower() for bot in active_bots]
+    
+    # Get all bot usernames from database
+    bot_usernames = await db.get_bot_usernames()
+    
+    if not bot_usernames:
+        return None, None, None, False, []
+    
+    # Separate active and inactive bots
+    active_bot_list = []
+    inactive_bot_list = []
+    
+    for bot_username in bot_usernames:
+        count = await db.get_users_count_by_bot(bot_username)
+        if bot_username.lower() in active_bots_lower:
+            active_bot_list.append((bot_username, count))
+        else:
+            inactive_bot_list.append((bot_username, count))
+    
+    # Check for untracked users
+    untracked_count = await db.get_users_count_by_bot("_untracked_")
+    has_untracked = untracked_count > 0
+    
+    # Create complete bot list for auto-selection logic
+    all_bots = active_bot_list + inactive_bot_list
+    if has_untracked:
+        all_bots.append(("_untracked_", untracked_count))
+    
+    # Create keyboard with bot instances
+    keyboard_buttons = []
+    
+    # Add active bots first
+    for bot_username, count in active_bot_list:
+        display_text = f"✅ @{bot_username} ({count} users)"
+        keyboard_buttons.append([
+            InlineKeyboardButton(display_text, callback_data=f"viewusers|{bot_username}|1")
+        ])
+    
+    # Add inactive bots with warning
+    for bot_username, count in inactive_bot_list:
+        display_text = f"⚠️ @{bot_username} ({count} users - INACTIVE)"
+        keyboard_buttons.append([
+            InlineKeyboardButton(display_text, callback_data=f"viewusers|{bot_username}|1")
+        ])
+    
+    # Add option to view users without bot_username
+    if has_untracked:
+        keyboard_buttons.append([
+            InlineKeyboardButton(f"Untracked Users ({untracked_count})", callback_data="viewusers|_untracked_|1")
+        ])
+    
+    keyboard = InlineKeyboardMarkup(keyboard_buttons)
+    
+    total_users = await db.get_users_count_by_bot()
+    
+    message = f"📊 **User Management by Bot Instance**\n\n"
+    message += f"Total Users: {total_users}\n"
+    message += f"Active Bot Instances: {len(active_bot_list)}\n"
+    
+    if inactive_bot_list:
+        message += f"⚠️ Inactive Bots: {len(inactive_bot_list)} (users should be pruned)\n"
+    
+    message += f"\nSelect a bot to manage its users:"
+    
+    # Non-markdown version
+    message_no_md = f"📊 User Management by Bot Instance\n\n"
+    message_no_md += f"Total Users: {total_users}\n"
+    message_no_md += f"Active Bot Instances: {len(active_bot_list)}\n"
+    
+    if inactive_bot_list:
+        message_no_md += f"⚠️ Inactive Bots: {len(inactive_bot_list)} (users should be pruned)\n"
+    
+    message_no_md += f"\nSelect a bot to manage its users:"
+    
+    return keyboard, message, message_no_md, True, all_bots
 
 
 async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -54,7 +141,7 @@ async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /users command - view all bot users with notification controls (admin only)."""
+    """Handle /users command - view bot users grouped by bot instance with notification controls (admin only)."""
     user_id = update.effective_user.id
     
     if not is_admin(user_id):
@@ -64,29 +151,75 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        # Show users list with pagination (10 per page)
-        page = int(context.args[0]) if context.args and context.args[0].isdigit() else 1
-        await show_users_page(update, context, page)
+        # Build bot selection menu
+        keyboard, message, message_no_md, has_bots, bot_list = await build_users_bot_selection_menu()
+        
+        if not has_bots:
+            try:
+                await update.message.reply_text(
+                    "📊 **User Management**\n\n"
+                    "No bot usernames found. Users may not have bot_username tracked yet.",
+                    parse_mode="Markdown"
+                )
+            except BadRequest as e:
+                logger.warning(f"Markdown parse error in users_command (no bots), retrying without parse_mode: {e}")
+                await update.message.reply_text(
+                    "📊 User Management\n\n"
+                    "No bot usernames found. Users may not have bot_username tracked yet."
+                )
+            return
+        
+        # If only one bot/group exists, auto-select it for better UX
+        if len(bot_list) == 1:
+            bot_username = bot_list[0][0]
+            await show_users_page(update, context, page=1, bot_username=bot_username)
+            return
+        
+        # Show selection menu when multiple bots exist
+        try:
+            await update.message.reply_text(
+                message,
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+        except BadRequest as e:
+            logger.warning(f"Markdown parse error in users_command, retrying without parse_mode: {e}")
+            await update.message.reply_text(
+                message_no_md,
+                reply_markup=keyboard
+            )
         
     except Exception as e:
-        logger.error(f"Error in users command: {e}")
+        logger.error(f"Error in users command: {e}", exc_info=True)
         await update.message.reply_text(
             "❌ An error occurred while retrieving user list."
         )
 
 
-async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1):
-    """Display a page of users with notification toggle controls."""
+async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1, bot_username: str = None):
+    """Display a page of users with notification toggle controls, optionally filtered by bot_username."""
     try:
         # Pagination settings
         per_page = 10
         offset = (page - 1) * per_page
         
-        # Get paginated users and total count in single query
-        total_users, page_users = await db.get_users_paginated(limit=per_page, offset=offset)
+        # Get paginated users and total count based on bot_username filter
+        if bot_username:
+            # Get users for specific bot
+            total_users, page_users = await db.get_users_by_bot_paginated(bot_username, limit=per_page, offset=offset)
+            
+            # Set display name for header
+            if bot_username == "_untracked_":
+                bot_display_name = "Untracked Users"
+            else:
+                bot_display_name = f"@{bot_username}"
+        else:
+            # Get all users (backward compatibility)
+            total_users, page_users = await db.get_users_paginated(limit=per_page, offset=offset)
+            bot_display_name = "All Users"
         
         if total_users == 0:
-            text = "📭 No users have interacted with the bot yet."
+            text = f"📭 No users found for {bot_display_name}."
             if update.callback_query:
                 await update.callback_query.edit_message_text(text)
             else:
@@ -97,7 +230,7 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
         page = max(1, min(page, total_pages))
         
         # Build message text
-        message_lines = [f"👥 **Bot Users** (Page {page}/{total_pages}, {total_users} total)\n"]
+        message_lines = [f"👥 **{bot_display_name}** (Page {page}/{total_pages}, {total_users} total)\n"]
         
         for i, user in enumerate(page_users, start=offset + 1):
             # Escape Markdown v1 characters
@@ -134,11 +267,12 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
                 f"   📬 Notifications: {notif_status}"
             )
             
-            # Add bot username if available
-            bot_username = user.get('bot_username')
-            if bot_username:
-                escaped_bot_username = escape_markdown_v1(f"@{bot_username}")
-                user_text += f"\n   🤖 Bot: {escaped_bot_username}"
+            # Only show bot username if not already filtering by bot
+            if not bot_username:
+                current_user_bot = user.get('bot_username')
+                if current_user_bot:
+                    escaped_bot_username = escape_markdown_v1(f"@{current_user_bot}")
+                    user_text += f"\n   🤖 Bot: {escaped_bot_username}"
             
             # Add blocked status if applicable
             if blocked_status:
@@ -160,22 +294,25 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
             if len(username) > 12:
                 username = username[:9] + "..."
             
+            # Create callback data that includes bot_username if specified
+            bot_param = f"|{bot_username}" if bot_username else ""
+            
             # Create row with notification toggle and block/unblock button
             row_buttons = [
                 InlineKeyboardButton(
                     f"{'🔕' if notif_enabled else '🔔'} {username}",
-                    callback_data=f"toggle_notif|{uid}|{page}"
+                    callback_data=f"toggle_notif|{uid}|{page}{bot_param}"
                 )
             ]
             
             # Add block/unblock button
             if is_blocked:
                 row_buttons.append(
-                    InlineKeyboardButton("✅ Unblock", callback_data=f"unblock_user|{uid}|{page}")
+                    InlineKeyboardButton("✅ Unblock", callback_data=f"unblock_user|{uid}|{page}{bot_param}")
                 )
             else:
                 row_buttons.append(
-                    InlineKeyboardButton("🚫 Block", callback_data=f"block_user|{uid}|{page}")
+                    InlineKeyboardButton("🚫 Block", callback_data=f"block_user|{uid}|{page}{bot_param}")
                 )
             
             keyboard_buttons.append(row_buttons)
@@ -183,12 +320,18 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
         # Add pagination buttons
         nav_buttons = []
         if page > 1:
-            nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"users_page|{page-1}"))
+            prev_callback = f"users_page|{page-1}{bot_param}" if bot_username else f"users_page|{page-1}"
+            nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=prev_callback))
         if page < total_pages:
-            nav_buttons.append(InlineKeyboardButton("➡️ Next", callback_data=f"users_page|{page+1}"))
+            next_callback = f"users_page|{page+1}{bot_param}" if bot_username else f"users_page|{page+1}"
+            nav_buttons.append(InlineKeyboardButton("➡️ Next", callback_data=next_callback))
         
         if nav_buttons:
             keyboard_buttons.append(nav_buttons)
+        
+        # Add back button if filtering by bot
+        if bot_username:
+            keyboard_buttons.append([InlineKeyboardButton("⬅️ Back to Bot List", callback_data="users_back_to_bots")])
         
         keyboard = InlineKeyboardMarkup(keyboard_buttons)
         
@@ -220,7 +363,7 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
                     reply_markup=keyboard
                 )
         
-        logger.info(f"Displayed users page {page}/{total_pages}")
+        logger.info(f"Displayed users page {page}/{total_pages} for {bot_display_name}")
         
     except Exception as e:
         logger.error(f"Error showing users page: {e}", exc_info=True)
