@@ -23,6 +23,9 @@ MAX_NOTIFICATIONS_PER_HOUR = 5  # Maximum notifications per user per hour
 NOTIFICATION_BATCH_SIZE = 10  # Send notifications in batches
 BATCH_DELAY_SECONDS = 3  # Delay between batches to avoid hitting rate limits
 
+# Queue processing configuration
+PENDING_NOTIFICATIONS_BATCH_LIMIT = 100  # Number of pending notifications to fetch per batch
+
 # Staggered delivery configuration
 ENABLE_STAGGERED_DELIVERY = True  # Enable staggered delivery to avoid spam flags
 STAGGER_GROUP_SIZE = 10  # Number of users per group for staggered delivery
@@ -211,7 +214,7 @@ class NotificationService:
             # Process notifications in batches until queue is empty
             while True:
                 batch_number += 1
-                pending = await self.db.get_pending_notifications(limit=100)
+                pending = await self.db.get_pending_notifications(limit=PENDING_NOTIFICATIONS_BATCH_LIMIT)
                 
                 if not pending:
                     if batch_number == 1:
@@ -231,8 +234,8 @@ class NotificationService:
                     user_notifications[user_id].append(notification)
                 
                 # Check if all users in this batch were already rate-limited
-                all_previously_rate_limited = all(uid in rate_limited_users for uid in user_notifications.keys())
-                if all_previously_rate_limited:
+                # Note: Need to check if user_notifications is not empty to avoid vacuous truth
+                if user_notifications and all(uid in rate_limited_users for uid in user_notifications.keys()):
                     logger.info(f"All {len(user_notifications)} users in batch {batch_number} were previously rate-limited, stopping")
                     break
                 
@@ -322,7 +325,7 @@ class NotificationService:
                 logger.info(f"Batch {batch_number} complete: Sent {sent_count} notifications successfully (total: {total_sent_count})")
                 
                 # Brief pause between batches to avoid overwhelming the system
-                if len(pending) == 100:  # If we got a full batch, there might be more
+                if len(pending) == PENDING_NOTIFICATIONS_BATCH_LIMIT:  # If we got a full batch, there might be more
                     await asyncio.sleep(2)
             
         except Exception as e:
