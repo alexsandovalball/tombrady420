@@ -9,10 +9,10 @@ This script identifies and removes:
 
 Usage:
     # Dry run (preview what would be deleted)
-    python migrate_prune_inactive_bots.py
+    python scripts/migrate_prune_inactive_bots.py
 
     # Actually perform the pruning
-    python migrate_prune_inactive_bots.py --confirm
+    python scripts/migrate_prune_inactive_bots.py --confirm
 
 The script compares bot usernames in the database against the list of active
 bots configured in the environment (BOT_TOKEN, BOT_TOKEN_1, etc.).
@@ -21,7 +21,11 @@ import asyncio
 import argparse
 import logging
 import sys
+import os
 from typing import List
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Setup logging
 logging.basicConfig(

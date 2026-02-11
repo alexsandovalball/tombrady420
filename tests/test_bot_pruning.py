@@ -8,13 +8,17 @@ This test validates:
 3. Active bots' data is preserved
 4. Notification error handling for deleted users
 
-Run with: python test_bot_pruning.py
+Run from project root: python tests/test_bot_pruning.py
 """
 import asyncio
 import os
+import sys
 import tempfile
 import logging
 from datetime import datetime
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
