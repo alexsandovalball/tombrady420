@@ -100,8 +100,7 @@ class NotificationService:
             "can't parse",
             "parse entities",
             "markdown",
-            "entities",
-            "offset"
+            "entities"
         ])
     
     def _get_bot_applications(self) -> List[Application]:
@@ -524,7 +523,7 @@ class NotificationService:
                 await self.db.mark_notification_sent(notification_id)
                 return False
             else:
-                logger.error(f"Telegram error sending notification to {user_id}: {e}", exc_info=True)
+                logger.error(f"Telegram error sending notification to {user_id}: {e}")
                 # Don't mark as sent, will retry later for temporary errors
                 return False
             
@@ -573,16 +572,27 @@ class NotificationService:
         self,
         context: ContextTypes.DEFAULT_TYPE,
         message_text: str,
-        exclude_blocked: bool = True
+        exclude_blocked: bool = True,
+        admin_user_id: Optional[int] = None
     ):
         """
         Broadcast a custom message to all users with rate limiting.
         Only runs on the primary bot instance to avoid duplicate queuing.
+        Returns a dictionary with delivery statistics.
+        
+        Args:
+            context: Bot context
+            message_text: Message to broadcast
+            exclude_blocked: Whether to exclude blocked users
+            admin_user_id: Admin user ID to send completion summary to
+            
+        Returns:
+            dict with keys: queued, sent, failed, blocked, not_found, rate_limited, markdown_errors
         """
         # Check if this is the primary bot instance
         if not self._is_primary_instance(context):
             logger.info(f"Skipping broadcast - not primary instance")
-            return 0
+            return {"queued": 0, "sent": 0, "failed": 0}
         
         try:
             # Get all users
@@ -590,54 +600,78 @@ class NotificationService:
             
             if not all_users:
                 logger.debug("No users to broadcast to")
-                return 0
+                return {"queued": 0, "sent": 0, "failed": 0}
             
             logger.info(f"Broadcasting custom message to {len(all_users)} users")
             
             # Queue messages for all non-blocked users
             queued = 0
+            skipped_blocked = 0
+            skipped_admin = 0
+            
             for user in all_users:
                 user_id = user["user_id"]
                 
                 # Skip blocked users if requested
                 if exclude_blocked and user.get("is_blocked", 0) == 1:
+                    skipped_blocked += 1
                     continue
                 
                 # Skip admin users
                 from utils.helpers import get_admin_ids
                 if user_id in get_admin_ids():
+                    skipped_admin += 1
                     continue
                 
                 await self.db.queue_custom_message(user_id, message_text)
                 queued += 1
             
-            logger.info(f"Queued {queued} custom messages")
+            logger.info(f"Queued {queued} custom messages (skipped {skipped_blocked} blocked, {skipped_admin} admins)")
             
-            # Process the queue
-            await self.process_custom_message_queue(context)
+            # Process the queue and get statistics
+            stats = await self.process_custom_message_queue(context)
+            stats["queued"] = queued
+            stats["skipped_blocked"] = skipped_blocked
+            stats["skipped_admin"] = skipped_admin
             
-            return queued
+            # Send summary to admin if requested
+            if admin_user_id and context.bot:
+                await self._send_admin_summary(context.bot, admin_user_id, stats, "broadcast")
+            
+            return stats
             
         except Exception as e:
             logger.error(f"Error broadcasting custom message: {e}", exc_info=True)
-            return 0
+            return {"queued": 0, "sent": 0, "failed": 0, "error": str(e)}
     
     async def process_custom_message_queue(self, context: ContextTypes.DEFAULT_TYPE):
         """
         Process pending custom messages from the queue with rate limiting.
         Uses multi-bot delivery - sends via the bot each user started.
         Only runs on the primary bot instance to avoid duplicate processing.
+        Returns statistics about the delivery.
         """
         # Check if this is the primary bot instance
         if not self._is_primary_instance(context):
             logger.info(f"Skipping custom message queue processing - not primary instance")
-            return
+            return {"sent": 0, "failed": 0}
+        
+        # Initialize statistics
+        stats = {
+            "sent": 0,
+            "failed": 0,
+            "blocked": 0,
+            "not_found": 0,
+            "rate_limited": 0,
+            "markdown_errors": 0,
+            "unexpected_errors": 0
+        }
         
         try:
             pending = await self.db.get_pending_custom_messages(limit=100)
             
             if not pending:
-                return
+                return stats
             
             logger.info(f"Processing {len(pending)} pending custom messages")
             
@@ -650,7 +684,6 @@ class NotificationService:
                 user_messages[user_id].append(message)
             
             # Process messages in batches
-            sent_count = 0
             batch = []
             
             for user_id, messages in user_messages.items():
@@ -660,6 +693,7 @@ class NotificationService:
                     # Mark as sent to remove from queue
                     for msg in messages:
                         await self.db.mark_custom_message_sent(msg["id"])
+                    stats["blocked"] += len(messages)
                     continue
                 
                 # Check rate limit for this user
@@ -667,6 +701,7 @@ class NotificationService:
                 
                 if recent_count >= MAX_CUSTOM_MESSAGES_PER_HOUR:
                     logger.debug(f"User {user_id} reached custom message rate limit, skipping")
+                    stats["rate_limited"] += len(messages)
                     continue
                 
                 # Calculate how many more messages we can send to this user
@@ -678,37 +713,46 @@ class NotificationService:
                     
                     # Send in batches to avoid overwhelming Telegram
                     if len(batch) >= CUSTOM_MESSAGE_BATCH_SIZE:
-                        sent = await self._send_custom_message_batch_multibot(batch)
-                        sent_count += sent
+                        batch_stats = await self._send_custom_message_batch_multibot(batch, stats)
                         batch = []
                         await asyncio.sleep(CUSTOM_MESSAGE_DELAY_SECONDS)
             
             # Send remaining batch
             if batch:
-                sent = await self._send_custom_message_batch_multibot(batch)
-                sent_count += sent
+                batch_stats = await self._send_custom_message_batch_multibot(batch, stats)
             
-            logger.info(f"Sent {sent_count} custom messages successfully")
+            logger.info(f"Custom message queue processed: {stats['sent']} sent, {stats['failed']} failed, "
+                       f"{stats['blocked']} blocked, {stats['not_found']} not found, "
+                       f"{stats['rate_limited']} rate limited, {stats['markdown_errors']} markdown errors")
+            
+            return stats
             
         except Exception as e:
             logger.error(f"Error processing custom message queue: {e}", exc_info=True)
+            stats["unexpected_errors"] += 1
+            return stats
     
     async def _send_custom_message_batch_multibot(
         self,
-        messages: List[dict]
+        messages: List[dict],
+        stats: Optional[Dict[str, int]] = None
     ) -> int:
         """
         Send a batch of custom messages using multi-bot delivery.
         Each message is sent via the bot that the user started.
+        Updates the provided stats dictionary with delivery results.
         Returns the number of successfully sent messages.
         """
-        sent_count = 0
+        if stats is None:
+            stats = {"sent": 0, "failed": 0, "blocked": 0, "not_found": 0, 
+                    "markdown_errors": 0, "unexpected_errors": 0}
         
         # Get all available bot applications (cached)
         bot_apps = self._get_bot_applications()
         
         if not bot_apps:
             logger.warning("No bot applications available for multi-bot delivery")
+            stats["failed"] += len(messages)
             return 0
         
         # Group messages by user's bot_username for efficient delivery
@@ -723,6 +767,7 @@ class NotificationService:
                 # User not found, mark message as sent and skip
                 logger.debug(f"User {user_id} not found, will mark custom message as sent")
                 await self.db.mark_custom_message_sent(message["id"])
+                stats["not_found"] += 1
                 continue
             
             bot_username = user.get("bot_username")
@@ -743,6 +788,7 @@ class NotificationService:
             
             # Send each message
             for message in bot_messages:
+                markdown_error_occurred = False
                 try:
                     user_id = message["user_id"]
                     message_text = message["message_text"]
@@ -753,6 +799,7 @@ class NotificationService:
                     if is_blocked:
                         # Mark as sent to remove from queue
                         await self.db.mark_custom_message_sent(message_id)
+                        stats["blocked"] += 1
                         continue
                     
                     # Send custom message using the bot application
@@ -766,6 +813,8 @@ class NotificationService:
                         # Handle markdown parse errors by retrying without parse_mode
                         if self._is_markdown_parse_error(e):
                             logger.warning(f"Markdown parse error for custom message to user {user_id}, retrying without parse_mode: {e}")
+                            markdown_error_occurred = True
+                            stats["markdown_errors"] += 1
                             await bot_app.bot.send_message(
                                 chat_id=user_id,
                                 text=message_text
@@ -776,7 +825,7 @@ class NotificationService:
                     
                     # Mark as sent
                     await self.db.mark_custom_message_sent(message_id)
-                    sent_count += 1
+                    stats["sent"] += 1
                     
                     logger.debug(f"Sent custom message to user {user_id} via bot @{get_bot_username(bot_app)}")
                     
@@ -786,10 +835,14 @@ class NotificationService:
                     if "chat not found" in error_msg or "user not found" in error_msg:
                         logger.warning(f"User {user_id} chat/account not found (deleted or never started bot), deleting user")
                         await self.db.delete_user(user_id)
+                        stats["not_found"] += 1
                     else:
                         logger.info(f"User {user_id} blocked the bot, marking as blocked")
                         await self.db.block_user(user_id)
+                        stats["blocked"] += 1
                     await self.db.mark_custom_message_sent(message_id)
+                    if not markdown_error_occurred:
+                        stats["failed"] += 1
                     
                 except TelegramError as e:
                     error_msg = str(e).lower()
@@ -798,21 +851,90 @@ class NotificationService:
                         logger.warning(f"User {user_id} permanently unreachable (error: {e}), deleting user")
                         await self.db.delete_user(user_id)
                         await self.db.mark_custom_message_sent(message_id)
+                        stats["not_found"] += 1
+                        if not markdown_error_occurred:
+                            stats["failed"] += 1
                     elif "bot was blocked by the user" in error_msg:
                         logger.info(f"User {user_id} blocked the bot, marking as blocked")
                         await self.db.block_user(user_id)
                         await self.db.mark_custom_message_sent(message_id)
+                        stats["blocked"] += 1
+                        if not markdown_error_occurred:
+                            stats["failed"] += 1
                     else:
-                        logger.error(f"Telegram error sending custom message to {user_id}: {e}", exc_info=True)
+                        logger.error(f"Telegram error sending custom message to {user_id}: {e}")
                         # Don't mark as sent, will retry later for temporary errors
+                        if not markdown_error_occurred:
+                            stats["failed"] += 1
                     
                 except Exception as e:
                     logger.error(f"Unexpected error sending custom message to {user_id}: {e}", exc_info=True)
                     # Don't mark as sent for unexpected errors - they should be investigated
                     # Note: Messages are not auto-retried on schedule, only when explicitly triggered
                     # This ensures we don't lose messages due to transient issues
+                    stats["unexpected_errors"] += 1
+                    if not markdown_error_occurred:
+                        stats["failed"] += 1
         
-        return sent_count
+        return stats["sent"]
     
+    async def _send_admin_summary(self, bot, admin_user_id: int, stats: Dict[str, int], operation: str = "broadcast"):
+        """Send a summary message to the admin with delivery statistics."""
+        try:
+            total_queued = stats.get("queued", 0)
+            sent = stats.get("sent", 0)
+            failed = stats.get("failed", 0)
+            blocked = stats.get("blocked", 0)
+            not_found = stats.get("not_found", 0)
+            rate_limited = stats.get("rate_limited", 0)
+            markdown_errors = stats.get("markdown_errors", 0)
+            unexpected_errors = stats.get("unexpected_errors", 0)
+            skipped_blocked = stats.get("skipped_blocked", 0)
+            skipped_admin = stats.get("skipped_admin", 0)
+            
+            # Build summary message
+            summary = f"📊 **{operation.title()} Complete**\n\n"
+            summary += f"✅ **Successfully Sent:** {sent}\n"
+            
+            if failed > 0:
+                summary += f"❌ **Failed:** {failed}\n"
+            
+            if total_queued > 0:
+                summary += f"\n📝 **Queued:** {total_queued}\n"
+            
+            if skipped_blocked > 0:
+                summary += f"⛔ **Skipped (blocked):** {skipped_blocked}\n"
+            
+            if skipped_admin > 0:
+                summary += f"👨‍💼 **Skipped (admins):** {skipped_admin}\n"
+            
+            if blocked > 0 or not_found > 0 or rate_limited > 0 or markdown_errors > 0:
+                summary += f"\n**Failure Breakdown:**\n"
+                if blocked > 0:
+                    summary += f"• Blocked by user: {blocked}\n"
+                if not_found > 0:
+                    summary += f"• Chat/user not found: {not_found}\n"
+                if rate_limited > 0:
+                    summary += f"• Rate limited: {rate_limited}\n"
+                if markdown_errors > 0:
+                    summary += f"• Markdown errors (sent as plain text): {markdown_errors}\n"
+                if unexpected_errors > 0:
+                    summary += f"• Unexpected errors: {unexpected_errors}\n"
+            
+            # Calculate success rate
+            total_attempted = sent + failed
+            if total_attempted > 0:
+                success_rate = (sent / total_attempted) * 100
+                summary += f"\n📈 **Success Rate:** {success_rate:.1f}%"
+            
+            await bot.send_message(
+                chat_id=admin_user_id,
+                text=summary,
+                parse_mode="Markdown"
+            )
+            logger.info(f"Sent delivery summary to admin {admin_user_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to send admin summary: {e}", exc_info=True)
 
 

@@ -536,27 +536,22 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Send status message
         await query.edit_message_text(
             "📡 **Broadcasting message...**\n\n"
-            "Please wait while the message is queued for all users.",
+            "Please wait while the message is queued and delivered to all users.",
             parse_mode="Markdown"
         )
         
         # Broadcast using notification service
         notification_service = NotificationService(db)
         
-        queued_count = await notification_service.broadcast_custom_message(
+        stats = await notification_service.broadcast_custom_message(
             context,
             message_text,
-            exclude_blocked=True
+            exclude_blocked=True,
+            admin_user_id=user_id
         )
         
-        await query.edit_message_text(
-            f"✅ **Broadcast Complete**\n\n"
-            f"📨 Messages queued: {queued_count}\n"
-            f"📝 Message: {message_text[:100]}{'...' if len(message_text) > 100 else ''}\n\n"
-            f"Messages will be delivered with rate-limiting intervals.",
-            parse_mode="Markdown"
-        )
-        logger.info(f"Admin {user_id} broadcast message to {queued_count} users")
+        # Note: The detailed summary is sent separately by the notification service
+        logger.info(f"Admin {user_id} broadcast message: {stats.get('sent', 0)} sent, {stats.get('failed', 0)} failed")
         
         context.user_data.clear()
         return
