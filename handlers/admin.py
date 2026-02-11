@@ -671,10 +671,13 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 [InlineKeyboardButton("❌ Cancel", callback_data="broadcast_cancel")]
             ])
             
-            # Escape message preview for Markdown
-            message_preview = escape_markdown_v1(message_text[:200])
+            # Truncate message before escaping
+            truncated_message = message_text[:200]
             if len(message_text) > 200:
-                message_preview += "..."
+                truncated_message += "..."
+            
+            # Escape message preview for Markdown
+            message_preview = escape_markdown_v1(truncated_message)
             
             try:
                 await update.message.reply_text(
@@ -690,7 +693,7 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 await update.message.reply_text(
                     f"✅ Broadcast to Single User - Confirmation\n\n"
                     f"🆔 User ID: {target_user_id}\n"
-                    f"📝 Message: {message_text[:200]}{'...' if len(message_text) > 200 else ''}\n\n"
+                    f"📝 Message: {truncated_message}\n\n"
                     f"Do you want to send this message?",
                     reply_markup=keyboard
                 )
@@ -713,10 +716,13 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 [InlineKeyboardButton("❌ Cancel", callback_data="broadcast_cancel")]
             ])
             
-            # Escape message preview for Markdown
-            message_preview = escape_markdown_v1(message_text[:200])
+            # Truncate message before escaping
+            truncated_message = message_text[:200]
             if len(message_text) > 200:
-                message_preview += "..."
+                truncated_message += "..."
+            
+            # Escape message preview for Markdown
+            message_preview = escape_markdown_v1(truncated_message)
             
             try:
                 await update.message.reply_text(
@@ -731,7 +737,7 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
                 logger.warning(f"Markdown parse error in broadcast confirmation (all), retrying without parse_mode: {e}")
                 await update.message.reply_text(
                     f"✅ Broadcast to All Users - Confirmation\n\n"
-                    f"📝 Message: {message_text[:200]}{'...' if len(message_text) > 200 else ''}\n"
+                    f"📝 Message: {truncated_message}\n"
                     f"📊 Recipients: {user_count} users\n\n"
                     f"Do you want to send this broadcast?",
                     reply_markup=keyboard
