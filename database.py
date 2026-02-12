@@ -1107,12 +1107,12 @@ class Database:
             return len(user_ids)
     
     async def get_bot_usernames(self) -> List[str]:
-        """Get list of unique bot usernames that have users."""
+        """Get list of unique bot usernames that have users (normalized to lowercase)."""
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("""
-                SELECT DISTINCT bot_username FROM bot_users 
+                SELECT DISTINCT LOWER(bot_username) FROM bot_users 
                 WHERE bot_username IS NOT NULL AND bot_username != ''
-                ORDER BY bot_username
+                ORDER BY 1
             """) as cursor:
                 rows = await cursor.fetchall()
                 return [row[0] for row in rows]
