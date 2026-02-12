@@ -13,6 +13,7 @@ from telegram.error import TelegramError, Forbidden, BadRequest
 
 from database import Database
 from utils.categories import get_category_display_name, get_subcategory_display_name, NOTIFICATION_EXCLUDED_CATEGORIES
+from utils.helpers import get_admin_ids
 from translations.translator import translate_text_async
 from configs.config import Config
 
@@ -220,15 +221,18 @@ class NotificationService:
                     total_sent = task_obj.result()
                     logger.info(f"Notification task completed. Total sent: {total_sent}")
                     
-                    # Send admin summary
-                    from utils.helpers import get_admin_ids
+                    # Send admin summary to first admin (to avoid spamming all admins)
                     admin_ids = get_admin_ids()
                     if admin_ids:
                         admin_id = admin_ids[0]  # Use first admin
                         stats = {"sent": total_sent}
                         
                         # Schedule admin summary in the event loop (callback must be synchronous)
-                        loop = asyncio.get_event_loop()
+                        try:
+                            loop = asyncio.get_running_loop()
+                        except RuntimeError:
+                            # Fallback for older Python or edge cases
+                            loop = asyncio.get_event_loop()
                         loop.create_task(self._send_admin_summary(
                             context.bot,
                             admin_id,
