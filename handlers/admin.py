@@ -80,9 +80,18 @@ async def build_users_bot_selection_menu():
     
     total_users = await db.get_users_count_by_bot()
     
+    # Count all active bots (not just those with users)
+    active_bots_count = len(active_bots)
+    # Count active bots with users  
+    active_bots_with_users_count = len(active_bot_list)
+    
     message = f"📊 **User Management by Bot Instance**\n\n"
     message += f"Total Users: {total_users}\n"
-    message += f"Active Bot Instances: {len(active_bot_list)}\n"
+    message += f"Active Bot Instances: {active_bots_count}\n"
+    
+    if active_bots_with_users_count < active_bots_count:
+        bots_without_users = active_bots_count - active_bots_with_users_count
+        message += f"ℹ️ {bots_without_users} active bot(s) have no users yet\n"
     
     if inactive_bot_list:
         message += f"⚠️ Inactive Bots: {len(inactive_bot_list)} (users should be pruned)\n"
@@ -92,7 +101,11 @@ async def build_users_bot_selection_menu():
     # Non-markdown version
     message_no_md = f"📊 User Management by Bot Instance\n\n"
     message_no_md += f"Total Users: {total_users}\n"
-    message_no_md += f"Active Bot Instances: {len(active_bot_list)}\n"
+    message_no_md += f"Active Bot Instances: {active_bots_count}\n"
+    
+    if active_bots_with_users_count < active_bots_count:
+        bots_without_users = active_bots_count - active_bots_with_users_count
+        message_no_md += f"ℹ️ {bots_without_users} active bot(s) have no users yet\n"
     
     if inactive_bot_list:
         message_no_md += f"⚠️ Inactive Bots: {len(inactive_bot_list)} (users should be pruned)\n"
@@ -1086,9 +1099,18 @@ async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         total_users = await db.get_users_count_by_bot()
         
+        # Count all active bots (not just those with users)
+        active_bots_count = len(active_bots)
+        # Count active bots with users  
+        active_bots_with_users_count = len(active_bot_list)
+        
         message = f"📊 **Bot Users by Instance**\n\n"
         message += f"Total Users: {total_users}\n"
-        message += f"Active Bot Instances: {len(active_bot_list)}\n"
+        message += f"Active Bot Instances: {active_bots_count}\n"
+        
+        if active_bots_with_users_count < active_bots_count:
+            bots_without_users = active_bots_count - active_bots_with_users_count
+            message += f"ℹ️ {bots_without_users} active bot(s) have no users yet\n"
         
         if inactive_bot_list:
             message += f"⚠️ Inactive Bots: {len(inactive_bot_list)} (users should be pruned)\n"
@@ -1106,7 +1128,11 @@ async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Remove markdown formatting for fallback
             message_no_md = f"📊 Bot Users by Instance\n\n"
             message_no_md += f"Total Users: {total_users}\n"
-            message_no_md += f"Active Bot Instances: {len(active_bot_list)}\n"
+            message_no_md += f"Active Bot Instances: {active_bots_count}\n"
+            
+            if active_bots_with_users_count < active_bots_count:
+                bots_without_users = active_bots_count - active_bots_with_users_count
+                message_no_md += f"ℹ️ {bots_without_users} active bot(s) have no users yet\n"
             
             if inactive_bot_list:
                 message_no_md += f"⚠️ Inactive Bots: {len(inactive_bot_list)} (users should be pruned)\n"
