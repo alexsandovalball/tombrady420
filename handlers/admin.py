@@ -21,12 +21,11 @@ async def build_users_bot_selection_menu():
     Returns tuple of (keyboard, message_text, message_text_no_md, has_bots, bot_list)
     where bot_list is a list of (bot_username, count) tuples for single-bot auto-selection
     """
-    # Get active bot usernames from webhook server
+    # Get active bot usernames from webhook server (already lowercase)
     from webhook_server import get_bot_usernames
     active_bots = get_bot_usernames()
-    active_bots_lower = [bot.lower() for bot in active_bots]
     
-    # Get all bot usernames from database
+    # Get all bot usernames from database (already lowercase)
     bot_usernames = await db.get_bot_usernames()
     
     if not bot_usernames:
@@ -38,7 +37,7 @@ async def build_users_bot_selection_menu():
     
     for bot_username in bot_usernames:
         count = await db.get_users_count_by_bot(bot_username)
-        if bot_username.lower() in active_bots_lower:
+        if bot_username in active_bots:
             active_bot_list.append((bot_username, count))
         else:
             inactive_bot_list.append((bot_username, count))
@@ -1022,12 +1021,11 @@ async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        # Get active bot usernames from webhook server
+        # Get active bot usernames from webhook server (already lowercase)
         from webhook_server import get_bot_usernames
         active_bots = get_bot_usernames()
-        active_bots_lower = [bot.lower() for bot in active_bots]
         
-        # Get all bot usernames from database
+        # Get all bot usernames from database (already lowercase)
         bot_usernames = await db.get_bot_usernames()
         
         if not bot_usernames:
@@ -1051,7 +1049,7 @@ async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         for bot_username in bot_usernames:
             count = await db.get_users_count_by_bot(bot_username)
-            if bot_username.lower() in active_bots_lower:
+            if bot_username in active_bots:
                 active_bot_list.append((bot_username, count))
             else:
                 inactive_bot_list.append((bot_username, count))
