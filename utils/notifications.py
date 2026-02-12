@@ -218,20 +218,27 @@ class NotificationService:
             def on_task_complete(task_obj):
                 try:
                     # Get the result (total_sent_count)
-                    total_sent = task_obj.result()
-                    logger.info(f"Notification task completed. Total sent: {total_sent}")
+                    try:
+                        total_sent = task_obj.result()
+                        logger.info(f"Notification task completed. Total sent: {total_sent}")
+                    except Exception as task_error:
+                        # Task execution failed - log it but continue with cleanup
+                        logger.error(f"Notification task failed with error: {task_error}", exc_info=True)
+                        total_sent = 0  # No messages sent if task failed
                     
-                    # Send admin summary to first admin (to avoid spamming all admins)
+                    # Send admin summary to first admin
+                    # Note: Using first admin to avoid spamming all admins with every notification run.
+                    # Future enhancement: Could implement rotation or configuration for which admin(s) to notify.
                     admin_ids = get_admin_ids()
-                    if admin_ids:
-                        admin_id = admin_ids[0]  # Use first admin
+                    if admin_ids and total_sent > 0:  # Only send if messages were actually sent
+                        admin_id = admin_ids[0]
                         stats = {"sent": total_sent}
                         
                         # Schedule admin summary in the event loop (callback must be synchronous)
                         try:
                             loop = asyncio.get_running_loop()
                         except RuntimeError:
-                            # Fallback for older Python or edge cases
+                            # Defensive fallback: handles edge case where callback runs outside event loop
                             loop = asyncio.get_event_loop()
                         loop.create_task(self._send_admin_summary(
                             context.bot,
