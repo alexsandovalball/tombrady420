@@ -230,22 +230,23 @@ class NotificationService:
                     # Note: Using first admin to avoid spamming all admins with every notification run.
                     # Future enhancement: Could implement rotation or configuration for which admin(s) to notify.
                     admin_ids = get_admin_ids()
-                    if admin_ids and total_sent > 0:  # Only send if messages were actually sent
+                    if admin_ids and len(admin_ids) > 0 and total_sent > 0:  # Only send if admins exist and messages were sent
                         admin_id = admin_ids[0]
                         stats = {"sent": total_sent}
                         
                         # Schedule admin summary in the event loop (callback must be synchronous)
                         try:
                             loop = asyncio.get_running_loop()
+                            loop.create_task(self._send_admin_summary(
+                                context.bot,
+                                admin_id,
+                                stats,
+                                operation="product notification"
+                            ))
                         except RuntimeError:
-                            # Defensive fallback: handles edge case where callback runs outside event loop
-                            loop = asyncio.get_event_loop()
-                        loop.create_task(self._send_admin_summary(
-                            context.bot,
-                            admin_id,
-                            stats,
-                            operation="product notification"
-                        ))
+                            # No running event loop - this shouldn't happen in a task callback
+                            # but handle gracefully by logging and skipping admin summary
+                            logger.error("Cannot send admin summary: no running event loop in callback")
                 except Exception as e:
                     logger.error(f"Error in notification task completion callback: {e}", exc_info=True)
                 finally:
