@@ -89,6 +89,7 @@ class NotificationService:
         self._bot_apps_cache = None  # Cache for bot applications
         self._bot_apps_cache_time = None  # Timestamp of last cache
         self._cache_ttl = 60  # Cache TTL in seconds
+        self._current_notification_task = None  # Track background notification task
     
     @staticmethod
     def _is_markdown_parse_error(error: BadRequest) -> bool:
@@ -196,6 +197,11 @@ class NotificationService:
             
             logger.info(f"Notifying {len(subscribed_users)} users about product {product_id}")
             
+            # Check if a notification task is already running
+            if self._current_notification_task is not None and not self._current_notification_task.done():
+                logger.warning(f"Notification task already running for product {product_id}, skipping duplicate task creation")
+                return
+            
             # Queue notifications for all subscribed users
             for user_id in subscribed_users:
                 await self.db.queue_notification(user_id, product_id)
@@ -203,16 +209,39 @@ class NotificationService:
             # Process the notification queue asynchronously (non-blocking)
             # Schedule as a background task so it doesn't block other operations
             # Store task reference to prevent it from being garbage collected
+            logger.info(f"Creating background notification task for product {product_id}")
             task = asyncio.create_task(self.process_notification_queue(context))
+            self._current_notification_task = task
             
-            # Add exception handling callback to log any errors
-            def log_task_exception(task_obj):
+            # Add completion callback to send admin summary and clear task reference
+            def on_task_complete(task_obj):
                 try:
-                    task_obj.result()
+                    # Get the result (total_sent_count)
+                    total_sent = task_obj.result()
+                    logger.info(f"Notification task completed. Total sent: {total_sent}")
+                    
+                    # Send admin summary
+                    from utils.helpers import get_admin_ids
+                    admin_ids = get_admin_ids()
+                    if admin_ids:
+                        admin_id = admin_ids[0]  # Use first admin
+                        stats = {"sent": total_sent}
+                        
+                        # Schedule admin summary in the event loop (callback must be synchronous)
+                        loop = asyncio.get_event_loop()
+                        loop.create_task(self._send_admin_summary(
+                            context.bot,
+                            admin_id,
+                            stats,
+                            operation="product notification"
+                        ))
                 except Exception as e:
-                    logger.error(f"Error in background notification task: {e}", exc_info=True)
+                    logger.error(f"Error in notification task completion callback: {e}", exc_info=True)
+                finally:
+                    # Always clear task reference
+                    self._current_notification_task = None
             
-            task.add_done_callback(log_task_exception)
+            task.add_done_callback(on_task_complete)
             
         except Exception as e:
             logger.error(f"Error notifying users about product {product_id}: {e}", exc_info=True)
@@ -239,7 +268,7 @@ class NotificationService:
                         logger.debug("No pending notifications to process")
                     else:
                         logger.info(f"Finished processing all notification batches. Total sent: {total_sent_count}")
-                    return
+                    return total_sent_count
                 
                 logger.info(f"Processing batch {batch_number}: {len(pending)} pending notifications")
                 
@@ -256,7 +285,7 @@ class NotificationService:
                 # to avoid incorrectly breaking when there are no users in the batch
                 if user_notifications and all(uid in rate_limited_users for uid in user_notifications.keys()):
                     logger.info(f"All {len(user_notifications)} users in batch {batch_number} were previously rate-limited, stopping")
-                    break
+                    return total_sent_count
                 
                 # Filter users who haven't exceeded rate limits
                 eligible_users = []
@@ -284,7 +313,7 @@ class NotificationService:
                     # All users in this batch are rate-limited
                     # If we continue, we'll fetch the same notifications again (infinite loop)
                     # So we break here - these will be retried in the next scheduled run
-                    break
+                    return total_sent_count
                 
                 # Implement staggered delivery by groups with multi-bot support
                 sent_count = 0
@@ -349,6 +378,7 @@ class NotificationService:
             
         except Exception as e:
             logger.error(f"Error processing notification queue: {e}", exc_info=True)
+            return total_sent_count
     
     async def _send_notification_batch_multibot(
         self,
