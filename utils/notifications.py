@@ -223,14 +223,16 @@ class NotificationService:
                         logger.info(f"Notification task completed. Total sent: {total_sent}")
                     except Exception as task_error:
                         # Task execution failed - log it but continue with cleanup
+                        # Note: process_notification_queue returns total_sent_count even in exception handler,
+                        # so we'll get the count of messages sent before the failure occurred
                         logger.error(f"Notification task failed with error: {task_error}", exc_info=True)
-                        total_sent = 0  # No messages sent if task failed
+                        total_sent = 0  # Default to 0 if result cannot be retrieved
                     
                     # Send admin summary to first admin
                     # Note: Using first admin to avoid spamming all admins with every notification run.
                     # Future enhancement: Could implement rotation or configuration for which admin(s) to notify.
                     admin_ids = get_admin_ids()
-                    if admin_ids and len(admin_ids) > 0 and total_sent > 0:  # Only send if admins exist and messages were sent
+                    if admin_ids and total_sent > 0:  # Only send if admins exist and messages were sent
                         admin_id = admin_ids[0]
                         stats = {"sent": total_sent}
                         
