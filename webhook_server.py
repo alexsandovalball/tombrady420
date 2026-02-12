@@ -68,7 +68,17 @@ def get_bot_applications() -> List[Application]:
 
 def get_bot_usernames() -> List[str]:
     """Get list of bot usernames for all registered bots (normalized to lowercase)."""
-    return [bot.bot.username.lower() for bot in _bot_applications if hasattr(bot, 'bot') and hasattr(bot.bot, 'username')]
+    usernames = []
+    for bot in _bot_applications:
+        if hasattr(bot, 'bot') and hasattr(bot.bot, 'username') and bot.bot.username is not None:
+            usernames.append(bot.bot.username.lower())
+        else:
+            # Log if a bot is missing username for debugging
+            if hasattr(bot, 'bot'):
+                logger.warning(f"Bot application has no username or username is None")
+            else:
+                logger.warning(f"Bot application has no 'bot' attribute")
+    return usernames
 
 
 async def setup_application(bot_token: str, bot_index: int = 0):

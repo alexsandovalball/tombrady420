@@ -24,9 +24,11 @@ async def build_users_bot_selection_menu():
     # Get active bot usernames from webhook server (already lowercase)
     from webhook_server import get_bot_usernames
     active_bots = get_bot_usernames()
+    logger.info(f"Active bots from webhook_server: {len(active_bots)} - {active_bots}")
     
     # Get all bot usernames from database (already lowercase)
     bot_usernames = await db.get_bot_usernames()
+    logger.info(f"All bots from database: {len(bot_usernames)} - {bot_usernames}")
     
     if not bot_usernames:
         return None, None, None, False, []
@@ -1024,9 +1026,11 @@ async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Get active bot usernames from webhook server (already lowercase)
         from webhook_server import get_bot_usernames
         active_bots = get_bot_usernames()
+        logger.info(f"Active bots from webhook_server: {len(active_bots)} - {active_bots}")
         
         # Get all bot usernames from database (already lowercase)
         bot_usernames = await db.get_bot_usernames()
+        logger.info(f"All bots from database: {len(bot_usernames)} - {bot_usernames}")
         
         if not bot_usernames:
             try:
