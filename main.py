@@ -69,6 +69,9 @@ media_group_messages = {}
 media_group_timers = {}
 media_group_locks = {}  # Locks to prevent race conditions in media group processing
 
+# Callback query configuration
+LONG_RUNNING_CALLBACKS = ["broadcast_confirm_all"]  # Callbacks that should not answer query upfront to avoid timeouts
+
 
 def _is_primary_instance(context: ContextTypes.DEFAULT_TYPE) -> bool:
     """
@@ -368,9 +371,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             )
             return
     
-    await query.answer()  # Answer callback to prevent loading spinner
-    
     callback_data = query.data
+    
+    # Don't answer callback query upfront for long-running operations
+    # These callbacks will answer the query themselves to avoid timeout errors
+    if callback_data not in LONG_RUNNING_CALLBACKS:
+        await query.answer()  # Answer callback to prevent loading spinner
     
     # Handle language selection callbacks from /language command
     if callback_data.startswith("setlang|"):
@@ -532,6 +538,9 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await query.answer("❌ Message not found. Please start over.", show_alert=True)
             context.user_data.clear()
             return
+        
+        # Answer query immediately to prevent timeout during long operation
+        await query.answer()
         
         # Send status message
         await query.edit_message_text(
