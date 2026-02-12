@@ -1112,7 +1112,7 @@ class Database:
             async with db.execute("""
                 SELECT DISTINCT LOWER(bot_username) FROM bot_users 
                 WHERE bot_username IS NOT NULL AND bot_username != ''
-                ORDER BY LOWER(bot_username)
+                ORDER BY 1
             """) as cursor:
                 rows = await cursor.fetchall()
                 return [row[0] for row in rows]
