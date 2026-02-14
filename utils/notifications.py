@@ -120,47 +120,44 @@ class NotificationService:
         """
         Helper method to send media notification for a specific file type.
         Returns True if sent successfully, False otherwise.
+        Raises exceptions for caller to handle.
         """
-        try:
-            if file_type == "photo":
-                await bot_app.bot.send_photo(
-                    chat_id=user_id,
-                    photo=file_id,
-                    caption=caption,
-                    parse_mode=parse_mode,
-                    reply_markup=keyboard
-                )
-            elif file_type == "video":
-                await bot_app.bot.send_video(
-                    chat_id=user_id,
-                    video=file_id,
-                    caption=caption,
-                    parse_mode=parse_mode,
-                    reply_markup=keyboard
-                )
-            elif file_type == "animation":
-                await bot_app.bot.send_animation(
-                    chat_id=user_id,
-                    animation=file_id,
-                    caption=caption,
-                    parse_mode=parse_mode,
-                    reply_markup=keyboard
-                )
-            elif file_type == "document":
-                await bot_app.bot.send_document(
-                    chat_id=user_id,
-                    document=file_id,
-                    caption=caption,
-                    parse_mode=parse_mode,
-                    reply_markup=keyboard
-                )
-            else:
-                # Unsupported media type
-                return False
-            return True
-        except Exception:
-            # Let caller handle the exception
-            raise
+        if file_type == "photo":
+            await bot_app.bot.send_photo(
+                chat_id=user_id,
+                photo=file_id,
+                caption=caption,
+                parse_mode=parse_mode,
+                reply_markup=keyboard
+            )
+        elif file_type == "video":
+            await bot_app.bot.send_video(
+                chat_id=user_id,
+                video=file_id,
+                caption=caption,
+                parse_mode=parse_mode,
+                reply_markup=keyboard
+            )
+        elif file_type == "animation":
+            await bot_app.bot.send_animation(
+                chat_id=user_id,
+                animation=file_id,
+                caption=caption,
+                parse_mode=parse_mode,
+                reply_markup=keyboard
+            )
+        elif file_type == "document":
+            await bot_app.bot.send_document(
+                chat_id=user_id,
+                document=file_id,
+                caption=caption,
+                parse_mode=parse_mode,
+                reply_markup=keyboard
+            )
+        else:
+            # Unsupported media type
+            return False
+        return True
     
     def _get_bot_applications(self) -> List[Application]:
         """
@@ -246,6 +243,9 @@ class NotificationService:
             
             # Check if a notification task is already running BEFORE queuing
             # This prevents duplicate notifications from being queued
+            # Note: This check-then-act pattern is acceptable for asyncio tasks in a single-threaded
+            # event loop. In the rare case of true concurrency, duplicates would still be filtered
+            # during queue processing since notifications are marked as sent.
             if self._current_notification_task is not None and not self._current_notification_task.done():
                 logger.warning(f"Notification task already running, skipping duplicate notification for product {product_id}")
                 return
@@ -584,7 +584,8 @@ class NotificationService:
                 file_id_to_use = file_id
                 
                 # Check if we need bot-specific file ID
-                # Both must be non-None and must match (case-insensitive) to skip bot-specific ID lookup
+                # When product_bot and current_bot are both non-None and match (case-insensitive),
+                # we can use the original file_id. Otherwise, we need to get a bot-specific file ID.
                 need_bot_specific_id = (
                     product_bot is None or 
                     current_bot is None or 
@@ -592,11 +593,10 @@ class NotificationService:
                 )
                 
                 if need_bot_specific_id:
-                    # Try to get bot-specific file ID
                     # get_bot_specific_file_id expects a context with a .bot attribute
-                    # bot_app is an Application which has a .bot attribute, so we can pass it
+                    # bot_app is an Application which has a .bot attribute
                     bot_specific_id = await get_bot_specific_file_id(
-                        bot_app,  # Application has .bot attribute needed by get_bot_specific_file_id
+                        bot_app,
                         product["chat_id"],
                         product["message_id"],
                         file_type,
