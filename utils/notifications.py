@@ -13,7 +13,7 @@ from telegram.error import TelegramError, Forbidden, BadRequest
 
 from database import Database
 from utils.categories import get_category_display_name, get_subcategory_display_name, NOTIFICATION_EXCLUDED_CATEGORIES
-from utils.helpers import get_admin_ids
+from utils.helpers import get_admin_ids, get_bot_specific_file_id
 from translations.translator import translate_text_async
 from configs.config import Config
 
@@ -107,6 +107,58 @@ class NotificationService:
             "markdown"
         ])
     
+    async def _send_media_notification(
+        self,
+        bot_app: Application,
+        user_id: int,
+        file_type: str,
+        file_id: str,
+        caption: str,
+        keyboard: InlineKeyboardMarkup,
+        parse_mode: Optional[str] = "Markdown"
+    ) -> bool:
+        """
+        Helper method to send media notification for a specific file type.
+        Returns True if sent successfully, False otherwise.
+        Raises exceptions for caller to handle.
+        """
+        if file_type == "photo":
+            await bot_app.bot.send_photo(
+                chat_id=user_id,
+                photo=file_id,
+                caption=caption,
+                parse_mode=parse_mode,
+                reply_markup=keyboard
+            )
+        elif file_type == "video":
+            await bot_app.bot.send_video(
+                chat_id=user_id,
+                video=file_id,
+                caption=caption,
+                parse_mode=parse_mode,
+                reply_markup=keyboard
+            )
+        elif file_type == "animation":
+            await bot_app.bot.send_animation(
+                chat_id=user_id,
+                animation=file_id,
+                caption=caption,
+                parse_mode=parse_mode,
+                reply_markup=keyboard
+            )
+        elif file_type == "document":
+            await bot_app.bot.send_document(
+                chat_id=user_id,
+                document=file_id,
+                caption=caption,
+                parse_mode=parse_mode,
+                reply_markup=keyboard
+            )
+        else:
+            # Unsupported media type
+            return False
+        return True
+    
     def _get_bot_applications(self) -> List[Application]:
         """
         Get bot applications with caching to avoid repeated imports.
@@ -189,6 +241,14 @@ class NotificationService:
                 logger.info(f"Product {product_id} is in excluded category '{category}', skipping notification")
                 return
             
+            # Check if a notification task is already running BEFORE queuing
+            # This prevents duplicate notifications from being queued, avoiding unnecessary
+            # database writes and duplicate task creation.
+            # Note: This check-then-act pattern is safe in asyncio's single-threaded event loop.
+            if self._current_notification_task is not None and not self._current_notification_task.done():
+                logger.warning(f"Notification task already running, skipping duplicate notification for product {product_id}")
+                return
+            
             # Get all subscribed users
             subscribed_users = await self.db.get_subscribed_users()
             
@@ -197,11 +257,6 @@ class NotificationService:
                 return
             
             logger.info(f"Notifying {len(subscribed_users)} users about product {product_id}")
-            
-            # Check if a notification task is already running
-            if self._current_notification_task is not None and not self._current_notification_task.done():
-                logger.warning(f"Notification task already running for product {product_id}, skipping duplicate task creation")
-                return
             
             # Queue notifications for all subscribed users
             for user_id in subscribed_users:
@@ -501,6 +556,7 @@ class NotificationService:
             
             caption_preview = caption[:100] + "..." if len(caption) > 100 else caption
             
+            # Prepare notification text (will be used as caption or fallback)
             message_text = (
                 f"🆕 **New Product Available!**\n\n"
                 f"📂 Category: {category_text}\n"
@@ -515,26 +571,90 @@ class NotificationService:
                 [InlineKeyboardButton("🔕 Unsubscribe", callback_data="unsubscribe_notifications")]
             ])
             
-            # Send notification using the bot application
-            try:
-                await bot_app.bot.send_message(
-                    chat_id=user_id,
-                    text=message_text,
-                    parse_mode="Markdown",
-                    reply_markup=keyboard
+            # Try to send with media preview (first available media file)
+            media_sent = False
+            file_id = product.get("file_id")
+            file_type = product.get("file_type")
+            
+            if file_id and file_type:
+                # Handle multi-bot scenarios - get bot-specific file ID if needed
+                product_bot = product.get("bot_username")
+                current_bot = bot_app.bot.username
+                file_id_to_use = file_id
+                
+                # Check if we need bot-specific file ID
+                # When product_bot and current_bot are both non-None and match (case-insensitive),
+                # we can use the original file_id. Otherwise, we need to get a bot-specific file ID.
+                need_bot_specific_id = (
+                    product_bot is None or 
+                    current_bot is None or 
+                    (product_bot.lower() != current_bot.lower())
                 )
-            except BadRequest as e:
-                # Handle markdown parse errors by retrying without parse_mode
-                if self._is_markdown_parse_error(e):
-                    logger.warning(f"Markdown parse error for user {user_id}, retrying without parse_mode: {e}")
+                
+                if need_bot_specific_id:
+                    # get_bot_specific_file_id expects a context with a .bot attribute
+                    # bot_app is an Application which has a .bot attribute
+                    bot_specific_id = await get_bot_specific_file_id(
+                        bot_app,
+                        product["chat_id"],
+                        product["message_id"],
+                        file_type,
+                        file_index=0
+                    )
+                    if bot_specific_id:
+                        file_id_to_use = bot_specific_id
+                        logger.debug(f"Using bot-specific file ID for notification to user {user_id}")
+                    else:
+                        logger.warning(f"Could not get bot-specific file ID for notification to user {user_id}, will try original file_id")
+                
+                # Try to send media with the notification text as caption
+                try:
+                    media_sent = await self._send_media_notification(
+                        bot_app, user_id, file_type, file_id_to_use,
+                        message_text, keyboard, parse_mode="Markdown"
+                    )
+                except BadRequest as e:
+                    # Handle markdown parse errors by retrying without parse_mode
+                    if self._is_markdown_parse_error(e):
+                        logger.warning(f"Markdown parse error in media notification for user {user_id}, retrying without parse_mode: {e}")
+                        try:
+                            media_sent = await self._send_media_notification(
+                                bot_app, user_id, file_type, file_id_to_use,
+                                message_text, keyboard, parse_mode=None
+                            )
+                        except Exception as retry_error:
+                            logger.warning(f"Failed to send media notification even without parse_mode for user {user_id}: {retry_error}")
+                            media_sent = False
+                    else:
+                        # Other BadRequest errors, log and fallback to text
+                        logger.warning(f"BadRequest sending media notification to user {user_id}: {e}, falling back to text")
+                        media_sent = False
+                except Exception as e:
+                    # Any other error sending media, log and fallback to text
+                    logger.warning(f"Error sending media notification to user {user_id}: {e}, falling back to text")
+                    media_sent = False
+            
+            # Fallback to text-only notification if media failed or not available
+            if not media_sent:
+                try:
                     await bot_app.bot.send_message(
                         chat_id=user_id,
                         text=message_text,
+                        parse_mode="Markdown",
                         reply_markup=keyboard
                     )
-                else:
-                    # Re-raise other BadRequest errors to be handled below
-                    raise
+                except BadRequest as e:
+                    # Handle markdown parse errors by retrying without parse_mode
+                    if self._is_markdown_parse_error(e):
+                        logger.warning(f"Markdown parse error for user {user_id}, retrying without parse_mode: {e}")
+                        await bot_app.bot.send_message(
+                            chat_id=user_id,
+                            text=message_text,
+                            reply_markup=keyboard
+                        )
+                    else:
+                        # Re-raise other BadRequest errors to be handled below
+                        raise
             
             # Mark as sent
             await self.db.mark_notification_sent(notification_id)
