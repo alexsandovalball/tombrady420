@@ -626,7 +626,7 @@ class NotificationService:
                             f"chat_id={product['chat_id']}, msg_id={product['message_id']}"
                         )
                         # Will fall through to try original file_id
-                        used_original_file_id = True
+                        # Note: used_original_file_id will be set to True only if media is sent successfully
                 else:
                     logger.debug(
                         f"[Media Notification] Using original file ID (same bot): user={user_id}, "
@@ -640,6 +640,9 @@ class NotificationService:
                         message_text, keyboard, parse_mode="Markdown"
                     )
                     if media_sent:
+                        # Set used_original_file_id if we successfully sent with original file_id
+                        if bot_specific_id_attempted and not bot_specific_id_success and file_id_to_use == file_id:
+                            used_original_file_id = True
                         logger.info(
                             f"[Media Notification] Successfully sent media: user={user_id}, "
                             f"product={product_id}, type={file_type}, "
