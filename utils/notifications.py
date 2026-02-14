@@ -107,8 +107,8 @@ class NotificationService:
             "markdown"
         ])
     
-    @staticmethod
     async def _send_media_notification(
+        self,
         bot_app: Application,
         user_id: int,
         file_type: str,
@@ -242,10 +242,9 @@ class NotificationService:
                 return
             
             # Check if a notification task is already running BEFORE queuing
-            # This prevents duplicate notifications from being queued
-            # Note: This check-then-act pattern is acceptable for asyncio tasks in a single-threaded
-            # event loop. In the rare case of true concurrency, duplicates would still be filtered
-            # during queue processing since notifications are marked as sent.
+            # This prevents duplicate notifications from being queued, avoiding unnecessary
+            # database writes and duplicate task creation.
+            # Note: This check-then-act pattern is safe in asyncio's single-threaded event loop.
             if self._current_notification_task is not None and not self._current_notification_task.done():
                 logger.warning(f"Notification task already running, skipping duplicate notification for product {product_id}")
                 return
