@@ -498,7 +498,7 @@ class NotificationService:
             bot_username = await self.db.get_bot_username_for_user(user_id)
             
             # If bot_username is None, it means either:
-            # 1. User doesn't exist (deleted) - will be handled by _send_single_notification
+            # 1. User doesn't exist (deleted) - send attempt will fail, caught by error handler in _send_single_notification
             # 2. User exists but has no bot assigned (NULL bot_username) - send via primary bot
             # In both cases, we group them together and send via primary bot
             if bot_username not in users_by_bot:
@@ -1064,7 +1064,7 @@ class NotificationService:
             bot_username = await self.db.get_bot_username_for_user(user_id)
             
             # If bot_username is None, it means either:
-            # 1. User doesn't exist (deleted) - will be handled by error handling below
+            # 1. User doesn't exist (deleted) - send attempt will fail with Forbidden/TelegramError, caught at lines 1130-1164
             # 2. User exists but has no bot assigned (NULL bot_username) - send via primary bot
             # In both cases, we group them together and send via primary bot
             if bot_username not in users_by_bot:
