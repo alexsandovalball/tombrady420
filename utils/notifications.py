@@ -576,6 +576,11 @@ class NotificationService:
             file_id = product.get("file_id")
             file_type = product.get("file_type")
             
+            # Track media sending metrics
+            bot_specific_id_attempted = False
+            bot_specific_id_success = False
+            used_original_file_id = False
+            
             if file_id and file_type:
                 # Handle multi-bot scenarios - get bot-specific file ID if needed
                 product_bot = product.get("bot_username")
@@ -592,6 +597,12 @@ class NotificationService:
                 )
                 
                 if need_bot_specific_id:
+                    bot_specific_id_attempted = True
+                    logger.debug(
+                        f"[Media Notification] Attempting bot-specific file ID: user={user_id}, "
+                        f"product_bot={product_bot}, current_bot={current_bot}"
+                    )
+                    
                     # get_bot_specific_file_id expects a context with a .bot attribute
                     # bot_app is an Application which has a .bot attribute
                     bot_specific_id = await get_bot_specific_file_id(
@@ -603,9 +614,24 @@ class NotificationService:
                     )
                     if bot_specific_id:
                         file_id_to_use = bot_specific_id
-                        logger.debug(f"Using bot-specific file ID for notification to user {user_id}")
+                        bot_specific_id_success = True
+                        logger.info(
+                            f"[Media Notification] Using bot-specific file ID: user={user_id}, "
+                            f"product={product_id}, type={file_type}"
+                        )
                     else:
-                        logger.warning(f"Could not get bot-specific file ID for notification to user {user_id}, will try original file_id")
+                        logger.warning(
+                            f"[Media Notification] Bot-specific file ID failed, will try original file_id: "
+                            f"user={user_id}, product={product_id}, type={file_type}, "
+                            f"chat_id={product['chat_id']}, msg_id={product['message_id']}"
+                        )
+                        # Will fall through to try original file_id
+                        used_original_file_id = True
+                else:
+                    logger.debug(
+                        f"[Media Notification] Using original file ID (same bot): user={user_id}, "
+                        f"product={product_id}, bot={current_bot}"
+                    )
                 
                 # Try to send media with the notification text as caption
                 try:
@@ -613,29 +639,70 @@ class NotificationService:
                         bot_app, user_id, file_type, file_id_to_use,
                         message_text, keyboard, parse_mode="Markdown"
                     )
+                    if media_sent:
+                        logger.info(
+                            f"[Media Notification] Successfully sent media: user={user_id}, "
+                            f"product={product_id}, type={file_type}, "
+                            f"bot_specific_attempted={bot_specific_id_attempted}, "
+                            f"bot_specific_success={bot_specific_id_success}, "
+                            f"used_original={used_original_file_id}"
+                        )
                 except BadRequest as e:
+                    error_msg = str(e)
                     # Handle markdown parse errors by retrying without parse_mode
                     if self._is_markdown_parse_error(e):
-                        logger.warning(f"Markdown parse error in media notification for user {user_id}, retrying without parse_mode: {e}")
+                        logger.warning(
+                            f"[Media Notification] Markdown parse error, retrying without parse_mode: "
+                            f"user={user_id}, error={e}"
+                        )
                         try:
                             media_sent = await self._send_media_notification(
                                 bot_app, user_id, file_type, file_id_to_use,
                                 message_text, keyboard, parse_mode=None
                             )
                         except Exception as retry_error:
-                            logger.warning(f"Failed to send media notification even without parse_mode for user {user_id}: {retry_error}")
+                            logger.warning(
+                                f"[Media Notification] Failed even without parse_mode: "
+                                f"user={user_id}, error={retry_error}"
+                            )
                             media_sent = False
+                    elif "wrong file identifier" in error_msg.lower() or "file_id" in error_msg.lower():
+                        # File ID is invalid/expired
+                        logger.error(
+                            f"[Media Notification] Invalid/expired file_id: user={user_id}, "
+                            f"product={product_id}, type={file_type}, file_id={file_id_to_use[:20]}..., "
+                            f"bot_specific_attempted={bot_specific_id_attempted}, "
+                            f"bot_specific_success={bot_specific_id_success}, error={e}"
+                        )
+                        media_sent = False
                     else:
                         # Other BadRequest errors, log and fallback to text
-                        logger.warning(f"BadRequest sending media notification to user {user_id}: {e}, falling back to text")
+                        logger.warning(
+                            f"[Media Notification] BadRequest error: user={user_id}, "
+                            f"product={product_id}, type={file_type}, error={e}"
+                        )
                         media_sent = False
                 except Exception as e:
                     # Any other error sending media, log and fallback to text
-                    logger.warning(f"Error sending media notification to user {user_id}: {e}, falling back to text")
+                    logger.warning(
+                        f"[Media Notification] Unexpected error: user={user_id}, "
+                        f"product={product_id}, type={file_type}, error={e}"
+                    )
                     media_sent = False
             
             # Fallback to text-only notification if media failed or not available
             if not media_sent:
+                if file_id and file_type:
+                    logger.info(
+                        f"[Media Notification] Falling back to text-only notification: user={user_id}, "
+                        f"product={product_id}, had_media=True, "
+                        f"bot_specific_attempted={bot_specific_id_attempted}, "
+                        f"bot_specific_success={bot_specific_id_success}"
+                    )
+                else:
+                    logger.debug(
+                        f"[Media Notification] Sending text-only (no media available): user={user_id}, product={product_id}"
+                    )
                 try:
                     await bot_app.bot.send_message(
                         chat_id=user_id,
