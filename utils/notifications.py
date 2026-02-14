@@ -493,16 +493,14 @@ class NotificationService:
         for notification in notifications:
             user_id = notification["user_id"]
             
-            # Get user's bot_username from database
-            user = await self.db.get_user_by_id(user_id)
-            if not user:
-                # User not found, mark notification as sent and skip
-                # This will be handled by _send_single_notification, but we skip grouping
-                logger.debug(f"User {user_id} not found, will mark notification as sent")
-                await self.db.mark_notification_sent(notification["id"])
-                continue
+            # Get user's bot_username from database using the dedicated method
+            # This is more efficient than fetching the entire user object
+            bot_username = await self.db.get_bot_username_for_user(user_id)
             
-            bot_username = user.get("bot_username")
+            # If bot_username is None, it means either:
+            # 1. User doesn't exist (deleted) - send will fail with user not found error (handled at line 522)
+            # 2. User exists but has no bot assigned (NULL bot_username) - send via primary bot
+            # In both cases, we group them together and send via primary bot
             if bot_username not in users_by_bot:
                 users_by_bot[bot_username] = []
             users_by_bot[bot_username].append(notification)
@@ -1061,16 +1059,14 @@ class NotificationService:
         for message in messages:
             user_id = message["user_id"]
             
-            # Get user's bot_username from database
-            user = await self.db.get_user_by_id(user_id)
-            if not user:
-                # User not found, mark message as sent and skip
-                logger.debug(f"User {user_id} not found, will mark custom message as sent")
-                await self.db.mark_custom_message_sent(message["id"])
-                stats["not_found"] += 1
-                continue
+            # Get user's bot_username from database using the dedicated method
+            # This is more efficient than fetching the entire user object
+            bot_username = await self.db.get_bot_username_for_user(user_id)
             
-            bot_username = user.get("bot_username")
+            # If bot_username is None, it means either:
+            # 1. User doesn't exist (deleted) - send attempt will fail with Forbidden/TelegramError, caught at lines 1130-1164
+            # 2. User exists but has no bot assigned (NULL bot_username) - send via primary bot
+            # In both cases, we group them together and send via primary bot
             if bot_username not in users_by_bot:
                 users_by_bot[bot_username] = []
             users_by_bot[bot_username].append(message)

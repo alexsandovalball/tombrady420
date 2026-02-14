@@ -876,6 +876,18 @@ class Database:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
     
+    async def get_bot_username_for_user(self, user_id: int) -> Optional[str]:
+        """
+        Get the bot_username for a specific user.
+        Returns None if user not found or bot_username is NULL.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT bot_username FROM bot_users WHERE user_id = ?
+            """, (user_id,)) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else None
+    
     async def user_exists(self, user_id: int) -> bool:
         """Check if a user exists in the database."""
         async with aiosqlite.connect(self.db_path) as db:
