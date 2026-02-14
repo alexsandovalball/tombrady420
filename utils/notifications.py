@@ -40,6 +40,25 @@ CUSTOM_MESSAGE_DELAY_SECONDS = 5  # Longer delay for custom messages
 # Queue processing safety limits
 MAX_QUEUE_PROCESSING_ITERATIONS = 50  # Maximum iterations to prevent infinite loops (50 batches * 100 = 5000 messages max per run)
 
+# Logging configuration
+FILE_ID_PREVIEW_LENGTH = 20  # Number of characters to show when logging file IDs
+
+
+def get_file_id_preview(file_id: str, max_length: int = FILE_ID_PREVIEW_LENGTH) -> str:
+    """
+    Get a preview of a file ID for logging purposes.
+    
+    Args:
+        file_id: The file ID to preview
+        max_length: Maximum length of the preview
+    
+    Returns:
+        Preview string with ellipsis if truncated
+    """
+    if len(file_id) > max_length:
+        return f"{file_id[:max_length]}..."
+    return file_id
+
 
 def get_bot_applications() -> List[Application]:
     """
@@ -671,10 +690,9 @@ class NotificationService:
                             media_sent = False
                     elif "wrong file identifier" in error_msg.lower() or "file_id" in error_msg.lower():
                         # File ID is invalid/expired
-                        file_id_preview = file_id_to_use[:20] if len(file_id_to_use) > 20 else file_id_to_use
                         logger.error(
                             f"[Media Notification] Invalid/expired file_id: user={user_id}, "
-                            f"product={product_id}, type={file_type}, file_id={file_id_preview}..., "
+                            f"product={product_id}, type={file_type}, file_id={get_file_id_preview(file_id_to_use)}, "
                             f"bot_specific_attempted={bot_specific_id_attempted}, "
                             f"bot_specific_success={bot_specific_id_success}, error={e}"
                         )
