@@ -671,9 +671,10 @@ class NotificationService:
                             media_sent = False
                     elif "wrong file identifier" in error_msg.lower() or "file_id" in error_msg.lower():
                         # File ID is invalid/expired
+                        file_id_preview = file_id_to_use[:20] if len(file_id_to_use) > 20 else file_id_to_use
                         logger.error(
                             f"[Media Notification] Invalid/expired file_id: user={user_id}, "
-                            f"product={product_id}, type={file_type}, file_id={file_id_to_use[:20]}..., "
+                            f"product={product_id}, type={file_type}, file_id={file_id_preview}..., "
                             f"bot_specific_attempted={bot_specific_id_attempted}, "
                             f"bot_specific_success={bot_specific_id_success}, error={e}"
                         )

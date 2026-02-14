@@ -285,29 +285,6 @@ async def get_bot_specific_file_id(
         f"file_type={file_type}, file_index={file_index}, target_admin={target_chat_id}"
     )
     
-    # First, validate that we can access the admin chat
-    try:
-        await context.bot.get_chat(target_chat_id)
-        logger.debug(f"[get_bot_specific_file_id] Admin chat {target_chat_id} is accessible")
-    except Forbidden as e:
-        logger.error(
-            f"[get_bot_specific_file_id] Cannot access admin chat {target_chat_id}: {e}. "
-            f"Admin needs to start a conversation with bot {bot_username} by sending /start. "
-            f"This is required for secondary bots to cache media file IDs."
-        )
-        return None
-    except BadRequest as e:
-        logger.error(
-            f"[get_bot_specific_file_id] Bad request when checking admin chat {target_chat_id}: {e}. "
-            f"The admin ID may be invalid."
-        )
-        return None
-    except TelegramError as e:
-        logger.error(
-            f"[get_bot_specific_file_id] Telegram error when checking admin chat {target_chat_id}: {e}"
-        )
-        return None
-    
     try:
         # Forward the message to get the bot-specific file ID
         forwarded = await context.bot.forward_message(
