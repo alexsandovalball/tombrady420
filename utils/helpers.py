@@ -6,7 +6,7 @@ import json
 from typing import List, Optional, Dict, Tuple
 from telegram import Update, User
 from telegram.ext import ContextTypes
-from telegram.error import Forbidden
+from telegram.error import Forbidden, BadRequest, TelegramError
 
 from configs.config import Config
 
@@ -268,21 +268,34 @@ async def get_bot_specific_file_id(
         return cached_file_id
     
     # Cache miss - need to get bot-specific file ID by forwarding
+    admin_ids = get_admin_ids()
+    if not admin_ids:
+        logger.error(
+            f"[get_bot_specific_file_id] No admin IDs configured - cannot get bot-specific file ID. "
+            f"Bot: {bot_username}, Source: chat={source_chat_id}, msg={source_message_id}, type={file_type}"
+        )
+        return None
+    
+    target_chat_id = admin_ids[0]
+    
+    # Log context for debugging
+    logger.debug(
+        f"[get_bot_specific_file_id] Attempting to get bot-specific file ID: "
+        f"bot={bot_username}, source_chat={source_chat_id}, source_msg={source_message_id}, "
+        f"file_type={file_type}, file_index={file_index}, target_admin={target_chat_id}"
+    )
+    
     try:
         # Forward the message to get the bot-specific file ID
-        # We forward to one of the admin users (they have permission to receive)
-        admin_ids = get_admin_ids()
-        if not admin_ids:
-            logger.error("No admin IDs configured - cannot get bot-specific file ID")
-            return None
-        
-        target_chat_id = admin_ids[0]
-        
-        # Forward the message
         forwarded = await context.bot.forward_message(
             chat_id=target_chat_id,
             from_chat_id=source_chat_id,
             message_id=source_message_id
+        )
+        
+        logger.debug(
+            f"[get_bot_specific_file_id] Successfully forwarded message {source_message_id} "
+            f"from chat {source_chat_id} to admin {target_chat_id}"
         )
         
         # Extract the file ID from the forwarded message
@@ -313,7 +326,10 @@ async def get_bot_specific_file_id(
                 bot_username,
                 file_id
             )
-            logger.info(f"Cached bot-specific file ID for {bot_username}: msg={source_message_id}, idx={file_index}")
+            logger.info(
+                f"[get_bot_specific_file_id] Successfully cached bot-specific file ID: "
+                f"bot={bot_username}, msg={source_message_id}, idx={file_index}, type={file_type}"
+            )
             
             # Delete the forwarded message to avoid cluttering admin chat
             try:
@@ -321,12 +337,17 @@ async def get_bot_specific_file_id(
                     chat_id=target_chat_id,
                     message_id=forwarded.message_id
                 )
+                logger.debug(f"[get_bot_specific_file_id] Deleted forwarded message from admin chat")
             except Exception as e:
-                logger.warning(f"Could not delete forwarded message: {e}")
+                logger.warning(f"[get_bot_specific_file_id] Could not delete forwarded message: {e}")
             
             return file_id
         else:
-            logger.warning(f"Could not extract file ID from forwarded message {source_message_id}")
+            logger.warning(
+                f"[get_bot_specific_file_id] Could not extract {file_type} file ID from forwarded message. "
+                f"Source: chat={source_chat_id}, msg={source_message_id}. "
+                f"The message may not contain media of the expected type."
+            )
             
             # Still try to delete the forwarded message
             try:
@@ -335,24 +356,66 @@ async def get_bot_specific_file_id(
                     message_id=forwarded.message_id
                 )
             except Exception as e:
-                logger.warning(f"Could not delete forwarded message: {e}")
+                logger.warning(f"[get_bot_specific_file_id] Could not delete forwarded message: {e}")
             
             return None
+    
+    except BadRequest as e:
+        error_msg = str(e)
+        if "message to forward not found" in error_msg.lower():
+            logger.error(
+                f"[get_bot_specific_file_id] Source message not found: chat={source_chat_id}, "
+                f"msg={source_message_id}. The message may have been deleted from the channel, "
+                f"or the bot doesn't have access to it. Error: {e}"
+            )
+        elif "message can't be forwarded" in error_msg.lower():
+            logger.error(
+                f"[get_bot_specific_file_id] Message cannot be forwarded: chat={source_chat_id}, "
+                f"msg={source_message_id}. The message may have forwarding restrictions. Error: {e}"
+            )
+        elif "chat not found" in error_msg.lower():
+            logger.error(
+                f"[get_bot_specific_file_id] Source chat not found: chat={source_chat_id}. "
+                f"The bot may have lost access to the channel. Error: {e}"
+            )
+        else:
+            logger.error(
+                f"[get_bot_specific_file_id] BadRequest error forwarding message: "
+                f"source_chat={source_chat_id}, source_msg={source_message_id}, "
+                f"target_admin={target_chat_id}, bot={bot_username}. Error: {e}"
+            )
+        return None
             
     except Forbidden as e:
-        # Handle "bot can't initiate conversation with a user" error
         error_msg = str(e)
         if "can't initiate conversation" in error_msg.lower() or "bot was blocked" in error_msg.lower():
             logger.warning(
-                f"Unable to forward message to admin {target_chat_id} for bot-specific file ID: {e}\n"
-                f"SOLUTION: Admin with ID {target_chat_id} needs to start a conversation with this bot "
-                f"by sending /start to it. This is required for secondary bots to cache media file IDs."
+                f"[get_bot_specific_file_id] Cannot initiate conversation with admin {target_chat_id}. "
+                f"SOLUTION: Admin needs to start a conversation with bot {bot_username} by sending /start. "
+                f"This is required for secondary bots to cache media file IDs. Error: {e}"
             )
         else:
-            logger.error(f"Forbidden error getting bot-specific file ID: {e}")
+            logger.error(
+                f"[get_bot_specific_file_id] Forbidden error: source_chat={source_chat_id}, "
+                f"source_msg={source_message_id}, target_admin={target_chat_id}, bot={bot_username}. Error: {e}"
+            )
         return None
+    
+    except TelegramError as e:
+        logger.error(
+            f"[get_bot_specific_file_id] Telegram API error: source_chat={source_chat_id}, "
+            f"source_msg={source_message_id}, target_admin={target_chat_id}, "
+            f"bot={bot_username}, file_type={file_type}. Error: {e}"
+        )
+        return None
+    
     except Exception as e:
-        logger.error(f"Error getting bot-specific file ID: {e}")
+        logger.error(
+            f"[get_bot_specific_file_id] Unexpected error: source_chat={source_chat_id}, "
+            f"source_msg={source_message_id}, target_admin={target_chat_id}, "
+            f"bot={bot_username}, file_type={file_type}. Error: {e}",
+            exc_info=True
+        )
         return None
 
 
