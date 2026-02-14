@@ -13,7 +13,7 @@ from telegram.error import TelegramError, Forbidden, BadRequest
 
 from database import Database
 from utils.categories import get_category_display_name, get_subcategory_display_name, NOTIFICATION_EXCLUDED_CATEGORIES
-from utils.helpers import get_admin_ids
+from utils.helpers import get_admin_ids, get_bot_specific_file_id
 from translations.translator import translate_text_async
 from configs.config import Config
 
@@ -106,6 +106,61 @@ class NotificationService:
             "parse entities",
             "markdown"
         ])
+    
+    @staticmethod
+    async def _send_media_notification(
+        bot_app: Application,
+        user_id: int,
+        file_type: str,
+        file_id: str,
+        caption: str,
+        keyboard: InlineKeyboardMarkup,
+        parse_mode: Optional[str] = "Markdown"
+    ) -> bool:
+        """
+        Helper method to send media notification for a specific file type.
+        Returns True if sent successfully, False otherwise.
+        """
+        try:
+            if file_type == "photo":
+                await bot_app.bot.send_photo(
+                    chat_id=user_id,
+                    photo=file_id,
+                    caption=caption,
+                    parse_mode=parse_mode,
+                    reply_markup=keyboard
+                )
+            elif file_type == "video":
+                await bot_app.bot.send_video(
+                    chat_id=user_id,
+                    video=file_id,
+                    caption=caption,
+                    parse_mode=parse_mode,
+                    reply_markup=keyboard
+                )
+            elif file_type == "animation":
+                await bot_app.bot.send_animation(
+                    chat_id=user_id,
+                    animation=file_id,
+                    caption=caption,
+                    parse_mode=parse_mode,
+                    reply_markup=keyboard
+                )
+            elif file_type == "document":
+                await bot_app.bot.send_document(
+                    chat_id=user_id,
+                    document=file_id,
+                    caption=caption,
+                    parse_mode=parse_mode,
+                    reply_markup=keyboard
+                )
+            else:
+                # Unsupported media type
+                return False
+            return True
+        except Exception:
+            # Let caller handle the exception
+            raise
     
     def _get_bot_applications(self) -> List[Application]:
         """
@@ -529,12 +584,15 @@ class NotificationService:
                 file_id_to_use = file_id
                 
                 # Check if we need bot-specific file ID
-                if (product_bot is None or 
+                # Both must be non-None and must match (case-insensitive) to skip bot-specific ID lookup
+                need_bot_specific_id = (
+                    product_bot is None or 
                     current_bot is None or 
-                    product_bot.lower() != current_bot.lower()):
+                    (product_bot.lower() != current_bot.lower())
+                )
+                
+                if need_bot_specific_id:
                     # Try to get bot-specific file ID
-                    from utils.helpers import get_bot_specific_file_id
-                    
                     # get_bot_specific_file_id expects a context with a .bot attribute
                     # bot_app is an Application which has a .bot attribute, so we can pass it
                     bot_specific_id = await get_bot_specific_file_id(
@@ -552,82 +610,19 @@ class NotificationService:
                 
                 # Try to send media with the notification text as caption
                 try:
-                    if file_type == "photo":
-                        await bot_app.bot.send_photo(
-                            chat_id=user_id,
-                            photo=file_id_to_use,
-                            caption=message_text,
-                            parse_mode="Markdown",
-                            reply_markup=keyboard
-                        )
-                        media_sent = True
-                    elif file_type == "video":
-                        await bot_app.bot.send_video(
-                            chat_id=user_id,
-                            video=file_id_to_use,
-                            caption=message_text,
-                            parse_mode="Markdown",
-                            reply_markup=keyboard
-                        )
-                        media_sent = True
-                    elif file_type == "animation":
-                        await bot_app.bot.send_animation(
-                            chat_id=user_id,
-                            animation=file_id_to_use,
-                            caption=message_text,
-                            parse_mode="Markdown",
-                            reply_markup=keyboard
-                        )
-                        media_sent = True
-                    elif file_type == "document":
-                        await bot_app.bot.send_document(
-                            chat_id=user_id,
-                            document=file_id_to_use,
-                            caption=message_text,
-                            parse_mode="Markdown",
-                            reply_markup=keyboard
-                        )
-                        media_sent = True
-                    else:
-                        # Unsupported media type for preview, will fallback to text
-                        logger.debug(f"Media type {file_type} not supported for preview, falling back to text")
+                    media_sent = await self._send_media_notification(
+                        bot_app, user_id, file_type, file_id_to_use,
+                        message_text, keyboard, parse_mode="Markdown"
+                    )
                 except BadRequest as e:
                     # Handle markdown parse errors by retrying without parse_mode
                     if self._is_markdown_parse_error(e):
                         logger.warning(f"Markdown parse error in media notification for user {user_id}, retrying without parse_mode: {e}")
                         try:
-                            if file_type == "photo":
-                                await bot_app.bot.send_photo(
-                                    chat_id=user_id,
-                                    photo=file_id_to_use,
-                                    caption=message_text,
-                                    reply_markup=keyboard
-                                )
-                                media_sent = True
-                            elif file_type == "video":
-                                await bot_app.bot.send_video(
-                                    chat_id=user_id,
-                                    video=file_id_to_use,
-                                    caption=message_text,
-                                    reply_markup=keyboard
-                                )
-                                media_sent = True
-                            elif file_type == "animation":
-                                await bot_app.bot.send_animation(
-                                    chat_id=user_id,
-                                    animation=file_id_to_use,
-                                    caption=message_text,
-                                    reply_markup=keyboard
-                                )
-                                media_sent = True
-                            elif file_type == "document":
-                                await bot_app.bot.send_document(
-                                    chat_id=user_id,
-                                    document=file_id_to_use,
-                                    caption=message_text,
-                                    reply_markup=keyboard
-                                )
-                                media_sent = True
+                            media_sent = await self._send_media_notification(
+                                bot_app, user_id, file_type, file_id_to_use,
+                                message_text, keyboard, parse_mode=None
+                            )
                         except Exception as retry_error:
                             logger.warning(f"Failed to send media notification even without parse_mode for user {user_id}: {retry_error}")
                             media_sent = False
