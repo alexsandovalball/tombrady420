@@ -356,8 +356,9 @@ class NotificationService:
     async def process_notification_queue(self, context: ContextTypes.DEFAULT_TYPE):
         """
         Process pending notifications from the queue with rate limiting and staggered delivery.
-        Groups users and sends notifications at staggered intervals to avoid spam flags.
-        Uses multi-bot delivery - sends via the bot each user started.
+        Uses bot-first grouping: notifications are grouped by bot_username BEFORE processing,
+        then each bot's notifications are processed simultaneously via asyncio.gather.
+        This eliminates duplicate sends by ensuring each bot handles only its assigned users.
         Processes all pending notifications in batches until queue is empty.
         """
         try:
@@ -382,10 +383,8 @@ class NotificationService:
                 
                 logger.info(f"Processing batch {batch_number}: {len(pending)} pending notifications")
                 
-                # Group notifications by user for rate limiting
-                # Deduplicate by (user_id, product_id) to avoid sending the same
-                # product multiple times if duplicates slipped into the queue.
-                user_notifications = {}
+                # Deduplicate by (user_id, product_id) across all batches
+                deduplicated = []
                 duplicate_skip_count = 0
                 duplicates_to_remove = []
                 
@@ -400,104 +399,53 @@ class NotificationService:
                         continue
                     
                     seen_user_product_global.add(key)
-                    
-                    if user_id not in user_notifications:
-                        user_notifications[user_id] = []
-                    user_notifications[user_id].append(notification)
+                    deduplicated.append(notification)
                 
                 if duplicate_skip_count:
                     logger.warning(f"Skipped {duplicate_skip_count} duplicate notifications in batch {batch_number}")
                     for duplicate_id in duplicates_to_remove:
                         await self._remove_duplicate_notification(duplicate_id)
                 
-                # Check if all users in this batch were already rate-limited
-                # Check if user_notifications is not empty before checking rate limits
-                # to avoid incorrectly breaking when there are no users in the batch
-                if user_notifications and all(uid in rate_limited_users for uid in user_notifications.keys()):
-                    logger.info(f"All {len(user_notifications)} users in batch {batch_number} were previously rate-limited, stopping")
+                if not deduplicated:
+                    # All notifications in this batch were duplicates
+                    if len(pending) == PENDING_NOTIFICATIONS_BATCH_LIMIT:
+                        await asyncio.sleep(2)
+                        continue
                     return total_sent_count
                 
-                # Filter users who haven't exceeded rate limits
-                eligible_users = []
-                for user_id, notifications in user_notifications.items():
-                    # Skip if already known to be rate-limited
-                    if user_id in rate_limited_users:
-                        continue
-                    
-                    # Check rate limit for this user
-                    recent_count = await self.db.get_recent_notifications_count(user_id, minutes=60)
-                    
-                    if recent_count >= MAX_NOTIFICATIONS_PER_HOUR:
-                        logger.debug(f"User {user_id} reached rate limit, skipping")
-                        rate_limited_users.add(user_id)
-                        continue
-                    
-                    # Calculate how many more notifications we can send to this user
-                    remaining = MAX_NOTIFICATIONS_PER_HOUR - recent_count
-                    
-                    # Add user with their limited notifications
-                    eligible_users.append((user_id, notifications[:remaining]))
+                # Bot-first grouping: group ALL notifications by bot_username BEFORE processing
+                notifications_by_bot = {}
+                for notification in deduplicated:
+                    user_id = notification["user_id"]
+                    bot_username = await self.db.get_bot_username_for_user(user_id)
+                    # Normalize: None means primary bot
+                    if bot_username not in notifications_by_bot:
+                        notifications_by_bot[bot_username] = []
+                    notifications_by_bot[bot_username].append(notification)
                 
-                if not eligible_users:
-                    logger.info(f"No eligible users after rate limiting in batch {batch_number}")
-                    # All users in this batch are rate-limited
-                    # If we continue, we'll fetch the same notifications again (infinite loop)
-                    # So we break here - these will be retried in the next scheduled run
-                    return total_sent_count
+                bot_summary = ', '.join(
+                    f'@{b or "primary"} ({len(n)})' for b, n in notifications_by_bot.items()
+                )
+                logger.info(f"Batch {batch_number}: grouped into {len(notifications_by_bot)} bot(s): {bot_summary}")
                 
-                # Implement staggered delivery by groups with multi-bot support
+                # Process all bots simultaneously using asyncio.gather
+                tasks = []
+                for bot_username, bot_notifications in notifications_by_bot.items():
+                    task = self._process_bot_notifications(
+                        bot_username, bot_notifications, rate_limited_users
+                    )
+                    tasks.append(task)
+                
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Aggregate results
                 sent_count = 0
-                
-                if ENABLE_STAGGERED_DELIVERY and len(eligible_users) >= STAGGER_GROUP_SIZE:
-                    logger.info(f"Using staggered delivery: {len(eligible_users)} users in groups of {STAGGER_GROUP_SIZE}")
-                    
-                    # Split users into groups
-                    user_groups = []
-                    for i in range(0, len(eligible_users), STAGGER_GROUP_SIZE):
-                        user_groups.append(eligible_users[i:i + STAGGER_GROUP_SIZE])
-                    
-                    # Process each group with staggered delay
-                    for group_idx, user_group in enumerate(user_groups):
-                        logger.info(f"Processing group {group_idx + 1}/{len(user_groups)} with {len(user_group)} users")
-                        
-                        # Collect all notifications for this group
-                        group_batch = []
-                        for user_id, notifications in user_group:
-                            group_batch.extend(notifications)
-                        
-                        # Send notifications in smaller batches within the group
-                        for i in range(0, len(group_batch), NOTIFICATION_BATCH_SIZE):
-                            batch = group_batch[i:i + NOTIFICATION_BATCH_SIZE]
-                            sent = await self._send_notification_batch_multibot(batch)
-                            sent_count += sent
-                            
-                            # Small delay between batches within a group
-                            if i + NOTIFICATION_BATCH_SIZE < len(group_batch):
-                                await asyncio.sleep(BATCH_DELAY_SECONDS)
-                        
-                        # Stagger delay before next group (except for last group)
-                        if group_idx < len(user_groups) - 1:
-                            logger.info(f"Waiting {STAGGER_INTERVAL_SECONDS}s before next group...")
-                            await asyncio.sleep(STAGGER_INTERVAL_SECONDS)
-                else:
-                    # Standard batch processing without staggering
-                    logger.info("Using standard batch processing (staggering disabled or small user count)")
-                    batch = []
-                    
-                    for user_id, notifications in eligible_users:
-                        batch.extend(notifications)
-                        
-                        # Send in batches to avoid overwhelming Telegram
-                        if len(batch) >= NOTIFICATION_BATCH_SIZE:
-                            sent = await self._send_notification_batch_multibot(batch)
-                            sent_count += sent
-                            batch = []
-                            await asyncio.sleep(BATCH_DELAY_SECONDS)
-                    
-                    # Send remaining batch
-                    if batch:
-                        sent = await self._send_notification_batch_multibot(batch)
-                        sent_count += sent
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        bot_name = list(notifications_by_bot.keys())[i]
+                        logger.error(f"Error processing notifications for bot @{bot_name or 'primary'}: {result}")
+                    else:
+                        sent_count += result
                 
                 total_sent_count += sent_count
                 logger.info(f"Batch {batch_number} complete: Sent {sent_count} notifications successfully (total: {total_sent_count})")
@@ -509,6 +457,164 @@ class NotificationService:
         except Exception as e:
             logger.error(f"Error processing notification queue: {e}", exc_info=True)
             return total_sent_count
+    
+    async def _process_bot_notifications(
+        self,
+        bot_username: Optional[str],
+        notifications: List[dict],
+        rate_limited_users: set
+    ) -> int:
+        """
+        Process notifications for a specific bot. Handles deduplication within the bot's scope,
+        rate limiting per user, and staggered delivery for anti-spam.
+        
+        Args:
+            bot_username: The bot username to send via (None for primary bot)
+            notifications: List of notification dicts assigned to this bot
+            rate_limited_users: Shared set tracking rate-limited users (updated in place)
+            
+        Returns:
+            Number of successfully sent notifications
+        """
+        # Get the appropriate bot application
+        bot_apps = self._get_bot_applications()
+        if not bot_apps:
+            logger.warning("No bot applications available for delivery")
+            return 0
+        
+        bot_app = get_bot_by_username(bot_username) if bot_username else bot_apps[0]
+        if not bot_app:
+            logger.warning(f"Bot @{bot_username} not found, using primary bot")
+            bot_app = bot_apps[0]
+        
+        actual_bot_name = get_bot_username(bot_app)
+        logger.info(f"[Bot @{actual_bot_name}] Processing {len(notifications)} notifications")
+        
+        # Group notifications by user for rate limiting
+        user_notifications = {}
+        for notification in notifications:
+            user_id = notification["user_id"]
+            if user_id not in user_notifications:
+                user_notifications[user_id] = []
+            user_notifications[user_id].append(notification)
+        
+        # Check if all users in this bot's batch were already rate-limited
+        if user_notifications and all(uid in rate_limited_users for uid in user_notifications.keys()):
+            logger.info(f"[Bot @{actual_bot_name}] All {len(user_notifications)} users were previously rate-limited, skipping")
+            return 0
+        
+        # Filter users who haven't exceeded rate limits
+        eligible_users = []
+        for user_id, user_notifs in user_notifications.items():
+            # Skip if already known to be rate-limited
+            if user_id in rate_limited_users:
+                continue
+            
+            # Check rate limit for this user
+            recent_count = await self.db.get_recent_notifications_count(user_id, minutes=60)
+            
+            if recent_count >= MAX_NOTIFICATIONS_PER_HOUR:
+                logger.debug(f"[Bot @{actual_bot_name}] User {user_id} reached rate limit, skipping")
+                rate_limited_users.add(user_id)
+                continue
+            
+            # Calculate how many more notifications we can send to this user
+            remaining = MAX_NOTIFICATIONS_PER_HOUR - recent_count
+            
+            # Add user with their limited notifications
+            eligible_users.append((user_id, user_notifs[:remaining]))
+        
+        if not eligible_users:
+            logger.info(f"[Bot @{actual_bot_name}] No eligible users after rate limiting")
+            return 0
+        
+        # Implement staggered delivery by groups
+        sent_count = 0
+        
+        if ENABLE_STAGGERED_DELIVERY and len(eligible_users) >= STAGGER_GROUP_SIZE:
+            logger.info(f"[Bot @{actual_bot_name}] Using staggered delivery: {len(eligible_users)} users in groups of {STAGGER_GROUP_SIZE}")
+            
+            # Split users into groups
+            user_groups = []
+            for i in range(0, len(eligible_users), STAGGER_GROUP_SIZE):
+                user_groups.append(eligible_users[i:i + STAGGER_GROUP_SIZE])
+            
+            # Process each group with staggered delay
+            for group_idx, user_group in enumerate(user_groups):
+                logger.info(f"[Bot @{actual_bot_name}] Processing group {group_idx + 1}/{len(user_groups)} with {len(user_group)} users")
+                
+                # Collect all notifications for this group
+                group_batch = []
+                for user_id, user_notifs in user_group:
+                    group_batch.extend(user_notifs)
+                
+                # Send notifications in smaller batches within the group
+                for i in range(0, len(group_batch), NOTIFICATION_BATCH_SIZE):
+                    batch = group_batch[i:i + NOTIFICATION_BATCH_SIZE]
+                    sent = await self._send_bot_notification_batch(bot_app, batch)
+                    sent_count += sent
+                    
+                    # Small delay between batches within a group
+                    if i + NOTIFICATION_BATCH_SIZE < len(group_batch):
+                        await asyncio.sleep(BATCH_DELAY_SECONDS)
+                
+                # Stagger delay before next group (except for last group)
+                if group_idx < len(user_groups) - 1:
+                    logger.info(f"[Bot @{actual_bot_name}] Waiting {STAGGER_INTERVAL_SECONDS}s before next group...")
+                    await asyncio.sleep(STAGGER_INTERVAL_SECONDS)
+        else:
+            # Standard batch processing without staggering
+            logger.info(f"[Bot @{actual_bot_name}] Using standard batch processing ({len(eligible_users)} users)")
+            batch = []
+            
+            for user_id, user_notifs in eligible_users:
+                batch.extend(user_notifs)
+                
+                # Send in batches to avoid overwhelming Telegram
+                if len(batch) >= NOTIFICATION_BATCH_SIZE:
+                    sent = await self._send_bot_notification_batch(bot_app, batch)
+                    sent_count += sent
+                    batch = []
+                    await asyncio.sleep(BATCH_DELAY_SECONDS)
+            
+            # Send remaining batch
+            if batch:
+                sent = await self._send_bot_notification_batch(bot_app, batch)
+                sent_count += sent
+        
+        logger.info(f"[Bot @{actual_bot_name}] Completed: sent {sent_count} notifications")
+        return sent_count
+    
+    async def _send_bot_notification_batch(
+        self,
+        bot_app: Application,
+        notifications: List[dict]
+    ) -> int:
+        """
+        Send a batch of notifications through a specific pre-determined bot.
+        No cross-bot grouping needed since the bot is already predetermined.
+        
+        Args:
+            bot_app: The bot application to send via
+            notifications: List of notification dicts to send
+            
+        Returns:
+            Number of successfully sent notifications
+        """
+        sent_count = 0
+        bot_name = get_bot_username(bot_app)
+        
+        logger.info(f"Sending {len(notifications)} notifications via bot @{bot_name}")
+        
+        for notification in notifications:
+            try:
+                success = await self._send_single_notification(bot_app, notification)
+                if success:
+                    sent_count += 1
+            except Exception as e:
+                logger.error(f"Error sending notification {notification['id']}: {e}")
+        
+        return sent_count
     
     async def _send_notification_batch_multibot(
         self,
@@ -944,7 +1050,8 @@ class NotificationService:
     async def process_custom_message_queue(self, context: ContextTypes.DEFAULT_TYPE):
         """
         Process pending custom messages from the queue with rate limiting.
-        Uses multi-bot delivery - sends via the bot each user started.
+        Uses bot-first grouping: messages are grouped by bot_username BEFORE processing,
+        then each bot's messages are processed simultaneously via asyncio.gather.
         Only runs on the primary bot instance to avoid duplicate processing.
         Returns statistics about the delivery.
         Processes all pending messages in batches until the queue is empty.
@@ -984,68 +1091,38 @@ class NotificationService:
                 total_fetched += len(pending)
                 logger.info(f"Processing batch {iteration_count} of {len(pending)} pending custom messages (total fetched: {total_fetched})")
                 
-                # Group messages by user for rate limiting
-                user_messages = {}
+                # Bot-first grouping: group ALL messages by bot_username BEFORE processing
+                messages_by_bot = {}
                 for message in pending:
                     user_id = message["user_id"]
-                    if user_id not in user_messages:
-                        user_messages[user_id] = []
-                    user_messages[user_id].append(message)
+                    bot_username = await self.db.get_bot_username_for_user(user_id)
+                    if bot_username not in messages_by_bot:
+                        messages_by_bot[bot_username] = []
+                    messages_by_bot[bot_username].append(message)
                 
-                # Process messages in batches
-                batch = []
+                logger.info(f"Batch {iteration_count}: grouped into {len(messages_by_bot)} bot(s)")
+                
+                # Process all bots simultaneously using asyncio.gather
+                tasks = []
+                for bot_username, bot_messages in messages_by_bot.items():
+                    task = self._process_bot_custom_messages(
+                        bot_username, bot_messages, stats, rate_limited_users
+                    )
+                    tasks.append(task)
+                
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Check results for errors
                 batch_has_messages = False
-                
-                for user_id, messages in user_messages.items():
-                    # Check if user is blocked
-                    is_blocked = await self.db.is_user_blocked(user_id)
-                    if is_blocked:
-                        # Mark as sent to remove from queue (blocked users won't receive messages)
-                        for msg in messages:
-                            await self.db.mark_custom_message_sent(msg["id"])
-                        stats["blocked"] += len(messages)
-                        continue
-                    
-                    # Check if user was previously rate-limited in this run
-                    # We skip to avoid double-counting stats and wasting rate limit checks
-                    # Messages remain in queue for next scheduled run when rate limits may have reset
-                    if user_id in rate_limited_users:
-                        continue
-                    
-                    # Check rate limit for this user
-                    recent_count = await self.db.get_recent_custom_messages_count(user_id, minutes=60)
-                    
-                    if recent_count >= MAX_CUSTOM_MESSAGES_PER_HOUR:
-                        # User at rate limit - count their messages and skip them
-                        # Messages stay in queue for next scheduled run
-                        logger.debug(f"User {user_id} reached custom message rate limit, skipping")
-                        stats["rate_limited"] += len(messages)
-                        rate_limited_users.add(user_id)
-                        continue
-                    
-                    # Calculate how many more messages we can send to this user
-                    remaining = MAX_CUSTOM_MESSAGES_PER_HOUR - recent_count
-                    
-                    # Send only the allowed number of messages
-                    # Messages beyond 'remaining' stay in queue and will be picked up in next iteration
-                    # or next scheduled run (if user then hits rate limit)
-                    for message in messages[:remaining]:
-                        batch.append(message)
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        bot_name = list(messages_by_bot.keys())[i]
+                        logger.error(f"Error processing custom messages for bot @{bot_name or 'primary'}: {result}")
+                    elif result:  # result is True if any messages were processable
                         batch_has_messages = True
-                        
-                        # Send in batches to avoid overwhelming Telegram
-                        if len(batch) >= CUSTOM_MESSAGE_BATCH_SIZE:
-                            batch_stats = await self._send_custom_message_batch_multibot(batch, stats)
-                            batch = []
-                            await asyncio.sleep(CUSTOM_MESSAGE_DELAY_SECONDS)
                 
-                # Send remaining batch
-                if batch:
-                    batch_stats = await self._send_custom_message_batch_multibot(batch, stats)
-                
-                # If no messages were actually sent in this batch (all blocked or rate-limited),
+                # If no messages were actually processable (all blocked or rate-limited),
                 # break to avoid infinite loop within this run
-                # Unsent messages remain in queue for next scheduled run
                 if not batch_has_messages:
                     logger.info(f"No more messages can be sent in this run (all blocked or rate-limited)")
                     break
@@ -1066,144 +1143,189 @@ class NotificationService:
             stats["unexpected_errors"] += 1
             return stats
     
-    async def _send_custom_message_batch_multibot(
+    async def _process_bot_custom_messages(
         self,
+        bot_username: Optional[str],
         messages: List[dict],
-        stats: Optional[Dict[str, int]] = None
-    ) -> int:
+        stats: Dict[str, int],
+        rate_limited_users: set
+    ) -> bool:
         """
-        Send a batch of custom messages using multi-bot delivery.
-        Each message is sent via the bot that the user started.
-        Updates the provided stats dictionary with delivery results.
-        Returns the number of successfully sent messages.
-        """
-        if stats is None:
-            stats = {
-                "sent": 0, 
-                "blocked": 0, 
-                "not_found": 0, 
-                "rate_limited": 0,
-                "markdown_errors": 0, 
-                "unexpected_errors": 0
-            }
+        Process custom messages for a specific bot. Handles blocked user checks,
+        rate limiting per user, and batched delivery.
         
-        # Get all available bot applications (cached)
+        Args:
+            bot_username: The bot username to send via (None for primary bot)
+            messages: List of message dicts assigned to this bot
+            stats: Shared stats dictionary (updated in place)
+            rate_limited_users: Shared set tracking rate-limited users (updated in place)
+            
+        Returns:
+            True if any messages were processable, False if all blocked/rate-limited
+        """
+        # Get the appropriate bot application
         bot_apps = self._get_bot_applications()
-        
         if not bot_apps:
-            logger.warning("No bot applications available for multi-bot delivery")
+            logger.warning("No bot applications available for delivery")
             stats["failed"] += len(messages)
-            return 0
+            return False
         
-        # Group messages by user's bot_username for efficient delivery
-        users_by_bot: Dict[str, List[dict]] = {}
+        bot_app = get_bot_by_username(bot_username) if bot_username else bot_apps[0]
+        if not bot_app:
+            logger.warning(f"Bot @{bot_username} not found, using primary bot")
+            bot_app = bot_apps[0]
         
+        actual_bot_name = get_bot_username(bot_app)
+        
+        # Group messages by user for rate limiting
+        user_messages = {}
         for message in messages:
             user_id = message["user_id"]
-            
-            # Get user's bot_username from database using the dedicated method
-            # This is more efficient than fetching the entire user object
-            bot_username = await self.db.get_bot_username_for_user(user_id)
-            
-            # If bot_username is None, it means either:
-            # 1. User doesn't exist (deleted) - send attempt will fail with Forbidden/TelegramError, caught at lines 1130-1164
-            # 2. User exists but has no bot assigned (NULL bot_username) - send via primary bot
-            # In both cases, we group them together and send via primary bot
-            if bot_username not in users_by_bot:
-                users_by_bot[bot_username] = []
-            users_by_bot[bot_username].append(message)
+            if user_id not in user_messages:
+                user_messages[user_id] = []
+            user_messages[user_id].append(message)
         
-        # Send messages through each bot
-        for bot_username, bot_messages in users_by_bot.items():
-            # Get the appropriate bot application
-            bot_app = get_bot_by_username(bot_username) if bot_username else bot_apps[0]
+        # Build batch of eligible messages
+        batch = []
+        batch_has_messages = False
+        
+        for user_id, user_msgs in user_messages.items():
+            # Check if user is blocked
+            is_blocked = await self.db.is_user_blocked(user_id)
+            if is_blocked:
+                # Mark as sent to remove from queue (blocked users won't receive messages)
+                for msg in user_msgs:
+                    await self.db.mark_custom_message_sent(msg["id"])
+                stats["blocked"] += len(user_msgs)
+                continue
             
-            if not bot_app:
-                logger.warning(f"Bot @{bot_username} not found, using primary bot")
-                bot_app = bot_apps[0]
+            # Check if user was previously rate-limited in this run
+            if user_id in rate_limited_users:
+                continue
             
-            logger.info(f"Sending {len(bot_messages)} custom messages via bot @{get_bot_username(bot_app)}")
+            # Check rate limit for this user
+            recent_count = await self.db.get_recent_custom_messages_count(user_id, minutes=60)
             
-            # Send each message
-            for message in bot_messages:
-                markdown_error_occurred = False
+            if recent_count >= MAX_CUSTOM_MESSAGES_PER_HOUR:
+                logger.debug(f"[Bot @{actual_bot_name}] User {user_id} reached custom message rate limit, skipping")
+                stats["rate_limited"] += len(user_msgs)
+                rate_limited_users.add(user_id)
+                continue
+            
+            # Calculate how many more messages we can send to this user
+            remaining = MAX_CUSTOM_MESSAGES_PER_HOUR - recent_count
+            
+            for message in user_msgs[:remaining]:
+                batch.append(message)
+                batch_has_messages = True
+                
+                # Send in batches to avoid overwhelming Telegram
+                if len(batch) >= CUSTOM_MESSAGE_BATCH_SIZE:
+                    await self._send_bot_custom_message_batch(bot_app, batch, stats)
+                    batch = []
+                    await asyncio.sleep(CUSTOM_MESSAGE_DELAY_SECONDS)
+        
+        # Send remaining batch
+        if batch:
+            await self._send_bot_custom_message_batch(bot_app, batch, stats)
+        
+        return batch_has_messages
+    
+    async def _send_bot_custom_message_batch(
+        self,
+        bot_app: Application,
+        messages: List[dict],
+        stats: Dict[str, int]
+    ) -> None:
+        """
+        Send a batch of custom messages through a specific pre-determined bot.
+        No cross-bot grouping needed since the bot is already predetermined.
+        
+        Args:
+            bot_app: The bot application to send via
+            messages: List of message dicts to send
+            stats: Shared stats dictionary (updated in place)
+        """
+        bot_name = get_bot_username(bot_app)
+        logger.info(f"Sending {len(messages)} custom messages via bot @{bot_name}")
+        
+        for message in messages:
+            markdown_error_occurred = False
+            try:
+                user_id = message["user_id"]
+                message_text = message["message_text"]
+                message_id = message["id"]
+                
+                # Check if user is blocked
+                is_blocked = await self.db.is_user_blocked(user_id)
+                if is_blocked:
+                    # Mark as sent to remove from queue
+                    await self.db.mark_custom_message_sent(message_id)
+                    stats["blocked"] += 1
+                    continue
+                
+                # Send custom message using the bot application
                 try:
-                    user_id = message["user_id"]
-                    message_text = message["message_text"]
-                    message_id = message["id"]
-                    
-                    # Check if user is blocked
-                    is_blocked = await self.db.is_user_blocked(user_id)
-                    if is_blocked:
-                        # Mark as sent to remove from queue
-                        await self.db.mark_custom_message_sent(message_id)
-                        stats["blocked"] += 1
-                        continue
-                    
-                    # Send custom message using the bot application
-                    try:
+                    await bot_app.bot.send_message(
+                        chat_id=user_id,
+                        text=message_text,
+                        parse_mode="Markdown"
+                    )
+                except BadRequest as e:
+                    # Handle markdown parse errors by retrying without parse_mode
+                    if self._is_markdown_parse_error(e):
+                        logger.warning(f"Markdown parse error for custom message to user {user_id}, retrying without parse_mode: {e}")
+                        markdown_error_occurred = True
+                        stats["markdown_errors"] += 1
                         await bot_app.bot.send_message(
                             chat_id=user_id,
-                            text=message_text,
-                            parse_mode="Markdown"
+                            text=message_text
                         )
-                    except BadRequest as e:
-                        # Handle markdown parse errors by retrying without parse_mode
-                        if self._is_markdown_parse_error(e):
-                            logger.warning(f"Markdown parse error for custom message to user {user_id}, retrying without parse_mode: {e}")
-                            markdown_error_occurred = True
-                            stats["markdown_errors"] += 1
-                            await bot_app.bot.send_message(
-                                chat_id=user_id,
-                                text=message_text
-                            )
-                        else:
-                            # Re-raise other BadRequest errors to be handled below
-                            raise
-                    
-                    # Mark as sent
-                    await self.db.mark_custom_message_sent(message_id)
-                    stats["sent"] += 1
-                    
-                    logger.debug(f"Sent custom message to user {user_id} via bot @{get_bot_username(bot_app)}")
-                    
-                except Forbidden as e:
-                    # User blocked the bot or chat not found
-                    error_msg = str(e).lower()
-                    if "chat not found" in error_msg or "user not found" in error_msg:
-                        logger.warning(f"User {user_id} chat/account not found (deleted or never started bot), deleting user")
-                        await self.db.delete_user(user_id)
-                        stats["not_found"] += 1
                     else:
-                        logger.info(f"User {user_id} blocked the bot, marking as blocked")
-                        await self.db.block_user(user_id)
-                        stats["blocked"] += 1
+                        # Re-raise other BadRequest errors to be handled below
+                        raise
+                
+                # Mark as sent
+                await self.db.mark_custom_message_sent(message_id)
+                stats["sent"] += 1
+                
+                logger.debug(f"Sent custom message to user {user_id} via bot @{bot_name}")
+                
+            except Forbidden as e:
+                # User blocked the bot or chat not found
+                error_msg = str(e).lower()
+                if "chat not found" in error_msg or "user not found" in error_msg:
+                    logger.warning(f"User {user_id} chat/account not found (deleted or never started bot), deleting user")
+                    await self.db.delete_user(user_id)
+                    stats["not_found"] += 1
+                else:
+                    logger.info(f"User {user_id} blocked the bot, marking as blocked")
+                    await self.db.block_user(user_id)
+                    stats["blocked"] += 1
+                await self.db.mark_custom_message_sent(message_id)
+                
+            except TelegramError as e:
+                error_msg = str(e).lower()
+                # Check for permanent failure conditions
+                if "chat not found" in error_msg or "user not found" in error_msg or "user is deactivated" in error_msg:
+                    logger.warning(f"User {user_id} permanently unreachable (error: {e}), deleting user")
+                    await self.db.delete_user(user_id)
                     await self.db.mark_custom_message_sent(message_id)
-                    
-                except TelegramError as e:
-                    error_msg = str(e).lower()
-                    # Check for permanent failure conditions
-                    if "chat not found" in error_msg or "user not found" in error_msg or "user is deactivated" in error_msg:
-                        logger.warning(f"User {user_id} permanently unreachable (error: {e}), deleting user")
-                        await self.db.delete_user(user_id)
-                        await self.db.mark_custom_message_sent(message_id)
-                        stats["not_found"] += 1
-                    elif "bot was blocked by the user" in error_msg:
-                        logger.info(f"User {user_id} blocked the bot, marking as blocked")
-                        await self.db.block_user(user_id)
-                        await self.db.mark_custom_message_sent(message_id)
-                        stats["blocked"] += 1
-                    else:
-                        logger.error(f"Telegram error sending custom message to {user_id}: {e}")
-                        # Don't mark as sent - temporary error, will be retried
-                    
-                except Exception as e:
-                    logger.error(f"Unexpected error sending custom message to {user_id}: {e}", exc_info=True)
-                    # Don't mark as sent for unexpected errors - they should be investigated
-                    # Messages remain in queue and will be retried on next broadcast/send operation
-                    stats["unexpected_errors"] += 1
-        
-        return stats["sent"]
+                    stats["not_found"] += 1
+                elif "bot was blocked by the user" in error_msg:
+                    logger.info(f"User {user_id} blocked the bot, marking as blocked")
+                    await self.db.block_user(user_id)
+                    await self.db.mark_custom_message_sent(message_id)
+                    stats["blocked"] += 1
+                else:
+                    logger.error(f"Telegram error sending custom message to {user_id}: {e}")
+                    # Don't mark as sent - temporary error, will be retried
+                
+            except Exception as e:
+                logger.error(f"Unexpected error sending custom message to {user_id}: {e}", exc_info=True)
+                # Don't mark as sent for unexpected errors - they should be investigated
+                # Messages remain in queue and will be retried on next broadcast/send operation
+                stats["unexpected_errors"] += 1
     
     async def _send_admin_summary(self, bot, admin_user_id: int, stats: Dict[str, int], operation: str = "broadcast"):
         """Send a summary message to the admin with delivery statistics."""
