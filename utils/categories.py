@@ -10,14 +10,16 @@ CATEGORIES = {
     "CARTRIDGES": ["AUTHENTICS", "REPLICAS"],
     "EDIBLES": ["FLOWER EDIBLES", "SHROOM EDIBLES"],
     "CONCENTRATES": [
-        "SNOWCAPS", "MOONROCKS", "HASH AND KIEF", "BADDER", 
-        "SHATTER", "DISTILLATE", "THCAPOWDER", "RSO", "ROSIN", "SUGAR", "OTHERS"
+        "LIVE RESIN", "ROSIN", "DIAMONDS AND SAUCE", "SHATTER", 
+        "BADDER", "CRUMBLE", "SUGAR", "DISTILLATE", "HASH", 
+        "KIEF", "THCAPOWDER", "RSO", "OTHERS"
     ],
     "PREROLLS": ["FLOWER PREROLLS", "INFUSED FLOWER PREROLLS"],
     "SHROOMS": [],
     "FLOWER": [
         "TOPSHELFCANDY", "PREMIUMEXOTICS", "EXOTICS", 
-        "PREMIUMLIGHTDEPS", "LIGHTDEPS", "LIGHTASSIST", "LOWS"
+        "PREMIUMLIGHTDEPS", "LIGHTDEPS", "LIGHTASSIST", "LOWS",
+        "INFUSED FLOWER"
     ],
     "DATEDPROOFS": [],
     "CLIENTTOUCHDOWNS": [],
@@ -46,6 +48,17 @@ EXCLUDED_FROM_ALL_PRODUCTS = ["DATEDPROOFS", "CLIENTTOUCHDOWNS", "ANNOUNCEMENTS"
 # All categories now trigger notifications
 NOTIFICATION_EXCLUDED_CATEGORIES = []
 
+
+# Keyword synonyms for better auto-detection
+# Maps common variations to canonical subcategory names
+SUBCATEGORY_SYNONYMS = {
+    "LIVE RESIN": ["LIVERESIN", "LIVE-RESIN", "LIVERESINS"],
+    "ROSIN": ["ROSINS"],
+    "DIAMONDS AND SAUCE": ["DIAMONDS&SAUCE", "DIAMONDSANDSAUCE", "DIAMONDS-AND-SAUCE", "DIAMONDSAUCE"],
+    "INFUSED FLOWER": ["INFUSEDFLOWER", "INFUSED-FLOWER", "MOONROCKS", "SNOWCAPS"],
+    "HASH": ["HASHES"],
+    "KIEF": ["KEIF", "KEEIF"],
+}
 
 
 def extract_category_from_caption(caption: str) -> Tuple[Optional[str], Optional[str]]:
@@ -84,8 +97,17 @@ def extract_category_from_caption(caption: str) -> Tuple[Optional[str], Optional
                     for tag2 in hashtags:
                         clean_tag2 = tag2.strip()
                         for subcat in subcategories:
+                            # Direct match
                             if clean_tag2 == subcat or clean_tag2.replace(" ", "") == subcat.replace(" ", ""):
                                 subcategory = subcat
+                                break
+                            # Check synonyms
+                            if subcat in SUBCATEGORY_SYNONYMS:
+                                for synonym in SUBCATEGORY_SYNONYMS[subcat]:
+                                    if clean_tag2 == synonym or clean_tag2.replace(" ", "") == synonym.replace(" ", ""):
+                                        subcategory = subcat
+                                        break
+                            if subcategory:
                                 break
                         if subcategory:
                             break
@@ -99,8 +121,14 @@ def extract_category_from_caption(caption: str) -> Tuple[Optional[str], Optional
         for category, subcategories in CATEGORIES.items():
             if subcategories:
                 for subcat in subcategories:
+                    # Direct match
                     if clean_tag == subcat or clean_tag.replace(" ", "") == subcat.replace(" ", ""):
                         return category, subcat
+                    # Check synonyms
+                    if subcat in SUBCATEGORY_SYNONYMS:
+                        for synonym in SUBCATEGORY_SYNONYMS[subcat]:
+                            if clean_tag == synonym or clean_tag.replace(" ", "") == synonym.replace(" ", ""):
+                                return category, subcat
     
     return None, None
 
@@ -125,21 +153,24 @@ def get_subcategory_display_name(subcategory: str, user_lang: str = "en") -> str
     Get translated display name for a subcategory.
     
     Args:
-        subcategory: The subcategory name (e.g., "AUTHENTICS", "HASH AND KIEF")
+        subcategory: The subcategory name (e.g., "AUTHENTICS", "DIAMONDS AND SAUCE")
         user_lang: User's language preference
     
     Returns:
         Translated subcategory display name
     
     Note:
-        Converts subcategory to key format by lowercasing and replacing all
-        whitespace (including spaces in conjunctions like 'AND') with underscores.
-        Examples: "FLOWER EDIBLES" -> "flower_edibles", "HASH AND KIEF" -> "hash_and_kief"
+        Normalizes subcategory by converting any sequence of non-alphanumeric 
+        characters to a single underscore and trimming leading/trailing underscores.
+        This handles special characters robustly.
+        Examples: 
+        - "FLOWER EDIBLES" -> "flower_edibles"
+        - "DIAMONDS AND SAUCE" -> "diamonds_and_sauce"
+        - "LIVE-RESIN" -> "live_resin"
     """
-    # Convert subcategory to key format (lowercase with underscores)
-    # Handle all whitespace variations consistently
-    normalized_subcategory = re.sub(r'\s+', '_', subcategory.lower())
-    key = f"subcategory_{normalized_subcategory}"
+    # Normalize: convert non-alphanumeric sequences to single underscore, trim edges
+    normalized = re.sub(r'[^0-9a-zA-Z]+', '_', subcategory.lower()).strip('_')
+    key = f"subcategory_{normalized}"
     
     # Get translated string
     translated = get_translated_string(key, user_lang)
