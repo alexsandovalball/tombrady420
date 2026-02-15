@@ -9,7 +9,7 @@ This module provides robust wrappers that:
 import logging
 from typing import Optional, Any, Callable, Awaitable
 from html import escape as escape_html
-import database
+from database import Database
 from telegram import Bot, Message
 from telegram.error import TelegramError, BadRequest, Forbidden
 from telegram.helpers import escape_markdown as escape_markdown_v2
@@ -91,7 +91,7 @@ async def handle_send_exception(exception: Exception, user_id: int, operation: s
     # If user should be removed, trigger DB cleanup
     if should_remove:
         try:
-            db = database.Database()
+            db = Database()
             await db.delete_user(user_id)
             logger.info(f"[User Cleanup] Removed user {user_id} from database (reason: {operation} failed - {exception})")
             return True
@@ -130,7 +130,8 @@ async def _execute_with_fallback(
     try:
         return await send_callable(payload, parse_mode)
     except BadRequest as e:
-        if payload and _is_entity_parsing_error(str(e)):
+        parsing_error = _is_entity_parsing_error(str(e))
+        if parsing_error and payload is not None:
             logger.warning(f"{parsing_context} parsing error for chat {chat_id}, retrying with escaped text: {e}")
             try:
                 escaped_payload = escape_text_for_parse_mode(payload, parse_mode)
@@ -144,7 +145,7 @@ async def _execute_with_fallback(
                     if chat_id:
                         await handle_send_exception(final_error, chat_id, operation)
                     return None
-        if chat_id:
+        if chat_id and not parsing_error:
             await handle_send_exception(e, chat_id, operation)
         return None
     except (Forbidden, TelegramError) as e:
