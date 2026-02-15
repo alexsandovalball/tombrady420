@@ -1016,7 +1016,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         
         # Handle recategorize cancel
         elif parts[0] == "recat_cancel":
-            product_id = int(parts[1]) if len(parts) >= 2 else None
+            if len(parts) < 2:
+                await query.answer("Invalid data", show_alert=True)
+                return
+            
+            product_id = int(parts[1])
             
             if not is_admin(update.effective_user.id):
                 await query.answer("❌ Only admins can manage products.", show_alert=True)
