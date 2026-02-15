@@ -456,7 +456,16 @@ async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE, pro
 
 
 async def recategorize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /recategorize command - send categorization notifications for uncategorized products (admin only)."""
+    """Handle /recategorize command - send categorization notifications for products needing (re)categorization (admin only).
+    
+    Includes:
+    - Products with no category
+    - Products with a category but missing subcategory (when subcategories are available for that category)
+    """
+    # Import at function level to avoid circular imports
+    from utils.categories import get_subcategories
+    from main import notify_admins_for_categorization
+    
     user_id = update.effective_user.id
     
     if not is_admin(user_id):
@@ -468,7 +477,7 @@ async def recategorize_command(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         # Send initial message
         status_msg = await update.message.reply_text(
-            "🔄 Checking for uncategorized products...\n"
+            "🔄 Checking for products needing categorization...\n"
             "This may take a moment."
         )
         
@@ -479,19 +488,26 @@ async def recategorize_command(update: Update, context: ContextTypes.DEFAULT_TYP
             await status_msg.edit_text("📭 No products found.")
             return
         
-        # Find uncategorized products
-        uncategorized = [p for p in all_products if not p.get("category")]
+        # Find uncategorized products (no category OR has category but missing required subcategory)
+        uncategorized = []
+        for p in all_products:
+            # Product has no category at all
+            if not p.get("category"):
+                uncategorized.append(p)
+            # Product has category but no subcategory, and category has subcategories available
+            elif p.get("category") and not p.get("subcategory"):
+                subcats = get_subcategories(p.get("category"))
+                # If category has subcategories defined, this product needs recategorization
+                if subcats:
+                    uncategorized.append(p)
         
         if not uncategorized:
             await status_msg.edit_text(
-                f"✅ All {len(all_products)} products are already categorized!"
+                f"✅ All {len(all_products)} products are properly categorized!"
             )
             return
         
-        # Send categorization notifications for uncategorized products
-        # Import the notification function
-        from main import notify_admins_for_categorization
-        
+        # Send categorization notifications for products needing categorization
         notified = 0
         for product in uncategorized[:10]:  # Limit to 10 at a time to avoid spam
             try:
@@ -506,13 +522,13 @@ async def recategorize_command(update: Update, context: ContextTypes.DEFAULT_TYP
         text = (
             f"📊 **Categorization Status**\n\n"
             f"📦 Total products: {len(all_products)}\n"
-            f"✅ Categorized: {categorized_count}\n"
-            f"❓ Uncategorized: {len(uncategorized)}\n"
+            f"✅ Properly categorized: {categorized_count}\n"
+            f"❓ Needing categorization: {len(uncategorized)}\n"
             f"📤 Notifications sent: {notified}"
         )
         
         if len(uncategorized) > 10:
-            text += f"\n\n⚠️ Only sent notifications for first 10 uncategorized products.\nRun command again to process more."
+            text += f"\n\n⚠️ Only sent notifications for first 10 products.\nRun command again to process more."
         
         try:
             await status_msg.edit_text(text, parse_mode="Markdown")
@@ -521,12 +537,12 @@ async def recategorize_command(update: Update, context: ContextTypes.DEFAULT_TYP
             text_no_md = (
                 f"📊 Categorization Status\n\n"
                 f"📦 Total products: {len(all_products)}\n"
-                f"✅ Categorized: {categorized_count}\n"
-                f"❓ Uncategorized: {len(uncategorized)}\n"
+                f"✅ Properly categorized: {categorized_count}\n"
+                f"❓ Needing categorization: {len(uncategorized)}\n"
                 f"📤 Notifications sent: {notified}"
             )
             if len(uncategorized) > 10:
-                text_no_md += f"\n\n⚠️ Only sent notifications for first 10 uncategorized products.\nRun command again to process more."
+                text_no_md += f"\n\n⚠️ Only sent notifications for first 10 products.\nRun command again to process more."
             await status_msg.edit_text(text_no_md)
         logger.info(f"Admin {user_id} triggered recategorization - sent {notified} notifications")
         

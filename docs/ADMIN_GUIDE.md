@@ -68,10 +68,12 @@ Delete ALL products from catalog (admin only)
 - Use with extreme caution!
 
 ### `/recategorize`
-Send categorization notifications for uncategorized products (admin only)
-- Scans for products without categories
-- Sends up to 10 categorization requests
-- Run multiple times to process all uncategorized products
+Send categorization notifications for products needing (re)categorization (admin only)
+- Scans for products without categories OR with categories but missing subcategories
+- When a category has subcategories defined, products in that category MUST have a subcategory
+- Sends up to 10 categorization requests per command
+- Run multiple times to process all products needing categorization
+- Useful after saving products with "Save without subcategory" option
 
 ### `/send`
 Send a message to a specific user (admin only) - **Interactive Workflow**
@@ -212,16 +214,18 @@ Each user has a toggle button in the `/users` interface:
 - SHROOM EDIBLES
 
 ### 💎 Concentrates
-- SNOWCAPS
-- MOONROCKS
-- HASH AND KIEF
-- BADDER
+- LIVE RESIN - Extracted from fresh-frozen flower to preserve terpenes
+- ROSIN - Solventless extract made with heat and pressure
+- DIAMONDS AND SAUCE - THCa diamonds suspended in terpene-rich sauce
 - SHATTER
+- BADDER
+- CRUMBLE
+- SUGAR
 - DISTILLATE
+- HASH
+- KIEF
 - THCAPOWDER
 - RSO
-- ROSIN
-- SUGAR
 - OTHERS
 
 ### 🚬 Pre-Rolls
@@ -239,6 +243,7 @@ _(No subcategories)_
 - LIGHTDEPS
 - LIGHTASSIST
 - LOWS
+- INFUSED FLOWER - Flower coated or infused with concentrates (e.g., Moonrocks, Snowcaps)
 
 ### 📅 Dated Proofs
 _(No subcategories)_
@@ -252,6 +257,40 @@ _(No subcategories)_
 > **Note:** Products in ANNOUNCEMENTS, DATEDPROOFS, and CLIENTTOUCHDOWNS categories are **excluded from the "All Products" view** and can only be accessed by browsing their specific category.
 > 
 > **Important:** All categories **WILL trigger notifications** to subscribed users.
+
+### Migration Note: Moonrocks and Snowcaps
+
+**Important:** The concentrate subcategories have been reorganized. Products previously tagged as SNOWCAPS or MOONROCKS now belong to the FLOWER category under the new INFUSED FLOWER subcategory.
+
+**For existing products:**
+- Existing products with SNOWCAPS or MOONROCKS subcategories will continue to work
+- Admins can optionally re-categorize these products to FLOWER > INFUSED FLOWER
+- The bot will automatically suggest INFUSED FLOWER for new Moonrocks/Snowcaps posts via hashtag synonyms
+
+**Manual migration (optional):**
+If you want to migrate all existing Moonrocks and Snowcaps products to the new category structure, you can use the following SQL command:
+
+```sql
+-- Connect to your database (catalog.db)
+-- Update all Snowcaps and Moonrocks to Infused Flower
+UPDATE products 
+SET category = 'FLOWER', subcategory = 'INFUSED FLOWER' 
+WHERE subcategory IN ('SNOWCAPS', 'MOONROCKS');
+```
+
+**To run this migration:**
+1. Stop the bot
+2. Make a backup of `catalog.db`
+3. Use SQLite command line or a GUI tool to run the SQL command
+4. Restart the bot
+
+**Hashtag auto-detection:**
+The bot now recognizes these hashtags for auto-categorization:
+- `#MOONROCKS`, `#SNOWCAPS`, `#INFUSEDFLOWER` → FLOWER > INFUSED FLOWER
+- `#LIVERESIN`, `#LIVE-RESIN` → CONCENTRATES > LIVE RESIN
+- `#HASH`, `#KIEF` → CONCENTRATES > HASH or KIEF (separately)
+- `#DIAMONDS`, `#DIAMONDSANDSAUCE` → CONCENTRATES > DIAMONDS AND SAUCE
+
 
 ## Tips for Admins
 
@@ -276,10 +315,12 @@ _(No subcategories)_
 - Consider backing up catalog.db before nuking
 - **Deleted products leave channel messages intact** - you can manually clear channel messages if desired
 
-### Uncategorized Products
-- Use `/recategorize` to find products that weren't categorized
+### Products Needing Categorization
+- Use `/recategorize` to find products that need categorization or re-categorization
+- Includes products without categories AND products missing required subcategories
 - Check regularly to ensure complete catalog
 - Process in batches of 10 to avoid notification spam
+- If you saved a product with "Save without subcategory", use `/recategorize` to add the subcategory later
 
 ## Troubleshooting
 

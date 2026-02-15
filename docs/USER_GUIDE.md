@@ -71,13 +71,14 @@ Categories organize products into logical groups:
 
 - 🛒 **Cartridges** - Vape cartridges (Authentics, Replicas)
 - 🍫 **Edibles** - Consumable products (Flower Edibles, Shroom Edibles)
-- 💎 **Concentrates** - Extracts and concentrates (Snowcaps, Moonrocks, Hash, Badder, Shatter, Distillate, THC Powder, RSO, Rosin, Sugar, Others)
+- 💎 **Concentrates** - Extracts and concentrates (Live Resin, Rosin, Diamonds & Sauce, Shatter, Badder, Crumble, Sugar, Distillate, Hash, Kief, THCa Powder, RSO, Others)
 - 🚬 **Pre-Rolls** - Ready-to-smoke products (Flower Prerolls, Infused Flower Prerolls)
 - 🍄 **Shrooms** - Mushroom products
-- 🌸 **Flower** - Cannabis flower (Top Shelf Candy, Premium Exotics, Exotics, Premium Light Deps, Light Deps, Light Assist, Lows)
+- 🌸 **Flower** - Cannabis flower (Top Shelf Candy, Premium Exotics, Exotics, Premium Light Deps, Light Deps, Light Assist, Lows, Infused Flower)
 - 📅 **Dated Proofs** - Verification photos
 - ✈️ **Client Touchdowns** - Delivery confirmations
 - 📢 **Announcements** - Important updates
+
 
 ### Pagination
 

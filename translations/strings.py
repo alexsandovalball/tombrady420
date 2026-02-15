@@ -39,16 +39,18 @@ def get_strings():
         "subcategory_shroom_edibles": "Shroom Edibles",
         
         # Subcategory names - CONCENTRATES
-        "subcategory_snowcaps": "Snowcaps",
-        "subcategory_moonrocks": "Moonrocks",
-        "subcategory_hash_and_kief": "Hash and Kief",
-        "subcategory_badder": "Badder",
+        "subcategory_live_resin": "Live Resin",
+        "subcategory_rosin": "Rosin",
+        "subcategory_diamonds_and_sauce": "Diamonds & Sauce",
         "subcategory_shatter": "Shatter",
+        "subcategory_badder": "Badder",
+        "subcategory_crumble": "Crumble",
+        "subcategory_sugar": "Sugar",
         "subcategory_distillate": "Distillate",
+        "subcategory_hash": "Hash",
+        "subcategory_kief": "Kief",
         "subcategory_thcapowder": "THCa Powder",
         "subcategory_rso": "RSO",
-        "subcategory_rosin": "Rosin",
-        "subcategory_sugar": "Sugar",
         "subcategory_others": "Others",
         
         # Subcategory names - PREROLLS
@@ -63,6 +65,13 @@ def get_strings():
         "subcategory_lightdeps": "Light Deps",
         "subcategory_lightassist": "Light Assist",
         "subcategory_lows": "Lows",
+        "subcategory_infused_flower": "Infused Flower",
+        
+        # Admin hints for subcategories (optional tooltips)
+        "hint_live_resin": "Extracted from fresh-frozen flower to preserve terpenes.",
+        "hint_diamonds_and_sauce": "THCa diamonds suspended in terpene-rich sauce. Dabbing recommended.",
+        "hint_rosin": "Solventless extract made with heat and pressure.",
+        "hint_infused_flower": "Flower coated or infused with concentrates (e.g., Moonrocks, Snowcaps).",
         
         # Buttons
         "button_back": "« Back",
