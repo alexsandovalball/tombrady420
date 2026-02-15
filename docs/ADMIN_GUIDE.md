@@ -68,10 +68,12 @@ Delete ALL products from catalog (admin only)
 - Use with extreme caution!
 
 ### `/recategorize`
-Send categorization notifications for uncategorized products (admin only)
-- Scans for products without categories
-- Sends up to 10 categorization requests
-- Run multiple times to process all uncategorized products
+Send categorization notifications for products needing (re)categorization (admin only)
+- Scans for products without categories OR with categories but missing subcategories
+- When a category has subcategories defined, products in that category MUST have a subcategory
+- Sends up to 10 categorization requests per command
+- Run multiple times to process all products needing categorization
+- Useful after saving products with "Save without subcategory" option
 
 ### `/send`
 Send a message to a specific user (admin only) - **Interactive Workflow**
@@ -313,10 +315,12 @@ The bot now recognizes these hashtags for auto-categorization:
 - Consider backing up catalog.db before nuking
 - **Deleted products leave channel messages intact** - you can manually clear channel messages if desired
 
-### Uncategorized Products
-- Use `/recategorize` to find products that weren't categorized
+### Products Needing Categorization
+- Use `/recategorize` to find products that need categorization or re-categorization
+- Includes products without categories AND products missing required subcategories
 - Check regularly to ensure complete catalog
 - Process in batches of 10 to avoid notification spam
+- If you saved a product with "Save without subcategory", use `/recategorize` to add the subcategory later
 
 ## Troubleshooting
 
