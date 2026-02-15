@@ -374,7 +374,7 @@ class NotificationService:
                     product_id = notification["product_id"]
                     key = (user_id, product_id)
                     
-                    if key in seen_user_product or key in seen_user_product_global:
+                    if key in seen_user_product_global:
                         duplicate_skip_count += 1
                         # Remove duplicate so it doesn't get retried in the next loop
                         try:
@@ -383,11 +383,12 @@ class NotificationService:
                             logger.error(
                                 f"Failed to delete duplicate notification {notification['id']} to prevent retry loops: {e}"
                             )
+                            # Best-effort fallback to mark as sent so it won't block the queue
                             try:
                                 await self.db.mark_notification_sent(notification["id"])
                             except Exception as mark_error:
                                 logger.error(
-                                    f"Failed to mark duplicate notification {notification['id']} as sent after delete failure: {mark_error}"
+                                    f"Fallback mark-as-sent failed for duplicate notification {notification['id']}: {mark_error}"
                                 )
                         continue
                     

@@ -308,10 +308,12 @@ class Database:
         try:
             await db.execute("""
                 DELETE FROM notification_queue
-                WHERE id NOT IN (
-                    SELECT MIN(id) FROM notification_queue
-                    GROUP BY user_id, product_id, (sent_at IS NULL)
-                )
+                WHERE sent_at IS NULL
+                  AND id NOT IN (
+                      SELECT MIN(id) FROM notification_queue
+                      WHERE sent_at IS NULL
+                      GROUP BY user_id, product_id
+                  )
             """)
         except Exception as e:
             logger.warning(f"Could not dedupe notification_queue: {e}")
@@ -1030,10 +1032,12 @@ class Database:
     async def queue_notification(self, user_id: int, product_id: int):
         """Add a notification to the queue."""
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
+            cursor = await db.execute("""
                 INSERT OR IGNORE INTO notification_queue (user_id, product_id, created_at)
                 VALUES (?, ?, ?)
             """, (user_id, product_id, datetime.now()))
+            if cursor.rowcount == 0:
+                logger.debug(f"Notification for user {user_id}, product {product_id} already queued (unsent duplicate)")
             await db.commit()
     
     async def mark_notification_sent(self, notification_id: int):
