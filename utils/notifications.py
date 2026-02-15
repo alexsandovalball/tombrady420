@@ -15,6 +15,7 @@ from telegram.error import TelegramError, Forbidden, BadRequest
 from database import Database
 from utils.categories import get_category_display_name, get_subcategory_display_name, NOTIFICATION_EXCLUDED_CATEGORIES
 from utils.helpers import get_admin_ids, get_bot_specific_file_id
+from utils.safe_send import safe_send_message, safe_send_photo, safe_send_video, handle_send_exception
 from translations.translator import translate_text_async
 from configs.config import Config
 
@@ -180,8 +181,10 @@ class NotificationService:
         Returns True if sent successfully, False otherwise.
         Raises exceptions for caller to handle.
         """
+        result = None
         if file_type == "photo":
-            await bot_app.bot.send_photo(
+            result = await safe_send_photo(
+                bot=bot_app.bot,
                 chat_id=user_id,
                 photo=file_id,
                 caption=caption,
@@ -189,7 +192,8 @@ class NotificationService:
                 reply_markup=keyboard
             )
         elif file_type == "video":
-            await bot_app.bot.send_video(
+            result = await safe_send_video(
+                bot=bot_app.bot,
                 chat_id=user_id,
                 video=file_id,
                 caption=caption,
@@ -204,6 +208,7 @@ class NotificationService:
                 parse_mode=parse_mode,
                 reply_markup=keyboard
             )
+            result = True  # Assume success for non-safe methods
         elif file_type == "document":
             await bot_app.bot.send_document(
                 chat_id=user_id,
@@ -212,10 +217,11 @@ class NotificationService:
                 parse_mode=parse_mode,
                 reply_markup=keyboard
             )
+            result = True  # Assume success for non-safe methods
         else:
             # Unsupported media type
             return False
-        return True
+        return result is not None
     
     def _get_bot_applications(self) -> List[Application]:
         """
@@ -902,25 +908,20 @@ class NotificationService:
                     logger.debug(
                         f"[Media Notification] Sending text-only (no media available): user={user_id}, product={product_id}"
                     )
-                try:
-                    await bot_app.bot.send_message(
-                        chat_id=user_id,
-                        text=message_text,
-                        parse_mode="Markdown",
-                        reply_markup=keyboard
-                    )
-                except BadRequest as e:
-                    # Handle markdown parse errors by retrying without parse_mode
-                    if self._is_markdown_parse_error(e):
-                        logger.warning(f"Markdown parse error for user {user_id}, retrying without parse_mode: {e}")
-                        await bot_app.bot.send_message(
-                            chat_id=user_id,
-                            text=message_text,
-                            reply_markup=keyboard
-                        )
-                    else:
-                        # Re-raise other BadRequest errors to be handled below
-                        raise
+                
+                # Use safe_send_message which handles parse errors and user cleanup
+                result = await safe_send_message(
+                    bot=bot_app.bot,
+                    chat_id=user_id,
+                    text=message_text,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
+                
+                # If safe_send_message returns None, the user was already handled (deleted if needed)
+                if result is None:
+                    await self.db.mark_notification_sent(notification_id)
+                    return False
             
             # Mark as sent
             await self.db.mark_notification_sent(notification_id)

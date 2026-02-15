@@ -10,6 +10,7 @@ from utils.pagination import create_pagination_keyboard, paginate_items
 from utils.helpers import is_admin
 from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES, EXCLUDED_FROM_ALL_PRODUCTS
 from translations.translator import get_translated_string_async
+from utils.safe_send import safe_send_message, safe_edit_message_text
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -68,18 +69,23 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         text = await get_translated_string_async("product_categories", user_lang)
         
         if update.callback_query:
-            message = update.callback_query.message
+            query = update.callback_query
+            message = query.message
             if message.photo or message.video or message.document or message.animation or message.audio:
                 # Don't delete media message - send new message to preserve product view
-                await context.bot.send_message(
+                await safe_send_message(
+                    context.bot,
                     chat_id=update.effective_chat.id,
                     text=text,
                     reply_markup=keyboard,
                     parse_mode="Markdown"
                 )
             else:
-                await update.callback_query.edit_message_text(
-                    text,
+                await safe_edit_message_text(
+                    context.bot,
+                    chat_id=query.message.chat_id,
+                    message_id=query.message.message_id,
+                    text=text,
                     reply_markup=keyboard,
                     parse_mode="Markdown"
                 )
@@ -166,18 +172,23 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
         )
         
         if update.callback_query:
-            message = update.callback_query.message
+            query = update.callback_query
+            message = query.message
             if message.photo or message.video or message.document or message.animation or message.audio:
                 # Don't delete media message - send new message to preserve product view
-                await context.bot.send_message(
+                await safe_send_message(
+                    context.bot,
                     chat_id=update.effective_chat.id,
                     text=text,
                     reply_markup=keyboard,
                     parse_mode="Markdown"
                 )
             else:
-                await update.callback_query.edit_message_text(
-                    text,
+                await safe_edit_message_text(
+                    context.bot,
+                    chat_id=query.message.chat_id,
+                    message_id=query.message.message_id,
+                    text=text,
                     reply_markup=keyboard,
                     parse_mode="Markdown"
                 )
@@ -261,7 +272,14 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             keyboard = InlineKeyboardMarkup(back_buttons)
             
             if update.callback_query:
-                await update.callback_query.edit_message_text(text, reply_markup=keyboard)
+                query = update.callback_query
+                await safe_edit_message_text(
+                    context.bot,
+                    chat_id=query.message.chat_id,
+                    message_id=query.message.message_id,
+                    text=text,
+                    reply_markup=keyboard
+                )
             else:
                 await update.message.reply_text(text, reply_markup=keyboard)
             return
@@ -346,10 +364,12 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         
         if update.callback_query:
             # Check if the message is a media message (can't edit media messages)
-            message = update.callback_query.message
+            query = update.callback_query
+            message = query.message
             if message.photo or message.video or message.document or message.animation or message.audio:
                 # Don't delete media message - send new message to preserve product view
-                await context.bot.send_message(
+                await safe_send_message(
+                    context.bot,
                     chat_id=update.effective_chat.id,
                     text=text,
                     reply_markup=keyboard,
@@ -357,8 +377,11 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 )
             else:
                 # Regular text message, can be edited
-                await update.callback_query.edit_message_text(
-                    text,
+                await safe_edit_message_text(
+                    context.bot,
+                    chat_id=query.message.chat_id,
+                    message_id=query.message.message_id,
+                    text=text,
                     reply_markup=keyboard,
                     parse_mode="Markdown"
                 )

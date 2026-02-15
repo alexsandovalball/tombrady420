@@ -45,6 +45,7 @@ from utils.helpers import (
 )
 from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES
 from utils.notifications import NotificationService
+from utils.safe_send import safe_send_message, safe_edit_message_text
 
 # Configure logging with structured format for better visibility on Render
 logging.basicConfig(
@@ -160,7 +161,7 @@ async def notify_admins_for_categorization(context: ContextTypes.DEFAULT_TYPE, p
 
         # Send notification only to primary admin
         try:
-            await context.bot.send_message(
+            await safe_send_message(context.bot,
                 chat_id=primary_admin,
                 text=message_text,
                 parse_mode="Markdown",
@@ -419,7 +420,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         message = query.message
         if message.photo or message.video or message.document or message.animation or message.audio:
             # Media message - send new text message
-            await context.bot.send_message(
+            await safe_send_message(context.bot,
                 chat_id=update.effective_chat.id,
                 text=message_text,
                 reply_markup=keyboard,
@@ -427,8 +428,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             )
         else:
             # Text message - edit it
-            await query.edit_message_text(
-                message_text,
+            await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                text=message_text,
                 reply_markup=keyboard,
                 parse_mode="Markdown"
             )
@@ -474,7 +475,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 keyboard = InlineKeyboardMarkup(keyboard_buttons)
                 
-                await context.bot.send_message(
+                await safe_send_message(context.bot,
                     chat_id=update.effective_chat.id,
                     text=welcome_text,
                     reply_markup=keyboard,
@@ -491,7 +492,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     
     # Handle broadcast confirmations
     if callback_data == "broadcast_cancel":
-        await query.edit_message_text("❌ Broadcast cancelled.")
+        await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id, text="❌ Broadcast cancelled.")
         context.user_data.clear()
         return
     
@@ -517,15 +518,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             )
             
             if success:
-                await query.edit_message_text(
-                    f"✅ **Message Sent Successfully!**\n\n"
+                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                    text=f"✅ **Message Sent Successfully!**\n\n"
                     f"🆔 User ID: `{target_user_id}`\n"
                     f"📝 Message: {message_text[:100]}{'...' if len(message_text) > 100 else ''}",
                     parse_mode="Markdown"
                 )
                 logger.info(f"Admin {user_id} sent message to user {target_user_id}")
             else:
-                await query.edit_message_text("❌ Failed to send message. Check logs for details.")
+                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id, text="❌ Failed to send message. Check logs for details.")
             
             context.user_data.clear()
         return
@@ -543,8 +544,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         await query.answer()
         
         # Send status message
-        await query.edit_message_text(
-            "📡 **Broadcasting message...**\n\n"
+        await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+            text="📡 **Broadcasting message...**\n\n"
             "Please wait while the message is queued and delivered to all users.",
             parse_mode="Markdown"
         )
@@ -576,7 +577,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     
     # Handle nuke confirmations
     if callback_data == "nuke_cancel":
-        await query.edit_message_text("✅ Nuke cancelled. No products were deleted.")
+        await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id, text="✅ Nuke cancelled. No products were deleted.")
         return
     
     if callback_data == "nuke_confirm1":
@@ -586,8 +587,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             [InlineKeyboardButton("❌ Cancel", callback_data="nuke_cancel")]
         ])
         
-        await query.edit_message_text(
-            f"⚠️ **FINAL WARNING**\n\n"
+        await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+            text=f"⚠️ **FINAL WARNING**\n\n"
             f"This is your last chance to cancel!\n\n"
             f"Are you ABSOLUTELY SURE you want to delete ALL products?\n\n"
             f"Type /nuke again to start over if you're unsure.",
@@ -608,7 +609,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             total_count = len(all_products)
             
             if total_count == 0:
-                await query.edit_message_text("📭 The catalog is already empty. Nothing to delete.")
+                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id, text="📭 The catalog is already empty. Nothing to delete.")
                 logger.info(f"Admin {query.from_user.id} attempted nuke on empty catalog")
                 return
             
@@ -633,13 +634,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 f"📝 Channel messages remain intact (manual cleanup required)"
             )
             
-            await query.edit_message_text(text, parse_mode="Markdown")
+            await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id, text=text, parse_mode="Markdown")
             logger.warning(f"Nuke complete - DB: {deleted_count}, Channel messages preserved")
             
         except Exception as e:
             logger.error(f"Error executing nuke: {e}", exc_info=True)
-            await query.edit_message_text(
-                "❌ An error occurred while deleting products. Check logs for details."
+            await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                text="❌ An error occurred while deleting products. Check logs for details."
             )
         
         return
@@ -697,8 +698,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     category_label = await get_translated_string_async("category_label", user_lang, category=translated_category)
                     select_or_save = await get_translated_string_async("select_subcategory_or_save", user_lang)
                     
-                    await query.edit_message_text(
-                        f"{category_label}\n\n"
+                    await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                        text=f"{category_label}\n\n"
                         f"{select_or_save}",
                         reply_markup=keyboard
                     )
@@ -715,8 +716,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         [InlineKeyboardButton("🔙 Back to Categories", callback_data=f"catback|{product_id}")]
                     ])
                     
-                    await query.edit_message_text(
-                        f"📂 Categorize Product #{product_id} as:\n\n"
+                    await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                        text=f"📂 Categorize Product #{product_id} as:\n\n"
                         f"**{translated_category}**\n\n"
                         f"Please confirm this categorization:",
                         reply_markup=keyboard,
@@ -745,8 +746,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 keyboard = InlineKeyboardMarkup(keyboard_buttons)
                 
-                await query.edit_message_text(
-                    f"📂 **Categorize Product #{product_id}**\n\n"
+                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                    text=f"📂 **Categorize Product #{product_id}**\n\n"
                     f"Please select a category:",
                     reply_markup=keyboard,
                     parse_mode="Markdown"
@@ -780,8 +781,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     [InlineKeyboardButton("🔙 Back", callback_data=f"setcat|{product_id}|{category}")]
                 ])
                 
-                await query.edit_message_text(
-                    f"📂 Categorize Product #{product_id} as:\n\n"
+                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                    text=f"📂 Categorize Product #{product_id} as:\n\n"
                     f"**{translated_category}** (no subcategory)\n\n"
                     f"Please confirm this categorization:",
                     reply_markup=keyboard,
@@ -819,8 +820,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     [InlineKeyboardButton("🔙 Back", callback_data=f"setcat|{product_id}|{category}")]
                 ])
                 
-                await query.edit_message_text(
-                    f"{category_label}\n"
+                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                    text=f"{category_label}\n"
                     f"{subcategory_label}\n\n"
                     f"{confirm_text}",
                     reply_markup=keyboard
@@ -861,8 +862,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     [InlineKeyboardButton("❌ No, skip notifications", callback_data=f"send_notif_no|{product_id}")]
                 ])
                 
-                await query.edit_message_text(
-                    f"{success_msg}\n\n"
+                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                    text=f"{success_msg}\n\n"
                     f"📂 {category_text}\n\n"
                     f"📢 **Send notifications to subscribed users?**\n"
                     f"Choose whether to notify users about this product:",
@@ -885,8 +886,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 # Send notifications
                 logger.info(f"Admin approved notifications for product {product_id}")
-                await query.edit_message_text(
-                    f"✅ **Notifications sent!**\n\n"
+                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                    text=f"✅ **Notifications sent!**\n\n"
                     f"📢 Subscribed users are being notified about product #{product_id}.\n\n"
                     f"Notifications are being sent in batches to avoid spam limits.",
                     parse_mode="Markdown"
@@ -911,8 +912,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 # Skip notifications
                 logger.info(f"Admin skipped notifications for product {product_id}")
-                await query.edit_message_text(
-                    f"✅ **Categorization complete**\n\n"
+                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                    text=f"✅ **Categorization complete**\n\n"
                     f"📂 Product #{product_id} has been categorized.\n"
                     f"🔕 No notifications will be sent for this product.",
                     parse_mode="Markdown"
@@ -1007,8 +1008,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             
             keyboard = InlineKeyboardMarkup(keyboard_buttons)
             
-            await query.edit_message_text(
-                f"📂 **Recategorize Product #{product_id}**\n\n"
+            await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                text=f"📂 **Recategorize Product #{product_id}**\n\n"
                 f"Please select a new category:",
                 reply_markup=keyboard,
                 parse_mode="Markdown"
@@ -1026,8 +1027,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await query.answer("❌ Only admins can manage products.", show_alert=True)
                 return
             
-            await query.edit_message_text(
-                f"❌ Recategorization cancelled for Product #{product_id}."
+            await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                text=f"❌ Recategorization cancelled for Product #{product_id}."
             )
         
         # Handle user notification toggle (admin only)
@@ -1148,19 +1149,19 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             keyboard, message, message_no_md, has_bots, bot_list = await build_users_bot_selection_menu()
             
             if not has_bots:
-                await query.edit_message_text("No bot usernames found.")
+                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id, text="No bot usernames found.")
                 return
             
             try:
-                await query.edit_message_text(
-                    message,
+                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                    text=message,
                     reply_markup=keyboard,
                     parse_mode="Markdown"
                 )
             except BadRequest as e:
                 logger.warning(f"Markdown parse error in users_back_to_bots, retrying without parse_mode: {e}")
-                await query.edit_message_text(
-                    message_no_md,
+                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                    text=message_no_md,
                     reply_markup=keyboard
                 )
         
@@ -1393,8 +1394,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             keyboard = InlineKeyboardMarkup(keyboard_buttons)
             total_users = await db.get_users_count_by_bot()
             
-            await query.edit_message_text(
-                f"📊 **Bot Users by Instance**\n\n"
+            await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                text=f"📊 **Bot Users by Instance**\n\n"
                 f"Total Users: {total_users}\n"
                 f"Bot Instances: {len(bot_usernames)}\n\n"
                 f"Select a bot to view its users:",
@@ -1429,8 +1430,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     [InlineKeyboardButton("❌ Cancel", callback_data=f"viewbotusers|{bot_username}|{page}")]
                 ])
                 
-                await query.edit_message_text(
-                    f"⚠️ **Delete User Confirmation**\n\n"
+                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                    text=f"⚠️ **Delete User Confirmation**\n\n"
                     f"User ID: `{target_user_id}`\n"
                     f"Username: @{username if username != 'N/A' else 'none'}\n"
                     f"Name: {first_name}\n\n"
@@ -1466,8 +1467,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     from handlers.admin import show_bot_users_page
                     await show_bot_users_page(update, context, bot_username, page)
                 else:
-                    await query.edit_message_text(
-                        f"✅ User `{target_user_id}` has been deleted successfully.",
+                    await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                        text=f"✅ User `{target_user_id}` has been deleted successfully.",
                         parse_mode="Markdown"
                     )
             else:
@@ -1496,8 +1497,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     [InlineKeyboardButton("❌ Cancel", callback_data=f"viewbotusers|{bot_username}|1")]
                 ])
                 
-                await query.edit_message_text(
-                    f"⚠️ **BULK DELETE WARNING**\n\n"
+                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                    text=f"⚠️ **BULK DELETE WARNING**\n\n"
                     f"You are about to delete **{count}** user(s) from {display_name}.\n\n"
                     f"This will completely remove all these users from the database.\n"
                     f"Users can restart the bot to be re-added as fresh users.\n\n"
@@ -1545,8 +1546,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 keyboard = InlineKeyboardMarkup(keyboard_buttons)
                 total_users = await db.get_users_count_by_bot()
                 
-                await query.edit_message_text(
-                    f"📊 **Bot Users by Instance**\n\n"
+                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                    text=f"📊 **Bot Users by Instance**\n\n"
                     f"Total Users: {total_users}\n"
                     f"Bot Instances: {len(bot_usernames)}\n\n"
                     f"✅ Deleted {deleted_count} users successfully.\n\n"
@@ -1575,14 +1576,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             stats = await db.prune_inactive_bot_users(active_bots, dry_run=False)
             
             if stats['users'] == 0:
-                await query.edit_message_text(
-                    "✅ **No Changes Made**\n\n"
+                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                    text="✅ **No Changes Made**\n\n"
                     "No users found associated with inactive bots.",
                     parse_mode="Markdown"
                 )
             else:
-                await query.edit_message_text(
-                    f"✅ **Pruning Complete**\n\n"
+                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                    text=f"✅ **Pruning Complete**\n\n"
                     f"Deleted:\n"
                     f"• Users: {stats['users']}\n"
                     f"• Products: {stats['products']}\n"
@@ -1598,8 +1599,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         
         # Handle cancel prune bots
         elif parts[0] == "cancel_prunebots":
-            await query.edit_message_text(
-                "❌ **Pruning Cancelled**\n\n"
+            await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
+                text="❌ **Pruning Cancelled**\n\n"
                 "No changes were made.",
                 parse_mode="Markdown"
             )
@@ -1713,7 +1714,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Try to send error message to user if possible
     if update and update.effective_chat:
         try:
-            await context.bot.send_message(
+            await safe_send_message(context.bot,
                 chat_id=update.effective_chat.id,
                 text="❌ An unexpected error occurred. Please try again later."
             )
