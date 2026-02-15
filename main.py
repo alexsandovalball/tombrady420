@@ -484,7 +484,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 )
                 logger.info(f"New user {user_id} selected language: {lang_code}")
             else:
-                await query.answer("❌ Invalid language", show_alert=True)
+                await query.answer(f"{emojis.ERROR} Invalid language", show_alert=True)
             return
     
     # Handle noop (page indicator button)
@@ -493,7 +493,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     
     # Handle broadcast confirmations
     if callback_data == "broadcast_cancel":
-        await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id, text="❌ Broadcast cancelled.")
+        await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id, text=f"{emojis.ERROR} Broadcast cancelled.")
         context.user_data.clear()
         return
     
@@ -505,7 +505,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             message_text = context.user_data.get('broadcast_message')
             
             if not message_text:
-                await query.answer("❌ Message not found. Please start over.", show_alert=True)
+                await query.answer(f"{emojis.ERROR} Message not found. Please start over.", show_alert=True)
                 context.user_data.clear()
                 return
             
@@ -585,7 +585,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Second confirmation
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("💥 YES, NUKE EVERYTHING", callback_data="nuke_confirm2")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="nuke_cancel")]
+            [InlineKeyboardButton(emojis.BUTTON_CANCEL, callback_data="nuke_cancel")]
         ])
         
         await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
@@ -601,7 +601,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     if callback_data == "nuke_confirm2":
         # Execute nuke
         if not is_admin(query.from_user.id):
-            await query.answer("❌ Only admins can nuke.", show_alert=True)
+            await query.answer(f"{emojis.ERROR} Only admins can nuke.", show_alert=True)
             return
         
         try:
@@ -1907,4 +1907,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
