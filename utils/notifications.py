@@ -15,8 +15,10 @@ from telegram.error import TelegramError, Forbidden, BadRequest
 from database import Database
 from utils.categories import get_category_display_name, get_subcategory_display_name, NOTIFICATION_EXCLUDED_CATEGORIES
 from utils.helpers import get_admin_ids, get_bot_specific_file_id
+from utils.safe_send import safe_send_message, safe_send_photo, safe_send_video, handle_send_exception
 from translations.translator import translate_text_async
 from configs.config import Config
+import emojis
 
 logger = logging.getLogger(__name__)
 
@@ -180,8 +182,10 @@ class NotificationService:
         Returns True if sent successfully, False otherwise.
         Raises exceptions for caller to handle.
         """
+        result = None
         if file_type == "photo":
-            await bot_app.bot.send_photo(
+            result = await safe_send_photo(
+                bot=bot_app.bot,
                 chat_id=user_id,
                 photo=file_id,
                 caption=caption,
@@ -189,7 +193,8 @@ class NotificationService:
                 reply_markup=keyboard
             )
         elif file_type == "video":
-            await bot_app.bot.send_video(
+            result = await safe_send_video(
+                bot=bot_app.bot,
                 chat_id=user_id,
                 video=file_id,
                 caption=caption,
@@ -197,25 +202,35 @@ class NotificationService:
                 reply_markup=keyboard
             )
         elif file_type == "animation":
-            await bot_app.bot.send_animation(
-                chat_id=user_id,
-                animation=file_id,
-                caption=caption,
-                parse_mode=parse_mode,
-                reply_markup=keyboard
-            )
+            try:
+                await bot_app.bot.send_animation(
+                    chat_id=user_id,
+                    animation=file_id,
+                    caption=caption,
+                    parse_mode=parse_mode,
+                    reply_markup=keyboard
+                )
+                result = True  # Mark success if no exception
+            except Exception:
+                # Let caller handle the exception
+                raise
         elif file_type == "document":
-            await bot_app.bot.send_document(
-                chat_id=user_id,
-                document=file_id,
-                caption=caption,
-                parse_mode=parse_mode,
-                reply_markup=keyboard
-            )
+            try:
+                await bot_app.bot.send_document(
+                    chat_id=user_id,
+                    document=file_id,
+                    caption=caption,
+                    parse_mode=parse_mode,
+                    reply_markup=keyboard
+                )
+                result = True  # Mark success if no exception
+            except Exception:
+                # Let caller handle the exception
+                raise
         else:
             # Unsupported media type
             return False
-        return True
+        return result is not None
     
     def _get_bot_applications(self) -> List[Application]:
         """
@@ -754,17 +769,17 @@ class NotificationService:
             
             # Prepare notification text (will be used as caption or fallback)
             message_text = (
-                f"🆕 **New Product Available!**\n\n"
-                f"📂 Category: {category_text}\n"
-                f"📝 {caption_preview}\n\n"
+                f"{emojis.BELL} **New Product Available!**\n\n"
+                f"{emojis.MENU} Category: {category_text}\n"
+                f"{emojis.INFO} {caption_preview}\n\n"
                 f"Use /menu to browse the catalog!"
             )
             
             # Create inline keyboard with view product button
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("👁️ View Product", callback_data=f"product|{product_id}")],
-                [InlineKeyboardButton("📋 View Catalog", callback_data="categories")],
-                [InlineKeyboardButton("🔕 Unsubscribe", callback_data="unsubscribe_notifications")]
+                [InlineKeyboardButton(f"{emojis.VIEW} View Product", callback_data=f"product|{product_id}")],
+                [InlineKeyboardButton(f"{emojis.MENU} View Catalog", callback_data="categories")],
+                [InlineKeyboardButton(f"{emojis.MUTED_BELL} Unsubscribe", callback_data="unsubscribe_notifications")]
             ])
             
             # Try to send with media preview (first available media file)
@@ -902,25 +917,27 @@ class NotificationService:
                     logger.debug(
                         f"[Media Notification] Sending text-only (no media available): user={user_id}, product={product_id}"
                     )
-                try:
-                    await bot_app.bot.send_message(
-                        chat_id=user_id,
-                        text=message_text,
-                        parse_mode="Markdown",
-                        reply_markup=keyboard
-                    )
-                except BadRequest as e:
-                    # Handle markdown parse errors by retrying without parse_mode
-                    if self._is_markdown_parse_error(e):
-                        logger.warning(f"Markdown parse error for user {user_id}, retrying without parse_mode: {e}")
-                        await bot_app.bot.send_message(
-                            chat_id=user_id,
-                            text=message_text,
-                            reply_markup=keyboard
-                        )
-                    else:
-                        # Re-raise other BadRequest errors to be handled below
-                        raise
+                
+                # Use safe_send_message which handles parse errors and user cleanup
+                result = await safe_send_message(
+                    bot=bot_app.bot,
+                    chat_id=user_id,
+                    text=message_text,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
+                
+                # If safe_send_message returns None, there was a failure
+                # The safe wrapper already handles user deletion for permanent failures
+                # We only mark as sent to prevent retries if user no longer exists
+                if result is None:
+                    # Check if user still exists - if not, they were deleted (permanent failure)
+                    user_exists = await self.db.user_exists(user_id)
+                    if not user_exists:
+                        # User was deleted, mark as sent to prevent retries
+                        await self.db.mark_notification_sent(notification_id)
+                    # Otherwise, don't mark as sent - allow retry for temporary failures
+                    return False
             
             # Mark as sent
             await self.db.mark_notification_sent(notification_id)

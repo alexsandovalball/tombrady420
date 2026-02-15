@@ -8,6 +8,7 @@ from database import Database
 from translations.language_config import LANGUAGE_DISPLAY, is_valid_language, DEFAULT_LANGUAGE
 from translations.translator import get_translated_string_async
 from utils.helpers import is_admin, get_user_display_name, ADMIN_COMMANDS_FALLBACK, escape_markdown_v1
+from utils.safe_send import safe_send_message, safe_edit_message_text
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -122,7 +123,8 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
     
     keyboard = InlineKeyboardMarkup(keyboard_buttons)
     
-    await context.bot.send_message(
+    await safe_send_message(
+        context.bot,
         chat_id=update.effective_chat.id,
         text=welcome_text,
         reply_markup=keyboard,

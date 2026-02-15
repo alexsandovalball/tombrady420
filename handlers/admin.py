@@ -10,6 +10,7 @@ from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 from database import Database
 from utils.helpers import is_admin, get_channel_id, get_channel_username, escape_markdown_v1
+from utils.safe_send import safe_send_message, safe_edit_message_text
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -234,7 +235,13 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
         if total_users == 0:
             text = f"📭 No users found for {bot_display_name}."
             if update.callback_query:
-                await update.callback_query.edit_message_text(text)
+                query = update.callback_query
+                await safe_edit_message_text(
+                    context.bot,
+                    chat_id=query.message.chat_id,
+                    message_id=query.message.message_id,
+                    text=text
+                )
             else:
                 await update.message.reply_text(text)
             return
@@ -350,16 +357,23 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
         
         # Send or edit message
         if update.callback_query:
+            query = update.callback_query
             try:
-                await update.callback_query.edit_message_text(
-                    message_text,
+                await safe_edit_message_text(
+                    context.bot,
+                    chat_id=query.message.chat_id,
+                    message_id=query.message.message_id,
+                    text=message_text,
                     parse_mode="Markdown",
                     reply_markup=keyboard
                 )
             except BadRequest as e:
                 logger.warning(f"Markdown parse error in show_users_page, retrying without parse_mode: {e}")
-                await update.callback_query.edit_message_text(
-                    message_text,
+                await safe_edit_message_text(
+                    context.bot,
+                    chat_id=query.message.chat_id,
+                    message_id=query.message.message_id,
+                    text=message_text,
                     reply_markup=keyboard
                 )
         else:
@@ -382,7 +396,13 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
         logger.error(f"Error showing users page: {e}", exc_info=True)
         error_text = "❌ An error occurred while displaying users."
         if update.callback_query:
-            await update.callback_query.edit_message_text(error_text)
+            query = update.callback_query
+            await safe_edit_message_text(
+                context.bot,
+                chat_id=query.message.chat_id,
+                message_id=query.message.message_id,
+                text=error_text
+            )
         else:
             await update.message.reply_text(error_text)
 
@@ -425,7 +445,8 @@ async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE, pro
                     await message.delete()
                 except Exception:
                     pass  # If deletion fails, continue anyway
-                await context.bot.send_message(
+                await safe_send_message(
+                    context.bot,
                     chat_id=update.effective_chat.id,
                     text="✅ Product deleted successfully!",
                     reply_markup=InlineKeyboardMarkup([
@@ -434,8 +455,12 @@ async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE, pro
                 )
             else:
                 # Regular text message, can be edited
-                await update.callback_query.edit_message_text(
-                    "✅ Product deleted successfully!",
+                query = update.callback_query
+                await safe_edit_message_text(
+                    context.bot,
+                    chat_id=query.message.chat_id,
+                    message_id=query.message.message_id,
+                    text="✅ Product deleted successfully!",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("🔙 Back to catalog", callback_data=f"menu|{back_page}")]
                     ])
@@ -1267,15 +1292,21 @@ async def show_bot_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE
         keyboard = InlineKeyboardMarkup(keyboard_buttons)
         
         try:
-            await query.edit_message_text(
-                message,
+            await safe_edit_message_text(
+                context.bot,
+                chat_id=query.message.chat_id,
+                message_id=query.message.message_id,
+                text=message,
                 reply_markup=keyboard,
                 parse_mode="Markdown"
             )
         except BadRequest as e:
             logger.warning(f"Markdown parse error in show_bot_users_page, retrying without parse_mode: {e}")
-            await query.edit_message_text(
-                message,
+            await safe_edit_message_text(
+                context.bot,
+                chat_id=query.message.chat_id,
+                message_id=query.message.message_id,
+                text=message,
                 reply_markup=keyboard
             )
         

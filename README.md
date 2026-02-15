@@ -39,6 +39,9 @@ A production-ready Telegram bot for managing and browsing a media product catalo
 - 🔄 **Automatic Migration** - Database schema updates on startup
 - 📝 **Comprehensive Logging** - Structured logs for monitoring
 - ⚙️ **Optimized Performance** - 10-second API timeouts, connection pooling
+- 🎨 **Emoji Support** - Consistent emoji usage across all user-facing messages and buttons
+- 🔐 **Safe Message Delivery** - Automatic fallback for entity parsing errors with graceful degradation
+- 🧹 **Auto User Cleanup** - Automatically removes deleted/deactivated Telegram accounts from database
 
 ## 🚀 Quick Start
 
@@ -303,6 +306,41 @@ See [configs/.env.example](configs/.env.example) for all options.
 - Message content (except search queries)
 - Personal information beyond Telegram profile
 - Payment or location data
+
+## 🛡️ Error Handling & Reliability
+
+### Robust Message Delivery
+
+The bot includes comprehensive error handling for Telegram API operations:
+
+- **Entity Parsing Fallback**: If a message fails to parse (e.g., due to special characters in product descriptions), the bot automatically:
+  1. Retries with escaped text
+  2. Falls back to plain text without formatting
+  3. Ensures users always receive content, even if formatting fails
+
+- **Automatic User Cleanup**: The bot detects and automatically removes users whose Telegram accounts have been:
+  - Deleted or deactivated
+  - Blocked the bot
+  - Are otherwise permanently unreachable
+  - This prevents wasted API calls and keeps the database clean
+
+- **Safe Send Wrappers**: All message sending operations use safe wrappers that:
+  - Handle Telegram API errors gracefully
+  - Log detailed error information for debugging
+  - Continue processing other messages on individual failures
+  - Never crash the bot due to a single user error
+
+### Emoji Support
+
+- **Consistent Icons**: Uses a centralized emoji module for uniform appearance
+- **User-Friendly**: Emojis enhance readability and provide visual cues
+- **Accessible**: Emojis complement text, never replace important information
+- **Examples**: 
+  - 🔔 Notifications
+  - ✅ Confirmations
+  - ❌ Errors and cancellations
+  - 📋 Menus and catalogs
+  - 🌐 Language settings
 
 ## 🛠️ Development
 
