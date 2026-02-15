@@ -1037,7 +1037,7 @@ class Database:
                 VALUES (?, ?, ?)
             """, (user_id, product_id, datetime.now()))
             if cursor.rowcount == 0:
-                logger.debug(f"Notification for user {user_id}, product {product_id} already queued (unsent duplicate)")
+                logger.debug(f"Notification for user {user_id}, product {product_id} already exists in queue")
             await db.commit()
     
     async def mark_notification_sent(self, notification_id: int):

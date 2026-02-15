@@ -366,7 +366,6 @@ class NotificationService:
                 # Deduplicate by (user_id, product_id) to avoid sending the same
                 # product multiple times if duplicates slipped into the queue.
                 user_notifications = {}
-                seen_user_product = set()
                 duplicate_skip_count = 0
                 
                 for notification in pending:
@@ -392,7 +391,6 @@ class NotificationService:
                                 )
                         continue
                     
-                    seen_user_product.add(key)
                     seen_user_product_global.add(key)
                     
                     if user_id not in user_notifications:
