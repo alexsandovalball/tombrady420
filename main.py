@@ -19,6 +19,7 @@ from telegram.error import TelegramError, BadRequest
 
 from configs.config import Config, ConfigError
 from database import Database
+import emojis
 from handlers.start import start_command, subscribe_command, unsubscribe_command
 from handlers.menu import menu_command, show_catalog_page, handle_catalog_pagination
 from handlers.search import handle_search, show_search_results, handle_search_pagination
@@ -1493,12 +1494,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 # Create confirmation keyboard
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ Yes, Delete All", callback_data=f"confirm_deleteallbot|{bot_username}")],
-                    [InlineKeyboardButton("❌ Cancel", callback_data=f"viewbotusers|{bot_username}|1")]
+                    [InlineKeyboardButton(f"{emojis.OK} Yes, Delete All", callback_data=f"confirm_deleteallbot|{bot_username}")],
+                    [InlineKeyboardButton(f"{emojis.ERROR} Cancel", callback_data=f"viewbotusers|{bot_username}|1")]
                 ])
                 
                 await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
-                    text=f"⚠️ **BULK DELETE WARNING**\n\n"
+                    text=f"{emojis.WARNING} **BULK DELETE WARNING**\n\n"
                     f"You are about to delete **{count}** user(s) from {display_name}.\n\n"
                     f"This will completely remove all these users from the database.\n"
                     f"Users can restart the bot to be re-added as fresh users.\n\n"

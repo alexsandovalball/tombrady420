@@ -18,6 +18,7 @@ from utils.helpers import get_admin_ids, get_bot_specific_file_id
 from utils.safe_send import safe_send_message, safe_send_photo, safe_send_video, handle_send_exception
 from translations.translator import translate_text_async
 from configs.config import Config
+import emojis
 
 logger = logging.getLogger(__name__)
 
@@ -760,17 +761,17 @@ class NotificationService:
             
             # Prepare notification text (will be used as caption or fallback)
             message_text = (
-                f"🆕 **New Product Available!**\n\n"
-                f"📂 Category: {category_text}\n"
-                f"📝 {caption_preview}\n\n"
+                f"{emojis.BELL} **New Product Available!**\n\n"
+                f"{emojis.MENU} Category: {category_text}\n"
+                f"{emojis.INFO} {caption_preview}\n\n"
                 f"Use /menu to browse the catalog!"
             )
             
             # Create inline keyboard with view product button
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("👁️ View Product", callback_data=f"product|{product_id}")],
-                [InlineKeyboardButton("📋 View Catalog", callback_data="categories")],
-                [InlineKeyboardButton("🔕 Unsubscribe", callback_data="unsubscribe_notifications")]
+                [InlineKeyboardButton(f"{emojis.VIEW} View Product", callback_data=f"product|{product_id}")],
+                [InlineKeyboardButton(f"{emojis.MENU} View Catalog", callback_data="categories")],
+                [InlineKeyboardButton(f"{emojis.MUTED_BELL} Unsubscribe", callback_data="unsubscribe_notifications")]
             ])
             
             # Try to send with media preview (first available media file)
