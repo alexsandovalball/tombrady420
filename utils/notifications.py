@@ -126,6 +126,24 @@ class NotificationService:
             "markdown"
         ])
     
+    async def _remove_duplicate_notification(self, notification_id: int):
+        """
+        Remove a duplicate notification from the queue, falling back to marking it
+        as sent if deletion fails.
+        """
+        try:
+            await self.db.delete_notification(notification_id)
+        except Exception as e:
+            logger.error(
+                f"Failed to delete duplicate notification {notification_id} to prevent retry loops: {e}"
+            )
+            try:
+                await self.db.mark_notification_sent(notification_id)
+            except Exception as mark_error:
+                logger.error(
+                    f"Fallback mark-as-sent failed for duplicate notification {notification_id}: {mark_error}"
+                )
+    
     async def _send_media_notification(
         self,
         bot_app: Application,
@@ -375,20 +393,7 @@ class NotificationService:
                     
                     if key in seen_user_product_global:
                         duplicate_skip_count += 1
-                        # Remove duplicate so it doesn't get retried in the next loop
-                        try:
-                            await self.db.delete_notification(notification["id"])
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to delete duplicate notification {notification['id']} to prevent retry loops: {e}"
-                            )
-                            # Best-effort fallback to mark as sent so it won't block the queue
-                            try:
-                                await self.db.mark_notification_sent(notification["id"])
-                            except Exception as mark_error:
-                                logger.error(
-                                    f"Fallback mark-as-sent failed for duplicate notification {notification['id']}: {mark_error}"
-                                )
+                        await self._remove_duplicate_notification(notification["id"])
                         continue
                     
                     seen_user_product_global.add(key)

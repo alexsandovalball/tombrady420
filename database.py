@@ -1032,12 +1032,10 @@ class Database:
     async def queue_notification(self, user_id: int, product_id: int):
         """Add a notification to the queue."""
         async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("""
+            await db.execute("""
                 INSERT OR IGNORE INTO notification_queue (user_id, product_id, created_at)
                 VALUES (?, ?, ?)
             """, (user_id, product_id, datetime.now()))
-            if cursor.rowcount == 0:
-                logger.debug(f"Notification for user {user_id}, product {product_id} already exists in queue")
             await db.commit()
     
     async def mark_notification_sent(self, notification_id: int):
