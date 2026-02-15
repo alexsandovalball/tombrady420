@@ -675,10 +675,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                             InlineKeyboardButton(translated_subcat, callback_data=f"setsubcat|{product_id}|{category}|{subcat}")
                         ])
                     
-                    # Add "No Subcategory" option
+                    # Add "No Subcategory" option - goes to confirmation first
                     save_without_text = await get_translated_string_async("save_without_subcategory", user_lang)
                     keyboard_buttons.append([
-                        InlineKeyboardButton(save_without_text, callback_data=f"savecat|{product_id}|{category}|")
+                        InlineKeyboardButton(save_without_text, callback_data=f"confirmcat|{product_id}|{category}|")
+                    ])
+                    
+                    # Add back button to return to category list
+                    keyboard_buttons.append([
+                        InlineKeyboardButton("🔙 Back to Categories", callback_data=f"catback|{product_id}")
                     ])
                     
                     keyboard = InlineKeyboardMarkup(keyboard_buttons)
@@ -698,32 +703,92 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         reply_markup=keyboard
                     )
                 else:
-                    # No subcategories, save directly and ask for notification confirmation
-                    await db.update_product_category(product_id, category, None)
-                    
+                    # No subcategories - show confirmation before saving
                     # Translate category name
                     category_key = f"category_{category.lower()}"
                     translated_category = await get_translated_string_async(category_key, user_lang)
                     if translated_category == category_key:
                         translated_category = get_category_display_name(category)
                     
-                    # Ask admin if they want to send notifications
                     keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("✅ Yes, send notifications", callback_data=f"send_notif_yes|{product_id}")],
-                        [InlineKeyboardButton("❌ No, skip notifications", callback_data=f"send_notif_no|{product_id}")]
+                        [InlineKeyboardButton("✅ Confirm", callback_data=f"savecat|{product_id}|{category}|")],
+                        [InlineKeyboardButton("🔙 Back to Categories", callback_data=f"catback|{product_id}")]
                     ])
                     
                     await query.edit_message_text(
-                        f"✅ Product #{product_id} categorized as:\n"
-                        f"📂 {translated_category}\n\n"
-                        f"📢 **Send notifications to subscribed users?**\n"
-                        f"Choose whether to notify users about this product:",
+                        f"📂 Categorize Product #{product_id} as:\n\n"
+                        f"**{translated_category}**\n\n"
+                        f"Please confirm this categorization:",
                         reply_markup=keyboard,
                         parse_mode="Markdown"
                     )
-                    logger.info(f"Product {product_id} categorized as {category} by admin {update.effective_user.id}, awaiting notification decision")
             else:
                 await query.answer("Invalid category data", show_alert=True)
+        
+        # Handle back to category list
+        elif parts[0] == "catback":
+            if len(parts) >= 2:
+                product_id = int(parts[1])
+                
+                # Check if user is admin
+                if not is_admin(update.effective_user.id):
+                    await query.answer("❌ Only admins can categorize products.", show_alert=True)
+                    return
+                
+                # Show category selection menu again
+                keyboard_buttons = []
+                for category in get_all_categories():
+                    display_name = get_category_display_name(category)
+                    keyboard_buttons.append([
+                        InlineKeyboardButton(display_name, callback_data=f"setcat|{product_id}|{category}")
+                    ])
+                
+                keyboard = InlineKeyboardMarkup(keyboard_buttons)
+                
+                await query.edit_message_text(
+                    f"📂 **Categorize Product #{product_id}**\n\n"
+                    f"Please select a category:",
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
+                )
+            else:
+                await query.answer("Invalid data", show_alert=True)
+        
+        # Handle confirmation for category without subcategory (from "Save without subcategory" button)
+        elif parts[0] == "confirmcat":
+            if len(parts) >= 3:
+                product_id = int(parts[1])
+                category = parts[2]
+                
+                # Check if user is admin
+                if not is_admin(update.effective_user.id):
+                    await query.answer("❌ Only admins can categorize products.", show_alert=True)
+                    return
+                
+                # Get user language preference
+                user_id = update.effective_user.id
+                user_lang = await db.get_user_language(user_id)
+                
+                # Translate category name
+                category_key = f"category_{category.lower()}"
+                translated_category = await get_translated_string_async(category_key, user_lang)
+                if translated_category == category_key:
+                    translated_category = get_category_display_name(category)
+                
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Confirm", callback_data=f"savecat|{product_id}|{category}|")],
+                    [InlineKeyboardButton("🔙 Back", callback_data=f"setcat|{product_id}|{category}")]
+                ])
+                
+                await query.edit_message_text(
+                    f"📂 Categorize Product #{product_id} as:\n\n"
+                    f"**{translated_category}** (no subcategory)\n\n"
+                    f"Please confirm this categorization:",
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
+                )
+            else:
+                await query.answer("Invalid data", show_alert=True)
         
         # Handle subcategory setting
         elif parts[0] == "setsubcat":
@@ -935,6 +1000,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     InlineKeyboardButton(display_name, callback_data=f"setcat|{product_id}|{category}")
                 ])
             
+            # Add cancel button
+            keyboard_buttons.append([
+                InlineKeyboardButton("❌ Cancel", callback_data=f"recat_cancel|{product_id}")
+            ])
+            
             keyboard = InlineKeyboardMarkup(keyboard_buttons)
             
             await query.edit_message_text(
@@ -942,6 +1012,22 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 f"Please select a new category:",
                 reply_markup=keyboard,
                 parse_mode="Markdown"
+            )
+        
+        # Handle recategorize cancel
+        elif parts[0] == "recat_cancel":
+            if len(parts) < 2:
+                await query.answer("Invalid data", show_alert=True)
+                return
+            
+            product_id = int(parts[1])
+            
+            if not is_admin(update.effective_user.id):
+                await query.answer("❌ Only admins can manage products.", show_alert=True)
+                return
+            
+            await query.edit_message_text(
+                f"❌ Recategorization cancelled for Product #{product_id}."
             )
         
         # Handle user notification toggle (admin only)
