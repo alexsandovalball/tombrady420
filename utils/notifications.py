@@ -378,7 +378,9 @@ class NotificationService:
                         try:
                             await self.db.mark_notification_sent(notification["id"])
                         except Exception as e:
-                            logger.error(f"Failed to mark duplicate notification {notification['id']} as sent: {e}")
+                            logger.error(
+                                f"Failed to mark duplicate notification {notification['id']} as sent to prevent retry loops: {e}"
+                            )
                         continue
                     
                     seen_user_product.add(key)

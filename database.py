@@ -275,6 +275,11 @@ class Database:
             # Notification queue indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_user_sent ON notification_queue(user_id, sent_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_created ON notification_queue(created_at)")
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_notification_queue_user_product_unsent 
+                ON notification_queue(user_id, product_id) 
+                WHERE sent_at IS NULL
+            """)
             
             # Pagination state indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_pagination_state_user ON pagination_state(user_id, created_at DESC)")
@@ -1680,4 +1685,3 @@ async def clear_database_caches():
 
 
     
-
