@@ -462,6 +462,10 @@ async def recategorize_command(update: Update, context: ContextTypes.DEFAULT_TYP
     - Products with no category
     - Products with a category but missing subcategory (when subcategories are available for that category)
     """
+    # Import at function level to avoid circular imports
+    from utils.categories import get_subcategories
+    from main import notify_admins_for_categorization
+    
     user_id = update.effective_user.id
     
     if not is_admin(user_id):
@@ -492,7 +496,6 @@ async def recategorize_command(update: Update, context: ContextTypes.DEFAULT_TYP
                 uncategorized.append(p)
             # Product has category but no subcategory, and category has subcategories available
             elif p.get("category") and not p.get("subcategory"):
-                from utils.categories import get_subcategories
                 subcats = get_subcategories(p.get("category"))
                 # If category has subcategories defined, this product needs recategorization
                 if subcats:
@@ -505,9 +508,6 @@ async def recategorize_command(update: Update, context: ContextTypes.DEFAULT_TYP
             return
         
         # Send categorization notifications for products needing categorization
-        # Import the notification function
-        from main import notify_admins_for_categorization
-        
         notified = 0
         for product in uncategorized[:10]:  # Limit to 10 at a time to avoid spam
             try:

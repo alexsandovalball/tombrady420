@@ -52,12 +52,12 @@ NOTIFICATION_EXCLUDED_CATEGORIES = []
 # Keyword synonyms for better auto-detection
 # Maps common variations to canonical subcategory names
 SUBCATEGORY_SYNONYMS = {
-    "LIVE RESIN": ["LIVERESIN", "LIVE-RESIN", "LIVERESINS"],
+    "LIVE RESIN": ["LIVERESIN", "LIVE-RESIN", "LIVE RESINS"],
     "ROSIN": ["ROSINS"],
     "DIAMONDS AND SAUCE": ["DIAMONDS&SAUCE", "DIAMONDSANDSAUCE", "DIAMONDS-AND-SAUCE", "DIAMONDSAUCE"],
     "INFUSED FLOWER": ["INFUSEDFLOWER", "INFUSED-FLOWER", "MOONROCKS", "SNOWCAPS"],
     "HASH": ["HASHES"],
-    "KIEF": ["KEIF", "KEEIF"],
+    "KIEF": ["KEIF"],  # Common misspelling
 }
 
 
