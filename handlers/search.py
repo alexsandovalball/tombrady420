@@ -8,6 +8,7 @@ from database import Database
 from utils.pagination import create_pagination_keyboard, paginate_items
 from utils.fuzzy_search import fuzzy_search_products
 from translations.translator import get_translated_string_async
+from utils.safe_send import safe_send_message, safe_edit_message_text
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -88,10 +89,12 @@ async def show_search_results(
         
         if update.callback_query:
             # Check if the message is a media message (can't edit media messages)
-            message = update.callback_query.message
+            query = update.callback_query
+            message = query.message
             if message.photo or message.video or message.document or message.animation or message.audio:
                 # Don't delete media message - send new message to preserve product view
-                await context.bot.send_message(
+                await safe_send_message(
+                    context.bot,
                     chat_id=update.effective_chat.id,
                     text=text,
                     reply_markup=keyboard,
@@ -99,8 +102,11 @@ async def show_search_results(
                 )
             else:
                 # Regular text message, can be edited
-                await update.callback_query.edit_message_text(
-                    text,
+                await safe_edit_message_text(
+                    context.bot,
+                    chat_id=query.message.chat_id,
+                    message_id=query.message.message_id,
+                    text=text,
                     reply_markup=keyboard,
                     parse_mode="Markdown"
                 )
