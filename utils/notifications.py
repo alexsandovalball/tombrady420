@@ -455,7 +455,7 @@ class NotificationService:
                 if not deduplicated:
                     # All notifications in this batch were duplicates
                     if len(pending) == PENDING_NOTIFICATIONS_BATCH_LIMIT:
-                        await asyncio.sleep(2)
+                        await asyncio.sleep(0.2)
                         continue
                     return total_sent_count
                 
@@ -498,7 +498,7 @@ class NotificationService:
                 
                 # Brief pause between batches to avoid overwhelming the system
                 if len(pending) == PENDING_NOTIFICATIONS_BATCH_LIMIT:  # If we got a full batch, there might be more
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(0.2)  # Brief yield to avoid burst sending
             
         except Exception as e:
             logger.error(f"Error processing notification queue: {e}", exc_info=True)

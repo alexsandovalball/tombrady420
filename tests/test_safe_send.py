@@ -87,7 +87,7 @@ class TestHandleSendException(unittest.TestCase):
             
             # Handle Forbidden exception
             exception = Forbidden("Bot was blocked by the user")
-            with patch('database.Database') as mock_db_class:
+            with patch('utils.safe_send.Database') as mock_db_class:
                 mock_db_instance = AsyncMock()
                 mock_db_class.return_value = mock_db_instance
                 
@@ -105,7 +105,7 @@ class TestHandleSendException(unittest.TestCase):
             user_id = 67890
             
             exception = BadRequest("User is deactivated")
-            with patch('database.Database') as mock_db_class:
+            with patch('utils.safe_send.Database') as mock_db_class:
                 mock_db_instance = AsyncMock()
                 mock_db_class.return_value = mock_db_instance
                 
@@ -123,7 +123,7 @@ class TestHandleSendException(unittest.TestCase):
             user_id = 11111
             
             exception = BadRequest("Chat not found")
-            with patch('database.Database') as mock_db_class:
+            with patch('utils.safe_send.Database') as mock_db_class:
                 mock_db_instance = AsyncMock()
                 mock_db_class.return_value = mock_db_instance
                 
