@@ -146,7 +146,7 @@ class NotificationService:
                     logger.warning(
                         f"Failed to delete duplicate notification {notification_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying..."
                     )
-                    await asyncio.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                    await asyncio.sleep(retry_delay * (attempt + 1))  # Linear backoff
                 else:
                     logger.error(
                         f"Failed to delete duplicate notification {notification_id} after {max_retries} attempts: {e}"

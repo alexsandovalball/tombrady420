@@ -1060,7 +1060,7 @@ class Database:
                     existing = await cursor.fetchone()
                     if existing:
                         logger.debug(f"Notification already queued for user {user_id}, product {product_id} (id={existing[0]})")
-                        return  # Skip insertion
+                        return  # Skip insertion - no commit needed
                 
                 # Insert notification - OR IGNORE provides additional safety
                 cursor = await db.execute("""
@@ -1073,15 +1073,18 @@ class Database:
                     logger.debug(f"Notification insert was ignored (race condition) for user {user_id}, product {product_id}")
                 else:
                     logger.debug(f"Successfully queued notification for user {user_id}, product {product_id}")
+                
+                # Commit only after successful insert
+                await db.commit()
                     
             except aiosqlite.IntegrityError as e:
                 # Unique index constraint violation - duplicate detected
+                # No commit needed - transaction will be rolled back
                 logger.debug(f"Duplicate notification prevented by unique constraint for user {user_id}, product {product_id}: {e}")
             except Exception as e:
-                # Log unexpected errors but don't crash the notification system
+                # Log unexpected errors and rollback transaction
                 logger.error(f"Unexpected error queueing notification for user {user_id}, product {product_id}: {e}", exc_info=True)
-            
-            await db.commit()
+                # Transaction will be rolled back automatically when context exits
     
     async def mark_notification_sent(self, notification_id: int):
         """Mark a notification as sent."""

@@ -25,7 +25,7 @@ class TestNotificationDeduplication(unittest.TestCase):
     
     def setUp(self):
         """Create a temporary database for testing."""
-        self.temp_db = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.db')
+        self.temp_db = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
         self.temp_db.close()
         self.db_path = self.temp_db.name
         self.db = Database(db_path=self.db_path)
@@ -193,7 +193,7 @@ class TestNotificationErrorHandling(unittest.TestCase):
     
     def setUp(self):
         """Create a temporary database for testing."""
-        self.temp_db = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.db')
+        self.temp_db = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
         self.temp_db.close()
         self.db_path = self.temp_db.name
         self.db = Database(db_path=self.db_path)
