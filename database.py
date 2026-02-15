@@ -259,6 +259,10 @@ class Database:
             logger.info("Checking for products needing bot_username migration...")
             await self._migrate_bot_username_for_existing_products(db)
             
+            # Clean up duplicates before adding unique indexes
+            logger.info("Removing duplicate notification queue entries...")
+            await self._dedupe_notification_queue(db)
+            
             # Create performance-critical indexes
             logger.info("Creating database indexes...")
             
@@ -276,7 +280,7 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_user_sent ON notification_queue(user_id, sent_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_created ON notification_queue(created_at)")
             await db.execute("""
-                CREATE INDEX IF NOT EXISTS idx_notification_queue_user_product_unsent 
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_queue_user_product_unsent 
                 ON notification_queue(user_id, product_id) 
                 WHERE sent_at IS NULL
             """)
@@ -295,6 +299,22 @@ class Database:
             
             await db.commit()
             logger.info("Database initialized successfully")
+    
+    async def _dedupe_notification_queue(self, db):
+        """
+        Remove duplicate notifications, keeping the earliest entry for each
+        (user_id, product_id, sent_at IS NULL) combination.
+        """
+        try:
+            await db.execute("""
+                DELETE FROM notification_queue
+                WHERE id NOT IN (
+                    SELECT MIN(id) FROM notification_queue
+                    GROUP BY user_id, product_id, (sent_at IS NULL)
+                )
+            """)
+        except Exception as e:
+            logger.warning(f"Could not dedupe notification_queue: {e}")
     
     async def _migrate_existing_media_groups(self, db):
         """
@@ -1011,13 +1031,9 @@ class Database:
         """Add a notification to the queue."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
-                INSERT INTO notification_queue (user_id, product_id, created_at)
-                SELECT ?, ?, ?
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM notification_queue 
-                    WHERE user_id = ? AND product_id = ? AND sent_at IS NULL
-                )
-            """, (user_id, product_id, datetime.now(), user_id, product_id))
+                INSERT OR IGNORE INTO notification_queue (user_id, product_id, created_at)
+                VALUES (?, ?, ?)
+            """, (user_id, product_id, datetime.now()))
             await db.commit()
     
     async def mark_notification_sent(self, notification_id: int):
