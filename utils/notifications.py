@@ -135,7 +135,7 @@ class NotificationService:
             await self.db.delete_notification(notification_id)
         except Exception as e:
             logger.error(
-                f"Failed to delete duplicate notification {notification_id} to prevent retry loops: {e}"
+                f"Failed to delete duplicate notification {notification_id}: {e}"
             )
             try:
                 await self.db.mark_notification_sent(notification_id)

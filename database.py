@@ -261,7 +261,7 @@ class Database:
             
             # Clean up duplicates before adding unique indexes
             logger.info("Removing duplicate notification queue entries...")
-            await self._dedupe_notification_queue(db)
+            dedupe_success = await self._dedupe_notification_queue(db)
             
             # Create performance-critical indexes
             logger.info("Creating database indexes...")
@@ -279,11 +279,16 @@ class Database:
             # Notification queue indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_user_sent ON notification_queue(user_id, sent_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_created ON notification_queue(created_at)")
-            await db.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_queue_user_product_unsent 
-                ON notification_queue(user_id, product_id) 
-                WHERE sent_at IS NULL
-            """)
+            try:
+                await db.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_queue_user_product_unsent 
+                    ON notification_queue(user_id, product_id) 
+                    WHERE sent_at IS NULL
+                """)
+            except Exception as e:
+                logger.warning(
+                    f"Could not create unique index for notification_queue (dedupe_success={dedupe_success}): {e}"
+                )
             
             # Pagination state indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_pagination_state_user ON pagination_state(user_id, created_at DESC)")
@@ -315,8 +320,10 @@ class Database:
                       GROUP BY user_id, product_id
                   )
             """)
+            return True
         except Exception as e:
             logger.warning(f"Could not dedupe notification_queue: {e}")
+            return False
     
     async def _migrate_existing_media_groups(self, db):
         """
@@ -1032,8 +1039,17 @@ class Database:
     async def queue_notification(self, user_id: int, product_id: int):
         """Add a notification to the queue."""
         async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT 1 FROM notification_queue 
+                WHERE user_id = ? AND product_id = ? AND sent_at IS NULL
+                LIMIT 1
+            """, (user_id, product_id)) as cursor:
+                if await cursor.fetchone():
+                    logger.debug(f"Notification for user {user_id}, product {product_id} already exists in queue")
+                    return
+            
             await db.execute("""
-                INSERT OR IGNORE INTO notification_queue (user_id, product_id, created_at)
+                INSERT INTO notification_queue (user_id, product_id, created_at)
                 VALUES (?, ?, ?)
             """, (user_id, product_id, datetime.now()))
             await db.commit()
