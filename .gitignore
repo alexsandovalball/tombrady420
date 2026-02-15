@@ -49,3 +49,6 @@ temp/
 htmlcov/
 .pytest_cache/
 .tox/
+*.db
+__pycache__/
+*.pyc

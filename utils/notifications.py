@@ -129,21 +129,41 @@ class NotificationService:
     
     async def _remove_duplicate_notification(self, notification_id: int):
         """
-        Remove a duplicate notification from the queue, falling back to marking it
-        as sent if deletion fails.
+        Remove a duplicate notification from the queue with retry logic.
+        Falls back to marking it as sent if deletion fails after retries.
         """
-        try:
-            await self.db.delete_notification(notification_id)
-        except aiosqlite.Error as e:
-            logger.error(
-                f"Failed to delete duplicate notification {notification_id}: {e}"
-            )
+        max_retries = 3
+        retry_delay = 0.5  # seconds
+        
+        for attempt in range(max_retries):
             try:
-                await self.db.mark_notification_sent(notification_id)
-            except aiosqlite.Error as mark_error:
-                logger.error(
-                    f"Fallback mark-as-sent failed for duplicate notification {notification_id}: {mark_error}"
-                )
+                await self.db.delete_notification(notification_id)
+                if attempt > 0:
+                    logger.info(f"Successfully deleted duplicate notification {notification_id} on attempt {attempt + 1}")
+                return  # Success
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"Failed to delete duplicate notification {notification_id} (attempt {attempt + 1}/{max_retries}): {e}. Retrying..."
+                    )
+                    await asyncio.sleep(retry_delay * (attempt + 1))  # Linear backoff
+                else:
+                    logger.error(
+                        f"Failed to delete duplicate notification {notification_id} after {max_retries} attempts: {e}"
+                    )
+        
+        # All deletion attempts failed - fallback to marking as sent
+        logger.warning(f"Falling back to marking duplicate notification {notification_id} as sent")
+        try:
+            await self.db.mark_notification_sent(notification_id)
+            logger.info(f"Successfully marked duplicate notification {notification_id} as sent")
+        except Exception as mark_error:
+            # Last resort failed - log critical error
+            logger.error(
+                f"CRITICAL: Fallback mark-as-sent failed for duplicate notification {notification_id}: {mark_error}. "
+                f"Notification may remain stuck in queue.",
+                exc_info=True
+            )
     
     async def _send_media_notification(
         self,
@@ -396,15 +416,26 @@ class NotificationService:
                     if key in seen_user_product_global:
                         duplicate_skip_count += 1
                         duplicates_to_remove.append(notification["id"])
+                        logger.debug(f"Duplicate detected: user={user_id}, product={product_id}, notification_id={notification['id']}")
                         continue
                     
                     seen_user_product_global.add(key)
                     deduplicated.append(notification)
                 
                 if duplicate_skip_count:
-                    logger.warning(f"Skipped {duplicate_skip_count} duplicate notifications in batch {batch_number}")
+                    logger.warning(f"Found {duplicate_skip_count} duplicate notifications in batch {batch_number} - removing from queue")
+                    removal_failures = 0
                     for duplicate_id in duplicates_to_remove:
-                        await self._remove_duplicate_notification(duplicate_id)
+                        try:
+                            await self._remove_duplicate_notification(duplicate_id)
+                        except Exception as e:
+                            removal_failures += 1
+                            logger.error(f"Failed to remove duplicate notification {duplicate_id}: {e}")
+                    
+                    if removal_failures > 0:
+                        logger.error(f"Failed to remove {removal_failures} out of {duplicate_skip_count} duplicate notifications")
+                    else:
+                        logger.info(f"Successfully removed all {duplicate_skip_count} duplicate notifications")
                 
                 if not deduplicated:
                     # All notifications in this batch were duplicates

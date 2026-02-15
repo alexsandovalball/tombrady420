@@ -279,16 +279,24 @@ class Database:
             # Notification queue indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_user_sent ON notification_queue(user_id, sent_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_created ON notification_queue(created_at)")
+            
+            # Critical: Create unique index for duplicate prevention
+            # If this fails, the notification system cannot guarantee deduplication
             try:
                 await db.execute("""
                     CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_queue_user_product_unsent 
                     ON notification_queue(user_id, product_id) 
                     WHERE sent_at IS NULL
                 """)
+                logger.info("Successfully created unique index for notification deduplication")
             except Exception as e:
-                logger.warning(
-                    f"Could not create unique index for notification_queue (dedupe_success={dedupe_success}): {e}"
-                )
+                error_msg = f"CRITICAL: Failed to create unique index for notification_queue (dedupe_success={dedupe_success}): {e}"
+                logger.error(error_msg)
+                # If deduplication was successful but index creation failed,
+                # this indicates a database issue that needs immediate attention
+                if dedupe_success:
+                    logger.error("Database may be corrupted or incompatible - unique index creation failed after successful deduplication")
+                raise RuntimeError(error_msg)
             
             # Pagination state indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_pagination_state_user ON pagination_state(user_id, created_at DESC)")
@@ -1037,19 +1045,46 @@ class Database:
                 return dict(result)
     
     async def queue_notification(self, user_id: int, product_id: int):
-        """Add a notification to the queue."""
+        """
+        Add a notification to the queue with duplicate prevention.
+        Uses pre-check validation and INSERT OR IGNORE for robust deduplication.
+        """
         async with aiosqlite.connect(self.db_path) as db:
             try:
+                # Pre-check: Verify if notification already exists
+                # This prevents unnecessary INSERT attempts and provides early feedback
+                async with db.execute("""
+                    SELECT id FROM notification_queue 
+                    WHERE user_id = ? AND product_id = ? AND sent_at IS NULL
+                """, (user_id, product_id)) as cursor:
+                    existing = await cursor.fetchone()
+                    if existing:
+                        logger.debug(f"Notification already queued for user {user_id}, product {product_id} (id={existing[0]})")
+                        return  # Skip insertion - no commit needed
+                
+                # Insert notification - OR IGNORE provides additional safety
                 cursor = await db.execute("""
                     INSERT OR IGNORE INTO notification_queue (user_id, product_id, created_at)
                     VALUES (?, ?, ?)
                 """, (user_id, product_id, datetime.now()))
+                
                 if cursor.rowcount == 0:
-                    logger.debug(f"Notification for user {user_id}, product {product_id} already exists in queue")
+                    # This should rarely happen due to pre-check, but handles race conditions
+                    logger.debug(f"Notification insert was ignored (race condition) for user {user_id}, product {product_id}")
+                else:
+                    logger.debug(f"Successfully queued notification for user {user_id}, product {product_id}")
+                
+                # Commit only after successful insert
+                await db.commit()
+                    
             except aiosqlite.IntegrityError as e:
-                # Unique index protects against concurrent duplicate inserts
-                logger.debug(f"Duplicate notification insert ignored for user {user_id}, product {product_id}: {e}")
-            await db.commit()
+                # Unique index constraint violation - duplicate detected
+                # No commit needed - transaction will be rolled back
+                logger.debug(f"Duplicate notification prevented by unique constraint for user {user_id}, product {product_id}: {e}")
+            except Exception as e:
+                # Log unexpected errors and rollback transaction
+                logger.error(f"Unexpected error queueing notification for user {user_id}, product {product_id}: {e}", exc_info=True)
+                # Transaction will be rolled back automatically when context exits
     
     async def mark_notification_sent(self, notification_id: int):
         """Mark a notification as sent."""
