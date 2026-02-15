@@ -1039,21 +1039,14 @@ class Database:
     async def queue_notification(self, user_id: int, product_id: int):
         """Add a notification to the queue."""
         async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("""
-                SELECT 1 FROM notification_queue 
-                WHERE user_id = ? AND product_id = ? AND sent_at IS NULL
-                LIMIT 1
-            """, (user_id, product_id)) as cursor:
-                if await cursor.fetchone():
-                    logger.debug(f"Notification for user {user_id}, product {product_id} already exists in queue")
-                    return
-            
             try:
-                await db.execute("""
-                    INSERT INTO notification_queue (user_id, product_id, created_at)
+                cursor = await db.execute("""
+                    INSERT OR IGNORE INTO notification_queue (user_id, product_id, created_at)
                     VALUES (?, ?, ?)
                 """, (user_id, product_id, datetime.now()))
-            except Exception as e:
+                if cursor.rowcount == 0:
+                    logger.debug(f"Notification for user {user_id}, product {product_id} already exists in queue")
+            except aiosqlite.IntegrityError as e:
                 # Unique index protects against concurrent duplicate inserts
                 logger.debug(f"Duplicate notification insert ignored for user {user_id}, product {product_id}: {e}")
             await db.commit()

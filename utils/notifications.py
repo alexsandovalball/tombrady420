@@ -7,6 +7,7 @@ import logging
 import asyncio
 from typing import List, Dict, Optional
 from datetime import datetime
+import aiosqlite
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, Application
 from telegram.error import TelegramError, Forbidden, BadRequest
@@ -133,13 +134,13 @@ class NotificationService:
         """
         try:
             await self.db.delete_notification(notification_id)
-        except Exception as e:
+        except aiosqlite.Error as e:
             logger.error(
                 f"Failed to delete duplicate notification {notification_id}: {e}"
             )
             try:
                 await self.db.mark_notification_sent(notification_id)
-            except Exception as mark_error:
+            except aiosqlite.Error as mark_error:
                 logger.error(
                     f"Fallback mark-as-sent failed for duplicate notification {notification_id}: {mark_error}"
                 )
@@ -386,6 +387,7 @@ class NotificationService:
                 # product multiple times if duplicates slipped into the queue.
                 user_notifications = {}
                 duplicate_skip_count = 0
+                duplicates_to_remove = []
                 
                 for notification in pending:
                     user_id = notification["user_id"]
@@ -394,7 +396,7 @@ class NotificationService:
                     
                     if key in seen_user_product_global:
                         duplicate_skip_count += 1
-                        await self._remove_duplicate_notification(notification["id"])
+                        duplicates_to_remove.append(notification["id"])
                         continue
                     
                     seen_user_product_global.add(key)
@@ -405,6 +407,8 @@ class NotificationService:
                 
                 if duplicate_skip_count:
                     logger.warning(f"Skipped {duplicate_skip_count} duplicate notifications in batch {batch_number}")
+                    for duplicate_id in duplicates_to_remove:
+                        await self._remove_duplicate_notification(duplicate_id)
                 
                 # Check if all users in this batch were already rate-limited
                 # Check if user_notifications is not empty before checking rate limits
