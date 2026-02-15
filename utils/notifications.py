@@ -7,6 +7,7 @@ import logging
 import asyncio
 from typing import List, Dict, Optional
 from datetime import datetime
+import aiosqlite
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, Application
 from telegram.error import TelegramError, Forbidden, BadRequest
@@ -125,6 +126,24 @@ class NotificationService:
             "parse entities",
             "markdown"
         ])
+    
+    async def _remove_duplicate_notification(self, notification_id: int):
+        """
+        Remove a duplicate notification from the queue, falling back to marking it
+        as sent if deletion fails.
+        """
+        try:
+            await self.db.delete_notification(notification_id)
+        except aiosqlite.Error as e:
+            logger.error(
+                f"Failed to delete duplicate notification {notification_id}: {e}"
+            )
+            try:
+                await self.db.mark_notification_sent(notification_id)
+            except aiosqlite.Error as mark_error:
+                logger.error(
+                    f"Fallback mark-as-sent failed for duplicate notification {notification_id}: {mark_error}"
+                )
     
     async def _send_media_notification(
         self,
@@ -345,6 +364,9 @@ class NotificationService:
             total_sent_count = 0
             batch_number = 0
             rate_limited_users = set()  # Track users who hit rate limits in this run
+            # Tracks duplicates across batches for this processing run
+            seen_user_product_global = set()
+            # Queue processing runs as a single task; DB unique constraint prevents new duplicates
             
             # Process notifications in batches until queue is empty
             while True:
@@ -361,12 +383,32 @@ class NotificationService:
                 logger.info(f"Processing batch {batch_number}: {len(pending)} pending notifications")
                 
                 # Group notifications by user for rate limiting
+                # Deduplicate by (user_id, product_id) to avoid sending the same
+                # product multiple times if duplicates slipped into the queue.
                 user_notifications = {}
+                duplicate_skip_count = 0
+                duplicates_to_remove = []
+                
                 for notification in pending:
                     user_id = notification["user_id"]
+                    product_id = notification["product_id"]
+                    key = (user_id, product_id)
+                    
+                    if key in seen_user_product_global:
+                        duplicate_skip_count += 1
+                        duplicates_to_remove.append(notification["id"])
+                        continue
+                    
+                    seen_user_product_global.add(key)
+                    
                     if user_id not in user_notifications:
                         user_notifications[user_id] = []
                     user_notifications[user_id].append(notification)
+                
+                if duplicate_skip_count:
+                    logger.warning(f"Skipped {duplicate_skip_count} duplicate notifications in batch {batch_number}")
+                    for duplicate_id in duplicates_to_remove:
+                        await self._remove_duplicate_notification(duplicate_id)
                 
                 # Check if all users in this batch were already rate-limited
                 # Check if user_notifications is not empty before checking rate limits
@@ -1229,5 +1271,3 @@ class NotificationService:
             
         except Exception as e:
             logger.error(f"Failed to send admin summary: {e}", exc_info=True)
-
-

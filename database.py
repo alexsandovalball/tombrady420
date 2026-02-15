@@ -259,6 +259,10 @@ class Database:
             logger.info("Checking for products needing bot_username migration...")
             await self._migrate_bot_username_for_existing_products(db)
             
+            # Clean up duplicates before adding unique indexes
+            logger.info("Removing duplicate notification queue entries...")
+            dedupe_success = await self._dedupe_notification_queue(db)
+            
             # Create performance-critical indexes
             logger.info("Creating database indexes...")
             
@@ -275,6 +279,16 @@ class Database:
             # Notification queue indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_user_sent ON notification_queue(user_id, sent_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_created ON notification_queue(created_at)")
+            try:
+                await db.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_queue_user_product_unsent 
+                    ON notification_queue(user_id, product_id) 
+                    WHERE sent_at IS NULL
+                """)
+            except Exception as e:
+                logger.warning(
+                    f"Could not create unique index for notification_queue (dedupe_success={dedupe_success}): {e}"
+                )
             
             # Pagination state indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_pagination_state_user ON pagination_state(user_id, created_at DESC)")
@@ -290,6 +304,26 @@ class Database:
             
             await db.commit()
             logger.info("Database initialized successfully")
+    
+    async def _dedupe_notification_queue(self, db):
+        """
+        Remove duplicate notifications, keeping the earliest entry for each
+        (user_id, product_id, sent_at IS NULL) combination.
+        """
+        try:
+            await db.execute("""
+                DELETE FROM notification_queue
+                WHERE sent_at IS NULL
+                  AND id NOT IN (
+                      SELECT MIN(id) FROM notification_queue
+                      WHERE sent_at IS NULL
+                      GROUP BY user_id, product_id
+                  )
+            """)
+            return True
+        except Exception as e:
+            logger.warning(f"Could not dedupe notification_queue: {e}")
+            return False
     
     async def _migrate_existing_media_groups(self, db):
         """
@@ -1005,10 +1039,16 @@ class Database:
     async def queue_notification(self, user_id: int, product_id: int):
         """Add a notification to the queue."""
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                INSERT INTO notification_queue (user_id, product_id, created_at)
-                VALUES (?, ?, ?)
-            """, (user_id, product_id, datetime.now()))
+            try:
+                cursor = await db.execute("""
+                    INSERT OR IGNORE INTO notification_queue (user_id, product_id, created_at)
+                    VALUES (?, ?, ?)
+                """, (user_id, product_id, datetime.now()))
+                if cursor.rowcount == 0:
+                    logger.debug(f"Notification for user {user_id}, product {product_id} already exists in queue")
+            except aiosqlite.IntegrityError as e:
+                # Unique index protects against concurrent duplicate inserts
+                logger.debug(f"Duplicate notification insert ignored for user {user_id}, product {product_id}: {e}")
             await db.commit()
     
     async def mark_notification_sent(self, notification_id: int):
@@ -1017,6 +1057,14 @@ class Database:
             await db.execute("""
                 UPDATE notification_queue SET sent_at = ? WHERE id = ?
             """, (datetime.now(), notification_id))
+            await db.commit()
+    
+    async def delete_notification(self, notification_id: int):
+        """Delete a notification from the queue."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                DELETE FROM notification_queue WHERE id = ?
+            """, (notification_id,))
             await db.commit()
     
     async def get_pending_notifications(self, limit: int = 100) -> List[Dict[str, Any]]:
@@ -1676,5 +1724,3 @@ async def clear_database_caches():
 
 
     
-
-
