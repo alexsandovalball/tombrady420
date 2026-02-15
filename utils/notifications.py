@@ -375,7 +375,10 @@ class NotificationService:
                     if key in seen_user_product:
                         duplicate_skip_count += 1
                         # Mark duplicate as sent so it doesn't get retried in the next loop
-                        await self.db.mark_notification_sent(notification["id"])
+                        try:
+                            await self.db.mark_notification_sent(notification["id"])
+                        except Exception as e:
+                            logger.error(f"Failed to mark duplicate notification {notification['id']} as sent: {e}")
                         continue
                     
                     seen_user_product.add(key)
@@ -385,7 +388,7 @@ class NotificationService:
                     user_notifications[user_id].append(notification)
                 
                 if duplicate_skip_count:
-                    logger.warning(f"Skipped {duplicate_skip_count} duplicate notification(s) in batch {batch_number}")
+                    logger.warning(f"Skipped {duplicate_skip_count} duplicate notifications in batch {batch_number}")
                 
                 # Check if all users in this batch were already rate-limited
                 # Check if user_notifications is not empty before checking rate limits
@@ -1248,4 +1251,3 @@ class NotificationService:
             
         except Exception as e:
             logger.error(f"Failed to send admin summary: {e}", exc_info=True)
-
