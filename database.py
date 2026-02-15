@@ -1028,6 +1028,14 @@ class Database:
             """, (datetime.now(), notification_id))
             await db.commit()
     
+    async def delete_notification(self, notification_id: int):
+        """Delete a notification from the queue."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                DELETE FROM notification_queue WHERE id = ?
+            """, (notification_id,))
+            await db.commit()
+    
     async def get_pending_notifications(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Get pending notifications from queue."""
         async with aiosqlite.connect(self.db_path) as db:

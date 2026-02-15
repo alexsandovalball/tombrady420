@@ -345,6 +345,7 @@ class NotificationService:
             total_sent_count = 0
             batch_number = 0
             rate_limited_users = set()  # Track users who hit rate limits in this run
+            seen_user_product_global = set()  # Track duplicates across batches
             
             # Process notifications in batches until queue is empty
             while True:
@@ -372,18 +373,19 @@ class NotificationService:
                     product_id = notification["product_id"]
                     key = (user_id, product_id)
                     
-                    if key in seen_user_product:
+                    if key in seen_user_product or key in seen_user_product_global:
                         duplicate_skip_count += 1
-                        # Mark duplicate as sent so it doesn't get retried in the next loop
+                        # Remove duplicate so it doesn't get retried in the next loop
                         try:
-                            await self.db.mark_notification_sent(notification["id"])
+                            await self.db.delete_notification(notification["id"])
                         except Exception as e:
                             logger.error(
-                                f"Failed to mark duplicate notification {notification['id']} as sent to prevent retry loops: {e}"
+                                f"Failed to delete duplicate notification {notification['id']} to prevent retry loops: {e}"
                             )
                         continue
                     
                     seen_user_product.add(key)
+                    seen_user_product_global.add(key)
                     
                     if user_id not in user_notifications:
                         user_notifications[user_id] = []
