@@ -1007,8 +1007,12 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 INSERT INTO notification_queue (user_id, product_id, created_at)
-                VALUES (?, ?, ?)
-            """, (user_id, product_id, datetime.now()))
+                SELECT ?, ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM notification_queue 
+                    WHERE user_id = ? AND product_id = ? AND sent_at IS NULL
+                )
+            """, (user_id, product_id, datetime.now(), user_id, product_id))
             await db.commit()
     
     async def mark_notification_sent(self, notification_id: int):
@@ -1676,5 +1680,4 @@ async def clear_database_caches():
 
 
     
-
 
