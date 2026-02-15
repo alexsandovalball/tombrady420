@@ -365,6 +365,7 @@ class NotificationService:
             rate_limited_users = set()  # Track users who hit rate limits in this run
             # Tracks duplicates across batches for this processing run
             seen_user_product_global = set()
+            # Queue processing runs as a single task; DB unique constraint prevents new duplicates
             
             # Process notifications in batches until queue is empty
             while True:

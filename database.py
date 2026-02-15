@@ -1048,10 +1048,14 @@ class Database:
                     logger.debug(f"Notification for user {user_id}, product {product_id} already exists in queue")
                     return
             
-            await db.execute("""
-                INSERT INTO notification_queue (user_id, product_id, created_at)
-                VALUES (?, ?, ?)
-            """, (user_id, product_id, datetime.now()))
+            try:
+                await db.execute("""
+                    INSERT INTO notification_queue (user_id, product_id, created_at)
+                    VALUES (?, ?, ?)
+                """, (user_id, product_id, datetime.now()))
+            except Exception as e:
+                # Unique index protects against concurrent duplicate inserts
+                logger.debug(f"Duplicate notification insert ignored for user {user_id}, product {product_id}: {e}")
             await db.commit()
     
     async def mark_notification_sent(self, notification_id: int):
