@@ -202,23 +202,31 @@ class NotificationService:
                 reply_markup=keyboard
             )
         elif file_type == "animation":
-            await bot_app.bot.send_animation(
-                chat_id=user_id,
-                animation=file_id,
-                caption=caption,
-                parse_mode=parse_mode,
-                reply_markup=keyboard
-            )
-            result = True  # Assume success for non-safe methods
+            try:
+                await bot_app.bot.send_animation(
+                    chat_id=user_id,
+                    animation=file_id,
+                    caption=caption,
+                    parse_mode=parse_mode,
+                    reply_markup=keyboard
+                )
+                result = True  # Mark success if no exception
+            except Exception:
+                # Let caller handle the exception
+                raise
         elif file_type == "document":
-            await bot_app.bot.send_document(
-                chat_id=user_id,
-                document=file_id,
-                caption=caption,
-                parse_mode=parse_mode,
-                reply_markup=keyboard
-            )
-            result = True  # Assume success for non-safe methods
+            try:
+                await bot_app.bot.send_document(
+                    chat_id=user_id,
+                    document=file_id,
+                    caption=caption,
+                    parse_mode=parse_mode,
+                    reply_markup=keyboard
+                )
+                result = True  # Mark success if no exception
+            except Exception:
+                # Let caller handle the exception
+                raise
         else:
             # Unsupported media type
             return False
@@ -919,9 +927,16 @@ class NotificationService:
                     reply_markup=keyboard
                 )
                 
-                # If safe_send_message returns None, the user was already handled (deleted if needed)
+                # If safe_send_message returns None, there was a failure
+                # The safe wrapper already handles user deletion for permanent failures
+                # We only mark as sent to prevent retries if user no longer exists
                 if result is None:
-                    await self.db.mark_notification_sent(notification_id)
+                    # Check if user still exists - if not, they were deleted (permanent failure)
+                    user_exists = await self.db.user_exists(user_id)
+                    if not user_exists:
+                        # User was deleted, mark as sent to prevent retries
+                        await self.db.mark_notification_sent(notification_id)
+                    # Otherwise, don't mark as sent - allow retry for temporary failures
                     return False
             
             # Mark as sent
