@@ -15,7 +15,7 @@ from telegram.error import TelegramError, Forbidden, BadRequest
 from database import Database
 from utils.categories import get_category_display_name, get_subcategory_display_name, NOTIFICATION_EXCLUDED_CATEGORIES
 from utils.helpers import get_admin_ids, get_bot_specific_file_id
-from utils.safe_send import safe_send_message, safe_send_photo, safe_send_video, handle_send_exception
+from utils.safe_send import safe_send_message, safe_send_photo, safe_send_video, safe_send_animation, safe_send_document, handle_send_exception
 from translations.translator import translate_text_async
 from configs.config import Config
 import emojis
@@ -202,31 +202,23 @@ class NotificationService:
                 reply_markup=keyboard
             )
         elif file_type == "animation":
-            try:
-                await bot_app.bot.send_animation(
-                    chat_id=user_id,
-                    animation=file_id,
-                    caption=caption,
-                    parse_mode=parse_mode,
-                    reply_markup=keyboard
-                )
-                result = True  # Mark success if no exception
-            except Exception:
-                # Let caller handle the exception
-                raise
+            result = await safe_send_animation(
+                bot_app.bot,
+                user_id,
+                animation=file_id,
+                caption=caption,
+                parse_mode=parse_mode,
+                reply_markup=keyboard
+            )
         elif file_type == "document":
-            try:
-                await bot_app.bot.send_document(
-                    chat_id=user_id,
-                    document=file_id,
-                    caption=caption,
-                    parse_mode=parse_mode,
-                    reply_markup=keyboard
-                )
-                result = True  # Mark success if no exception
-            except Exception:
-                # Let caller handle the exception
-                raise
+            result = await safe_send_document(
+                bot_app.bot,
+                user_id,
+                document=file_id,
+                caption=caption,
+                parse_mode=parse_mode,
+                reply_markup=keyboard
+            )
         else:
             # Unsupported media type
             return False

@@ -990,7 +990,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             
             # Check if user is admin
             if not is_admin(update.effective_user.id):
-                await query.answer("❌ Only admins can recategorize products.", show_alert=True)
+                await query.answer("❌ Only admins can categorize products.", show_alert=True)
                 return
             
             # Show category selection menu (same as initial categorization)
