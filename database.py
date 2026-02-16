@@ -40,10 +40,10 @@ class Database:
         return bot_username.lower() if bot_username else None
 
     @staticmethod
-    def _normalize_excluded_categories(categories: List[Any]) -> List[str]:
+    def _normalize_excluded_categories(excluded_categories: List[Any]) -> List[str]:
         """Normalize category names for exclusion filtering."""
         normalized: List[str] = []
-        for cat in categories:
+        for cat in excluded_categories:
             if isinstance(cat, str):
                 stripped = cat.strip()
                 if stripped:
@@ -52,14 +52,14 @@ class Database:
     
     @staticmethod
     async def _count_all_products(db: aiosqlite.Connection) -> int:
-        """Count all products."""
+        """Count all products without applying any category filters."""
         async with db.execute("SELECT COUNT(*) FROM products") as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
     
     @staticmethod
     async def _get_all_products_ordered(db: aiosqlite.Connection) -> List[Dict[str, Any]]:
-        """Return all products ordered by creation date."""
+        """Return all products ordered by creation date (newest first)."""
         async with db.execute("SELECT * FROM products ORDER BY created_at DESC") as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
