@@ -128,8 +128,8 @@ async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # First confirmation
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⚠️ Yes, I want to nuke", callback_data="nuke_confirm1")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="nuke_cancel")]
+        [InlineKeyboardButton(ui_strings.BTN_CONFIRM_NUKE, callback_data="nuke_confirm1")],
+        [InlineKeyboardButton(ui_strings.BTN_CANCEL, callback_data="nuke_cancel")]
     ])
     
     total_count = await db.count_products()
@@ -328,11 +328,11 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
             # Add block/unblock button
             if is_blocked:
                 row_buttons.append(
-                    InlineKeyboardButton("✅ Unblock", callback_data=f"unblock_user|{uid}|{page}{bot_param}")
+                    InlineKeyboardButton(ui_strings.BTN_UNBLOCK_USER, callback_data=f"unblock_user|{uid}|{page}{bot_param}")
                 )
             else:
                 row_buttons.append(
-                    InlineKeyboardButton("🚫 Block", callback_data=f"block_user|{uid}|{page}{bot_param}")
+                    InlineKeyboardButton(ui_strings.BTN_BLOCK_USER, callback_data=f"block_user|{uid}|{page}{bot_param}")
                 )
             
             keyboard_buttons.append(row_buttons)
@@ -864,8 +864,8 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
             # Show confirmation with inline buttons
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Confirm & Send", callback_data=f"broadcast_confirm_single|{target_user_id}")],
-                [InlineKeyboardButton("❌ Cancel", callback_data="broadcast_cancel")]
+                [InlineKeyboardButton(ui_strings.BTN_CONFIRM_SEND, callback_data=f"broadcast_confirm_single|{target_user_id}")],
+                [InlineKeyboardButton(ui_strings.BTN_CANCEL, callback_data="broadcast_cancel")]
             ])
             
             # Truncate message before escaping
@@ -909,8 +909,8 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
             # Show confirmation with inline buttons
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
             keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Confirm & Broadcast", callback_data="broadcast_confirm_all")],
-                [InlineKeyboardButton("❌ Cancel", callback_data="broadcast_cancel")]
+                [InlineKeyboardButton(ui_strings.BTN_CONFIRM_BROADCAST, callback_data="broadcast_confirm_all")],
+                [InlineKeyboardButton(ui_strings.BTN_CANCEL, callback_data="broadcast_cancel")]
             ])
             
             # Truncate message before escaping
@@ -1377,7 +1377,7 @@ async def prunebots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Create confirmation keyboard
                 keyboard = InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ Yes, Prune Now", callback_data="confirm_prunebots")],
-                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_prunebots")]
+                    [InlineKeyboardButton(ui_strings.BTN_CANCEL, callback_data="cancel_prunebots")]
                 ])
                 
                 # Escape bot usernames for Markdown

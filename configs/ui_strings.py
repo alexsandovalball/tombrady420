@@ -55,6 +55,14 @@ BTN_SELECT_LANGUAGE = f"{emojis.LANGUAGE} Select Your Language"
 # Admin buttons
 BTN_SEND_NOTIFICATIONS = f"{emojis.OK} Yes, send notifications"
 BTN_SKIP_NOTIFICATIONS = f"{emojis.ERROR} No, skip notifications"
+BTN_CONFIRM_SEND = f"{emojis.OK} Confirm & Send"
+BTN_CONFIRM_BROADCAST = f"{emojis.OK} Confirm & Broadcast"
+BTN_CONFIRM_NUKE = f"{emojis.WARNING} Yes, I want to nuke"
+BTN_CONFIRM_BLOCK = f"{emojis.OK} Yes, Block User"
+BTN_CONFIRM_UNSUBSCRIBE = f"{emojis.OK} Yes, Unsubscribe"
+BTN_UNBLOCK_USER = f"{emojis.OK} Unblock"
+BTN_BLOCK_USER = f"{emojis.BLOCK} Block"
+BTN_RECATEGORIZE = f"{emojis.REFRESH} Recategorize"
 
 # ============================================================================
 # STATUS MESSAGES
@@ -67,6 +75,14 @@ MSG_NUKE_CANCELLED = f"{emojis.OK} Nuke cancelled. No products were deleted."
 MSG_BROADCAST_CANCELLED = f"{emojis.ERROR} Broadcast cancelled."
 MSG_NOTIFICATIONS_SENT = f"{emojis.OK} **Notifications sent!**"
 MSG_CATEGORIZATION_COMPLETE = f"{emojis.OK} **Categorization complete**"
+MSG_PRODUCT_DELETED = f"{emojis.OK} Product deleted successfully."
+MSG_USER_BLOCKED = f"{emojis.BLOCK} User blocked successfully."
+MSG_USER_UNBLOCKED = f"{emojis.OK} User has been unblocked."
+MSG_USER_DELETED = f"{emojis.OK} User deleted successfully."
+MSG_BLOCK_CANCELLED = f"{emojis.OK} Block cancelled."
+MSG_SUBSCRIBED = f"{emojis.OK} You have been subscribed to product notifications."
+MSG_UNSUBSCRIBED = f"{emojis.OK} You have been unsubscribed from product notifications."
+MSG_NO_NOTIFICATIONS = f"{emojis.MUTED_BELL} No notifications will be sent."
 
 # Error messages
 MSG_ERROR = f"{emojis.ERROR} Error"
@@ -74,13 +90,23 @@ MSG_INVALID_LANGUAGE = f"{emojis.ERROR} Invalid language"
 MSG_MESSAGE_NOT_FOUND = f"{emojis.ERROR} Message not found. Please start over."
 MSG_SEND_FAILED = f"{emojis.ERROR} Failed to send message. Check logs for details."
 MSG_DELETE_ERROR = f"{emojis.ERROR} An error occurred while deleting products. Check logs for details."
+MSG_PRODUCT_NOT_FOUND = f"{emojis.ERROR} Product not found."
+MSG_ERROR_OCCURRED = f"{emojis.ERROR} An error occurred."
+
+# Admin-only messages
 MSG_ADMIN_ONLY = f"{emojis.ERROR} Only admins can perform this action."
 MSG_ADMIN_ONLY_CATEGORIZE = f"{emojis.ERROR} Only admins can categorize products."
 MSG_ADMIN_ONLY_NOTIFICATIONS = f"{emojis.ERROR} Only admins can manage notifications."
 MSG_ADMIN_ONLY_NUKE = f"{emojis.ERROR} Only admins can nuke."
+MSG_ADMIN_ONLY_BLOCK = f"{emojis.ERROR} Only admins can block users."
+MSG_ADMIN_ONLY_UNBLOCK = f"{emojis.ERROR} Only admins can unblock users."
+MSG_ADMIN_ONLY_DELETE = f"{emojis.ERROR} Only admins can delete users."
+MSG_ADMIN_ONLY_MANAGE = f"{emojis.ERROR} Only admins can manage users."
+MSG_ADMIN_ONLY_VIEW_USERS = f"{emojis.ERROR} Only admins can view users."
 
 # Warning messages
 MSG_FINAL_WARNING = f"{emojis.WARNING} **FINAL WARNING**"
+MSG_ARE_YOU_SURE = f"{emojis.WARNING} Are you sure?"
 
 # ============================================================================
 # MENU LABELS
@@ -108,10 +134,14 @@ MSG_NO_RESULTS = f"{emojis.INFO} No results found"
 # NOTIFICATION MESSAGES
 # ============================================================================
 
+MSG_NOTIFICATION_TOGGLE_ON = f"{emojis.BELL} ON"
+MSG_NOTIFICATION_TOGGLE_OFF = f"{emojis.MUTED_BELL} OFF"
+
+
 def format_notification_prompt(product_name: str) -> str:
     """Format the notification sending prompt for a product."""
     return (
-        f"{emojis.BELL} **Send Notifications?**\n\n"
+        f"{emojis.BROADCAST} **Send Notifications?**\n\n"
         f"Product: *{product_name}*\n\n"
         "Would you like to notify subscribed users about this product?"
     )

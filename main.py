@@ -20,6 +20,7 @@ from telegram.error import TelegramError, BadRequest
 from configs.config import Config, ConfigError
 from database import Database
 import emojis
+from configs import ui_strings
 from handlers.start import start_command, subscribe_command, unsubscribe_command
 from handlers.menu import menu_command, show_catalog_page, handle_catalog_pagination
 from handlers.search import handle_search, show_search_results, handle_search_pagination
@@ -484,7 +485,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 )
                 logger.info(f"New user {user_id} selected language: {lang_code}")
             else:
-                await query.answer("❌ Invalid language", show_alert=True)
+                await query.answer(ui_strings.MSG_INVALID_LANGUAGE, show_alert=True)
             return
     
     # Handle noop (page indicator button)
@@ -493,7 +494,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     
     # Handle broadcast confirmations
     if callback_data == "broadcast_cancel":
-        await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id, text="❌ Broadcast cancelled.")
+        await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id, text=ui_strings.MSG_BROADCAST_CANCELLED)
         context.user_data.clear()
         return
     
@@ -505,7 +506,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             message_text = context.user_data.get('broadcast_message')
             
             if not message_text:
-                await query.answer("❌ Message not found. Please start over.", show_alert=True)
+                await query.answer(ui_strings.MSG_MESSAGE_NOT_FOUND, show_alert=True)
                 context.user_data.clear()
                 return
             
@@ -527,7 +528,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 )
                 logger.info(f"Admin {user_id} sent message to user {target_user_id}")
             else:
-                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id, text="❌ Failed to send message. Check logs for details.")
+                await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id, text=ui_strings.MSG_SEND_FAILED)
             
             context.user_data.clear()
         return
@@ -537,7 +538,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         message_text = context.user_data.get('broadcast_message')
         
         if not message_text:
-            await query.answer("❌ Message not found. Please start over.", show_alert=True)
+            await query.answer(ui_strings.MSG_MESSAGE_NOT_FOUND, show_alert=True)
             context.user_data.clear()
             return
         
@@ -578,14 +579,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     
     # Handle nuke confirmations
     if callback_data == "nuke_cancel":
-        await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id, text="✅ Nuke cancelled. No products were deleted.")
+        await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id, text=ui_strings.MSG_NUKE_CANCELLED)
         return
     
     if callback_data == "nuke_confirm1":
         # Second confirmation
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("💥 YES, NUKE EVERYTHING", callback_data="nuke_confirm2")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="nuke_cancel")]
+            [InlineKeyboardButton(ui_strings.BTN_CANCEL, callback_data="nuke_cancel")]
         ])
         
         await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
@@ -601,7 +602,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     if callback_data == "nuke_confirm2":
         # Execute nuke
         if not is_admin(query.from_user.id):
-            await query.answer("❌ Only admins can nuke.", show_alert=True)
+            await query.answer(ui_strings.MSG_ADMIN_ONLY_NUKE, show_alert=True)
             return
         
         try:
@@ -657,7 +658,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 # Check if user is admin
                 if not is_admin(update.effective_user.id):
-                    await query.answer("❌ Only admins can categorize products.", show_alert=True)
+                    await query.answer(ui_strings.MSG_ADMIN_ONLY_CATEGORIZE, show_alert=True)
                     return
                 
                 # Check if this is a main category or we need subcategory
@@ -713,7 +714,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                         translated_category = get_category_display_name(category)
                     
                     keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("✅ Confirm", callback_data=f"savecat|{product_id}|{category}|")],
+                        [InlineKeyboardButton(ui_strings.BTN_CONFIRM, callback_data=f"savecat|{product_id}|{category}|")],
                         [InlineKeyboardButton("🔙 Back to Categories", callback_data=f"catback|{product_id}")]
                     ])
                     
@@ -734,7 +735,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 # Check if user is admin
                 if not is_admin(update.effective_user.id):
-                    await query.answer("❌ Only admins can categorize products.", show_alert=True)
+                    await query.answer(ui_strings.MSG_ADMIN_ONLY_CATEGORIZE, show_alert=True)
                     return
                 
                 # Show category selection menu again
@@ -764,7 +765,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 # Check if user is admin
                 if not is_admin(update.effective_user.id):
-                    await query.answer("❌ Only admins can categorize products.", show_alert=True)
+                    await query.answer(ui_strings.MSG_ADMIN_ONLY_CATEGORIZE, show_alert=True)
                     return
                 
                 # Get user language preference
@@ -778,7 +779,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     translated_category = get_category_display_name(category)
                 
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ Confirm", callback_data=f"savecat|{product_id}|{category}|")],
+                    [InlineKeyboardButton(ui_strings.BTN_CONFIRM, callback_data=f"savecat|{product_id}|{category}|")],
                     [InlineKeyboardButton("🔙 Back", callback_data=f"setcat|{product_id}|{category}")]
                 ])
                 
@@ -817,7 +818,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 # Confirmation message
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ Confirm", callback_data=f"savecat|{product_id}|{category}|{subcategory}")],
+                    [InlineKeyboardButton(ui_strings.BTN_CONFIRM, callback_data=f"savecat|{product_id}|{category}|{subcategory}")],
                     [InlineKeyboardButton("🔙 Back", callback_data=f"setcat|{product_id}|{category}")]
                 ])
                 
@@ -859,8 +860,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 # Ask admin if they want to send notifications for this product
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ Yes, send notifications", callback_data=f"send_notif_yes|{product_id}")],
-                    [InlineKeyboardButton("❌ No, skip notifications", callback_data=f"send_notif_no|{product_id}")]
+                    [InlineKeyboardButton(ui_strings.BTN_SEND_NOTIFICATIONS, callback_data=f"send_notif_yes|{product_id}")],
+                    [InlineKeyboardButton(ui_strings.BTN_SKIP_NOTIFICATIONS, callback_data=f"send_notif_no|{product_id}")]
                 ])
                 
                 await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
@@ -882,7 +883,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 # Check if user is admin
                 if not is_admin(update.effective_user.id):
-                    await query.answer("❌ Only admins can manage notifications.", show_alert=True)
+                    await query.answer(ui_strings.MSG_ADMIN_ONLY_NOTIFICATIONS, show_alert=True)
                     return
                 
                 # Send notifications
@@ -908,7 +909,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
                 # Check if user is admin
                 if not is_admin(update.effective_user.id):
-                    await query.answer("❌ Only admins can manage notifications.", show_alert=True)
+                    await query.answer(ui_strings.MSG_ADMIN_ONLY_NOTIFICATIONS, show_alert=True)
                     return
                 
                 # Skip notifications
@@ -990,7 +991,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             
             # Check if user is admin
             if not is_admin(update.effective_user.id):
-                await query.answer("❌ Only admins can recategorize products.", show_alert=True)
+                await query.answer(ui_strings.MSG_ADMIN_ONLY_CATEGORIZE, show_alert=True)
                 return
             
             # Show category selection menu (same as initial categorization)
@@ -1004,7 +1005,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             
             # Add cancel button
             keyboard_buttons.append([
-                InlineKeyboardButton("❌ Cancel", callback_data=f"recat_cancel|{product_id}")
+                InlineKeyboardButton(ui_strings.BTN_CANCEL, callback_data=f"recat_cancel|{product_id}")
             ])
             
             keyboard = InlineKeyboardMarkup(keyboard_buttons)
@@ -1025,7 +1026,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             product_id = int(parts[1])
             
             if not is_admin(update.effective_user.id):
-                await query.answer("❌ Only admins can manage products.", show_alert=True)
+                await query.answer(ui_strings.MSG_ADMIN_ONLY_MANAGE, show_alert=True)
                 return
             
             await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
@@ -1035,7 +1036,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Handle user notification toggle (admin only)
         elif parts[0] == "toggle_notif":
             if not is_admin(update.effective_user.id):
-                await query.answer("❌ Only admins can manage notifications.", show_alert=True)
+                await query.answer(ui_strings.MSG_ADMIN_ONLY_NOTIFICATIONS, show_alert=True)
                 return
             
             if len(parts) >= 2:
@@ -1058,7 +1059,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     bot_param = f"|{bot_username}" if bot_username else ""
                     confirmation_keyboard = InlineKeyboardMarkup([
                         [InlineKeyboardButton(f"✅ Yes, {action_text.title()} Notifications", callback_data=f"confirm_toggle_notif|{target_user_id}|{page}|{int(is_subscribed)}{bot_param}")],
-                        [InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_toggle_notif|{page}{bot_param}")]
+                        [InlineKeyboardButton(ui_strings.BTN_CANCEL, callback_data=f"cancel_toggle_notif|{page}{bot_param}")]
                     ])
                     await query.edit_message_reply_markup(reply_markup=confirmation_keyboard)
                 except Exception as e:
@@ -1075,7 +1076,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Handle confirm toggle notifications
         elif parts[0] == "confirm_toggle_notif":
             if not is_admin(update.effective_user.id):
-                await query.answer("❌ Only admins can manage notifications.", show_alert=True)
+                await query.answer(ui_strings.MSG_ADMIN_ONLY_NOTIFICATIONS, show_alert=True)
                 return
             
             if len(parts) >= 3:
@@ -1099,7 +1100,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Handle cancel toggle notifications
         elif parts[0] == "cancel_toggle_notif":
             if not is_admin(update.effective_user.id):
-                await query.answer("❌ Only admins can manage notifications.", show_alert=True)
+                await query.answer(ui_strings.MSG_ADMIN_ONLY_NOTIFICATIONS, show_alert=True)
                 return
             
             if len(parts) >= 1:
@@ -1175,7 +1176,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Show confirmation before unsubscribing
                 keyboard = InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ Yes, Unsubscribe", callback_data="confirm_unsubscribe")],
-                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel_unsubscribe")]
+                    [InlineKeyboardButton(ui_strings.BTN_CANCEL, callback_data="cancel_unsubscribe")]
                 ])
                 
                 await query.edit_message_reply_markup(reply_markup=keyboard)
@@ -1241,7 +1242,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             # Show confirmation before unsubscribing
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ Yes, Unsubscribe", callback_data="confirm_unsubscribe")],
-                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_unsubscribe")]
+                [InlineKeyboardButton(ui_strings.BTN_CANCEL, callback_data="cancel_unsubscribe")]
             ])
             
             await query.edit_message_reply_markup(reply_markup=keyboard)
@@ -1253,7 +1254,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Handle block user
         elif parts[0] == "block_user":
             if not is_admin(update.effective_user.id):
-                await query.answer("❌ Only admins can block users.", show_alert=True)
+                await query.answer(ui_strings.MSG_ADMIN_ONLY_BLOCK, show_alert=True)
                 return
             
             if len(parts) >= 2:
@@ -1278,7 +1279,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     bot_param = f"|{bot_username}" if bot_username else ""
                     confirmation_keyboard = InlineKeyboardMarkup([
                         [InlineKeyboardButton("✅ Yes, Block User", callback_data=f"confirm_block|{target_user_id}|{page}{bot_param}")],
-                        [InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_block|{page}{bot_param}")]
+                        [InlineKeyboardButton(ui_strings.BTN_CANCEL, callback_data=f"cancel_block|{page}{bot_param}")]
                     ])
                     await query.edit_message_reply_markup(reply_markup=confirmation_keyboard)
                 except Exception as e:
@@ -1294,7 +1295,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Handle confirm block user
         elif parts[0] == "confirm_block":
             if not is_admin(update.effective_user.id):
-                await query.answer("❌ Only admins can block users.", show_alert=True)
+                await query.answer(ui_strings.MSG_ADMIN_ONLY_BLOCK, show_alert=True)
                 return
             
             if len(parts) >= 2:
@@ -1333,7 +1334,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Handle unblock user
         elif parts[0] == "unblock_user":
             if not is_admin(update.effective_user.id):
-                await query.answer("❌ Only admins can unblock users.", show_alert=True)
+                await query.answer(ui_strings.MSG_ADMIN_ONLY_UNBLOCK, show_alert=True)
                 return
             
             if len(parts) >= 2:
@@ -1407,7 +1408,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Handle delete single user
         elif parts[0] == "deleteuser":
             if not is_admin(update.effective_user.id):
-                await query.answer("❌ Only admins can delete users.", show_alert=True)
+                await query.answer(ui_strings.MSG_ADMIN_ONLY_DELETE, show_alert=True)
                 return
             
             if len(parts) >= 4:
@@ -1428,7 +1429,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 # Create confirmation keyboard
                 keyboard = InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ Yes, Delete", callback_data=f"confirm_deleteuser|{target_user_id}|{bot_username}|{page}")],
-                    [InlineKeyboardButton("❌ Cancel", callback_data=f"viewbotusers|{bot_username}|{page}")]
+                    [InlineKeyboardButton(ui_strings.BTN_CANCEL, callback_data=f"viewbotusers|{bot_username}|{page}")]
                 ])
                 
                 await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
@@ -1449,7 +1450,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Handle confirm delete user
         elif parts[0] == "confirm_deleteuser":
             if not is_admin(update.effective_user.id):
-                await query.answer("❌ Only admins can delete users.", show_alert=True)
+                await query.answer(ui_strings.MSG_ADMIN_ONLY_DELETE, show_alert=True)
                 return
             
             if len(parts) >= 2:
@@ -1478,7 +1479,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Handle delete all users from a bot
         elif parts[0] == "deleteallbot":
             if not is_admin(update.effective_user.id):
-                await query.answer("❌ Only admins can delete users.", show_alert=True)
+                await query.answer(ui_strings.MSG_ADMIN_ONLY_DELETE, show_alert=True)
                 return
             
             if len(parts) >= 2:
@@ -1515,7 +1516,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Handle confirm delete all users from bot
         elif parts[0] == "confirm_deleteallbot":
             if not is_admin(update.effective_user.id):
-                await query.answer("❌ Only admins can delete users.", show_alert=True)
+                await query.answer(ui_strings.MSG_ADMIN_ONLY_DELETE, show_alert=True)
                 return
             
             if len(parts) >= 2:
