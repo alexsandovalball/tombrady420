@@ -496,7 +496,12 @@ class Database:
                     return row[0] if row else 0
             
             # Normalize categories for case/whitespace-insensitive comparison
-            normalized_categories = [cat.upper() for cat in excluded_categories]
+            normalized_categories = [cat.upper() for cat in excluded_categories if cat]
+            if not normalized_categories:
+                async with db.execute("SELECT COUNT(*) FROM products") as cursor:
+                    row = await cursor.fetchone()
+                    return row[0] if row else 0
+            
             placeholders = ','.join('?' * len(normalized_categories))
             query = f"""
                 SELECT COUNT(*) FROM products 
@@ -552,7 +557,12 @@ class Database:
                     return [dict(row) for row in rows]
             
             # Normalize categories for case/whitespace-insensitive comparison
-            normalized_categories = [cat.upper() for cat in excluded_categories]
+            normalized_categories = [cat.upper() for cat in excluded_categories if cat]
+            if not normalized_categories:
+                async with db.execute("SELECT * FROM products ORDER BY created_at DESC") as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(row) for row in rows]
+            
             placeholders = ','.join('?' * len(normalized_categories))
             query = f"""
                 SELECT * FROM products 
