@@ -156,68 +156,92 @@ async def send_media_message(
     reply_markup=None
 ):
     """
-    Send a media message based on file type.
+    Send a media message with robust error handling and fallback.
+    Uses safe wrappers for consistent error handling and rate limiting.
     """
+    from utils.safe_send import (
+        safe_send_photo, safe_send_video, safe_send_animation,
+        safe_send_document, safe_send_message
+    )
+    
     try:
+        result = None
         if file_type == "photo":
-            await context.bot.send_photo(
-                chat_id=chat_id,
+            result = await safe_send_photo(
+                context.bot,
+                chat_id,
                 photo=file_id,
                 caption=caption,
-                reply_markup=reply_markup,
-                parse_mode=None
+                parse_mode=None,
+                reply_markup=reply_markup
             )
         elif file_type == "video":
-            await context.bot.send_video(
-                chat_id=chat_id,
+            result = await safe_send_video(
+                context.bot,
+                chat_id,
                 video=file_id,
                 caption=caption,
-                reply_markup=reply_markup,
-                parse_mode=None
+                parse_mode=None,
+                reply_markup=reply_markup
             )
         elif file_type == "animation":
-            await context.bot.send_animation(
-                chat_id=chat_id,
+            result = await safe_send_animation(
+                context.bot,
+                chat_id,
                 animation=file_id,
                 caption=caption,
-                reply_markup=reply_markup,
-                parse_mode=None
+                parse_mode=None,
+                reply_markup=reply_markup
             )
         elif file_type in ["document", "audio", "voice", "video_note"]:
-            await context.bot.send_document(
-                chat_id=chat_id,
+            result = await safe_send_document(
+                context.bot,
+                chat_id,
                 document=file_id,
                 caption=caption,
-                reply_markup=reply_markup,
-                parse_mode=None
+                parse_mode=None,
+                reply_markup=reply_markup
             )
         else:
             # Fallback to text message
-            await context.bot.send_message(
-                chat_id=chat_id,
+            result = await safe_send_message(
+                context.bot,
+                chat_id,
                 text=caption or "Media",
+                parse_mode=None,
                 reply_markup=reply_markup
             )
+        
+        # If safe wrapper returned None, try text fallback
+        if result is None:
+            fallback_text = caption or 'Media'
+            fallback_text += f"\n\n{emojis.WARNING} Media temporarily unavailable."
+            
+            await safe_send_message(
+                context.bot,
+                chat_id,
+                text=fallback_text,
+                parse_mode=None,
+                reply_markup=reply_markup
+            )
+            
     except Exception as e:
-        error_msg = str(e)
         logger.error(f"Error sending media message: {e}")
         
-        # Provide helpful error messages based on the error type
+        # Final fallback to text message
         fallback_text = caption or 'Media'
-        if "Wrong file identifier" in error_msg or "file_id" in error_msg.lower():
-            fallback_text += (
-                "\n\n⚠️ Media temporarily unavailable (file ID issue).\n"
-                "If this persists, please report this product to an admin."
-            )
-        else:
-            fallback_text += f"\n\n⚠️ Error displaying media."
+        fallback_text += f"\n\n{emojis.WARNING} Error displaying media."
         
-        # Fallback to text message
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=fallback_text,
-            reply_markup=reply_markup
-        )
+        try:
+            await safe_send_message(
+                context.bot,
+                chat_id,
+                text=fallback_text,
+                parse_mode=None,
+                reply_markup=reply_markup
+            )
+        except Exception as fallback_error:
+            logger.error(f"Failed to send fallback message: {fallback_error}")
 
 
 async def get_bot_specific_file_id(

@@ -7,6 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMe
 from telegram.ext import ContextTypes
 from database import Database
 from utils.helpers import send_media_message, is_admin, get_bot_specific_file_id
+from utils.safe_send import safe_send_message
 from utils.pagination import paginate_items
 from utils.categories import format_category_info
 from translations.translator import translate_text_async, get_translated_string_async
@@ -282,9 +283,11 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 dm_message = await get_translated_string_async("dm_to_order", user_lang, contact=order_contact)
                 
                 # Send keyboard in a separate message
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
+                await safe_send_message(
+                    context.bot,
+                    update.effective_chat.id,
                     text=dm_message,
+                    parse_mode=None,
                     reply_markup=keyboard
                 )
                 
@@ -335,9 +338,11 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         dm_message = await get_translated_string_async("dm_to_order", user_lang, contact=order_contact)
         
         # Send DM message with keyboard separately for consistency
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
+        await safe_send_message(
+            context.bot,
+            update.effective_chat.id,
             text=dm_message,
+            parse_mode=None,
             reply_markup=keyboard
         )
         
