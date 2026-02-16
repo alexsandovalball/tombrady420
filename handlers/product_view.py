@@ -8,7 +8,6 @@ from telegram.ext import ContextTypes
 from database import Database
 from utils.helpers import send_media_message, is_admin, get_bot_specific_file_id
 from utils.safe_send import safe_send_message
-from configs import ui_strings
 from utils.pagination import paginate_items
 from utils.categories import format_category_info
 from translations.translator import translate_text_async, get_translated_string_async
@@ -24,7 +23,7 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         
         if not product:
             await update.callback_query.answer(
-                ui_strings.MSG_PRODUCT_NOT_FOUND,
+                "❌ Product not found.",
                 show_alert=True
             )
             return
@@ -352,7 +351,7 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
     except Exception as e:
         logger.error(f"Error showing product: {e}")
         await update.callback_query.answer(
-            ui_strings.MSG_ERROR_OCCURRED,
+            "❌ An error occurred while loading the product.",
             show_alert=True
         )
 

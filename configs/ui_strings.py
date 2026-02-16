@@ -131,6 +131,13 @@ MSG_SEARCH_RESULTS = f"{emojis.SEARCH} Search Results"
 MSG_NO_RESULTS = f"{emojis.INFO} No results found"
 
 # ============================================================================
+# MEDIA MESSAGES
+# ============================================================================
+
+MSG_MEDIA_UNAVAILABLE = f"{emojis.WARNING} Media temporarily unavailable."
+MSG_MEDIA_ERROR = f"{emojis.WARNING} Error displaying media."
+
+# ============================================================================
 # NOTIFICATION MESSAGES
 # ============================================================================
 

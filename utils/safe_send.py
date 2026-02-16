@@ -168,29 +168,8 @@ async def _execute_with_fallback(
         # Check if this is an entity parsing error that we can fix
         if text_or_caption and ("can't find end of the entity" in error_msg or "can't parse entities" in error_msg):
             logger.warning(f"[Safe Send] Entity parsing error for {operation} to chat {chat_id}, attempting fallback")
-            
-            # Fallback stage 1: Try with escaped text
-            if parse_mode:
-                try:
-                    escaped_text = escape_text_for_parse_mode(text_or_caption, parse_mode)
-                    logger.debug(f"[Safe Send] Fallback stage 1: escaped text with parse_mode={parse_mode}")
-                    
-                    # Create new callable with escaped text
-                    def make_escaped_call():
-                        # The telegram_call is already bound, we need to reconstruct with escaped text
-                        # This is handled by the wrapper functions
-                        raise NotImplementedError("Escaped call should be handled by wrapper")
-                    
-                    # Return None to signal wrapper to try escaped text
-                    return None
-                    
-                except Exception as retry_error:
-                    logger.warning(f"[Safe Send] Escaped text failed for {operation} to chat {chat_id}, "
-                                 f"trying plain text: {retry_error}")
-            
-            # Fallback stage 2: Try with no parse_mode (plain text)
-            logger.debug(f"[Safe Send] Fallback stage 2: plain text (no parse_mode)")
-            return None  # Signal wrapper to try plain text
+            # Return None to signal wrapper to try escaped/plain text fallback
+            return None
         else:
             # Not a parsing error, check if user should be removed
             await handle_send_exception(e, chat_id, operation)
@@ -249,9 +228,11 @@ async def safe_send_message(
             logger.warning(f"[Safe Send] Rate limit delay too long ({e.retry_after}s) for send_message to chat {chat_id}")
             return None
         
-        delay = e.retry_after + random.uniform(-JITTER_RANGE, JITTER_RANGE)
-        logger.info(f"[Safe Send] Rate limited, retrying send_message to chat {chat_id} in {delay:.2f}s")
-        await asyncio.sleep(delay)
+        delay = max(MIN_RETRY_DELAY, e.retry_after)
+        jitter = delay * JITTER_RANGE * (2 * random.random() - 1)  # +/- JITTER_RANGE as percentage
+        total_delay = max(MIN_RETRY_DELAY, delay + jitter)  # Ensure delay is always >= MIN_RETRY_DELAY
+        logger.info(f"[Safe Send] Rate limited, retrying send_message to chat {chat_id} in {total_delay:.2f}s")
+        await asyncio.sleep(total_delay)
         
         try:
             return await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, **kwargs)
@@ -358,8 +339,10 @@ async def safe_edit_message_text(
             logger.warning(f"[Safe Send] Rate limit delay too long ({e.retry_after}s) for edit_message_text")
             return None
         
-        delay = e.retry_after + random.uniform(-JITTER_RANGE, JITTER_RANGE)
-        logger.info(f"[Safe Send] Rate limited, retrying edit_message_text in {delay:.2f}s")
+        delay = max(MIN_RETRY_DELAY, e.retry_after)
+        jitter = delay * JITTER_RANGE * (2 * random.random() - 1)  # +/- JITTER_RANGE as percentage
+        total_delay = max(MIN_RETRY_DELAY, delay + jitter)  # Ensure delay is always >= MIN_RETRY_DELAY
+        logger.info(f"[Safe Send] Rate limited, retrying edit_message_text in {total_delay:.2f}s")
         await asyncio.sleep(delay)
         
         try:
@@ -475,8 +458,10 @@ async def safe_send_photo(
             logger.warning(f"[Safe Send] Rate limit delay too long ({e.retry_after}s) for send_photo to chat {chat_id}")
             return None
         
-        delay = e.retry_after + random.uniform(-JITTER_RANGE, JITTER_RANGE)
-        logger.info(f"[Safe Send] Rate limited, retrying send_photo to chat {chat_id} in {delay:.2f}s")
+        delay = max(MIN_RETRY_DELAY, e.retry_after)
+        jitter = delay * JITTER_RANGE * (2 * random.random() - 1)  # +/- JITTER_RANGE as percentage
+        total_delay = max(MIN_RETRY_DELAY, delay + jitter)  # Ensure delay is always >= MIN_RETRY_DELAY
+        logger.info(f"[Safe Send] Rate limited, retrying send_photo to chat {chat_id} in {total_delay:.2f}s")
         await asyncio.sleep(delay)
         
         try:
@@ -585,8 +570,10 @@ async def safe_send_video(
             logger.warning(f"[Safe Send] Rate limit delay too long ({e.retry_after}s) for send_video to chat {chat_id}")
             return None
         
-        delay = e.retry_after + random.uniform(-JITTER_RANGE, JITTER_RANGE)
-        logger.info(f"[Safe Send] Rate limited, retrying send_video to chat {chat_id} in {delay:.2f}s")
+        delay = max(MIN_RETRY_DELAY, e.retry_after)
+        jitter = delay * JITTER_RANGE * (2 * random.random() - 1)  # +/- JITTER_RANGE as percentage
+        total_delay = max(MIN_RETRY_DELAY, delay + jitter)  # Ensure delay is always >= MIN_RETRY_DELAY
+        logger.info(f"[Safe Send] Rate limited, retrying send_video to chat {chat_id} in {total_delay:.2f}s")
         await asyncio.sleep(delay)
         
         try:
@@ -695,8 +682,10 @@ async def safe_send_animation(
             logger.warning(f"[Safe Send] Rate limit delay too long ({e.retry_after}s) for send_animation to chat {chat_id}")
             return None
         
-        delay = e.retry_after + random.uniform(-JITTER_RANGE, JITTER_RANGE)
-        logger.info(f"[Safe Send] Rate limited, retrying send_animation to chat {chat_id} in {delay:.2f}s")
+        delay = max(MIN_RETRY_DELAY, e.retry_after)
+        jitter = delay * JITTER_RANGE * (2 * random.random() - 1)  # +/- JITTER_RANGE as percentage
+        total_delay = max(MIN_RETRY_DELAY, delay + jitter)  # Ensure delay is always >= MIN_RETRY_DELAY
+        logger.info(f"[Safe Send] Rate limited, retrying send_animation to chat {chat_id} in {total_delay:.2f}s")
         await asyncio.sleep(delay)
         
         try:
@@ -805,8 +794,10 @@ async def safe_send_document(
             logger.warning(f"[Safe Send] Rate limit delay too long ({e.retry_after}s) for send_document to chat {chat_id}")
             return None
         
-        delay = e.retry_after + random.uniform(-JITTER_RANGE, JITTER_RANGE)
-        logger.info(f"[Safe Send] Rate limited, retrying send_document to chat {chat_id} in {delay:.2f}s")
+        delay = max(MIN_RETRY_DELAY, e.retry_after)
+        jitter = delay * JITTER_RANGE * (2 * random.random() - 1)  # +/- JITTER_RANGE as percentage
+        total_delay = max(MIN_RETRY_DELAY, delay + jitter)  # Ensure delay is always >= MIN_RETRY_DELAY
+        logger.info(f"[Safe Send] Rate limited, retrying send_document to chat {chat_id} in {total_delay:.2f}s")
         await asyncio.sleep(delay)
         
         try:

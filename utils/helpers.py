@@ -9,6 +9,7 @@ from telegram.ext import ContextTypes
 from telegram.error import Forbidden, BadRequest, TelegramError
 
 from configs.config import Config
+import emojis
 
 logger = logging.getLogger(__name__)
 
