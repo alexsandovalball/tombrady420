@@ -496,7 +496,10 @@ class Database:
                     return row[0] if row else 0
             
             # Normalize categories for case/whitespace-insensitive comparison
-            normalized_categories = [cat.strip().upper() for cat in excluded_categories if cat and cat.strip()]
+            normalized_categories = [
+                cat.strip().upper() for cat in excluded_categories
+                if isinstance(cat, str) and cat.strip()
+            ]
             if not normalized_categories:
                 async with db.execute("SELECT COUNT(*) FROM products") as cursor:
                     row = await cursor.fetchone()
@@ -506,7 +509,7 @@ class Database:
             query = f"""
                 SELECT COUNT(*) FROM products 
                 WHERE (category IS NULL OR TRIM(category) = '') 
-                   OR UPPER(TRIM(category)) NOT IN ({placeholders})
+                   OR (category IS NOT NULL AND TRIM(category) != '' AND UPPER(TRIM(category)) NOT IN ({placeholders}))
             """
             
             async with db.execute(query, normalized_categories) as cursor:
@@ -557,7 +560,10 @@ class Database:
                     return [dict(row) for row in rows]
             
             # Normalize categories for case/whitespace-insensitive comparison
-            normalized_categories = [cat.strip().upper() for cat in excluded_categories if cat and cat.strip()]
+            normalized_categories = [
+                cat.strip().upper() for cat in excluded_categories
+                if isinstance(cat, str) and cat.strip()
+            ]
             if not normalized_categories:
                 async with db.execute("SELECT * FROM products ORDER BY created_at DESC") as cursor:
                     rows = await cursor.fetchall()
@@ -567,7 +573,7 @@ class Database:
             query = f"""
                 SELECT * FROM products 
                 WHERE (category IS NULL OR TRIM(category) = '') 
-                   OR UPPER(TRIM(category)) NOT IN ({placeholders})
+                   OR (category IS NOT NULL AND TRIM(category) != '' AND UPPER(TRIM(category)) NOT IN ({placeholders}))
                 ORDER BY created_at DESC
             """
             
