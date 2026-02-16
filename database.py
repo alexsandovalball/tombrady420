@@ -507,14 +507,10 @@ class Database:
             
             placeholders = ','.join('?' * len(normalized_categories))
             query = f"""
-                WITH products_trimmed AS (
-                    SELECT TRIM(category) AS trimmed_category
-                    FROM products
-                )
-                SELECT COUNT(*) FROM products_trimmed
-                WHERE trimmed_category IS NULL 
-                   OR trimmed_category = '' 
-                   OR UPPER(trimmed_category) NOT IN ({placeholders})
+                SELECT COUNT(*) FROM products
+                WHERE category IS NULL 
+                   OR TRIM(category) = '' 
+                   OR UPPER(TRIM(category)) NOT IN ({placeholders})
             """
             
             async with db.execute(query, normalized_categories) as cursor:
@@ -576,16 +572,11 @@ class Database:
             
             placeholders = ','.join('?' * len(normalized_categories))
             query = f"""
-                WITH products_trimmed AS (
-                    SELECT id, TRIM(category) AS trimmed_category
-                    FROM products
-                )
-                SELECT p.* FROM products p
-                JOIN products_trimmed pt ON p.id = pt.id
-                WHERE pt.trimmed_category IS NULL 
-                   OR pt.trimmed_category = '' 
-                   OR UPPER(pt.trimmed_category) NOT IN ({placeholders})
-                ORDER BY p.created_at DESC
+                SELECT * FROM products
+                WHERE category IS NULL 
+                   OR TRIM(category) = '' 
+                   OR UPPER(TRIM(category)) NOT IN ({placeholders})
+                ORDER BY created_at DESC
             """
             
             async with db.execute(query, normalized_categories) as cursor:
