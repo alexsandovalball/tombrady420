@@ -50,6 +50,20 @@ class Database:
                     normalized.append(stripped.upper())
         return normalized
     
+    @staticmethod
+    async def _count_all_products(db) -> int:
+        """Count all products."""
+        async with db.execute("SELECT COUNT(*) FROM products") as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+    
+    @staticmethod
+    async def _get_all_products_ordered(db) -> List[Dict[str, Any]]:
+        """Return all products ordered by creation date."""
+        async with db.execute("SELECT * FROM products ORDER BY created_at DESC") as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+    
     async def init_db(self):
         """Initialize database with schema."""
         async with aiosqlite.connect(self.db_path) as db:
@@ -282,6 +296,7 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_category_subcategory ON products(category, subcategory)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_created_at ON products(created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_media_group_id ON products(media_group_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_products_category_trimmed_upper ON products(UPPER(TRIM(category)))")
             
             # Bot users indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_notifications ON bot_users(notifications_enabled) WHERE notifications_enabled = 1")
@@ -500,18 +515,10 @@ class Database:
             Count of products excluding specified categories
         """
         async with aiosqlite.connect(self.db_path) as db:
-            if not excluded_categories:
-                # If no categories to exclude, count all products
-                async with db.execute("SELECT COUNT(*) FROM products") as cursor:
-                    row = await cursor.fetchone()
-                    return row[0] if row else 0
-            
             # Normalize categories for case/whitespace-insensitive comparison
-            normalized_categories = self._normalize_categories_for_filter(excluded_categories)
+            normalized_categories = self._normalize_categories_for_filter(excluded_categories or [])
             if not normalized_categories:
-                async with db.execute("SELECT COUNT(*) FROM products") as cursor:
-                    row = await cursor.fetchone()
-                    return row[0] if row else 0
+                return await self._count_all_products(db)
             
             placeholders = ','.join('?' * len(normalized_categories))
             query = f"""
@@ -562,18 +569,10 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             
-            if not excluded_categories:
-                # If no categories to exclude, return all products
-                async with db.execute("SELECT * FROM products ORDER BY created_at DESC") as cursor:
-                    rows = await cursor.fetchall()
-                    return [dict(row) for row in rows]
-            
             # Normalize categories for case/whitespace-insensitive comparison
-            normalized_categories = self._normalize_categories_for_filter(excluded_categories)
+            normalized_categories = self._normalize_categories_for_filter(excluded_categories or [])
             if not normalized_categories:
-                async with db.execute("SELECT * FROM products ORDER BY created_at DESC") as cursor:
-                    rows = await cursor.fetchall()
-                    return [dict(row) for row in rows]
+                return await self._get_all_products_ordered(db)
             
             placeholders = ','.join('?' * len(normalized_categories))
             query = f"""
