@@ -38,6 +38,31 @@ class Database:
     def normalize_bot_username(bot_username: Optional[str]) -> Optional[str]:
         """Normalize bot username to lowercase for consistent database lookups."""
         return bot_username.lower() if bot_username else None
+
+    @staticmethod
+    def _normalize_categories(excluded_categories: List[Any]) -> List[str]:
+        """Normalize category names for exclusion filtering."""
+        normalized: List[str] = []
+        for cat in excluded_categories:
+            if isinstance(cat, str):
+                stripped = cat.strip()
+                if stripped:
+                    normalized.append(stripped.upper())
+        return normalized
+    
+    @staticmethod
+    async def _count_all_products(db: aiosqlite.Connection) -> int:
+        """Count all products. Used as a fallback when no categories need to be excluded."""
+        async with db.execute("SELECT COUNT(*) FROM products") as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+    
+    @staticmethod
+    async def _get_all_products_ordered(db: aiosqlite.Connection) -> List[Dict[str, Any]]:
+        """Return all products ordered by creation date (newest first). Used as a fallback when no categories need to be excluded."""
+        async with db.execute("SELECT * FROM products ORDER BY created_at DESC") as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
     
     async def init_db(self):
         """Initialize database with schema."""
@@ -271,6 +296,7 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_category_subcategory ON products(category, subcategory)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_created_at ON products(created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_media_group_id ON products(media_group_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_products_category_trimmed_upper ON products(UPPER(TRIM(category)))")
             
             # Bot users indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_notifications ON bot_users(notifications_enabled) WHERE notifications_enabled = 1")
@@ -489,20 +515,20 @@ class Database:
             Count of products excluding specified categories
         """
         async with aiosqlite.connect(self.db_path) as db:
-            if not excluded_categories:
-                # If no categories to exclude, count all products
-                async with db.execute("SELECT COUNT(*) FROM products") as cursor:
-                    row = await cursor.fetchone()
-                    return row[0] if row else 0
+            # Normalize categories for case/whitespace-insensitive comparison
+            normalized_categories = self._normalize_categories(excluded_categories or [])
+            if not normalized_categories:
+                return await self._count_all_products(db)
             
-            # Build placeholders for SQL query
-            placeholders = ','.join('?' * len(excluded_categories))
+            placeholders = ','.join('?' * len(normalized_categories))
             query = f"""
-                SELECT COUNT(*) FROM products 
-                WHERE (category IS NULL OR category = '') OR category NOT IN ({placeholders})
+                SELECT COUNT(*) FROM products
+                WHERE category IS NULL 
+                   OR TRIM(category) = '' 
+                   OR UPPER(TRIM(category)) NOT IN ({placeholders})
             """
             
-            async with db.execute(query, excluded_categories) as cursor:
+            async with db.execute(query, normalized_categories) as cursor:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
     
@@ -543,21 +569,21 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             
-            if not excluded_categories:
-                # If no categories to exclude, return all products
-                async with db.execute("SELECT * FROM products ORDER BY created_at DESC") as cursor:
-                    rows = await cursor.fetchall()
-                    return [dict(row) for row in rows]
+            # Normalize categories for case/whitespace-insensitive comparison
+            normalized_categories = self._normalize_categories(excluded_categories or [])
+            if not normalized_categories:
+                return await self._get_all_products_ordered(db)
             
-            # Build placeholders for SQL query
-            placeholders = ','.join('?' * len(excluded_categories))
+            placeholders = ','.join('?' * len(normalized_categories))
             query = f"""
-                SELECT * FROM products 
-                WHERE (category IS NULL OR category = '') OR category NOT IN ({placeholders})
+                SELECT * FROM products
+                WHERE category IS NULL 
+                   OR TRIM(category) = '' 
+                   OR UPPER(TRIM(category)) NOT IN ({placeholders})
                 ORDER BY created_at DESC
             """
             
-            async with db.execute(query, excluded_categories) as cursor:
+            async with db.execute(query, normalized_categories) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
     
