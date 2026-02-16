@@ -343,7 +343,7 @@ async def safe_edit_message_text(
         jitter = delay * JITTER_RANGE * (2 * random.random() - 1)  # +/- JITTER_RANGE as percentage
         total_delay = max(MIN_RETRY_DELAY, delay + jitter)  # Ensure delay is always >= MIN_RETRY_DELAY
         logger.info(f"[Safe Send] Rate limited, retrying edit_message_text in {total_delay:.2f}s")
-        await asyncio.sleep(delay)
+        await asyncio.sleep(total_delay)
         
         try:
             return await bot.edit_message_text(
@@ -462,7 +462,7 @@ async def safe_send_photo(
         jitter = delay * JITTER_RANGE * (2 * random.random() - 1)  # +/- JITTER_RANGE as percentage
         total_delay = max(MIN_RETRY_DELAY, delay + jitter)  # Ensure delay is always >= MIN_RETRY_DELAY
         logger.info(f"[Safe Send] Rate limited, retrying send_photo to chat {chat_id} in {total_delay:.2f}s")
-        await asyncio.sleep(delay)
+        await asyncio.sleep(total_delay)
         
         try:
             return await bot.send_photo(
@@ -574,7 +574,7 @@ async def safe_send_video(
         jitter = delay * JITTER_RANGE * (2 * random.random() - 1)  # +/- JITTER_RANGE as percentage
         total_delay = max(MIN_RETRY_DELAY, delay + jitter)  # Ensure delay is always >= MIN_RETRY_DELAY
         logger.info(f"[Safe Send] Rate limited, retrying send_video to chat {chat_id} in {total_delay:.2f}s")
-        await asyncio.sleep(delay)
+        await asyncio.sleep(total_delay)
         
         try:
             return await bot.send_video(
@@ -686,7 +686,7 @@ async def safe_send_animation(
         jitter = delay * JITTER_RANGE * (2 * random.random() - 1)  # +/- JITTER_RANGE as percentage
         total_delay = max(MIN_RETRY_DELAY, delay + jitter)  # Ensure delay is always >= MIN_RETRY_DELAY
         logger.info(f"[Safe Send] Rate limited, retrying send_animation to chat {chat_id} in {total_delay:.2f}s")
-        await asyncio.sleep(delay)
+        await asyncio.sleep(total_delay)
         
         try:
             return await bot.send_animation(
@@ -798,7 +798,7 @@ async def safe_send_document(
         jitter = delay * JITTER_RANGE * (2 * random.random() - 1)  # +/- JITTER_RANGE as percentage
         total_delay = max(MIN_RETRY_DELAY, delay + jitter)  # Ensure delay is always >= MIN_RETRY_DELAY
         logger.info(f"[Safe Send] Rate limited, retrying send_document to chat {chat_id} in {total_delay:.2f}s")
-        await asyncio.sleep(delay)
+        await asyncio.sleep(total_delay)
         
         try:
             return await bot.send_document(
