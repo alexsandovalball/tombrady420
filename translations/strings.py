@@ -90,6 +90,7 @@ def get_strings():
         "no_results": "No products found matching \"{query}\".",
         "search_prompt": "💬 Type what you're looking for to search the catalog!",
         "search_min_chars": "🔍 Please enter at least 2 characters to search.",
+        "search_placeholder": "search",
         "catalog_empty": "📭 The catalog is empty. No products available yet.",
         "no_products_found": "❌ No products found for '{query}'. Try different keywords.",
         

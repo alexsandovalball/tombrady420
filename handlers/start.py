@@ -122,9 +122,10 @@ async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Prompt user to search with a custom input placeholder
     search_prompt = await get_translated_string_async("search_prompt", user_lang)
+    search_placeholder = await get_translated_string_async("search_placeholder", user_lang)
     await update.message.reply_text(
         search_prompt,
-        reply_markup=ForceReply(input_field_placeholder="search")
+        reply_markup=ForceReply(input_field_placeholder=search_placeholder)
     )
     logger.info(f"User {user.id} started the bot (language: {user_lang})")
 
