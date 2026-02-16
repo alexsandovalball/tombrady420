@@ -495,14 +495,16 @@ class Database:
                     row = await cursor.fetchone()
                     return row[0] if row else 0
             
-            # Build placeholders for SQL query
-            placeholders = ','.join('?' * len(excluded_categories))
+            # Normalize categories for case/whitespace-insensitive comparison
+            normalized_categories = [cat.upper() for cat in excluded_categories]
+            placeholders = ','.join('?' * len(normalized_categories))
             query = f"""
                 SELECT COUNT(*) FROM products 
-                WHERE (category IS NULL OR category = '') OR category NOT IN ({placeholders})
+                WHERE (category IS NULL OR TRIM(category) = '') 
+                   OR UPPER(TRIM(category)) NOT IN ({placeholders})
             """
             
-            async with db.execute(query, excluded_categories) as cursor:
+            async with db.execute(query, normalized_categories) as cursor:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
     
@@ -549,15 +551,17 @@ class Database:
                     rows = await cursor.fetchall()
                     return [dict(row) for row in rows]
             
-            # Build placeholders for SQL query
-            placeholders = ','.join('?' * len(excluded_categories))
+            # Normalize categories for case/whitespace-insensitive comparison
+            normalized_categories = [cat.upper() for cat in excluded_categories]
+            placeholders = ','.join('?' * len(normalized_categories))
             query = f"""
                 SELECT * FROM products 
-                WHERE (category IS NULL OR category = '') OR category NOT IN ({placeholders})
+                WHERE (category IS NULL OR TRIM(category) = '') 
+                   OR UPPER(TRIM(category)) NOT IN ({placeholders})
                 ORDER BY created_at DESC
             """
             
-            async with db.execute(query, excluded_categories) as cursor:
+            async with db.execute(query, normalized_categories) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
     
