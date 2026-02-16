@@ -139,5 +139,5 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
         text=search_prompt,
         reply_markup=ForceReply(input_field_placeholder="search")
     )
-    
+
     logger.info(f"User {user_id} changed language to {lang_code}")
