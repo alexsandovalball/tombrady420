@@ -7,9 +7,9 @@ import pytest
 from database import Database
 
 
-def test_normalize_excluded_categories_filters_and_uppercases():
+def test_normalize_categories_filters_and_uppercases():
     categories = [" datedproofs ", "ANNOUNCEMENTS", None, "  ", 123, "clientTouchdowns"]
-    normalized = Database._normalize_excluded_categories(categories)
+    normalized = Database._normalize_categories(categories)
     assert normalized == ["DATEDPROOFS", "ANNOUNCEMENTS", "CLIENTTOUCHDOWNS"]
 
 

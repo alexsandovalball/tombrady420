@@ -40,7 +40,7 @@ class Database:
         return bot_username.lower() if bot_username else None
 
     @staticmethod
-    def _normalize_excluded_categories(excluded_categories: List[Any]) -> List[str]:
+    def _normalize_categories(excluded_categories: List[Any]) -> List[str]:
         """Normalize category names for exclusion filtering."""
         normalized: List[str] = []
         for cat in excluded_categories:
@@ -52,14 +52,14 @@ class Database:
     
     @staticmethod
     async def _count_all_products(db: aiosqlite.Connection) -> int:
-        """Count all products without applying any category filters."""
+        """Count all products. Used as a fallback when no categories need to be excluded."""
         async with db.execute("SELECT COUNT(*) FROM products") as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
     
     @staticmethod
     async def _get_all_products_ordered(db: aiosqlite.Connection) -> List[Dict[str, Any]]:
-        """Return all products ordered by creation date (newest first)."""
+        """Return all products ordered by creation date (newest first). Used as a fallback when no categories need to be excluded."""
         async with db.execute("SELECT * FROM products ORDER BY created_at DESC") as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
@@ -516,7 +516,7 @@ class Database:
         """
         async with aiosqlite.connect(self.db_path) as db:
             # Normalize categories for case/whitespace-insensitive comparison
-            normalized_categories = self._normalize_excluded_categories(excluded_categories or [])
+            normalized_categories = self._normalize_categories(excluded_categories or [])
             if not normalized_categories:
                 return await self._count_all_products(db)
             
@@ -570,7 +570,7 @@ class Database:
             db.row_factory = aiosqlite.Row
             
             # Normalize categories for case/whitespace-insensitive comparison
-            normalized_categories = self._normalize_excluded_categories(excluded_categories or [])
+            normalized_categories = self._normalize_categories(excluded_categories or [])
             if not normalized_categories:
                 return await self._get_all_products_ordered(db)
             
