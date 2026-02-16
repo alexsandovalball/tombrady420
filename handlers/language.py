@@ -5,7 +5,6 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import Database
-import emojis
 from translations.language_config import LANGUAGE_DISPLAY, is_valid_language, DEFAULT_LANGUAGE
 from translations.translator import get_translated_string_async
 from utils.helpers import is_admin, get_user_display_name, ADMIN_COMMANDS_FALLBACK, escape_markdown_v1
@@ -62,7 +61,7 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
     
     # Validate language code
     if not is_valid_language(lang_code):
-        await query.answer(f"{emojis.ERROR} Invalid language", show_alert=True)
+        await query.answer("❌ Invalid language", show_alert=True)
         return
     
     # Update user's language preference

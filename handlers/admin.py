@@ -9,7 +9,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 from database import Database
-import emojis
 from utils.helpers import is_admin, get_channel_id, get_channel_username, escape_markdown_v1
 from utils.safe_send import safe_send_message, safe_edit_message_text
 
@@ -123,14 +122,14 @@ async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not is_admin(user_id):
         await update.message.reply_text(
-            f"{emojis.ERROR} This command is only available for administrators."
+            "❌ This command is only available for administrators."
         )
         return
     
     # First confirmation
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚠️ Yes, I want to nuke", callback_data="nuke_confirm1")],
-        [InlineKeyboardButton(emojis.BUTTON_CANCEL, callback_data="nuke_cancel")]
+        [InlineKeyboardButton("❌ Cancel", callback_data="nuke_cancel")]
     ])
     
     total_count = await db.count_products()
@@ -161,7 +160,7 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not is_admin(user_id):
         await update.message.reply_text(
-            f"{emojis.ERROR} This command is only available for administrators."
+            "❌ This command is only available for administrators."
         )
         return
     
@@ -1462,5 +1461,7 @@ async def prunebots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "❌ An error occurred while pruning bot users."
         )
+
+
 
 
