@@ -40,7 +40,7 @@ class Database:
         return bot_username.lower() if bot_username else None
 
     @staticmethod
-    def _normalize_categories_for_filter(categories: List[str]) -> List[str]:
+    def _normalize_excluded_categories(categories: List[str]) -> List[str]:
         """Normalize category names for exclusion filtering."""
         normalized: List[str] = []
         for cat in categories:
@@ -516,7 +516,7 @@ class Database:
         """
         async with aiosqlite.connect(self.db_path) as db:
             # Normalize categories for case/whitespace-insensitive comparison
-            normalized_categories = self._normalize_categories_for_filter(excluded_categories or [])
+            normalized_categories = self._normalize_excluded_categories(excluded_categories or [])
             if not normalized_categories:
                 return await self._count_all_products(db)
             
@@ -570,7 +570,7 @@ class Database:
             db.row_factory = aiosqlite.Row
             
             # Normalize categories for case/whitespace-insensitive comparison
-            normalized_categories = self._normalize_categories_for_filter(excluded_categories or [])
+            normalized_categories = self._normalize_excluded_categories(excluded_categories or [])
             if not normalized_categories:
                 return await self._get_all_products_ordered(db)
             
