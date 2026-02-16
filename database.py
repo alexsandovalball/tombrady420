@@ -38,6 +38,17 @@ class Database:
     def normalize_bot_username(bot_username: Optional[str]) -> Optional[str]:
         """Normalize bot username to lowercase for consistent database lookups."""
         return bot_username.lower() if bot_username else None
+
+    @staticmethod
+    def _normalize_categories_for_filter(categories: List[str]) -> List[str]:
+        """Normalize category names for exclusion filtering."""
+        normalized: List[str] = []
+        for cat in categories:
+            if isinstance(cat, str):
+                stripped = cat.strip()
+                if stripped:
+                    normalized.append(stripped.upper())
+        return normalized
     
     async def init_db(self):
         """Initialize database with schema."""
@@ -496,10 +507,7 @@ class Database:
                     return row[0] if row else 0
             
             # Normalize categories for case/whitespace-insensitive comparison
-            normalized_categories = [
-                cat.strip().upper() for cat in excluded_categories
-                if isinstance(cat, str) and cat.strip()
-            ]
+            normalized_categories = self._normalize_categories_for_filter(excluded_categories)
             if not normalized_categories:
                 async with db.execute("SELECT COUNT(*) FROM products") as cursor:
                     row = await cursor.fetchone()
@@ -561,10 +569,7 @@ class Database:
                     return [dict(row) for row in rows]
             
             # Normalize categories for case/whitespace-insensitive comparison
-            normalized_categories = [
-                cat.strip().upper() for cat in excluded_categories
-                if isinstance(cat, str) and cat.strip()
-            ]
+            normalized_categories = self._normalize_categories_for_filter(excluded_categories)
             if not normalized_categories:
                 async with db.execute("SELECT * FROM products ORDER BY created_at DESC") as cursor:
                     rows = await cursor.fetchall()
