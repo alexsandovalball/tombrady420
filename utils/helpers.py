@@ -13,16 +13,18 @@ import emojis
 
 logger = logging.getLogger(__name__)
 
-# Import admin commands from centralized UI strings
-# Note: We keep this import here for backwards compatibility
-# New code should import from configs.ui_strings directly
-def get_admin_commands_text():
-    """Get admin commands text from centralized UI strings module."""
-    from configs.ui_strings import ADMIN_COMMANDS_TEXT
-    return ADMIN_COMMANDS_TEXT
-
-# Backwards compatibility - will be deprecated
-ADMIN_COMMANDS_FALLBACK = get_admin_commands_text()
+# Admin commands fallback text constant (hardcoded for consistency across deploys)
+ADMIN_COMMANDS_FALLBACK = (
+    "\n\n👨‍💼 Admin Commands:\n"
+    "• /start - Welcome message\n"
+    "• /menu - View catalog\n"
+    "• /users - Manage users\n"
+    "• /send - Send message to user\n"
+    "• /broadcast - Broadcast to all users\n"
+    "• /setcontact - Set order contact\n"
+    "• /recategorize - Recategorize products\n"
+    "• /nuke - Delete all products"
+)
 
 
 def escape_markdown_v1(text: str) -> str:
