@@ -2,7 +2,7 @@
 Start command handler.
 """
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import ForceReply, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import Database
 from translations.translator import get_translated_string_async
@@ -119,6 +119,13 @@ async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYP
         reply_markup=keyboard,
         parse_mode="Markdown"
     )
+
+    # Prompt user to search with a custom input placeholder
+    search_prompt = await get_translated_string_async("search_prompt", user_lang)
+    await update.message.reply_text(
+        search_prompt,
+        reply_markup=ForceReply(input_field_placeholder="search")
+    )
     logger.info(f"User {user.id} started the bot (language: {user_lang})")
 
 
@@ -170,4 +177,3 @@ async def unsubscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         parse_mode="Markdown"
     )
     logger.info(f"User {user_id} unsubscribed from notifications")
-

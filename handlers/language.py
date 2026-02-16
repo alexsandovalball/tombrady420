@@ -2,7 +2,7 @@
 Language settings handler.
 """
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import ForceReply, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import Database
 from translations.language_config import LANGUAGE_DISPLAY, is_valid_language, DEFAULT_LANGUAGE
@@ -129,6 +129,15 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
         text=welcome_text,
         reply_markup=keyboard,
         parse_mode="Markdown"
+    )
+
+    # Prompt user to search with a custom input placeholder
+    search_prompt = await get_translated_string_async("search_prompt", lang_code)
+    await safe_send_message(
+        context.bot,
+        chat_id=update.effective_chat.id,
+        text=search_prompt,
+        reply_markup=ForceReply(input_field_placeholder="search")
     )
     
     logger.info(f"User {user_id} changed language to {lang_code}")
