@@ -361,7 +361,8 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle all callback queries (buttons)."""
     query = update.callback_query
-    
+    callback_data = query.data
+
     # Check if user is blocked (except for admins)
     user_id = update.effective_user.id
     if not is_admin(user_id):
@@ -372,11 +373,9 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 show_alert=True
             )
             return
-    
-    callback_data = query.data
-    
-    # Don't answer callback query upfront for long-running operations
-    # These callbacks will answer the query themselves to avoid timeout errors
+
+    # Answer callback query immediately for instant button feedback
+    # Exception: long-running operations that will answer later to avoid timeout
     if callback_data not in LONG_RUNNING_CALLBACKS:
         await query.answer()  # Answer callback to prevent loading spinner
     
@@ -443,12 +442,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         parts = callback_data.split("|")
         if len(parts) >= 2:
             lang_code = parts[1]
-            
+
             # Validate and set language
             if is_valid_language(lang_code):
                 await db.set_user_language(user_id, lang_code)
-                # Answer the callback
-                await query.answer()
                 # Delete the language selection message
                 await query.delete_message()
                 
@@ -1132,8 +1129,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             if len(parts) >= 2:
                 bot_username = parts[1]
                 page = int(parts[2]) if len(parts) > 2 else 1
-                
-                await query.answer()
+
                 await show_users_page(update, context, page, bot_username)
             else:
                 await query.answer("Invalid data", show_alert=True)
@@ -1143,9 +1139,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             if not is_admin(update.effective_user.id):
                 await query.answer("❌ Only admins can view users.", show_alert=True)
                 return
-            
-            await query.answer()
-            
+
             # Build bot selection menu using helper function
             keyboard, message, message_no_md, has_bots, bot_list = await build_users_bot_selection_menu()
             
@@ -1372,10 +1366,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             if not is_admin(update.effective_user.id):
                 await query.answer("❌ Only admins can view users.", show_alert=True)
                 return
-            
+
             # Display the bot list inline (duplicates botusers_command logic for callback context)
-            await query.answer()
-            
             bot_usernames = await db.get_bot_usernames()
             keyboard_buttons = []
             
@@ -1442,7 +1434,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     reply_markup=keyboard,
                     parse_mode="Markdown"
                 )
-                await query.answer()
             else:
                 await query.answer("Invalid data", show_alert=True)
         
@@ -1497,7 +1488,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     [InlineKeyboardButton(f"{emojis.OK} Yes, Delete All", callback_data=f"confirm_deleteallbot|{bot_username}")],
                     [InlineKeyboardButton(f"{emojis.ERROR} Cancel", callback_data=f"viewbotusers|{bot_username}|1")]
                 ])
-                
+
                 await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
                     text=f"{emojis.WARNING} **BULK DELETE WARNING**\n\n"
                     f"You are about to delete **{count}** user(s) from {display_name}.\n\n"
@@ -1508,7 +1499,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     reply_markup=keyboard,
                     parse_mode="Markdown"
                 )
-                await query.answer()
             else:
                 await query.answer("Invalid data", show_alert=True)
         
@@ -1617,7 +1607,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Handle "Message is not modified" error silently
         if "message is not modified" in str(e).lower():
             logger.debug(f"Message not modified for callback {callback_data}: {e}")
-            await query.answer()  # Silent acknowledgment
+            # Already answered at the start of handler
         else:
             logger.error(f"BadRequest error handling callback query: {e}", exc_info=True)
             await query.answer("Unable to process this action. Please try again.", show_alert=True)
