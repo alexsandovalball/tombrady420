@@ -63,7 +63,7 @@ def restore_placeholders(text: str, placeholder_map: Dict[str, str]) -> str:
 def normalize_language_code(lang: str) -> str:
     """
     Normalize language codes for consistency.
-    Both USA and UK English use 'en'.
+    USA English variants (en-US) use 'en'.
     
     Args:
         lang: Language code to normalize

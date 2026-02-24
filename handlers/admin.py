@@ -15,6 +15,9 @@ from utils.safe_send import safe_send_message, safe_edit_message_text
 logger = logging.getLogger(__name__)
 db = Database()
 
+# Constants
+CAPTION_DISPLAY_LENGTH = 50  # Maximum length of caption to display in scan results
+
 
 async def build_users_bot_selection_menu():
     """
@@ -1461,6 +1464,8 @@ async def prunebots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "❌ An error occurred while pruning bot users."
         )
+
+
 
 
 

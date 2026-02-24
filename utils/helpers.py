@@ -103,6 +103,35 @@ def get_channel_username() -> Optional[str]:
     return username if username else None
 
 
+def get_bot_username(context: ContextTypes.DEFAULT_TYPE) -> Optional[str]:
+    """
+    Get bot username from context with fallback handling.
+
+    Args:
+        context: Telegram context object
+
+    Returns:
+        Bot username or None if not available
+    """
+    return context.bot.username if hasattr(context.bot, 'username') else None
+
+
+async def get_user_lang_async(user_id: int) -> str:
+    """
+    Get user's language preference from database.
+    Centralizes the common pattern of fetching user language.
+
+    Args:
+        user_id: Telegram user ID
+
+    Returns:
+        User's preferred language code
+    """
+    from database import Database
+    db = Database()
+    return await db.get_user_language(user_id)
+
+
 def get_file_id_and_type(update: Update) -> tuple[Optional[str], Optional[str]]:
     """
     Extract file_id and file_type from a message.
@@ -148,6 +177,27 @@ def has_media(update: Update) -> bool:
     """Check if message contains media."""
     file_id, _ = get_file_id_and_type(update)
     return file_id is not None
+
+
+def is_media_message(message) -> bool:
+    """
+    Check if a message contains any type of media.
+
+    Args:
+        message: Telegram Message object
+
+    Returns:
+        True if message contains photo, video, document, animation, or audio
+    """
+    if not message:
+        return False
+    return bool(
+        message.photo or
+        message.video or
+        message.document or
+        message.animation or
+        message.audio
+    )
 
 
 async def send_media_message(
@@ -248,7 +298,7 @@ async def send_media_message(
 
 
 async def get_bot_specific_file_id(
-    context: ContextTypes.DEFAULT_TYPE,
+    bot_or_context,
     source_chat_id: int,
     source_message_id: int,
     file_type: str,
@@ -262,7 +312,7 @@ async def get_bot_specific_file_id(
     Uses persistent database cache to survive bot restarts.
     
     Args:
-        context: Bot context
+        bot_or_context: Bot instance or ContextTypes.DEFAULT_TYPE
         source_chat_id: ID of the source chat (usually the channel)
         source_message_id: ID of the specific message containing the media
         file_type: Type of file (photo, video, document, etc.)
@@ -274,8 +324,43 @@ async def get_bot_specific_file_id(
     from database import Database
     db = Database()
     
+    # Extract bot from context or use directly
+    if hasattr(bot_or_context, 'bot'):
+        # This is a Context object
+        bot = bot_or_context.bot
+    else:
+        # This is a Bot instance directly
+        bot = bot_or_context
+    
+    # Defensive check: ensure bot has forward_message (i.e., it is a Bot, not a User).
+    # In multi-bot setups the resolved object may be a User or thin wrapper; attempt recovery
+    # before treating this as an error.
+    if not hasattr(bot, "forward_message"):
+        logger.warning(
+            "[get_bot_specific_file_id] Bot object does not implement forward_message – "
+            "attempting recovery. type=%s repr=%r",
+            type(bot).__name__,
+            repr(bot),
+        )
+        # Try to recover: check for wrapped client or fall back to bot_or_context itself
+        candidate = getattr(bot, "client", None) or getattr(bot, "bot", None)
+        if candidate and hasattr(candidate, "forward_message"):
+            bot = candidate
+            logger.debug("[get_bot_specific_file_id] Resolved bot client via wrapper attribute")
+        elif hasattr(bot_or_context, "forward_message"):
+            bot = bot_or_context
+            logger.debug("[get_bot_specific_file_id] Resolved bot client from bot_or_context directly")
+        else:
+            logger.error(
+                "[get_bot_specific_file_id] Unable to resolve Bot client for forwarding. "
+                "source_chat=%s source_msg=%s type=%s repr=%r",
+                source_chat_id, source_message_id,
+                type(bot).__name__, repr(bot),
+            )
+            return None
+    
     # Get current bot username
-    bot_username = context.bot.username
+    bot_username = bot.username
     if not bot_username:
         logger.error("Bot username not available - cannot cache file ID")
         return None
@@ -312,7 +397,7 @@ async def get_bot_specific_file_id(
     
     try:
         # Forward the message to get the bot-specific file ID
-        forwarded = await context.bot.forward_message(
+        forwarded = await bot.forward_message(
             chat_id=target_chat_id,
             from_chat_id=source_chat_id,
             message_id=source_message_id
@@ -358,7 +443,7 @@ async def get_bot_specific_file_id(
             
             # Delete the forwarded message to avoid cluttering admin chat
             try:
-                await context.bot.delete_message(
+                await bot.delete_message(
                     chat_id=target_chat_id,
                     message_id=forwarded.message_id
                 )
@@ -376,7 +461,7 @@ async def get_bot_specific_file_id(
             
             # Still try to delete the forwarded message
             try:
-                await context.bot.delete_message(
+                await bot.delete_message(
                     chat_id=target_chat_id,
                     message_id=forwarded.message_id
                 )

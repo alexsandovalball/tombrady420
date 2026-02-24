@@ -9,6 +9,7 @@ def get_strings():
     return {
         # Start command
         "welcome_with_contact": "👋 Welcome, {name}!\n\nI'm your media product catalog bot. I help you browse and search products from our catalog.\n\nUse /menu to view all products or simply type what you're looking for!\n\n💬 DM {contact} TO ORDER",
+        "user_commands_info": "📋 Available Commands:\n• /menu - Browse the product catalog\n• /language - Change your language\n• /subscribe - Enable notifications\n• /unsubscribe - Disable notifications",
         "admin_commands_info": "👨‍💼 Admin Commands:\n• /start - Welcome message\n• /menu - View catalog\n• /users - Manage users\n• /send - Send message to user\n• /broadcast - Broadcast to all users\n• /setcontact - Set order contact\n• /recategorize - Recategorize products\n• /nuke - Delete all products",
         "notifications_enabled": "🔔 **Notifications Enabled!**\n\nYou will now receive notifications when new products are added to the catalog.\n\nUse /unsubscribe to stop receiving notifications.",
         "notifications_disabled": "🔕 **Notifications Disabled**\n\nYou will no longer receive notifications about new products.\n\nUse /subscribe to enable notifications again.",
@@ -137,6 +138,29 @@ def get_strings():
         "broadcast_sent_single": "✅ Message sent to user {user_id}!",
         "broadcast_sent_all": "✅ Broadcast queued for {count} users!",
         "invalid_user_id": "❌ Invalid user ID. Please enter a valid number.",
+
+        # Inline mode
+        "inline_help_title": "💡 How to use inline mode",
+        "inline_help_text": "Type @{bot_username} followed by a product name in any chat to search the catalog inline.",
+        "inline_open_shop": "🛍️ Open Shop",
+        "inline_browse_categories": "📂 Browse Categories",
+        "inline_no_results": "❌ No products found for \"{query}\".",
+        "inline_product_label": "📦 {title}",
+        "inline_tips_title": "💡 Inline Search Tips",
+        "inline_tips_description": "Learn how to search effectively",
+        "inline_tips_message": "💡 **Inline Search Tips**\n\n• Type product names: `@{bot_username} cartridge`\n• Search by category: `cat:edibles` or `category:flower`\n• Find by ID: `id:123`\n• Keywords: `new` for new arrivals, `popular` for trending\n\nStart typing to search!",
+        "inline_new_arrivals_title": "✨ New Arrivals",
+        "inline_new_arrivals_description": "Recently added products",
+        "inline_popular_title": "🔥 Popular Products",
+        "inline_popular_description": "Trending items",
+        "inline_top_categories_title": "📂 Top Categories",
+        "inline_top_categories_description": "Browse by category",
+        "inline_top_categories_message": "📂 **Top Categories**\n\n{categories}\n\nTry searching: `cat:cartridges` or just type a category name!",
+
+
+        # Deep link start payloads
+        "deeplink_product_not_found": "❌ Product not found. It may have been removed.",
+        "deeplink_inline_help": "💡 *Inline Mode Help*\n\nType @{bot_username} followed by a product name in any chat to search inline.\n\nExample: `@{bot_username} cartridge`",
     }
 
 # Initialize strings

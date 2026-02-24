@@ -12,7 +12,7 @@ import asyncio
 import random
 from typing import Optional, Any, Callable, Dict, Tuple
 from html import escape as escape_html
-from telegram import Bot, Message
+from telegram import Bot, Message, Update
 from telegram.error import TelegramError, BadRequest, Forbidden, RetryAfter
 from telegram.helpers import escape_markdown as escape_markdown_v2
 
@@ -858,3 +858,115 @@ async def safe_send_document(
     except Exception as e:
         logger.error(f"[Safe Send] Unexpected error in send_document to chat {chat_id}: {e}")
         return None
+
+
+async def handle_handler_error(
+    update: Update,
+    user_id: int,
+    error: Exception,
+    logger_msg: str,
+    logger_obj: logging.Logger = None
+) -> None:
+    """
+    Centralized error handling for command handlers with translation support.
+
+    This consolidates the common pattern of:
+    1. Logging the error
+    2. Getting user's language preference
+    3. Getting translated error message
+    4. Sending error message (callback query or regular message)
+
+    Args:
+        update: Telegram update object
+        user_id: User ID for language preference lookup
+        error: The exception that occurred
+        logger_msg: Custom error message for logging
+        logger_obj: Optional logger instance (uses module logger if not provided)
+    """
+    if logger_obj is None:
+        logger_obj = logger
+
+    # Log the error
+    logger_obj.error(f"{logger_msg}: {error}")
+
+    # Get user's language and translated error message
+    try:
+        from database import Database
+        from translations.translator import get_translated_string_async
+
+        db = Database()
+        user_lang = await db.get_user_language(user_id)
+        error_text = await get_translated_string_async("error_occurred", user_lang)
+
+        # Send error message based on update type
+        if update.callback_query:
+            await update.callback_query.answer(error_text, show_alert=True)
+        else:
+            await update.message.reply_text(error_text)
+    except Exception as handler_error:
+        logger_obj.error(f"Error in error handler: {handler_error}")
+
+
+async def safe_update_message(
+    update: Update,
+    context,
+    text: str,
+    reply_markup=None,
+    parse_mode: Optional[str] = "Markdown"
+) -> Optional[Message]:
+    """
+    Safely update or send a message based on context.
+
+    This consolidates the common pattern of:
+    1. Check if update is from callback query
+    2. Check if message contains media
+    3. Send new message if media (can't edit media messages)
+    4. Edit message if text-only
+    5. Reply to message if not from callback query
+
+    Args:
+        update: Telegram update object
+        context: Telegram context object
+        text: Message text to send/edit
+        reply_markup: Optional keyboard markup
+        parse_mode: Parse mode for text (default: Markdown)
+
+    Returns:
+        Message object on success, None on failure
+    """
+    from utils.helpers import is_media_message
+
+    if update.callback_query:
+        query = update.callback_query
+        message = query.message
+
+        # Check if message contains media
+        if is_media_message(message):
+            # Send new message (can't edit media messages)
+            return await safe_send_message(
+                context.bot,
+                chat_id=update.effective_chat.id,
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode
+            )
+        else:
+            # Edit existing text message
+            return await safe_edit_message_text(
+                context.bot,
+                chat_id=query.message.chat_id,
+                message_id=query.message.message_id,
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode
+            )
+    else:
+        # Reply to original message
+        return await safe_send_message(
+            context.bot,
+            chat_id=update.effective_chat.id,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+

@@ -9,6 +9,7 @@ from collections import defaultdict
 import logging
 import asyncio
 from functools import lru_cache
+import uuid
 
 from configs.config import Config
 
@@ -30,46 +31,83 @@ class Database:
     def __init__(self, db_path: str = None):
         self.db_path = db_path or Config.DB_PATH
     
+    async def _get_optimized_connection(self):
+        """
+        Internal helper to create an optimized database connection.
+        Applies busy_timeout and cache_size pragmas for better concurrent performance.
+
+        Returns a connection object that should be used with async with.
+        """
+        conn = await aiosqlite.connect(self.db_path)
+        # Set busy timeout to 30 seconds to handle concurrent access gracefully
+        await conn.execute("PRAGMA busy_timeout = 30000")
+        # Increase cache size for better performance (10MB)
+        await conn.execute("PRAGMA cache_size = -10000")
+        return conn
+
     def get_connection(self):
-        """Get a database connection context manager."""
-        return aiosqlite.connect(self.db_path)
+        """
+        Return an async context manager that yields an optimized database connection.
+        Wraps _get_optimized_connection() for backward-compatible public access.
+
+        Usage::
+
+            async with db.get_connection() as conn:
+                async with conn.execute("SELECT ...") as cursor:
+                    ...
+        """
+        return self._OptimizedConnectionContext(self)
+
+    class _OptimizedConnectionContext:
+        """Async context manager returned by get_connection()."""
+
+        def __init__(self, db: "Database"):
+            self._db = db
+            self._conn = None
+
+        async def __aenter__(self):
+            self._conn = await self._db._get_optimized_connection()
+            return self._conn
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            if self._conn is not None:
+                await self._conn.close()
+            return False
+
+    async def checkpoint_wal(self) -> None:
+        """
+        Checkpoint the WAL file to prevent it from growing indefinitely.
+        Should be called periodically (e.g., after processing large batches).
+        Uses TRUNCATE mode to reset the WAL file after checkpointing.
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                logger.debug("WAL checkpoint completed successfully")
+        except Exception as e:
+            logger.warning(f"Failed to checkpoint WAL: {e}")
     
     @staticmethod
     def normalize_bot_username(bot_username: Optional[str]) -> Optional[str]:
         """Normalize bot username to lowercase for consistent database lookups."""
         return bot_username.lower() if bot_username else None
-
-    @staticmethod
-    def _normalize_categories(excluded_categories: List[Any]) -> List[str]:
-        """Normalize category names for exclusion filtering."""
-        normalized: List[str] = []
-        for cat in excluded_categories:
-            if isinstance(cat, str):
-                stripped = cat.strip()
-                if stripped:
-                    normalized.append(stripped.upper())
-        return normalized
-    
-    @staticmethod
-    async def _count_all_products(db: aiosqlite.Connection) -> int:
-        """Count all products. Used as a fallback when no categories need to be excluded."""
-        async with db.execute("SELECT COUNT(*) FROM products") as cursor:
-            row = await cursor.fetchone()
-            return row[0] if row else 0
-    
-    @staticmethod
-    async def _get_all_products_ordered(db: aiosqlite.Connection) -> List[Dict[str, Any]]:
-        """Return all products ordered by creation date (newest first). Used as a fallback when no categories need to be excluded."""
-        async with db.execute("SELECT * FROM products ORDER BY created_at DESC") as cursor:
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
     
     async def init_db(self):
-        """Initialize database with schema."""
+        """Initialize database with schema and apply performance optimizations."""
         async with aiosqlite.connect(self.db_path) as db:
             # Enable WAL mode for better concurrent read/write performance
             await db.execute("PRAGMA journal_mode=WAL")
             logger.info("Enabled WAL mode for database")
+
+            # Set busy timeout to prevent immediate SQLITE_BUSY errors under concurrent load
+            await db.execute("PRAGMA busy_timeout = 30000")
+
+            # Performance optimizations
+            await db.execute("PRAGMA cache_size = -10000")  # 10MB cache
+            await db.execute("PRAGMA synchronous = NORMAL")  # Faster writes, still safe with WAL
+            await db.execute("PRAGMA temp_store = MEMORY")  # Keep temp tables in memory
+
+            logger.info("Applied SQLite performance optimizations (busy_timeout=30s, cache_size=10MB, synchronous=NORMAL)")
             
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS products (
@@ -147,6 +185,7 @@ class Database:
                     interaction_count INTEGER DEFAULT 1,
                     notifications_enabled INTEGER DEFAULT 1,
                     is_blocked INTEGER DEFAULT 0,
+                    is_subscribed INTEGER DEFAULT 1,
                     language TEXT DEFAULT 'en'
                 )
             """)
@@ -210,6 +249,27 @@ class Database:
                 )
             """)
             
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS inline_queries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    query TEXT NOT NULL DEFAULT '',
+                    bot_username TEXT NOT NULL DEFAULT '',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS inline_chosen_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    result_id TEXT NOT NULL,
+                    query TEXT NOT NULL DEFAULT '',
+                    bot_username TEXT NOT NULL DEFAULT '',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
             # Set default order contact if not exists
             await db.execute("""
                 INSERT OR IGNORE INTO bot_settings (key, value)
@@ -217,63 +277,40 @@ class Database:
             """, (DEFAULT_ORDER_CONTACT,))
             
             # Add columns if they don't exist (for existing databases)
-            try:
-                await db.execute("ALTER TABLE products ADD COLUMN media_group_id TEXT")
-            except aiosqlite.OperationalError:
-                pass  # Column already exists
-            
-            try:
-                await db.execute("ALTER TABLE products ADD COLUMN additional_file_ids TEXT")
-            except aiosqlite.OperationalError:
-                pass
-            
-            try:
-                await db.execute("ALTER TABLE products ADD COLUMN category TEXT")
-            except aiosqlite.OperationalError:
-                pass
-            
-            try:
-                await db.execute("ALTER TABLE products ADD COLUMN subcategory TEXT")
-            except aiosqlite.OperationalError:
-                pass
-            
-            try:
-                await db.execute("ALTER TABLE bot_users ADD COLUMN notifications_enabled INTEGER DEFAULT 1")
-            except aiosqlite.OperationalError:
-                pass
-            
-            try:
-                await db.execute("ALTER TABLE bot_users ADD COLUMN bot_username TEXT")
-            except aiosqlite.OperationalError:
-                pass
-            
-            try:
-                await db.execute("ALTER TABLE bot_users ADD COLUMN is_blocked INTEGER DEFAULT 0")
-            except aiosqlite.OperationalError:
-                pass
-            
-            try:
-                await db.execute("ALTER TABLE products ADD COLUMN bot_username TEXT")
-            except aiosqlite.OperationalError:
-                pass
-            
-            try:
-                await db.execute("ALTER TABLE bot_users ADD COLUMN language TEXT DEFAULT 'en'")
-                logger.info("Added 'language' column to bot_users table")
-            except aiosqlite.OperationalError as e:
-                if "duplicate column" in str(e).lower():
-                    logger.debug("Column 'language' already exists in bot_users table")
-                else:
-                    logger.warning(f"Could not add 'language' column to bot_users: {e}")
-            
-            try:
-                await db.execute("ALTER TABLE products ADD COLUMN additional_message_ids TEXT")
-                logger.info("Added 'additional_message_ids' column to products table")
-            except aiosqlite.OperationalError as e:
-                if "duplicate column" in str(e).lower():
-                    logger.debug("Column 'additional_message_ids' already exists in products table")
-                else:
-                    logger.warning(f"Could not add 'additional_message_ids' column to products: {e}")
+            # Schema migrations defined as (table, column, definition, log_on_add)
+            migrations = [
+                ("products", "media_group_id", "TEXT", False),
+                ("products", "additional_file_ids", "TEXT", False),
+                ("products", "category", "TEXT", False),
+                ("products", "subcategory", "TEXT", False),
+                ("products", "bot_username", "TEXT", False),
+                ("products", "additional_message_ids", "TEXT", True),
+                ("products", "compressed_file_id", "TEXT", True),
+                ("bot_users", "notifications_enabled", "INTEGER DEFAULT 1", False),
+                ("bot_users", "bot_username", "TEXT", False),
+                ("bot_users", "is_blocked", "INTEGER DEFAULT 0", False),
+                ("bot_users", "language", "TEXT DEFAULT 'en'", True),
+                ("bot_users", "is_subscribed", "INTEGER DEFAULT 1", True),
+                ("notification_queue", "claimed_at", "TIMESTAMP", True),
+                ("notification_queue", "claim_token", "TEXT", True),
+                ("notification_queue", "claimed_by", "TEXT", True),
+                ("inline_queries", "latency_ms", "INTEGER", True),
+                ("inline_queries", "results_count", "INTEGER", True),
+                ("inline_queries", "is_empty_query", "INTEGER DEFAULT 0", True),
+                ("inline_queries", "query_length", "INTEGER", True),
+            ]
+
+            for table, column, definition, log_on_add in migrations:
+                try:
+                    await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                    if log_on_add:
+                        logger.info(f"Added '{column}' column to {table} table")
+                except aiosqlite.OperationalError as e:
+                    if "duplicate column" in str(e).lower():
+                        if log_on_add:
+                            logger.debug(f"Column '{column}' already exists in {table} table")
+                    else:
+                        logger.warning(f"Could not add '{column}' column to {table}: {e}")
             
             # Migrate existing media groups to populate additional_message_ids
             # For media groups created before this fix, infer message IDs from sequential ordering
@@ -296,16 +333,19 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_category_subcategory ON products(category, subcategory)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_created_at ON products(created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_media_group_id ON products(media_group_id)")
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_products_category_trimmed_upper ON products(UPPER(TRIM(category)))")
             
             # Bot users indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_notifications ON bot_users(notifications_enabled) WHERE notifications_enabled = 1")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_last_seen ON bot_users(last_seen DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_bot_username ON bot_users(bot_username)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_user_id_bot ON bot_users(user_id, bot_username)")
             
             # Notification queue indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_user_sent ON notification_queue(user_id, sent_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_created ON notification_queue(created_at)")
-            
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_claimed ON notification_queue(claimed_at, sent_at)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_notification_queue_claim_token ON notification_queue(claim_token)")
+
             # Critical: Create unique index for duplicate prevention
             # If this fails, the notification system cannot guarantee deduplication
             try:
@@ -515,20 +555,20 @@ class Database:
             Count of products excluding specified categories
         """
         async with aiosqlite.connect(self.db_path) as db:
-            # Normalize categories for case/whitespace-insensitive comparison
-            normalized_categories = self._normalize_categories(excluded_categories or [])
-            if not normalized_categories:
-                return await self._count_all_products(db)
+            if not excluded_categories:
+                # If no categories to exclude, count all products
+                async with db.execute("SELECT COUNT(*) FROM products") as cursor:
+                    row = await cursor.fetchone()
+                    return row[0] if row else 0
             
-            placeholders = ','.join('?' * len(normalized_categories))
+            # Build placeholders for SQL query
+            placeholders = ','.join('?' * len(excluded_categories))
             query = f"""
-                SELECT COUNT(*) FROM products
-                WHERE category IS NULL 
-                   OR TRIM(category) = '' 
-                   OR UPPER(TRIM(category)) NOT IN ({placeholders})
+                SELECT COUNT(*) FROM products 
+                WHERE (category IS NULL OR category = '') OR category NOT IN ({placeholders})
             """
             
-            async with db.execute(query, normalized_categories) as cursor:
+            async with db.execute(query, excluded_categories) as cursor:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
     
@@ -548,20 +588,37 @@ class Database:
                 return [dict(row) for row in rows]
     
     async def get_all_products_for_search(self) -> List[Dict[str, Any]]:
-        """Get all products for fuzzy search (no pagination)."""
+        """
+        Get all products for fuzzy search (no pagination).
+        Excludes products from Dated Proofs, Client Touchdowns, and Announcements categories.
+        """
+        # Categories to exclude from search results
+        excluded_categories = ['DATEDPROOFS', 'CLIENTTOUCHDOWNS', 'ANNOUNCEMENTS']
+        
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            async with db.execute("SELECT * FROM products ORDER BY created_at DESC") as cursor:
+            
+            # Build placeholders for SQL query
+            placeholders = ','.join('?' * len(excluded_categories))
+            query = f"""
+                SELECT * FROM products 
+                WHERE (category IS NULL OR category = '' OR category NOT IN ({placeholders}))
+                ORDER BY created_at DESC
+            """
+            
+            async with db.execute(query, excluded_categories) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
     
-    async def get_all_products_excluding_categories(self, excluded_categories: List[str]) -> List[Dict[str, Any]]:
+    async def get_all_products_excluding_categories(self, excluded_categories: List[str], limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
         """
         Get all products excluding those in specified categories.
         Products with no category assigned (NULL or empty string) are included.
         
         Args:
             excluded_categories: List of category names to exclude (e.g., ['DATEDPROOFS', 'CLIENTTOUCHDOWNS'])
+            limit: Maximum number of products to return (optional)
+            offset: Number of products to skip (for pagination, default 0)
         
         Returns:
             List of product dictionaries excluding products from specified categories
@@ -569,21 +626,26 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             
-            # Normalize categories for case/whitespace-insensitive comparison
-            normalized_categories = self._normalize_categories(excluded_categories or [])
-            if not normalized_categories:
-                return await self._get_all_products_ordered(db)
+            if not excluded_categories:
+                # If no categories to exclude, return all products
+                query = "SELECT * FROM products ORDER BY created_at DESC"
+                if limit is not None:
+                    query += f" LIMIT {limit} OFFSET {offset}"
+                async with db.execute(query) as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(row) for row in rows]
             
-            placeholders = ','.join('?' * len(normalized_categories))
+            # Build placeholders for SQL query
+            placeholders = ','.join('?' * len(excluded_categories))
             query = f"""
-                SELECT * FROM products
-                WHERE category IS NULL 
-                   OR TRIM(category) = '' 
-                   OR UPPER(TRIM(category)) NOT IN ({placeholders})
+                SELECT * FROM products 
+                WHERE (category IS NULL OR category = '') OR category NOT IN ({placeholders})
                 ORDER BY created_at DESC
             """
+            if limit is not None:
+                query += f" LIMIT {limit} OFFSET {offset}"
             
-            async with db.execute(query, normalized_categories) as cursor:
+            async with db.execute(query, excluded_categories) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
     
@@ -742,6 +804,44 @@ class Database:
             """, (additional_file_ids, additional_message_ids, product_id))
             await db.commit()
     
+    async def update_compressed_file_id(self, product_id: int, compressed_file_id: str):
+        """
+        Store compressed video file ID for a product.
+        
+        Args:
+            product_id: Product ID
+            compressed_file_id: Telegram file_id of the compressed video
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE products SET compressed_file_id = ? WHERE id = ?
+            """, (compressed_file_id, product_id))
+            await db.commit()
+            logger.info(f"Updated compressed_file_id for product {product_id}")
+    
+    async def get_compressed_file_id(self, product_id: int) -> Optional[str]:
+        """
+        Get compressed video file ID for a product.
+        
+        Args:
+            product_id: Product ID
+            
+        Returns:
+            Compressed file_id or None if not available
+        """
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute("""
+                    SELECT compressed_file_id FROM products WHERE id = ?
+                """, (product_id,)) as cursor:
+                    row = await cursor.fetchone()
+                    if row and row[0]:
+                        return row[0]
+                    return None
+        except Exception as e:
+            logger.exception(f"Error getting compressed file_id for product {product_id}: {e}")
+            return None
+    
     async def get_products_by_category(self, category: str, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
         """Get products filtered by category."""
         async with aiosqlite.connect(self.db_path) as db:
@@ -818,6 +918,26 @@ class Database:
             """, (category,)) as cursor:
                 rows = await cursor.fetchall()
                 return [{"subcategory": row[0], "count": row[1]} for row in rows]
+    
+    async def get_all_subcategories_with_counts(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Get all subcategories for all categories with product counts in a single query."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT category, subcategory, COUNT(*) as count
+                FROM products
+                WHERE subcategory IS NOT NULL
+                GROUP BY category, subcategory
+                ORDER BY category, subcategory
+            """) as cursor:
+                rows = await cursor.fetchall()
+                # Group by category
+                result = {}
+                for row in rows:
+                    category = row[0]
+                    if category not in result:
+                        result[category] = []
+                    result[category].append({"subcategory": row[1], "count": row[2]})
+                return result
     
     async def update_product_category(self, product_id: int, category: str, subcategory: Optional[str] = None):
         """Update a product's category and subcategory."""
@@ -1075,58 +1195,66 @@ class Database:
         Add a notification to the queue with duplicate prevention.
         Uses pre-check validation and INSERT OR IGNORE for robust deduplication.
         """
-        async with aiosqlite.connect(self.db_path) as db:
-            try:
-                # Pre-check: Verify if notification already exists
-                # This prevents unnecessary INSERT attempts and provides early feedback
-                async with db.execute("""
-                    SELECT id FROM notification_queue 
-                    WHERE user_id = ? AND product_id = ? AND sent_at IS NULL
-                """, (user_id, product_id)) as cursor:
-                    existing = await cursor.fetchone()
-                    if existing:
-                        logger.debug(f"Notification already queued for user {user_id}, product {product_id} (id={existing[0]})")
-                        return  # Skip insertion - no commit needed
-                
-                # Insert notification - OR IGNORE provides additional safety
-                cursor = await db.execute("""
-                    INSERT OR IGNORE INTO notification_queue (user_id, product_id, created_at)
-                    VALUES (?, ?, ?)
-                """, (user_id, product_id, datetime.now()))
-                
-                if cursor.rowcount == 0:
-                    # This should rarely happen due to pre-check, but handles race conditions
-                    logger.debug(f"Notification insert was ignored (race condition) for user {user_id}, product {product_id}")
-                else:
-                    logger.debug(f"Successfully queued notification for user {user_id}, product {product_id}")
-                
-                # Commit only after successful insert
-                await db.commit()
-                    
-            except aiosqlite.IntegrityError as e:
-                # Unique index constraint violation - duplicate detected
-                # No commit needed - transaction will be rolled back
-                logger.debug(f"Duplicate notification prevented by unique constraint for user {user_id}, product {product_id}: {e}")
-            except Exception as e:
-                # Log unexpected errors and rollback transaction
-                logger.error(f"Unexpected error queueing notification for user {user_id}, product {product_id}: {e}", exc_info=True)
-                # Transaction will be rolled back automatically when context exits
-    
+        conn = await self._get_optimized_connection()
+        try:
+            # Pre-check: Verify if notification already exists
+            # This prevents unnecessary INSERT attempts and provides early feedback
+            async with conn.execute("""
+                SELECT id FROM notification_queue
+                WHERE user_id = ? AND product_id = ? AND sent_at IS NULL
+            """, (user_id, product_id)) as cursor:
+                existing = await cursor.fetchone()
+                if existing:
+                    logger.debug(f"Notification already queued for user {user_id}, product {product_id} (id={existing[0]})")
+                    return  # Skip insertion - no commit needed
+
+            # Insert notification - OR IGNORE provides additional safety
+            cursor = await conn.execute("""
+                INSERT OR IGNORE INTO notification_queue (user_id, product_id, created_at)
+                VALUES (?, ?, ?)
+            """, (user_id, product_id, datetime.now()))
+
+            if cursor.rowcount == 0:
+                # This should rarely happen due to pre-check, but handles race conditions
+                logger.debug(f"Notification insert was ignored (race condition) for user {user_id}, product {product_id}")
+            else:
+                logger.debug(f"Successfully queued notification for user {user_id}, product {product_id}")
+
+            # Commit only after successful insert
+            await conn.commit()
+
+        except aiosqlite.IntegrityError as e:
+            # Unique index constraint violation - duplicate detected
+            # No commit needed - transaction will be rolled back
+            logger.debug(f"Duplicate notification prevented by unique constraint for user {user_id}, product {product_id}: {e}")
+        except Exception as e:
+            # Log unexpected errors and rollback transaction
+            logger.error(f"Unexpected error queueing notification for user {user_id}, product {product_id}: {e}", exc_info=True)
+            # Transaction will be rolled back automatically when context exits
+        finally:
+            await conn.close()
+
     async def mark_notification_sent(self, notification_id: int):
         """Mark a notification as sent."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
+        conn = await self._get_optimized_connection()
+        try:
+            await conn.execute("""
                 UPDATE notification_queue SET sent_at = ? WHERE id = ?
             """, (datetime.now(), notification_id))
-            await db.commit()
-    
+            await conn.commit()
+        finally:
+            await conn.close()
+
     async def delete_notification(self, notification_id: int):
         """Delete a notification from the queue."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
+        conn = await self._get_optimized_connection()
+        try:
+            await conn.execute("""
                 DELETE FROM notification_queue WHERE id = ?
             """, (notification_id,))
-            await db.commit()
+            await conn.commit()
+        finally:
+            await conn.close()
     
     async def get_pending_notifications(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Get pending notifications from queue."""
@@ -1145,13 +1273,159 @@ class Database:
         """Count notifications sent to user in the last N minutes."""
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("""
-                SELECT COUNT(*) FROM notification_queue 
+                SELECT COUNT(*) FROM notification_queue
                 WHERE user_id = ? AND sent_at IS NOT NULL
                 AND datetime(sent_at) > datetime('now', '-' || ? || ' minutes')
             """, (user_id, minutes)) as cursor:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
-    
+
+    async def claim_pending_notifications(
+        self,
+        limit: int = 100,
+        claim_token: Optional[str] = None,
+        lease_seconds: int = 300,
+        claimed_by: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Atomically claim pending notifications for processing.
+
+        This prevents duplicate processing across concurrent workers by:
+        1. Selecting unclaimed or expired notifications
+        2. Marking them with a claim token and timestamp
+        3. Returning the claimed notifications
+
+        Args:
+            limit: Maximum number of notifications to claim
+            claim_token: Unique token for this claim (auto-generated if None)
+            lease_seconds: How long the claim is valid (default 300s/5min)
+            claimed_by: Optional identifier for the claiming instance
+
+        Returns:
+            List of claimed notification dicts
+        """
+        if claim_token is None:
+            claim_token = str(uuid.uuid4())
+
+        conn = await self._get_optimized_connection()
+        try:
+            conn.row_factory = aiosqlite.Row
+
+            # Begin transaction for atomicity
+            await conn.execute("BEGIN IMMEDIATE")
+
+            try:
+                # Calculate lease expiry time (absolute time, not relative)
+                now = datetime.now()
+                lease_threshold = now - timedelta(seconds=lease_seconds)
+
+                # Select claimable notifications (not sent, and either unclaimed or lease expired)
+                # Use datetime() to convert claimed_at to datetime for comparison
+                async with conn.execute("""
+                    SELECT * FROM notification_queue
+                    WHERE sent_at IS NULL
+                      AND (claimed_at IS NULL OR datetime(claimed_at) < datetime(?))
+                    ORDER BY created_at ASC
+                    LIMIT ?
+                """, (lease_threshold.isoformat(), limit)) as cursor:
+                    rows = await cursor.fetchall()
+
+                    if not rows:
+                        await conn.commit()
+                        return []
+
+                    # Extract IDs to claim
+                    notification_ids = [row['id'] for row in rows]
+
+                    # Claim these notifications with current timestamp
+                    claim_timestamp = now.isoformat()
+                    placeholders = ','.join('?' * len(notification_ids))
+                    await conn.execute(f"""
+                        UPDATE notification_queue
+                        SET claimed_at = ?,
+                            claim_token = ?,
+                            claimed_by = ?
+                        WHERE id IN ({placeholders})
+                    """, (claim_timestamp, claim_token, claimed_by, *notification_ids))
+
+                    await conn.commit()
+
+                    logger.info(
+                        f"Claimed {len(notification_ids)} notifications with token {claim_token[:8]}... "
+                        f"(claimed_by: {claimed_by or 'unknown'})"
+                    )
+
+                    # Re-fetch the updated rows to return current claim info
+                    async with conn.execute(f"""
+                        SELECT * FROM notification_queue
+                        WHERE id IN ({placeholders})
+                        ORDER BY created_at ASC
+                    """, notification_ids) as cursor2:
+                        updated_rows = await cursor2.fetchall()
+                        return [dict(row) for row in updated_rows]
+
+            except Exception as e:
+                await conn.rollback()
+                logger.error(f"Error claiming notifications: {e}", exc_info=True)
+                raise
+        finally:
+            await conn.close()
+
+    async def release_notification_claim(
+        self,
+        notification_id: Optional[int] = None,
+        claim_token: Optional[str] = None
+    ) -> int:
+        """
+        Release claim on notification(s) so they can be retried.
+
+        Use this when a notification send fails temporarily and should be
+        retried later. Either notification_id OR claim_token must be provided.
+
+        Args:
+            notification_id: Specific notification to release (optional)
+            claim_token: Release all notifications with this claim token (optional)
+
+        Returns:
+            Number of notifications released
+        """
+        if notification_id is None and claim_token is None:
+            raise ValueError("Either notification_id or claim_token must be provided")
+
+        conn = await self._get_optimized_connection()
+        try:
+            if notification_id is not None:
+                # Release specific notification
+                cursor = await conn.execute("""
+                    UPDATE notification_queue
+                    SET claimed_at = NULL,
+                        claim_token = NULL,
+                        claimed_by = NULL
+                    WHERE id = ? AND sent_at IS NULL
+                """, (notification_id,))
+            else:
+                # Release all notifications with this claim token
+                cursor = await conn.execute("""
+                    UPDATE notification_queue
+                    SET claimed_at = NULL,
+                        claim_token = NULL,
+                        claimed_by = NULL
+                    WHERE claim_token = ? AND sent_at IS NULL
+                """, (claim_token,))
+
+            await conn.commit()
+            released_count = cursor.rowcount
+
+            if released_count > 0:
+                logger.info(
+                    f"Released {released_count} notification(s) "
+                    f"(id={notification_id}, token={claim_token[:8] if claim_token else 'N/A'}...)"
+                )
+
+            return released_count
+        finally:
+            await conn.close()
+
     async def block_user(self, user_id: int):
         """Block a user from using the bot."""
         async with aiosqlite.connect(self.db_path) as db:
@@ -1770,6 +2044,50 @@ class Database:
                        f"from inactive bots: {', '.join(sorted(inactive_bot_usernames))}")
         
         return stats
+
+    # ------------------------------------------------------------------
+    # Inline analytics
+    # ------------------------------------------------------------------
+
+    async def log_inline_query(
+        self,
+        user_id: int,
+        query: str,
+        bot_username: str,
+        latency_ms: Optional[int] = None,
+        results_count: Optional[int] = None,
+        is_empty_query: bool = False,
+    ) -> None:
+        """Log an inline query event for analytics."""
+        query_length = len(query) if query else 0
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO inline_queries
+                (user_id, query, bot_username, latency_ms, results_count, is_empty_query, query_length)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, query, bot_username, latency_ms, results_count, int(is_empty_query), query_length),
+            )
+            await db.commit()
+
+    async def log_chosen_inline_result(
+        self,
+        user_id: int,
+        result_id: str,
+        query: str,
+        bot_username: str,
+    ) -> None:
+        """Log a chosen inline result event for analytics."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO inline_chosen_results (user_id, result_id, query, bot_username)
+                VALUES (?, ?, ?, ?)
+                """,
+                (user_id, result_id, query, bot_username),
+            )
+            await db.commit()
 
 
 async def clear_database_caches():

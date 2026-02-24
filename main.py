@@ -6,12 +6,14 @@ import asyncio
 import json
 import aiosqlite
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat, MenuButtonWebApp, WebAppInfo
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
+    InlineQueryHandler,
+    ChosenInlineResultHandler,
     filters,
     ContextTypes
 )
@@ -23,15 +25,16 @@ import emojis
 from handlers.start import start_command, subscribe_command, unsubscribe_command
 from handlers.menu import menu_command, show_catalog_page, handle_catalog_pagination
 from handlers.search import handle_search, show_search_results, handle_search_pagination
-from handlers.product_view import show_product, handle_product_callback
+from handlers.product_view import show_product_media, handle_product_callback
 from handlers.language import language_command, handle_language_callback
 from handlers.admin import (
-    delete_product, nuke_command, recategorize_command, 
+    delete_product, nuke_command, recategorize_command,
     users_command, show_users_page, build_users_bot_selection_menu,
     block_command, unblock_command, send_command, broadcast_command,
     setcontact_command, handle_setcontact_input, clearcache_command,
     botusers_command, prunebots_command
 )
+from handlers.inline import handle_inline_query, handle_chosen_inline_result
 from translations.language_config import is_valid_language, LANGUAGE_DISPLAY
 from translations.translator import get_translated_string_async, translation_service
 from utils.helpers import (
@@ -44,21 +47,14 @@ from utils.helpers import (
     get_user_display_name,
     escape_markdown_v1
 )
-from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES
+from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES, extract_category_from_caption
 from utils.notifications import NotificationService
 from utils.safe_send import safe_send_message, safe_edit_message_text
 
-# Configure logging with structured format for better visibility on Render
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - [%(funcName)s:%(lineno)d] - %(message)s',
-    level=logging.INFO,
-    force=True  # Ensure this configuration takes precedence
-)
+# Configure logging
+from configs.logging_config import configure_logging
+configure_logging()
 logger = logging.getLogger(__name__)
-
-# Ensure all loggers use INFO level
-logging.getLogger('telegram').setLevel(logging.INFO)
-logging.getLogger('httpx').setLevel(logging.WARNING)  # Reduce noise from HTTP library
 
 # Initialize database
 db = Database()
@@ -182,8 +178,14 @@ async def notify_admins_for_categorization(context: ContextTypes.DEFAULT_TYPE, p
 
 
 async def process_media_group(media_group_id: str, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """Process collected media group messages after a short delay."""
-    await asyncio.sleep(0.5)  # Wait for all messages in the group to arrive
+    """Process collected media group messages after a short delay.
+    
+    Reduced delay from 500ms to 250ms for faster responsiveness.
+    Telegram typically delivers all media group messages within 100-200ms,
+    making 250ms sufficient while maintaining reliability.
+    Monitor media_group_messages dict size if incomplete groups are detected.
+    """
+    await asyncio.sleep(0.25)
     
     # Get or create a lock for this media group to prevent race conditions
     if media_group_id not in media_group_locks:
@@ -245,9 +247,12 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
         logger.info(f"Updated media group product {existing_product_id} with {len(file_ids)} files")
         return
     
-    # Create new product with first file as primary (NO automatic categorization)
+    # Create new product with first file as primary (with automatic categorization)
     additional_files = json.dumps(list(zip(file_ids[1:], file_types[1:]))) if len(file_ids) > 1 else None
     additional_msg_ids = json.dumps(message_ids[1:]) if len(message_ids) > 1 else None
+    
+    # Extract category from caption hashtags
+    category, subcategory = extract_category_from_caption(caption)
     
     product_id = await db.add_product(
         file_id=file_ids[0],
@@ -258,16 +263,17 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
         media_group_id=media_group_id,
         additional_file_ids=additional_files,
         additional_message_ids=additional_msg_ids,
-        category=None,  # No automatic categorization
-        subcategory=None,
+        category=category,
+        subcategory=subcategory,
         bot_username=context.bot.username
     )
     
     if product_id > 0:
         # Register this media group
         await db.register_media_group(media_group_id, chat_id, product_id)
+        category_info = f"category={category}, subcategory={subcategory}" if category else "uncategorized"
         logger.info(
-            f"New media group product saved: ID={product_id}, files={len(file_ids)}"
+            f"New media group product saved: ID={product_id}, files={len(file_ids)}, {category_info}"
         )
         
         # Notify admins for categorization
@@ -328,23 +334,28 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         # Get caption
         caption = message.caption or message.text or ""
         
-        # Save product to database WITHOUT automatic categorization
+        # Extract category from caption hashtags
+        category, subcategory = extract_category_from_caption(caption)
+        
+        # Save product to database with automatic categorization
         product_id = await db.add_product(
             file_id=file_id,
             file_type=file_type,
             caption=caption,
             message_id=message.message_id,
             chat_id=message.chat.id,
-            category=None,  # No automatic categorization
-            subcategory=None,
+            category=category,
+            subcategory=subcategory,
             bot_username=context.bot.username
         )
         
         if product_id > 0:
+            category_info = f"category={category}, subcategory={subcategory}" if category else "uncategorized"
             logger.info(
                 f"New product saved: ID={product_id}, "
                 f"message_id={message.message_id}, "
                 f"type={file_type}, "
+                f"{category_info}, "
                 f"bot={context.bot.username}"
             )
             
@@ -361,8 +372,7 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle all callback queries (buttons)."""
     query = update.callback_query
-    callback_data = query.data
-
+    
     # Check if user is blocked (except for admins)
     user_id = update.effective_user.id
     if not is_admin(user_id):
@@ -373,9 +383,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 show_alert=True
             )
             return
-
-    # Answer callback query immediately for instant button feedback
-    # Exception: long-running operations that will answer later to avoid timeout
+    
+    callback_data = query.data
+    
+    # Don't answer callback query upfront for long-running operations
+    # These callbacks will answer the query themselves to avoid timeout errors
     if callback_data not in LONG_RUNNING_CALLBACKS:
         await query.answer()  # Answer callback to prevent loading spinner
     
@@ -442,10 +454,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         parts = callback_data.split("|")
         if len(parts) >= 2:
             lang_code = parts[1]
-
+            
             # Validate and set language
             if is_valid_language(lang_code):
                 await db.set_user_language(user_id, lang_code)
+                # Answer the callback
+                await query.answer()
                 # Delete the language selection message
                 await query.delete_message()
                 
@@ -602,9 +616,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             return
         
         try:
-            # Get all products before deletion
-            all_products = await db.get_all_products_for_search()
-            total_count = len(all_products)
+            # Count products efficiently without loading all into memory
+            async with aiosqlite.connect(db.db_path) as conn:
+                cursor = await conn.execute("SELECT COUNT(*) FROM products")
+                total_count = (await cursor.fetchone())[0]
             
             if total_count == 0:
                 await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id, text="📭 The catalog is already empty. Nothing to delete.")
@@ -1129,7 +1144,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             if len(parts) >= 2:
                 bot_username = parts[1]
                 page = int(parts[2]) if len(parts) > 2 else 1
-
+                
+                await query.answer()
                 await show_users_page(update, context, page, bot_username)
             else:
                 await query.answer("Invalid data", show_alert=True)
@@ -1139,7 +1155,9 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             if not is_admin(update.effective_user.id):
                 await query.answer("❌ Only admins can view users.", show_alert=True)
                 return
-
+            
+            await query.answer()
+            
             # Build bot selection menu using helper function
             keyboard, message, message_no_md, has_bots, bot_list = await build_users_bot_selection_menu()
             
@@ -1366,8 +1384,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             if not is_admin(update.effective_user.id):
                 await query.answer("❌ Only admins can view users.", show_alert=True)
                 return
-
+            
             # Display the bot list inline (duplicates botusers_command logic for callback context)
+            await query.answer()
+            
             bot_usernames = await db.get_bot_usernames()
             keyboard_buttons = []
             
@@ -1434,6 +1454,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     reply_markup=keyboard,
                     parse_mode="Markdown"
                 )
+                await query.answer()
             else:
                 await query.answer("Invalid data", show_alert=True)
         
@@ -1488,7 +1509,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     [InlineKeyboardButton(f"{emojis.OK} Yes, Delete All", callback_data=f"confirm_deleteallbot|{bot_username}")],
                     [InlineKeyboardButton(f"{emojis.ERROR} Cancel", callback_data=f"viewbotusers|{bot_username}|1")]
                 ])
-
+                
                 await safe_edit_message_text(context.bot, chat_id=query.message.chat_id, message_id=query.message.message_id,
                     text=f"{emojis.WARNING} **BULK DELETE WARNING**\n\n"
                     f"You are about to delete **{count}** user(s) from {display_name}.\n\n"
@@ -1499,6 +1520,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                     reply_markup=keyboard,
                     parse_mode="Markdown"
                 )
+                await query.answer()
             else:
                 await query.answer("Invalid data", show_alert=True)
         
@@ -1607,7 +1629,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Handle "Message is not modified" error silently
         if "message is not modified" in str(e).lower():
             logger.debug(f"Message not modified for callback {callback_data}: {e}")
-            # Already answered at the start of handler
+            await query.answer()  # Silent acknowledgment
         else:
             logger.error(f"BadRequest error handling callback query: {e}", exc_info=True)
             await query.answer("Unable to process this action. Please try again.", show_alert=True)
@@ -1764,11 +1786,27 @@ async def setup_bot_commands(bot):
     Args:
         bot: The Telegram bot instance
     """
+    # Configure Menu Button to open webapp (if WEB_APP_URL is configured)
+    if Config.WEB_APP_URL:
+        try:
+            await bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(
+                    text="🛒 SHOP",  # Text shown on menu button
+                    web_app=WebAppInfo(url=Config.WEB_APP_URL)
+                )
+            )
+            logger.info(f"Menu button configured to open webapp: {Config.WEB_APP_URL}")
+        except Exception as e:
+            logger.error(f"Failed to set menu button: {e}")
+    
     # Define user commands (available to all users)
     # These appear in the command menu for all users
     user_commands = [
         BotCommand("start", "Start the bot and select language"),
         BotCommand("menu", "Browse the product catalog"),
+        BotCommand("language", "Change bot language"),
+        BotCommand("subscribe", "Enable product notifications"),
+        BotCommand("unsubscribe", "Disable product notifications"),
     ]
     
     # Define admin commands (available to admins only)
@@ -1790,21 +1828,27 @@ async def setup_bot_commands(bot):
     await bot.set_my_commands(user_commands)
     logger.info(f"Set user commands globally: {[cmd.command for cmd in user_commands]}")
     
-    # Set admin-specific commands for each admin user
+    # Set admin-specific commands for each admin user (batched for performance)
     # This overrides the global commands for admin chat scopes
     admin_ids = get_admin_ids()
     if not admin_ids:
         logger.warning("No admin IDs configured - admin commands will not be set")
-    
-    for admin_id in admin_ids:
-        try:
-            await bot.set_my_commands(
-                admin_commands,
-                scope=BotCommandScopeChat(chat_id=admin_id)
-            )
-            logger.info(f"Set admin commands for user {admin_id}: {[cmd.command for cmd in admin_commands]}")
-        except Exception as e:
-            logger.warning(f"Could not set admin commands for {admin_id}: {e}")
+    else:
+        # Batch admin command setup using asyncio.gather for parallel execution
+        async def set_admin_commands_for_user(admin_id):
+            try:
+                await bot.set_my_commands(
+                    admin_commands,
+                    scope=BotCommandScopeChat(chat_id=admin_id)
+                )
+                logger.info(f"Set admin commands for user {admin_id}: {[cmd.command for cmd in admin_commands]}")
+                return True
+            except Exception as e:
+                logger.warning(f"Could not set admin commands for {admin_id}: {e}")
+                return False
+        
+        # Execute all admin command setups concurrently
+        await asyncio.gather(*[set_admin_commands_for_user(admin_id) for admin_id in admin_ids])
     
     logger.info("Bot commands configured successfully - menu will be consistent across all bot instances")
 
@@ -1876,6 +1920,10 @@ def main():
     # Callback query handler (for inline buttons)
     application.add_handler(CallbackQueryHandler(callback_query_handler))
     
+    # Inline query handler (for @bot search in any chat)
+    application.add_handler(InlineQueryHandler(handle_inline_query))
+    application.add_handler(ChosenInlineResultHandler(handle_chosen_inline_result))
+
     # Message handler (for search queries)
     application.add_handler(
         MessageHandler(
@@ -1897,4 +1945,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -3,10 +3,10 @@ Product view handler.
 """
 import logging
 import json
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, InputMediaAnimation, InputMediaDocument
 from telegram.ext import ContextTypes
 from database import Database
-from utils.helpers import send_media_message, is_admin, get_bot_specific_file_id
+from utils.helpers import send_media_message, is_admin, get_bot_specific_file_id, get_user_lang_async
 from utils.safe_send import safe_send_message
 from utils.pagination import paginate_items
 from utils.categories import format_category_info
@@ -16,16 +16,17 @@ logger = logging.getLogger(__name__)
 db = Database()
 
 
-async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, product_id: int):
-    """Show a single product with media and details."""
+async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE, product_id: int):
+    """Show all product media at once (as media group if multiple files)."""
     try:
         product = await db.get_product(product_id)
         
         if not product:
-            await update.callback_query.answer(
-                "❌ Product not found.",
-                show_alert=True
-            )
+            if update.callback_query:
+                await update.callback_query.answer(
+                    "❌ Product not found.",
+                    show_alert=True
+                )
             return
         
         # Get user's pagination state to determine back button behavior
@@ -96,10 +97,78 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
                 back_callback = f"category|{product_category}|1"
             # else: keep default "menu|1"
         
-        # Create keyboard
-        keyboard_buttons = [
-            [InlineKeyboardButton("🔙 Back to results", callback_data=back_callback)]
-        ]
+        # Get user's language preference
+        user_lang = await get_user_lang_async(user_id)
+        
+        # Get caption and translate it
+        caption = product.get("caption") or "No description"
+        
+        # Translate caption if user language is not English
+        if user_lang and user_lang not in ["en", "en-US"]:
+            try:
+                caption = await translate_text_async(caption, user_lang)
+            except Exception as e:
+                logger.error(f"Error translating caption: {e}")
+                # Keep original caption if translation fails
+        
+        category_info = format_category_info(product.get("category"), product.get("subcategory"), user_lang)
+        
+        # Collect all media information
+        additional_file_ids = product.get("additional_file_ids")
+        media_list = [(product["file_id"], product["file_type"])]
+        
+        if additional_file_ids:
+            try:
+                file_data = json.loads(additional_file_ids)
+                media_list.extend(file_data)
+            except Exception as e:
+                logger.error(f"Error parsing additional_file_ids: {e}")
+        
+        total_media = len(media_list)
+        
+        # Try to get bot-specific file IDs if needed
+        product_bot = product.get("bot_username")
+        current_bot = context.bot.username
+        
+        if (product_bot is None or current_bot is None or product_bot.lower() != current_bot.lower()):
+            # Try to get bot-specific file IDs for all media
+            additional_message_ids_json = product.get("additional_message_ids")
+            if additional_message_ids_json:
+                try:
+                    additional_msg_ids = json.loads(additional_message_ids_json)
+                    message_ids = [product["message_id"]] + additional_msg_ids
+                    
+                    # Update file IDs with bot-specific ones
+                    updated_media_list = []
+                    for idx, (file_id, file_type) in enumerate(media_list):
+                        if idx < len(message_ids):
+                            bot_specific_id = await get_bot_specific_file_id(
+                                context,
+                                product["chat_id"],
+                                message_ids[idx],
+                                file_type,
+                                file_index=idx
+                            )
+                            if bot_specific_id:
+                                updated_media_list.append((bot_specific_id, file_type))
+                            else:
+                                updated_media_list.append((file_id, file_type))
+                        else:
+                            updated_media_list.append((file_id, file_type))
+                    media_list = updated_media_list
+                except Exception as e:
+                    logger.warning(f"Could not get bot-specific file IDs: {e}")
+        
+        # Build full caption
+        full_caption = f"{caption}\n\n📂 {category_info}"
+        
+        # Create keyboard with back button and admin buttons
+        keyboard_buttons = []
+        
+        # Add back button
+        keyboard_buttons.append([
+            InlineKeyboardButton("🔙 Back to results", callback_data=back_callback)
+        ])
         
         # Add delete and recategorize buttons for admins
         if is_admin(user_id):
@@ -116,220 +185,86 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         
         keyboard = InlineKeyboardMarkup(keyboard_buttons)
         
-        # Get user's language preference
-        user_lang = await db.get_user_language(user_id)
-        
-        # Get caption and translate it
-        caption = product.get("caption") or "No description"
-        
-        # Translate caption if user language is not English
-        if user_lang and user_lang not in ["en", "en-US"]:
+        # Send all media at once
+        if total_media == 1:
+            # Single media - send with caption
+            file_id, file_type = media_list[0]
+            await send_media_message(
+                context,
+                update.effective_chat.id,
+                file_id,
+                file_type,
+                caption=full_caption,
+                reply_markup=None
+            )
+        else:
+            # Multiple media - send as media group
             try:
-                caption = await translate_text_async(caption, user_lang)
-            except Exception as e:
-                logger.error(f"Error translating caption: {e}")
-                # Keep original caption if translation fails
-        
-        category_info = format_category_info(product.get("category"), product.get("subcategory"), user_lang)
-        
-        # Add category to caption
-        full_caption = f"{caption}\n\n📂 {category_info}"
-        
-        # Check if this is a media group (has additional files)
-        additional_file_ids = product.get("additional_file_ids")
-        
-        if additional_file_ids:
-            # This is a media group - send as album
-            try:
-                file_data = json.loads(additional_file_ids)
+                media_group = []
+                unsupported_media = []  # Track media that can't be in groups
+                caption_used = False  # Track if caption has been added to any media
                 
-                # Check if we need bot-specific file ID resolution
-                product_bot = product.get("bot_username")
-                current_bot = context.bot.username
-                # Handle None values for bot usernames
-                needs_bot_specific_ids = (
-                    product_bot is None or 
-                    current_bot is None or 
-                    product_bot.lower() != current_bot.lower()
-                )
+                # Helper to get caption (only for first media item)
+                def get_caption():
+                    nonlocal caption_used
+                    if not caption_used:
+                        caption_used = True
+                        return full_caption
+                    return None
                 
-                # Parse additional message IDs if available
-                additional_message_ids_json = product.get("additional_message_ids")
-                message_ids = []
-                use_bot_specific_ids = False
-                
-                if additional_message_ids_json:
-                    try:
-                        additional_msg_ids = json.loads(additional_message_ids_json)
-                        # Build complete message ID list: [first_message_id, ...additional_message_ids]
-                        message_ids = [product["message_id"]] + additional_msg_ids
-                        # Use bot-specific IDs if different bot OR no message IDs stored
-                        use_bot_specific_ids = needs_bot_specific_ids
-                    except (json.JSONDecodeError, TypeError) as e:
-                        logger.warning(f"Failed to parse additional_message_ids: {e}")
-                        use_bot_specific_ids = False
-                else:
-                    # No message IDs - need bot-specific resolution if different bot
-                    if needs_bot_specific_ids:
-                        # We need message IDs for bot-specific resolution
-                        # Estimate sequential message IDs (may not be accurate for all cases)
-                        logger.warning(
-                            f"Product {product_id} has no stored message IDs - estimating sequential IDs. "
-                            f"This may fail if messages weren't sent sequentially."
-                        )
-                        # Build message ID list from the first message ID with correct sequential numbering
-                        # message_ids[0] = base, message_ids[1] = base+1, message_ids[2] = base+2, etc.
-                        message_ids = [product["message_id"] + i for i in range(len(file_data) + 1)]
-                        use_bot_specific_ids = True
-                    else:
-                        use_bot_specific_ids = False
-                
-                # Prepare media list
-                media_list = []
-                non_group_media = []  # Media that can't be in a group (documents, animations, etc.)
-                
-                # Add first media
-                first_type = product["file_type"]
-                first_id = product["file_id"]
-                chat_id = product["chat_id"]
-                
-                # Try to get bot-specific file ID for the first media if message IDs are available
-                if use_bot_specific_ids:
-                    bot_specific_id = await get_bot_specific_file_id(
-                        context,
-                        chat_id,
-                        message_ids[0],
-                        first_type,
-                        file_index=0
-                    )
-                    # Use bot-specific ID if available, otherwise fall back to original
-                    first_id = bot_specific_id or first_id
-                
-                # Check if first media can be in a media group
-                if first_type == "photo":
-                    media_list.append(InputMediaPhoto(media=first_id, caption=full_caption))
-                elif first_type == "video":
-                    media_list.append(InputMediaVideo(media=first_id, caption=full_caption))
-                else:
-                    # First media is not photo/video, add to non-group media
-                    # We'll send caption with this media
-                    non_group_media.append((first_id, first_type, full_caption))
-                
-                # Add additional media with bot-specific file IDs if available
-                for idx, (file_id, file_type) in enumerate(file_data, start=1):
-                    if use_bot_specific_ids:
-                        # Verify we have a message ID for this file
-                        if idx < len(message_ids):
-                            # Get the corresponding message ID
-                            msg_id = message_ids[idx]
-                            
-                            # Try to get bot-specific file ID
-                            bot_specific_id = await get_bot_specific_file_id(
-                                context,
-                                chat_id,
-                                msg_id,
-                                file_type,
-                                file_index=idx
-                            )
-                            
-                            # Use bot-specific ID if available, otherwise fall back to original
-                            file_id = bot_specific_id or file_id
-                        else:
-                            # Message ID missing for this file - log warning and use original
-                            logger.warning(
-                                f"Message ID missing for file {idx} in product {product_id} "
-                                f"(have {len(message_ids)} IDs, need {len(file_data)+1})"
-                            )
-                    
-                    # Add media to the list based on type
-                    # Telegram media groups only support photos and videos
-                    # Other types will be sent as separate messages
+                for idx, (file_id, file_type) in enumerate(media_list):
                     if file_type == "photo":
-                        media_list.append(InputMediaPhoto(media=file_id))
+                        media_group.append(InputMediaPhoto(media=file_id, caption=get_caption()))
                     elif file_type == "video":
-                        media_list.append(InputMediaVideo(media=file_id))
+                        media_group.append(InputMediaVideo(media=file_id, caption=get_caption()))
+                    elif file_type == "animation":
+                        media_group.append(InputMediaAnimation(media=file_id, caption=get_caption()))
+                    elif file_type == "document":
+                        # Documents can be in media groups (unlike audio/voice/video_note)
+                        media_group.append(InputMediaDocument(media=file_id, caption=get_caption()))
+                    elif file_type in ["audio", "voice", "video_note"]:
+                        # These types cannot be in media groups - send separately
+                        # Caption will be added to first media item encountered
+                        unsupported_media.append((file_id, file_type, get_caption()))
                     else:
-                        # This media type can't be in a group, send separately
-                        non_group_media.append((file_id, file_type, None))
+                        # Unknown type - log and skip
+                        logger.warning(f"Unknown media type '{file_type}' for product {product_id}, skipping")
                 
-                # Now send the media
-                # 1. Send media group if we have photos/videos
-                if media_list:
-                    logger.info(f"Sending media group with {len(media_list)} items for product {product_id}")
+                # Send media group if we have any supported media
+                if media_group:
                     await context.bot.send_media_group(
                         chat_id=update.effective_chat.id,
-                        media=media_list
+                        media=media_group
                     )
                 
-                # 2. Send non-group media (documents, animations, etc.) separately
-                if non_group_media:
-                    logger.info(f"Sending {len(non_group_media)} non-group media items for product {product_id}")
-                    for idx, (file_id, file_type, caption) in enumerate(non_group_media):
-                        # Add caption to first non-group media only if it wasn't used in media group
-                        should_add_caption = idx == 0 and not media_list
+                # Send unsupported media types individually
+                for file_id, file_type, item_caption in unsupported_media:
+                    await send_media_message(
+                        context,
+                        update.effective_chat.id,
+                        file_id,
+                        file_type,
+                        caption=item_caption,
+                        reply_markup=None
+                    )
+                    
+            except Exception as e:
+                logger.exception(f"Error sending media group: {e}")
+                # Fallback: send all media individually
+                for idx, (file_id, file_type) in enumerate(media_list):
+                    # Add caption only to first media
+                    item_caption = full_caption if idx == 0 else None
+                    try:
                         await send_media_message(
                             context,
                             update.effective_chat.id,
                             file_id,
                             file_type,
-                            caption=caption if should_add_caption else None,
-                            reply_markup=None  # Don't add keyboard to each media
+                            caption=item_caption,
+                            reply_markup=None
                         )
-                
-                # Get order contact
-                order_contact = await db.get_order_contact()
-                
-                # Get translated DM to order message
-                dm_message = await get_translated_string_async("dm_to_order", user_lang, contact=order_contact)
-                
-                # Send keyboard in a separate message
-                await safe_send_message(
-                    context.bot,
-                    update.effective_chat.id,
-                    text=dm_message,
-                    parse_mode=None,
-                    reply_markup=keyboard
-                )
-                
-                await update.callback_query.answer()
-                return
-                
-            except Exception as e:
-                logger.error(f"Error sending media group: {e}")
-                # Fall back to single media
-        
-        # Send single media with caption
-        # Check if we need bot-specific file ID
-        product_bot = product.get("bot_username")
-        current_bot = context.bot.username
-        file_id_to_use = product["file_id"]
-        
-        # Handle None values for bot usernames
-        if (product_bot is None or 
-            current_bot is None or 
-            product_bot.lower() != current_bot.lower()):
-            # Try to get bot-specific file ID for single media
-            bot_specific_id = await get_bot_specific_file_id(
-                context,
-                product["chat_id"],
-                product["message_id"],
-                product["file_type"],
-                file_index=0
-            )
-            if bot_specific_id:
-                file_id_to_use = bot_specific_id
-                logger.debug(f"Using bot-specific file ID for product {product_id}")
-            else:
-                logger.warning(f"Could not get bot-specific file ID for product {product_id}, using original")
-        
-        await send_media_message(
-            context,
-            update.effective_chat.id,
-            file_id_to_use,
-            product["file_type"],
-            caption=full_caption,
-            reply_markup=None  # Don't add keyboard to media message
-        )
+                    except Exception as send_error:
+                        logger.error(f"Failed to send media {idx + 1}/{total_media}: {send_error}")
         
         # Get order contact
         order_contact = await db.get_order_contact()
@@ -337,7 +272,7 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
         # Get translated DM to order message
         dm_message = await get_translated_string_async("dm_to_order", user_lang, contact=order_contact)
         
-        # Send DM message with keyboard separately for consistency
+        # Send DM message with keyboard separately
         await safe_send_message(
             context.bot,
             update.effective_chat.id,
@@ -346,15 +281,16 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE, produ
             reply_markup=keyboard
         )
         
-        await update.callback_query.answer()
+        if update.callback_query:
+            await update.callback_query.answer()
         
     except Exception as e:
-        logger.error(f"Error showing product: {e}")
-        await update.callback_query.answer(
-            "❌ An error occurred while loading the product.",
-            show_alert=True
-        )
-
+        logger.exception(f"Error showing product media: {e}")
+        if update.callback_query:
+            await update.callback_query.answer(
+                "❌ An error occurred while loading the product.",
+                show_alert=True
+            )
 
 async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle product button callback."""
@@ -363,7 +299,7 @@ async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_
     
     if len(parts) == 2 and parts[0] == "product":
         product_id = int(parts[1])
-        await show_product(update, context, product_id)
+        await show_product_media(update, context, product_id)
     else:
         await update.callback_query.answer("Invalid callback data", show_alert=True)
 

@@ -28,6 +28,7 @@ class ConfigClass:
         self.DB_PATH: str = 'catalog.db'
         self.USE_WEBHOOK: bool = False
         self.WEBHOOK_URL: Optional[str] = None
+        self.WEB_APP_URL: Optional[str] = None
         self.ORDER_CONTACT: str = '@FLYAWAYPEP'  # Configurable order contact
         self._load_config()
     
@@ -41,27 +42,48 @@ class ConfigClass:
             self.BOT_TOKEN = config('BOT_TOKEN')
         except UndefinedValueError:
             self.BOT_TOKEN = None
-        
-        # Load additional bot tokens (BOT_TOKEN_1, BOT_TOKEN_2, etc.)
-        # This allows multiple bot instances to run with separate webhook endpoints
+
+        # BOT_TOKENS (comma-separated list) takes priority over individual token vars.
+        # This is useful when all tokens are known upfront or managed by an orchestrator.
+        try:
+            bot_tokens_raw = config('BOT_TOKENS')
+            if bot_tokens_raw:
+                self.BOT_TOKENS = [t.strip() for t in bot_tokens_raw.split(',') if t.strip()]
+                if not self.BOT_TOKENS:
+                    logger.warning("BOT_TOKENS is set but contains no valid tokens (check for extra commas or whitespace).")
+                self._loaded = True
+                return
+        except UndefinedValueError:
+            pass
+
+        # Build BOT_TOKENS from individual env vars:
+        #   index 0 = BOT_TOKEN (primary bot)
+        #   index 1 = BOT_TOKEN_1, index 2 = BOT_TOKEN_2, … (additional bots)
+        # Gaps in numbering are skipped but do NOT stop scanning; later indices
+        # are still collected so the resulting list stays as compact as possible.
+        # The startup log (see validate()) prints each index → token-id so operators
+        # can confirm the mapping matches what was registered with Telegram.
         bot_tokens = []
         if self.BOT_TOKEN:
             bot_tokens.append(self.BOT_TOKEN)
-        
-        # Try to load BOT_TOKEN_1, BOT_TOKEN_2, ... up to BOT_TOKEN_10
+
+        # Support BOT_TOKEN_ (trailing underscore, no number) as an additional token
+        try:
+            token = config('BOT_TOKEN_')
+            if token and token not in bot_tokens:
+                bot_tokens.append(token)
+        except UndefinedValueError:
+            pass
+
+        # Scan BOT_TOKEN_1 … BOT_TOKEN_10; continue past gaps (don't break early)
         for i in range(1, 11):
             try:
                 token = config(f'BOT_TOKEN_{i}')
-                if token:
+                if token and token not in bot_tokens:
                     bot_tokens.append(token)
             except UndefinedValueError:
-                # Stop searching if we hit a missing token index >= 2
-                # This assumes tokens are numbered sequentially starting from 1
-                # We allow BOT_TOKEN to exist without BOT_TOKEN_1, but if BOT_TOKEN_2
-                # is missing, we assume there are no more tokens
-                if i >= 2:
-                    break
-        
+                continue
+
         self.BOT_TOKENS = bot_tokens
         
         # Load ADMIN_IDS
@@ -88,6 +110,11 @@ class ConfigClass:
         self.USE_WEBHOOK = config('USE_WEBHOOK', default=False, cast=bool)
         self.WEBHOOK_URL = config('WEBHOOK_URL', default=None)
         self.ORDER_CONTACT = config('ORDER_CONTACT', default='@FLYAWAYPEP')
+        
+        # Load WEB_APP_URL - if not set, derive from WEBHOOK_URL
+        self.WEB_APP_URL = config('WEB_APP_URL', default=None)
+        if not self.WEB_APP_URL and self.WEBHOOK_URL:
+            self.WEB_APP_URL = self.WEBHOOK_URL.rstrip('/') + '/webapp/index.html'
         
         self._loaded = True
     
@@ -129,7 +156,9 @@ class ConfigClass:
             logger.info(f"  - Primary bot token: {'*' * 10}{self.BOT_TOKEN[-5:]}")
         logger.info(f"  - Total bot instances: {len(self.BOT_TOKENS)}")
         for idx, token in enumerate(self.BOT_TOKENS):
-            logger.info(f"    - Bot {idx}: {'*' * 10}{token[-5:]}")
+            token_id = token.split(':')[0] if ':' in token else 'INVALID_FORMAT'
+            webhook_path = '/webhook' if idx == 0 else f'/webhook/{idx}'
+            logger.info(f"    - Bot {idx} (token_id={token_id}, path={webhook_path})")
         logger.info(f"  - Admin IDs: {len(self.ADMIN_IDS)} admin(s) configured")
         logger.info(f"  - Channel: {self.CHANNEL_ID or self.CHANNEL_USERNAME}")
         logger.info(f"  - Database: {self.DB_PATH}")

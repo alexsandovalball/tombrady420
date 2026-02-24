@@ -7,8 +7,7 @@ Welcome to the Telegram Media Catalog Bot! This bot helps you browse and search 
 ### First Time Using the Bot
 
 1. **Start the bot** - Send `/start` to the bot
-2. **Select your language** - Choose from 7 supported languages:
-   - 🇬🇧 English (UK)
+2. **Select your language** - Choose from 6 supported languages:
    - 🇺🇸 English (USA)
    - 🇩🇪 German
    - 🇳🇱 Dutch

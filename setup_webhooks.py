@@ -24,7 +24,7 @@ def setup_webhooks():
         return False
     
     if not Config.BOT_TOKENS:
-        print("❌ No bot tokens found. Please set BOT_TOKEN or BOT_TOKEN_1, etc.")
+        print("❌ No bot tokens found. Please set BOT_TOKENS, BOT_TOKEN, BOT_TOKEN_ or BOT_TOKEN_1, etc.")
         return False
     
     print("=" * 70)
@@ -50,7 +50,13 @@ def setup_webhooks():
         params = {
             'url': webhook_url,
             'drop_pending_updates': True,
-            'allowed_updates': ['message', 'callback_query', 'channel_post']
+            'allowed_updates': [
+                'message',
+                'callback_query',
+                'channel_post',
+                'inline_query',
+                'chosen_inline_result',
+            ]
         }
         
         try:

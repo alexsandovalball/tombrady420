@@ -71,12 +71,24 @@ def extract_category_from_caption(caption: str) -> Tuple[Optional[str], Optional
     if not caption:
         return None, None
     
-    # Normalize caption to uppercase for matching
-    caption_upper = caption.upper()
+    # Extract hashtags by splitting on # and taking uppercase words
+    # This correctly handles multi-word hashtags like #LIVE RESIN or #DIAMONDS AND SAUCE
+    parts = [p.strip() for p in caption.split('#') if p.strip()]
     
-    # Extract all hashtags - improved pattern to handle spaces within hashtags
-    # Matches #WORD, #WORD WORD, etc.
-    hashtags = re.findall(r'#([A-Z0-9]+(?:\s+[A-Z0-9]+)*)', caption_upper)
+    hashtags = []
+    for part in parts:
+        # Take only the uppercase words at the start of each hashtag
+        words = part.split()
+        tag_words = []
+        for word in words:
+            # Include uppercase words (including those with digits like "420" if uppercase)
+            # Reject standalone digits or mixed-case words
+            if word.isupper():
+                tag_words.append(word)
+            else:
+                break  # Stop at first non-uppercase word (start of regular text)
+        if tag_words:
+            hashtags.append(' '.join(tag_words))
     
     if not hashtags:
         return None, None

@@ -5,6 +5,7 @@ Supports multi-bot delivery - sends messages through the bot each user started.
 """
 import logging
 import asyncio
+import uuid
 from typing import List, Dict, Optional
 from datetime import datetime
 import aiosqlite
@@ -385,50 +386,79 @@ class NotificationService:
         Process pending notifications from the queue with rate limiting and staggered delivery.
         Uses bot-first grouping: notifications are grouped by bot_username BEFORE processing,
         then each bot's notifications are processed simultaneously via asyncio.gather.
-        This eliminates duplicate sends by ensuring each bot handles only its assigned users.
+
+        Uses atomic claim/lease semantics to prevent duplicate processing across concurrent workers.
+        Each batch is claimed with a unique token and lease timeout, ensuring only one worker
+        processes each notification at a time.
+
         Processes all pending notifications in batches until queue is empty.
         """
         try:
+            # Generate unique claim token for this processing run
+            claim_token = str(uuid.uuid4())
+            claimed_by = f"process_{claim_token[:8]}"
+
             total_sent_count = 0
+            total_notifications_attempted = 0
             batch_number = 0
             rate_limited_users = set()  # Track users who hit rate limits in this run
             # Tracks duplicates across batches for this processing run
             seen_user_product_global = set()
             # Queue processing runs as a single task; DB unique constraint prevents new duplicates
-            
+
+            logger.info(f"Starting notification queue processing with claim_token={claim_token[:8]}... claimed_by={claimed_by}")
+
             # Process notifications in batches until queue is empty
             while True:
                 batch_number += 1
-                pending = await self.db.get_pending_notifications(limit=PENDING_NOTIFICATIONS_BATCH_LIMIT)
-                
+
+                # Atomically claim pending notifications
+                pending = await self.db.claim_pending_notifications(
+                    limit=PENDING_NOTIFICATIONS_BATCH_LIMIT,
+                    claim_token=claim_token,
+                    lease_seconds=300,  # 5 minute lease
+                    claimed_by=claimed_by
+                )
+
                 if not pending:
                     if batch_number == 1:
                         logger.debug("No pending notifications to process")
                     else:
-                        logger.info(f"Finished processing all notification batches. Total sent: {total_sent_count}")
+                        # Calculate unique users processed
+                        unique_users = len(set(key[0] for key in seen_user_product_global))
+                        logger.info(
+                            f"Finished processing all notification batches. "
+                            f"Unique users: {unique_users}, "
+                            f"Notifications sent: {total_sent_count}, "
+                            f"Notifications attempted: {total_notifications_attempted}"
+                        )
                     return total_sent_count
-                
-                logger.info(f"Processing batch {batch_number}: {len(pending)} pending notifications")
-                
+
+                total_notifications_attempted += len(pending)
+                logger.info(
+                    f"Processing batch {batch_number}: claimed {len(pending)} pending notifications "
+                    f"(token: {claim_token[:8]}...)"
+                )
+
                 # Deduplicate by (user_id, product_id) across all batches
                 deduplicated = []
                 duplicate_skip_count = 0
                 duplicates_to_remove = []
-                
+
                 for notification in pending:
                     user_id = notification["user_id"]
                     product_id = notification["product_id"]
                     key = (user_id, product_id)
-                    
+
                     if key in seen_user_product_global:
                         duplicate_skip_count += 1
                         duplicates_to_remove.append(notification["id"])
                         logger.debug(f"Duplicate detected: user={user_id}, product={product_id}, notification_id={notification['id']}")
                         continue
-                    
+
                     seen_user_product_global.add(key)
                     deduplicated.append(notification)
-                
+
                 if duplicate_skip_count:
                     logger.warning(f"Found {duplicate_skip_count} duplicate notifications in batch {batch_number} - removing from queue")
                     removal_failures = 0
@@ -438,19 +468,19 @@ class NotificationService:
                         except Exception as e:
                             removal_failures += 1
                             logger.error(f"Failed to remove duplicate notification {duplicate_id}: {e}")
-                    
+
                     if removal_failures > 0:
                         logger.error(f"Failed to remove {removal_failures} out of {duplicate_skip_count} duplicate notifications")
                     else:
                         logger.info(f"Successfully removed all {duplicate_skip_count} duplicate notifications")
-                
+
                 if not deduplicated:
                     # All notifications in this batch were duplicates
                     if len(pending) == PENDING_NOTIFICATIONS_BATCH_LIMIT:
                         await asyncio.sleep(2)
                         continue
                     return total_sent_count
-                
+
                 # Bot-first grouping: group ALL notifications by bot_username BEFORE processing
                 notifications_by_bot = {}
                 for notification in deduplicated:
@@ -460,12 +490,17 @@ class NotificationService:
                     if bot_username not in notifications_by_bot:
                         notifications_by_bot[bot_username] = []
                     notifications_by_bot[bot_username].append(notification)
-                
+
+                # Calculate unique users in this batch
+                unique_users_in_batch = len(set(n["user_id"] for n in deduplicated))
                 bot_summary = ', '.join(
                     f'@{b or "primary"} ({len(n)})' for b, n in notifications_by_bot.items()
                 )
-                logger.info(f"Batch {batch_number}: grouped into {len(notifications_by_bot)} bot(s): {bot_summary}")
-                
+                logger.info(
+                    f"Batch {batch_number}: grouped into {len(notifications_by_bot)} bot(s): {bot_summary}. "
+                    f"Unique users in batch: {unique_users_in_batch}, notifications: {len(deduplicated)}"
+                )
+
                 # Process all bots simultaneously using asyncio.gather
                 tasks = []
                 for bot_username, bot_notifications in notifications_by_bot.items():
@@ -473,9 +508,9 @@ class NotificationService:
                         bot_username, bot_notifications, rate_limited_users
                     )
                     tasks.append(task)
-                
+
                 results = await asyncio.gather(*tasks, return_exceptions=True)
-                
+
                 # Aggregate results
                 sent_count = 0
                 for i, result in enumerate(results):
@@ -484,18 +519,32 @@ class NotificationService:
                         logger.error(f"Error processing notifications for bot @{bot_name or 'primary'}: {result}")
                     else:
                         sent_count += result
-                
+
                 total_sent_count += sent_count
-                logger.info(f"Batch {batch_number} complete: Sent {sent_count} notifications successfully (total: {total_sent_count})")
-                
+                logger.info(
+                    f"Batch {batch_number} complete: Sent {sent_count} notifications successfully "
+                    f"(total sent: {total_sent_count}, total attempted: {total_notifications_attempted})"
+                )
+
+                # Checkpoint WAL after every 5 batches to prevent WAL file growth
+                if batch_number % 5 == 0:
+                    await self.db.checkpoint_wal()
+
                 # Brief pause between batches to avoid overwhelming the system
                 if len(pending) == PENDING_NOTIFICATIONS_BATCH_LIMIT:  # If we got a full batch, there might be more
                     await asyncio.sleep(2)
-            
+
         except Exception as e:
             logger.error(f"Error processing notification queue: {e}", exc_info=True)
+            # Release all claims on error so notifications can be retried
+            try:
+                if 'claim_token' in locals():
+                    released = await self.db.release_notification_claim(claim_token=claim_token)
+                    logger.info(f"Released {released} notifications after error (token: {claim_token[:8]}...)")
+            except Exception as release_error:
+                logger.error(f"Failed to release claims after error: {release_error}")
             return total_sent_count
-    
+
     async def _process_bot_notifications(
         self,
         bot_username: Optional[str],
@@ -620,7 +669,10 @@ class NotificationService:
                 sent = await self._send_bot_notification_batch(bot_app, batch)
                 sent_count += sent
         
-        logger.info(f"[Bot @{actual_bot_name}] Completed: sent {sent_count} notifications")
+        logger.info(
+            f"[Bot @{actual_bot_name}] Completed: sent {sent_count} notifications "
+            f"to {len(user_notifications)} unique users"
+        )
         return sent_count
     
     async def _send_bot_notification_batch(

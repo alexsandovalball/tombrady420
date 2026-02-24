@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes
 from database import Database
 from translations.language_config import LANGUAGE_DISPLAY, is_valid_language, DEFAULT_LANGUAGE
 from translations.translator import get_translated_string_async
-from utils.helpers import is_admin, get_user_display_name, ADMIN_COMMANDS_FALLBACK, escape_markdown_v1
+from utils.helpers import is_admin, get_user_display_name, ADMIN_COMMANDS_FALLBACK, escape_markdown_v1, get_user_lang_async
 from utils.safe_send import safe_send_message, safe_edit_message_text
 
 logger = logging.getLogger(__name__)
@@ -17,35 +17,35 @@ db = Database()
 async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /language command - show language selection menu."""
     user_id = update.effective_user.id
-    
+
     # Get current language
-    current_lang = await db.get_user_language(user_id)
-    
+    current_lang = await get_user_lang_async(user_id)
+
     # Create language selection keyboard
     keyboard_buttons = []
-    
+
     for lang_code, display_name in LANGUAGE_DISPLAY.items():
         # Add checkmark for current language
         if lang_code == current_lang:
             display_name = f"✓ {display_name}"
-        
+
         keyboard_buttons.append([
             InlineKeyboardButton(display_name, callback_data=f"setlang|{lang_code}")
         ])
-    
+
     keyboard = InlineKeyboardMarkup(keyboard_buttons)
-    
+
     # Get translated message
     message_text = await get_translated_string_async("language_settings", current_lang)
     current_lang_name = LANGUAGE_DISPLAY.get(current_lang, LANGUAGE_DISPLAY[DEFAULT_LANGUAGE])
     current_lang_text = await get_translated_string_async(
-        "current_language", 
+        "current_language",
         current_lang,
         language=current_lang_name
     )
-    
+
     message_text += f"\n\n{current_lang_text}"
-    
+
     await update.message.reply_text(
         message_text,
         reply_markup=keyboard,

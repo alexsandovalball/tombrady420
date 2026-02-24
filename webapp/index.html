@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Tom Brady Menu</title>
+
+    <!-- Preconnect to Telegram CDN for faster script loading -->
+    <link rel="preconnect" href="https://telegram.org" crossorigin>
+    <link rel="dns-prefetch" href="https://telegram.org">
+
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div>
+                <h1>🏈 Tom Brady Menu</h1>
+                <p class="subtitle" id="subtitle">Your premium catalog</p>
+            </div>
+            <div class="header-actions">
+                <button id="search-btn" class="icon-btn" title="Search">🔍</button>
+                <button id="language-btn" class="icon-btn" title="Language">🌐</button>
+                <button id="home-btn" class="icon-btn" title="Home">🏠</button>
+            </div>
+        </header>
+
+        <!-- User Info Bar -->
+        <div class="info-row">
+            <div class="status-pill" id="status" data-i18n="status_loading">Loading...</div>
+            <div class="info-text">
+                <p><strong>User:</strong> <span id="user-name">-</span></p>
+                <p><strong>Lang:</strong> <span id="current-lang">English</span></p>
+            </div>
+        </div>
+
+        <!-- Breadcrumb Navigation -->
+        <div id="breadcrumb" class="breadcrumb" style="display: none;"></div>
+
+        <!-- Main Content Area -->
+        <div id="main-content">
+            <!-- Welcome View -->
+            <div id="welcome-view" class="view" style="display: none;">
+                <div class="welcome-message">
+                    <h2 data-i18n="welcome_title">👋 Welcome to Tom Brady Menu!</h2>
+                    <p id="welcome-text" data-i18n="welcome_subtitle">Browse our complete product catalog</p>
+                    <p class="hint" id="order-contact-info" style="margin-top: 1em;"></p>
+                </div>
+                <div class="action-buttons">
+                    <button class="action-btn" data-action="catalog">
+                        <span class="btn-icon">📚</span>
+                        <span class="btn-text" data-i18n="btn_view_catalog">SHOP</span>
+                    </button>
+                    <button class="action-btn" data-action="search">
+                        <span class="btn-icon">🔍</span>
+                        <span class="btn-text" data-i18n="btn_search">Search Products</span>
+                    </button>
+                    <button class="action-btn" data-action="language">
+                        <span class="btn-icon">🌐</span>
+                        <span class="btn-text" data-i18n="btn_language">Change Language</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Language Selection View -->
+            <div id="language-view" class="view" style="display: none;">
+                <div class="section">
+                    <div class="section-header">
+                        <h2 data-i18n="language_title">🌐 Select Language</h2>
+                    </div>
+                    <div class="language-grid" id="language-grid"></div>
+                </div>
+            </div>
+
+            <!-- Search View -->
+            <div id="search-view" class="view" style="display: none;">
+                <div class="section">
+                    <div class="search-box">
+                        <input type="text" id="search-input" data-i18n-placeholder="search_placeholder" placeholder="Search products..." autocomplete="off">
+                        <button id="search-submit-btn" class="btn btn-primary" data-i18n="search_button">Search</button>
+                    </div>
+                    <p id="search-status" class="hint"></p>
+                    <div id="search-results" class="product-grid"></div>
+                    <div id="search-pagination" class="pagination"></div>
+                </div>
+            </div>
+
+            <!-- Categories View -->
+            <div id="categories-view" class="view" style="display: none;">
+                <div class="section">
+                    <div class="section-header">
+                        <h2 id="categories-title" data-i18n="categories_title">Categories</h2>
+                        <span id="categories-count" class="count-pill" data-i18n="items_count">0 items</span>
+                    </div>
+                    <p id="categories-status" class="hint" data-i18n="status_loading">Loading...</p>
+                    <div id="categories-grid" class="category-grid"></div>
+                </div>
+            </div>
+
+            <!-- Products View -->
+            <div id="products-view" class="view" style="display: none;">
+                <div class="section">
+                    <div class="section-header">
+                        <h2 id="products-title" data-i18n="products_title">Products</h2>
+                        <span id="products-count" class="count-pill" data-i18n="items_count">0 items</span>
+                    </div>
+                    <p id="products-status" class="hint" data-i18n="status_loading">Loading...</p>
+                    <div id="products-grid" class="product-grid"></div>
+                    <div id="products-pagination" class="pagination"></div>
+                </div>
+            </div>
+
+            <!-- Product Detail View (Full Page) -->
+            <div id="product-detail-view" class="view" style="display: none;">
+                <div class="section">
+                    <div id="product-detail-content"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer Actions -->
+        <div class="footer-actions">
+            <button id="back-btn" class="btn btn-secondary" style="display: none;" data-i18n="btn_back">← Back</button>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
