@@ -138,12 +138,15 @@ class MediaCache:
     async def _evict_if_needed(self):
         """Evict oldest files if cache exceeds max size."""
         try:
-            # Get all cache files with their access times
-            cache_files = [
-                (f, f.stat().st_atime, f.stat().st_size)
-                for f in self.cache_dir.iterdir()
-                if f.is_file()
-            ]
+            # Collect stats once per file to avoid redundant syscalls
+            cache_files = []
+            for f in self.cache_dir.iterdir():
+                if f.is_file():
+                    try:
+                        st = f.stat()
+                        cache_files.append((f, st.st_atime, st.st_size))
+                    except (OSError, FileNotFoundError):
+                        pass
 
             # Calculate total cache size
             total_size = sum(size for _, _, size in cache_files)
@@ -444,15 +447,15 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """Middleware to log all incoming requests for debugging and monitoring."""
     async def dispatch(self, request, call_next):
-        # Log incoming request
+        # Log incoming request at DEBUG level to avoid flooding production logs
         client_host = request.client.host if request.client else "unknown"
-        logger.info(f"Incoming request: {request.method} {request.url.path} from {client_host}")
+        logger.debug(f"Incoming request: {request.method} {request.url.path} from {client_host}")
         
         # Process request
         response = await call_next(request)
         
-        # Log response status
-        logger.info(f"Response: {request.method} {request.url.path} - Status: {response.status_code}")
+        # Log response status at DEBUG level
+        logger.debug(f"Response: {request.method} {request.url.path} - Status: {response.status_code}")
         
         return response
 
@@ -690,10 +693,16 @@ async def get_categories(request: Request, lang: str = "en"):
     # Add "All Products" count
     all_products_count = await _catalog_db.count_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
     
-    return {
-        "categories": categories,
-        "all_products_count": all_products_count
-    }
+    # Return with a short cache hint: categories change infrequently so clients
+    # can reuse the response for up to 60 seconds before revalidating.
+    return Response(
+        content=json.dumps({
+            "categories": categories,
+            "all_products_count": all_products_count
+        }),
+        media_type="application/json",
+        headers={"Cache-Control": "public, max-age=60"}
+    )
 
 
 @app.get("/api/products")
@@ -760,13 +769,17 @@ async def get_products(
             "media_info": media_info,  # Include full media info with types
         })
     
-    return {
-        "items": items,
-        "total": total,
-        "bot": bot.username if bot and getattr(bot, "username", None) else None,
-        "order_contact": order_contact,
-        "order_contact_username": order_contact_username
-    }
+    return Response(
+        content=json.dumps({
+            "items": items,
+            "total": total,
+            "bot": bot.username if bot and getattr(bot, "username", None) else None,
+            "order_contact": order_contact,
+            "order_contact_username": order_contact_username
+        }),
+        media_type="application/json",
+        headers={"Cache-Control": "public, max-age=30"}
+    )
 
 
 @app.get("/api/catalog")
@@ -1123,7 +1136,14 @@ async def search_products(
         # Search across all products
         async with aiosqlite.connect(_catalog_db.db_path) as db:
             db.row_factory = aiosqlite.Row
-            
+            # Apply the same pragmas used by the optimized DB connection to ensure
+            # consistent performance: WAL mode allows concurrent reads, 10 MB page cache
+            # reduces disk I/O, and NORMAL sync is safe under WAL.
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.execute("PRAGMA busy_timeout=30000")
+            await db.execute("PRAGMA cache_size=-10000")
+            await db.execute("PRAGMA synchronous=NORMAL")
+            await db.execute("PRAGMA temp_store=MEMORY")
             # Build placeholders for excluded categories
             placeholders = ','.join('?' * len(excluded_categories))
             

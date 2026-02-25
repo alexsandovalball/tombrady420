@@ -422,7 +422,8 @@
     // Initialize media request manager
     const mediaRequestManager = new MediaRequestManager();
 
-    // Debounce utility
+    // Debounce utility: delays invoking func until after wait ms have elapsed
+    // since the last call, preventing excessive calls during rapid input events.
     function debounce(func, wait) {
         let timeout;
         return function executedFunction(...args) {
@@ -470,19 +471,6 @@
         pendingRequests: new Map(),  // Track pending requests for deduplication
         initialDataLoadFailed: false  // Track if initial data load failed/timed out
     };
-    
-    // Debounce utility
-    function debounce(func, wait) {
-        let timeout;
-        return function executedFunction(...args) {
-            const later = () => {
-                clearTimeout(timeout);
-                func(...args);
-            };
-            clearTimeout(timeout);
-            timeout = setTimeout(later, wait);
-        };
-    }
     
     // Create debounced pagination handler once (reused across renders)
     const debouncedPageChange = debounce(async (newPage, category, subcategory) => {
@@ -1396,16 +1384,41 @@
             } else if (previous.view === 'language') {
                 showLanguageSelection(false);
             } else if (previous.view === 'categories') {
-                showCategories(false);
+                // Check if we need to restore a subcategory view or main categories
+                if (previous.category) {
+                    // Restore subcategory view for the saved category
+                    const category = state.categories.find(cat => cat.name === previous.category);
+                    if (category) {
+                        state.currentCategory = previous.category;
+                        state.currentSubcategory = null;
+                        logger.navigationChange('go_back_subcategory', {
+                            category: previous.category,
+                            subcategories_count: category.subcategories?.length || 0
+                        });
+                        showSubcategories(category, false);
+                    } else {
+                        // Category not found, fall back to main categories
+                        logger.navigationChange('go_back_subcategory_fallback', {
+                            category: previous.category,
+                            reason: 'category_not_in_state'
+                        });
+                        showCategories(false);
+                    }
+                } else {
+                    // Restore main categories view
+                    showCategories(false);
+                }
             } else if (previous.view === 'products') {
-                state.currentCategory = previous.category;
-                state.currentSubcategory = previous.subcategory;
-                state.page = previous.page || 0;
-                showProducts(false);
+                loadProducts(previous.category, previous.subcategory, false, false);
             } else if (previous.view === 'search') {
-                state.searchQuery = previous.query;
+                state.searchQuery = previous.query || '';
                 state.page = previous.page || 0;
-                showSearchResults(state.searchResults, false);
+                showSearch(false);
+                const searchInput = document.getElementById('search-input');
+                if (searchInput) searchInput.value = state.searchQuery;
+                if (state.searchResults && state.searchResults.length > 0) {
+                    showSearchResults(state.searchResults, false);
+                }
             }
         }
         updateBackButton();
@@ -1496,7 +1509,7 @@
 
     function showLanguageSelection(addToHistory = true) {
         if (addToHistory && state.view !== 'language') {
-            pushHistory({ view: state.view });
+            pushHistory({ view: state.view, category: state.currentCategory, subcategory: state.currentSubcategory, page: state.page });
         }
         
         state.view = 'language';
@@ -1557,9 +1570,15 @@
 
     function showSearch(addToHistory = true) {
         if (addToHistory && state.view !== 'search') {
-            pushHistory({ view: state.view });
+            pushHistory({ view: state.view, category: state.currentCategory, subcategory: state.currentSubcategory, page: state.page });
         }
-        
+
+        logger.navigationChange('show_search', {
+            from_view: state.view,
+            category: state.currentCategory,
+            subcategory: state.currentSubcategory
+        });
+
         state.view = 'search';
         hideAllViews();
         document.getElementById('search-view').style.display = 'block';
@@ -1762,22 +1781,36 @@
     }
 
     function handleCategoryClick(category) {
+        // Save current state before modifying it
+        const previousCategory = state.currentCategory;
         state.currentCategory = category.name;
-        
+
         if (category.has_subcategories && category.subcategories.length > 0) {
-            // Show subcategories
-            showSubcategories(category);
+            // Show subcategories - pass previous category for history
+            showSubcategories(category, true, previousCategory);
         } else {
             // Load products directly
             loadProducts(category.name, null);
         }
     }
 
-    function showSubcategories(category) {
-        pushHistory({ view: 'categories' });
-        
+    function showSubcategories(category, addToHistory = true, previousCategory = null) {
+        if (addToHistory) {
+            // Save the previous state (before we showed subcategories)
+            pushHistory({ view: 'categories', category: previousCategory });
+        }
+
         state.view = 'categories';  // Reuse categories view for subcategories
-        
+        state.currentSubcategory = null;  // Clear subcategory when entering subcategory selection view
+
+        hideAllViews();
+        document.getElementById('categories-view').style.display = 'block';
+
+        logger.navigationChange('show_subcategories', {
+            category: category.name,
+            subcategories_count: category.subcategories?.length || 0
+        });
+
         document.getElementById('categories-title').textContent = category.display_name;
         document.getElementById('categories-count').textContent = t('subcategories_count', category.subcategories.length);
         updateBreadcrumb();
@@ -2121,7 +2154,7 @@
         });
         
         // Save current state to history for back button
-        state.history.push({
+        pushHistory({
             view: state.view,
             category: state.currentCategory,
             subcategory: state.currentSubcategory,
@@ -2365,7 +2398,9 @@
                     img.style.width = 'auto';
                     img.style.height = 'auto';
                     img.style.objectFit = 'contain';
-                    img.loading = 'lazy';
+                    // Use eager loading for the actively displayed main viewer image;
+                    // lazy loading would defer loading and cause a blank frame on navigation.
+                    img.loading = 'eager';
                     img.onload = () => {
                         img.classList.add('loaded');
                     };
