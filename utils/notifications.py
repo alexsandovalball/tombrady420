@@ -482,10 +482,14 @@ class NotificationService:
                     return total_sent_count
 
                 # Bot-first grouping: group ALL notifications by bot_username BEFORE processing
+                # Bulk fetch bot usernames — single DB query instead of N sequential queries
+                all_user_ids = list({n["user_id"] for n in deduplicated})
+                bot_usernames_map = await self.db.get_bot_usernames_for_users(all_user_ids)
+
                 notifications_by_bot = {}
                 for notification in deduplicated:
                     user_id = notification["user_id"]
-                    bot_username = await self.db.get_bot_username_for_user(user_id)
+                    bot_username = bot_usernames_map.get(user_id)
                     # Normalize: None means primary bot
                     if bot_username not in notifications_by_bot:
                         notifications_by_bot[bot_username] = []
@@ -591,14 +595,17 @@ class NotificationService:
             return 0
         
         # Filter users who haven't exceeded rate limits
+        # Bulk fetch rate limit counts — single DB query instead of N sequential queries
+        non_rate_limited_ids = [uid for uid in user_notifications if uid not in rate_limited_users]
+        recent_counts = await self.db.get_recent_notifications_count_bulk(non_rate_limited_ids, minutes=60)
+
         eligible_users = []
         for user_id, user_notifs in user_notifications.items():
             # Skip if already known to be rate-limited
             if user_id in rate_limited_users:
                 continue
             
-            # Check rate limit for this user
-            recent_count = await self.db.get_recent_notifications_count(user_id, minutes=60)
+            recent_count = recent_counts.get(user_id, 0)
             
             if recent_count >= MAX_NOTIFICATIONS_PER_HOUR:
                 logger.debug(f"[Bot @{actual_bot_name}] User {user_id} reached rate limit, skipping")
@@ -703,6 +710,7 @@ class NotificationService:
                     sent_count += 1
             except Exception as e:
                 logger.error(f"Error sending notification {notification['id']}: {e}")
+            await asyncio.sleep(0)
         
         return sent_count
     

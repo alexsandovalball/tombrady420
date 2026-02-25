@@ -1075,6 +1075,24 @@ class Database:
             """, (user_id,)) as cursor:
                 row = await cursor.fetchone()
                 return row[0] if row else None
+
+    async def get_bot_usernames_for_users(self, user_ids: List[int]) -> Dict[int, Optional[str]]:
+        """
+        Bulk fetch bot usernames for multiple users in a single query.
+        Returns a dict mapping user_id -> bot_username (or None if not set).
+        """
+        if not user_ids:
+            return {}
+        placeholders = ','.join('?' * len(user_ids))
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(f"""
+                SELECT user_id, bot_username FROM bot_users WHERE user_id IN ({placeholders})
+            """, tuple(user_ids)) as cursor:
+                rows = await cursor.fetchall()
+        result = {row[0]: row[1] for row in rows}
+        for uid in user_ids:
+            result.setdefault(uid, None)
+        return result
     
     async def user_exists(self, user_id: int) -> bool:
         """Check if a user exists in the database."""
@@ -1279,6 +1297,30 @@ class Database:
             """, (user_id, minutes)) as cursor:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
+
+    async def get_recent_notifications_count_bulk(self, user_ids: List[int], minutes: int = 60) -> Dict[int, int]:
+        """
+        Bulk fetch recent notification counts for multiple users in a single query.
+        Returns a dict mapping user_id -> count of notifications sent in the last N minutes.
+        """
+        if not user_ids:
+            return {}
+        cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat()
+        placeholders = ','.join('?' * len(user_ids))
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(f"""
+                SELECT user_id, COUNT(*) as cnt
+                FROM notification_queue
+                WHERE user_id IN ({placeholders})
+                  AND sent_at IS NOT NULL
+                  AND sent_at >= ?
+                GROUP BY user_id
+            """, (*user_ids, cutoff)) as cursor:
+                rows = await cursor.fetchall()
+        result = {row[0]: row[1] for row in rows}
+        for uid in user_ids:
+            result.setdefault(uid, 0)
+        return result
 
     async def claim_pending_notifications(
         self,

@@ -2197,6 +2197,7 @@
         // Create media display container
         const mediaContainer = document.createElement('div');
         mediaContainer.style.marginBottom = '20px';
+        mediaContainer.style.position = 'relative';
         
         // Create main media viewer (for expanded view)
         const mediaViewer = document.createElement('div');
@@ -2216,9 +2217,23 @@
         // Track current media index
         let currentMediaIndex = 0;
         
+        // Helper: request fullscreen with vendor-prefix fallbacks for Android WebView
+        function requestFullscreen(element) {
+            if (element.requestFullscreen) {
+                element.requestFullscreen();
+            } else if (element.webkitRequestFullscreen) {
+                element.webkitRequestFullscreen();
+            } else if (element.webkitEnterFullscreen) {
+                element.webkitEnterFullscreen();
+            }
+        }
+
         // Function to render media at index in main viewer
         const renderMedia = (index) => {
             mediaViewer.replaceChildren();
+            // Remove any existing fullscreen button from the previous render
+            const existingFsBtn = mediaContainer.querySelector('.video-fullscreen-btn');
+            if (existingFsBtn) existingFsBtn.remove();
             const mediaUrl = buildMediaUrl(product, index);
             const mediaType = mediaInfo[index]?.type || 'photo';
             
@@ -2389,6 +2404,41 @@
                     });
                     
                     mediaViewer.appendChild(video);
+
+                    // Custom fullscreen button appended to mediaContainer (outside mediaViewer's
+                    // overflow:hidden clipping context) so it is reachable by touch on Android.
+                    const fsBtn = document.createElement('button');
+                    fsBtn.className = 'video-fullscreen-btn';
+                    fsBtn.setAttribute('aria-label', 'Full screen');
+                    fsBtn.textContent = '⛶';
+                    fsBtn.style.position = 'absolute';
+                    fsBtn.style.top = '8px';
+                    fsBtn.style.right = '8px';
+                    fsBtn.style.zIndex = '10';
+                    fsBtn.style.background = 'rgba(0,0,0,0.55)';
+                    fsBtn.style.color = 'white';
+                    fsBtn.style.border = 'none';
+                    fsBtn.style.borderRadius = '6px';
+                    fsBtn.style.padding = '6px 9px';
+                    fsBtn.style.fontSize = '20px';
+                    fsBtn.style.lineHeight = '1';
+                    fsBtn.style.cursor = 'pointer';
+                    fsBtn.style.touchAction = 'manipulation';
+
+                    let fsBtnTouchHandled = false;
+                    fsBtn.addEventListener('touchstart', (e) => {
+                        fsBtnTouchHandled = true;
+                        e.preventDefault();
+                        requestFullscreen(video);
+                    }, { passive: false });
+                    fsBtn.addEventListener('click', () => {
+                        if (!fsBtnTouchHandled) {
+                            requestFullscreen(video);
+                        }
+                        fsBtnTouchHandled = false;
+                    });
+
+                    mediaContainer.appendChild(fsBtn);
                 } else {
                     const img = document.createElement('img');
                     img.src = mediaUrl;
