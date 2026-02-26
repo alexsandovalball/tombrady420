@@ -47,7 +47,7 @@ from utils.helpers import (
     get_user_display_name,
     escape_markdown_v1
 )
-from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES, extract_category_from_caption
+from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES
 from utils.notifications import NotificationService
 from utils.safe_send import safe_send_message, safe_edit_message_text
 
@@ -255,7 +255,7 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
     additional_msg_ids = json.dumps(message_ids[1:]) if len(message_ids) > 1 else None
     
     # Extract category from caption hashtags
-    category, subcategory = extract_category_from_caption(caption)
+    category, subcategory = None, None
     
     product_id = await db.add_product(
         file_id=file_ids[0],
@@ -338,7 +338,7 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         caption = message.caption or message.text or ""
         
         # Extract category from caption hashtags
-        category, subcategory = extract_category_from_caption(caption)
+        category, subcategory = None, None
         
         # Save product to database with automatic categorization
         product_id = await db.add_product(

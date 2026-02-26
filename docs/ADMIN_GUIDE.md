@@ -214,18 +214,10 @@ Each user has a toggle button in the `/users` interface:
 - SHROOM EDIBLES
 
 ### 💎 Concentrates
-- LIVE RESIN - Extracted from fresh-frozen flower to preserve terpenes
-- ROSIN - Solventless extract made with heat and pressure
-- DIAMONDS AND SAUCE - THCa diamonds suspended in terpene-rich sauce
-- SHATTER
-- BADDER
-- CRUMBLE
-- SUGAR
-- DISTILLATE
-- HASH
-- KIEF
-- THCAPOWDER
-- RSO
+- SOLVENTLESS
+- LIVE RESIN AND EXTRACTS
+- OILS AND ISOLATES
+- HASH AND KIEF
 - OTHERS
 
 ### 🚬 Pre-Rolls
@@ -243,7 +235,7 @@ _(No subcategories)_
 - LIGHTDEPS
 - LIGHTASSIST
 - LOWS
-- INFUSED FLOWER - Flower coated or infused with concentrates (e.g., Moonrocks, Snowcaps)
+- MOONROCKS AND SNOWCAPS
 
 ### 📅 Dated Proofs
 _(No subcategories)_
@@ -257,39 +249,6 @@ _(No subcategories)_
 > **Note:** Products in ANNOUNCEMENTS, DATEDPROOFS, and CLIENTTOUCHDOWNS categories are **excluded from the "All Products" view** and can only be accessed by browsing their specific category.
 > 
 > **Important:** All categories **WILL trigger notifications** to subscribed users.
-
-### Migration Note: Moonrocks and Snowcaps
-
-**Important:** The concentrate subcategories have been reorganized. Products previously tagged as SNOWCAPS or MOONROCKS now belong to the FLOWER category under the new INFUSED FLOWER subcategory.
-
-**For existing products:**
-- Existing products with SNOWCAPS or MOONROCKS subcategories will continue to work
-- Admins can optionally re-categorize these products to FLOWER > INFUSED FLOWER
-- The bot will automatically suggest INFUSED FLOWER for new Moonrocks/Snowcaps posts via hashtag synonyms
-
-**Manual migration (optional):**
-If you want to migrate all existing Moonrocks and Snowcaps products to the new category structure, you can use the following SQL command:
-
-```sql
--- Connect to your database (catalog.db)
--- Update all Snowcaps and Moonrocks to Infused Flower
-UPDATE products 
-SET category = 'FLOWER', subcategory = 'INFUSED FLOWER' 
-WHERE subcategory IN ('SNOWCAPS', 'MOONROCKS');
-```
-
-**To run this migration:**
-1. Stop the bot
-2. Make a backup of `catalog.db`
-3. Use SQLite command line or a GUI tool to run the SQL command
-4. Restart the bot
-
-**Hashtag auto-detection:**
-The bot now recognizes these hashtags for auto-categorization:
-- `#MOONROCKS`, `#SNOWCAPS`, `#INFUSEDFLOWER` → FLOWER > INFUSED FLOWER
-- `#LIVERESIN`, `#LIVE-RESIN` → CONCENTRATES > LIVE RESIN
-- `#HASH`, `#KIEF` → CONCENTRATES > HASH or KIEF (separately)
-- `#DIAMONDS`, `#DIAMONDSANDSAUCE` → CONCENTRATES > DIAMONDS AND SAUCE
 
 
 ## Tips for Admins
