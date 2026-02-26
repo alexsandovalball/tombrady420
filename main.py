@@ -910,6 +910,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 )
                 
                 # Trigger notifications
+                notification_service = NotificationService(db)
                 await notification_service.notify_users_about_product(context, product_id)
                 logger.info(f"Notification service triggered for product {product_id}")
             else:
