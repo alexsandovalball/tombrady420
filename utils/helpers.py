@@ -4,7 +4,7 @@ Helper utilities for the bot.
 import logging
 import json
 from typing import List, Optional, Dict, Tuple
-from telegram import Update, User
+from telegram import Bot, Update, User
 from telegram.ext import ContextTypes
 from telegram.error import Forbidden, BadRequest, TelegramError
 
@@ -324,12 +324,18 @@ async def get_bot_specific_file_id(
     from database import Database
     db = Database()
     
-    # Extract bot from context or use directly
-    if hasattr(bot_or_context, 'bot'):
+    # Extract bot from context or use directly.
+    # Check isinstance(Bot) first because Bot/ExtBot also exposes a `.bot` property
+    # that returns a User object (from get_me()), which would cause the hasattr
+    # branch below to wrongly extract a User instead of the Bot controller.
+    if isinstance(bot_or_context, Bot):
+        # Already a Bot/ExtBot instance
+        bot = bot_or_context
+    elif hasattr(bot_or_context, 'bot'):
         # This is a Context object
         bot = bot_or_context.bot
     else:
-        # This is a Bot instance directly
+        # Fallback: use directly
         bot = bot_or_context
     
     # Defensive check: ensure bot has forward_message (i.e., it is a Bot, not a User).
