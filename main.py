@@ -181,14 +181,13 @@ async def notify_admins_for_categorization(context: ContextTypes.DEFAULT_TYPE, p
 
 
 async def process_media_group(media_group_id: str, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """Process collected media group messages after a short delay.
-    
-    Reduced delay from 500ms to 250ms for faster responsiveness.
-    Telegram typically delivers all media group messages within 100-200ms,
-    making 250ms sufficient while maintaining reliability.
-    Monitor media_group_messages dict size if incomplete groups are detected.
+    """Process collected media group messages after a delay to ensure all media is received.
+
+    Increased delay to 5000ms (5 seconds) to prevent partial uploads when Telegram
+    sends messages with network latency jitter. This ensures all photos in an album
+    are captured before processing, preventing incomplete media groups.
     """
-    await asyncio.sleep(0.25)
+    await asyncio.sleep(5.0)
     
     # Get or create a lock for this media group to prevent race conditions
     if media_group_id not in media_group_locks:

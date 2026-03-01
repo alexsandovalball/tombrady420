@@ -106,14 +106,16 @@ def get_bot_by_username(username: str) -> Optional[Application]:
 
 
 class NotificationService:
-    """Service for managing and sending product notifications."""
-    
+    """Service for managing and sending product notifications with sequential FIFO queue."""
+
     def __init__(self, db: Database):
         self.db = db
         self._bot_apps_cache = None  # Cache for bot applications
         self._bot_apps_cache_time = None  # Timestamp of last cache
         self._cache_ttl = 60  # Cache TTL in seconds
-        self._current_notification_task = None  # Track background notification task
+        self._notification_queue = asyncio.Queue()  # FIFO queue for notification requests
+        self._queue_worker_task = None  # Background worker task
+        self._is_processing = False  # Track if worker is currently processing
     
     @staticmethod
     def _is_markdown_parse_error(error: BadRequest) -> bool:
@@ -129,6 +131,50 @@ class NotificationService:
             "parse entities",
             "markdown"
         ])
+
+    async def _start_queue_worker(self):
+        """Start the background queue worker if not already running."""
+        if self._queue_worker_task is None or self._queue_worker_task.done():
+            self._queue_worker_task = asyncio.create_task(self._queue_worker())
+            logger.info("Notification queue worker started")
+
+    async def _queue_worker(self):
+        """Background worker that processes notification requests sequentially from the FIFO queue."""
+        logger.info("Notification queue worker loop started")
+        while True:
+            try:
+                # Wait for next notification request (product_id, context)
+                product_id, context = await self._notification_queue.get()
+                logger.info(f"Queue worker processing notification for product {product_id}")
+
+                try:
+                    self._is_processing = True
+                    # Process the notification batch
+                    total_sent = await self.process_notification_queue(context)
+
+                    # Send admin summary after completing this batch
+                    admin_ids = get_admin_ids()
+                    if admin_ids and total_sent > 0:
+                        admin_id = admin_ids[0]
+                        await self._send_admin_summary(
+                            context.bot,
+                            admin_id,
+                            {"sent": total_sent},
+                            operation="product notification"
+                        )
+                        logger.info(f"Admin summary sent: {total_sent} notifications delivered")
+                except Exception as e:
+                    logger.error(f"Error processing notification for product {product_id}: {e}", exc_info=True)
+                finally:
+                    self._is_processing = False
+                    # Mark task as done in the queue
+                    self._notification_queue.task_done()
+                    logger.info(f"Completed processing notification for product {product_id}")
+
+            except Exception as e:
+                logger.error(f"Error in notification queue worker: {e}", exc_info=True)
+                await asyncio.sleep(1)  # Brief pause before continuing
+
     
     async def _remove_duplicate_notification(self, notification_id: int):
         """
@@ -280,104 +326,55 @@ class NotificationService:
     ):
         """
         Notify subscribed users about a new categorized product.
-        Implements rate limiting to prevent spam.
+        Uses a FIFO queue to ensure notifications are processed sequentially.
+        New notification requests will wait in line until the current batch finishes.
         Only runs on the primary bot instance to avoid duplicate notifications.
         """
         # Check if this is the primary bot instance
         if not self._is_primary_instance(context):
             logger.info(f"Skipping notification for product {product_id} - not primary instance")
             return
-        
+
         try:
             # Get product details
             product = await self.db.get_product(product_id)
             if not product:
                 logger.warning(f"Product {product_id} not found for notification")
                 return
-            
+
             # Only notify if product is categorized
             if not product.get("category"):
                 logger.debug(f"Product {product_id} not categorized, skipping notification")
                 return
-            
+
             # Check if category should be excluded from notifications
-            # (Currently all categories trigger notifications)
             category = product.get("category")
             if category in NOTIFICATION_EXCLUDED_CATEGORIES:
                 logger.info(f"Product {product_id} is in excluded category '{category}', skipping notification")
                 return
-            
-            # Check if a notification task is already running BEFORE queuing
-            # This prevents duplicate notifications from being queued, avoiding unnecessary
-            # database writes and duplicate task creation.
-            # Note: This check-then-act pattern is safe in asyncio's single-threaded event loop.
-            if self._current_notification_task is not None and not self._current_notification_task.done():
-                logger.warning(f"Notification task already running, skipping duplicate notification for product {product_id}")
-                return
-            
+
             # Get all subscribed users
             subscribed_users = await self.db.get_subscribed_users()
-            
+
             if not subscribed_users:
                 logger.debug("No subscribed users to notify")
                 return
-            
-            logger.info(f"Notifying {len(subscribed_users)} users about product {product_id}")
-            
-            # Queue notifications for all subscribed users
+
+            logger.info(f"Queueing notifications for {len(subscribed_users)} users about product {product_id}")
+
+            # Queue notifications for all subscribed users in the database
             for user_id in subscribed_users:
                 await self.db.queue_notification(user_id, product_id)
-            
-            # Process the notification queue asynchronously (non-blocking)
-            # Schedule as a background task so it doesn't block other operations
-            # Store task reference to prevent it from being garbage collected
-            logger.info(f"Creating background notification task for product {product_id}")
-            task = asyncio.create_task(self.process_notification_queue(context))
-            self._current_notification_task = task
-            
-            # Add completion callback to send admin summary and clear task reference
-            def on_task_complete(task_obj):
-                try:
-                    # Get the result (total_sent_count)
-                    try:
-                        total_sent = task_obj.result()
-                        logger.info(f"Notification task completed. Total sent: {total_sent}")
-                    except Exception as task_error:
-                        # Task execution failed - log it but continue with cleanup
-                        # Note: process_notification_queue returns total_sent_count even in exception handler,
-                        # so we'll get the count of messages sent before the failure occurred
-                        logger.error(f"Notification task failed with error: {task_error}", exc_info=True)
-                        total_sent = 0  # Default to 0 if result cannot be retrieved
-                    
-                    # Send admin summary to first admin
-                    # Note: Using first admin to avoid spamming all admins with every notification run.
-                    # Future enhancement: Could implement rotation or configuration for which admin(s) to notify.
-                    admin_ids = get_admin_ids()
-                    if admin_ids and total_sent > 0:  # Only send if admins exist and messages were sent
-                        admin_id = admin_ids[0]
-                        stats = {"sent": total_sent}
-                        
-                        # Schedule admin summary in the event loop (callback must be synchronous)
-                        try:
-                            loop = asyncio.get_running_loop()
-                            loop.create_task(self._send_admin_summary(
-                                context.bot,
-                                admin_id,
-                                stats,
-                                operation="product notification"
-                            ))
-                        except RuntimeError:
-                            # No running event loop - this shouldn't happen in a task callback
-                            # but handle gracefully by logging and skipping admin summary
-                            logger.error("Cannot send admin summary: no running event loop in callback")
-                except Exception as e:
-                    logger.error(f"Error in notification task completion callback: {e}", exc_info=True)
-                finally:
-                    # Always clear task reference
-                    self._current_notification_task = None
-            
-            task.add_done_callback(on_task_complete)
-            
+
+            # Add this notification request to the FIFO queue
+            # It will be processed sequentially by the worker
+            await self._notification_queue.put((product_id, context))
+            queue_size = self._notification_queue.qsize()
+            logger.info(f"Product {product_id} added to notification queue (queue size: {queue_size})")
+
+            # Start the queue worker if not already running
+            await self._start_queue_worker()
+
         except Exception as e:
             logger.error(f"Error notifying users about product {product_id}: {e}", exc_info=True)
     
