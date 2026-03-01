@@ -442,6 +442,12 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
             # Cache images for 1 day (can be cached longer as they rarely change)
             elif request.url.path.endswith(('.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico')):
                 response.headers['Cache-Control'] = 'public, max-age=86400'
+
+        # Security headers for HTML responses
+        content_type = response.headers.get('content-type', '')
+        if 'text/html' in content_type:
+            response.headers['X-Content-Type-Options'] = 'nosniff'
+            response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
         
         return response
 
@@ -474,31 +480,158 @@ _STOREFRONT_DOMAIN = os.getenv("STOREFRONT_DOMAIN", "https://topshelfcaliplug.co
 
 
 def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
-                        product: Optional[dict] = None, deep_link: str = "") -> dict:
+                        product: Optional[dict] = None, deep_link: str = "",
+                        keywords: str = "", category: str = "") -> dict:
     """Build template context dict for SSR SEO pages."""
     if product:
-        schema = json.dumps({
+        product_url = url or _STOREFRONT_DOMAIN
+        product_schema: dict = {
             "@context": "https://schema.org/",
             "@type": "Product",
             "name": title,
             "description": desc,
             "image": image,
+            "url": product_url,
+            "brand": {
+                "@type": "Brand",
+                "name": "Top Shelf Cali Plug",
+            },
+            "offers": {
+                "@type": "Offer",
+                "url": product_url,
+                "availability": "https://schema.org/InStock",
+                "seller": {
+                    "@type": "Organization",
+                    "name": "Top Shelf Cali Plug",
+                },
+            },
+        }
+        breadcrumb: dict = {
+            "@type": "BreadcrumbList",
+            "itemListElement": [
+                {
+                    "@type": "ListItem",
+                    "position": 1,
+                    "name": "Home",
+                    "item": f"{_STOREFRONT_DOMAIN}/",
+                },
+                {
+                    "@type": "ListItem",
+                    "position": 2,
+                    "name": category or "Products",
+                    "item": f"{_STOREFRONT_DOMAIN}/?category={urllib.parse.quote(category)}" if category else f"{_STOREFRONT_DOMAIN}/",
+                },
+                {
+                    "@type": "ListItem",
+                    "position": 3,
+                    "name": title,
+                    "item": product_url,
+                },
+            ],
+        }
+        schema = json.dumps({
+            "@context": "https://schema.org/",
+            "@graph": [product_schema, breadcrumb],
         })
     else:
         schema = json.dumps({
-            "@context": "https://schema.org/",
-            "@type": "Store",
-            "name": title,
-            "description": desc,
+            "@context": "https://schema.org",
+            "@graph": [
+                {
+                    "@type": "WebSite",
+                    "name": "Top Shelf Cali Plug",
+                    "url": _STOREFRONT_DOMAIN,
+                    "description": desc,
+                    "potentialAction": {
+                        "@type": "SearchAction",
+                        "target": f"{_STOREFRONT_DOMAIN}/?search={{search_term_string}}",
+                        "query-input": "required name=search_term_string",
+                    },
+                },
+                {
+                    "@type": "Store",
+                    "name": title,
+                    "description": desc,
+                    "url": _STOREFRONT_DOMAIN,
+                    "image": image,
+                    "contactPoint": {
+                        "@type": "ContactPoint",
+                        "contactType": "customer service",
+                        "url": f"https://t.me/{_STOREFRONT_BOT_USERNAME}",
+                    },
+                },
+            ],
         })
+    default_keywords = "premium catalog, online shop, Telegram store, Top Shelf Cali Plug, buy online, product catalog"
     return {
         "seo_title": title,
         "seo_desc": desc,
         "seo_image": image,
         "seo_url": url,
         "seo_schema": schema,
+        "seo_keywords": keywords or default_keywords,
         "telegram_deep_link": deep_link or f"https://t.me/{_STOREFRONT_BOT_USERNAME}",
     }
+
+
+
+@app.get("/robots.txt", response_class=Response)
+async def serve_robots_txt():
+    """Serve robots.txt to guide crawlers."""
+    content = (
+        "User-agent: *\n"
+        "Allow: /\n"
+        "Disallow: /api/\n"
+        "Disallow: /webhook\n"
+        "Disallow: /webhook/\n"
+        "\n"
+        f"Sitemap: {_STOREFRONT_DOMAIN}/sitemap.xml\n"
+    )
+    return Response(content=content, media_type="text/plain")
+
+
+@app.get("/sitemap.xml", response_class=Response)
+async def serve_sitemap_xml():
+    """Dynamically generate a sitemap.xml including homepage and all product pages."""
+    from datetime import date
+    today = date.today().isoformat()
+    products = await _catalog_db.get_all_products()
+
+    urls = [
+        (
+            f"  <url>\n"
+            f"    <loc>{_STOREFRONT_DOMAIN}/</loc>\n"
+            f"    <lastmod>{today}</lastmod>\n"
+            f"    <changefreq>weekly</changefreq>\n"
+            f"    <priority>1.0</priority>\n"
+            f"  </url>"
+        )
+    ]
+    for p in products:
+        pid = p.get("id") or p.get("product_id")
+        if pid is None:
+            continue
+        lastmod = p.get("created_at") or today
+        if isinstance(lastmod, str) and "T" in lastmod:
+            lastmod = lastmod.split("T")[0]
+        elif not isinstance(lastmod, str):
+            lastmod = today
+        urls.append(
+            f"  <url>\n"
+            f"    <loc>{_STOREFRONT_DOMAIN}/product/{pid}</loc>\n"
+            f"    <lastmod>{lastmod}</lastmod>\n"
+            f"    <changefreq>monthly</changefreq>\n"
+            f"    <priority>0.8</priority>\n"
+            f"  </url>"
+        )
+
+    sitemap = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        + "\n".join(urls)
+        + "\n</urlset>"
+    )
+    return Response(content=sitemap, media_type="application/xml")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -545,6 +678,15 @@ async def serve_product_page(product_id: int, request: Request):
         url=product_url,
         product=product,
         deep_link=deep_link,
+        keywords=", ".join(filter(None, [
+            product.get("category", ""),
+            product.get("subcategory", ""),
+            " ".join(caption.split()[:6]),
+            "Top Shelf Cali Plug",
+            "buy online",
+            "Telegram store",
+        ])),
+        category=product.get("category", ""),
     )
     ctx["request"] = request
     return templates.TemplateResponse("index.html", ctx)

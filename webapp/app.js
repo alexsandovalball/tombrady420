@@ -2062,6 +2062,7 @@
     }
 
     function createProductCard(item) {
+        // NOTE: All <img> elements created here must include an alt attribute for SEO and accessibility.
         const card = document.createElement('div');
         card.className = 'product-card';
         card.addEventListener('click', () => showProductDetail(item));

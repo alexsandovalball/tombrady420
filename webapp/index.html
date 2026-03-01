@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>{{ seo_title }}</title>
     <meta name="description" content="{{ seo_desc }}">
+    <link rel="canonical" href="{{ seo_url }}">
+
+    <!-- Additional SEO meta tags -->
+    <meta name="robots" content="index, follow">
+    <meta name="googlebot" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
+    <meta name="author" content="Top Shelf Cali Plug">
+    <meta name="keywords" content="{{ seo_keywords }}">
+    <meta name="theme-color" content="#2481cc">
 
     <!-- Open Graph / Social sharing tags -->
     <meta property="og:type" content="website">
@@ -12,6 +20,8 @@
     <meta property="og:description" content="{{ seo_desc }}">
     <meta property="og:image" content="{{ seo_image }}">
     <meta property="og:url" content="{{ seo_url }}">
+    <meta property="og:site_name" content="Top Shelf Cali Plug">
+    <meta property="og:locale" content="en_US">
 
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image">
@@ -33,6 +43,13 @@
     <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body>
+    <noscript>
+        <div style="padding: 20px; text-align: center;">
+            <h1>Top Shelf Cali Plug – Premium Catalog</h1>
+            <p>Browse our complete product catalog. JavaScript is required for the full experience.</p>
+            <p><a href="{{ telegram_deep_link }}">Open in Telegram</a></p>
+        </div>
+    </noscript>
     <div class="container">
         <!-- Header -->
         <header class="header">
