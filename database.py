@@ -978,13 +978,17 @@ class Database:
                 return result
     
     async def update_product_category(self, product_id: int, category: str, subcategory: Optional[str] = None):
-        """Update a product's category and subcategory."""
+        """Update a product's category, subcategory, and timestamp.
+
+        Updates created_at to current time so recategorized products move up in lists,
+        indicating fresh or restocked inventory.
+        """
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
-                UPDATE products SET category = ?, subcategory = ? WHERE id = ?
-            """, (category, subcategory, product_id))
+                UPDATE products SET category = ?, subcategory = ?, created_at = ? WHERE id = ?
+            """, (category, subcategory, datetime.now(), product_id))
             await db.commit()
-            
+
             # Remove from pending categorization if it exists
             await db.execute("""
                 DELETE FROM pending_categorization WHERE product_id = ?

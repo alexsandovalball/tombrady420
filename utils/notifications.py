@@ -149,20 +149,25 @@ class NotificationService:
 
                 try:
                     self._is_processing = True
-                    # Process the notification batch
-                    total_sent = await self.process_notification_queue(context)
+                    # Process the notification batch (returns stats dict)
+                    stats = await self.process_notification_queue(context)
 
                     # Send admin summary after completing this batch
                     admin_ids = get_admin_ids()
-                    if admin_ids and total_sent > 0:
+                    if admin_ids and stats["sent"] > 0:
                         admin_id = admin_ids[0]
                         await self._send_admin_summary(
                             context.bot,
                             admin_id,
-                            {"sent": total_sent},
+                            stats,
                             operation="product notification"
                         )
-                        logger.info(f"Admin summary sent: {total_sent} notifications delivered")
+                        logger.info(
+                            f"Admin summary sent: {stats['sent']} sent, "
+                            f"{stats['attempted']} attempted, "
+                            f"{stats['rate_limited']} rate-limited, "
+                            f"{stats['duplicates_removed']} duplicates removed"
+                        )
                 except Exception as e:
                     logger.error(f"Error processing notification for product {product_id}: {e}", exc_info=True)
                 finally:
@@ -389,6 +394,14 @@ class NotificationService:
         processes each notification at a time.
 
         Processes all pending notifications in batches until queue is empty.
+
+        Returns:
+            Dictionary with statistics: {
+                "sent": int,
+                "attempted": int,
+                "rate_limited": int,
+                "duplicates_removed": int
+            }
         """
         try:
             # Generate unique claim token for this processing run
@@ -397,6 +410,7 @@ class NotificationService:
 
             total_sent_count = 0
             total_notifications_attempted = 0
+            total_duplicates_removed = 0
             batch_number = 0
             rate_limited_users = set()  # Track users who hit rate limits in this run
             # Tracks duplicates across batches for this processing run
@@ -429,7 +443,12 @@ class NotificationService:
                             f"Notifications sent: {total_sent_count}, "
                             f"Notifications attempted: {total_notifications_attempted}"
                         )
-                    return total_sent_count
+                    return {
+                        "sent": total_sent_count,
+                        "attempted": total_notifications_attempted,
+                        "rate_limited": len(rate_limited_users),
+                        "duplicates_removed": total_duplicates_removed
+                    }
 
                 total_notifications_attempted += len(pending)
                 logger.info(
@@ -457,6 +476,7 @@ class NotificationService:
                     deduplicated.append(notification)
 
                 if duplicate_skip_count:
+                    total_duplicates_removed += duplicate_skip_count
                     logger.warning(f"Found {duplicate_skip_count} duplicate notifications in batch {batch_number} - removing from queue")
                     removal_failures = 0
                     for duplicate_id in duplicates_to_remove:
@@ -476,7 +496,12 @@ class NotificationService:
                     if len(pending) == PENDING_NOTIFICATIONS_BATCH_LIMIT:
                         await asyncio.sleep(2)
                         continue
-                    return total_sent_count
+                    return {
+                        "sent": total_sent_count,
+                        "attempted": total_notifications_attempted,
+                        "rate_limited": len(rate_limited_users),
+                        "duplicates_removed": total_duplicates_removed
+                    }
 
                 # Bot-first grouping: group ALL notifications by bot_username BEFORE processing
                 # Bulk fetch bot usernames — single DB query instead of N sequential queries
@@ -544,7 +569,13 @@ class NotificationService:
                     logger.info(f"Released {released} notifications after error (token: {claim_token[:8]}...)")
             except Exception as release_error:
                 logger.error(f"Failed to release claims after error: {release_error}")
-            return total_sent_count
+            # Return stats even on error
+            return {
+                "sent": total_sent_count if 'total_sent_count' in locals() else 0,
+                "attempted": total_notifications_attempted if 'total_notifications_attempted' in locals() else 0,
+                "rate_limited": len(rate_limited_users) if 'rate_limited_users' in locals() else 0,
+                "duplicates_removed": total_duplicates_removed if 'total_duplicates_removed' in locals() else 0
+            }
 
     async def _process_bot_notifications(
         self,
