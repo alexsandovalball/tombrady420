@@ -2739,9 +2739,49 @@
         }
     }
 
+    // --- External Visitor Detection ---
+    // If the user is NOT inside Telegram (no initData), show a simplified landing page
+    // instead of the full bot-like interface.
+    function isExternalVisitor() {
+        return !(window.Telegram?.WebApp?.initData);
+    }
+
+    function showExternalLanding() {
+        // Hide the main bot interface
+        const container = document.querySelector('.container');
+        if (container) container.style.display = 'none';
+
+        // Show the external landing page
+        const landing = document.getElementById('external-landing');
+        if (!landing) return;
+        landing.style.display = 'block';
+
+        // Populate product image if a meta og:image is set
+        const ogImage = document.querySelector('meta[property="og:image"]');
+        const imgEl = document.getElementById('external-product-image');
+        if (imgEl && ogImage && ogImage.content) {
+            imgEl.src = ogImage.content;
+            imgEl.alt = document.title;
+        } else if (imgEl) {
+            imgEl.style.display = 'none';
+        }
+
+        // Title and description are already rendered server-side in the HTML
+    }
+
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
+        document.addEventListener('DOMContentLoaded', function () {
+            if (isExternalVisitor()) {
+                showExternalLanding();
+            } else {
+                init();
+            }
+        });
     } else {
-        init();
+        if (isExternalVisitor()) {
+            showExternalLanding();
+        } else {
+            init();
+        }
     }
 })();
