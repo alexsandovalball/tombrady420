@@ -15,8 +15,9 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Request, Response, status
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from telegram import Update
 from telegram.constants import FileSizeLimit
 from telegram.ext import Application
@@ -432,7 +433,7 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         
         # Add cache headers for static assets
-        if request.url.path.startswith('/webapp/'):
+        if request.url.path.startswith('/assets/'):
             # No cache for dynamic code files to ensure updates reflect immediately
             if request.url.path.endswith(('.js', '.css', '.html')):
                 response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
@@ -462,8 +463,91 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(CacheControlMiddleware)
 
-# Mount static files for WebApp
-app.mount("/webapp", StaticFiles(directory="webapp", html=True), name="webapp")
+# Jinja2 templates for SSR/SEO pages
+templates = Jinja2Templates(directory="webapp")
+
+# Mount static assets (CSS, JS, images) under /assets
+app.mount("/assets", StaticFiles(directory="webapp"), name="assets")
+
+_STOREFRONT_BOT_USERNAME = os.getenv("BOT_USERNAME", "").lstrip("@")
+_STOREFRONT_DOMAIN = os.getenv("STOREFRONT_DOMAIN", "https://topshelfcaliplug.com")
+
+
+def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
+                        product: Optional[dict] = None, deep_link: str = "") -> dict:
+    """Build template context dict for SSR SEO pages."""
+    if product:
+        schema = json.dumps({
+            "@context": "https://schema.org/",
+            "@type": "Product",
+            "name": title,
+            "description": desc,
+            "image": image,
+        })
+    else:
+        schema = json.dumps({
+            "@context": "https://schema.org/",
+            "@type": "Store",
+            "name": title,
+            "description": desc,
+        })
+    return {
+        "seo_title": title,
+        "seo_desc": desc,
+        "seo_image": image,
+        "seo_url": url,
+        "seo_schema": schema,
+        "telegram_deep_link": deep_link or f"https://t.me/{_STOREFRONT_BOT_USERNAME}",
+    }
+
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_homepage(request: Request):
+    """Serve the homepage with default Storefront SEO metadata."""
+    ctx = _build_seo_context(
+        title="Top Shelf Cali Plug – Premium Cannabis Storefront",
+        desc="Browse our premium cannabis catalog. Order directly via Telegram.",
+        url=_STOREFRONT_DOMAIN,
+    )
+    ctx["request"] = request
+    return templates.TemplateResponse("index.html", ctx)
+
+
+@app.get("/product/{product_id}", response_class=HTMLResponse)
+async def serve_product_page(product_id: int, request: Request):
+    """Serve an individual product page with dynamic SEO metadata."""
+    product = await _catalog_db.get_product(product_id)
+    if not product:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+
+    # Build SEO fields from product data
+    caption: str = product.get("caption") or ""
+    # First line of caption as title, rest as description
+    lines = [l.strip() for l in caption.splitlines() if l.strip()]
+    seo_title = lines[0] if lines else f"Product #{product_id}"
+    seo_desc = " ".join(lines[1:]) if len(lines) > 1 else seo_title
+
+    # Prefer photo file_id represented as a media URL served by this server
+    media_ids_json = product.get("media_ids") or "[]"
+    try:
+        media_ids = json.loads(media_ids_json) if isinstance(media_ids_json, str) else media_ids_json
+    except Exception:
+        media_ids = []
+    seo_image = f"{_STOREFRONT_DOMAIN}/api/media/{product_id}/0" if media_ids else ""
+
+    product_url = f"{_STOREFRONT_DOMAIN}/product/{product_id}"
+    deep_link = f"https://t.me/{_STOREFRONT_BOT_USERNAME}?start=product_{product_id}"
+
+    ctx = _build_seo_context(
+        title=seo_title,
+        desc=seo_desc,
+        image=seo_image,
+        url=product_url,
+        product=product,
+        deep_link=deep_link,
+    )
+    ctx["request"] = request
+    return templates.TemplateResponse("index.html", ctx)
 
 
 def _get_primary_bot(request: Request, required: bool = True):
