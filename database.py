@@ -481,6 +481,34 @@ class Database:
         except Exception as e:
             logger.error(f"Error checking bot_username migration: {e}")
     
+    async def get_next_free_id(self) -> int:
+        """Get the next available product ID by finding gaps in the sequence.
+
+        If gaps exist (e.g., IDs 1, 2, 4 exist, 3 is deleted), returns the lowest gap (3).
+        Otherwise returns the next sequential ID after the highest existing ID.
+
+        Returns:
+            Next available product ID to use
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            # Find the lowest gap in the ID sequence
+            async with db.execute("""
+                SELECT id + 1 as gap
+                FROM products
+                WHERE (id + 1) NOT IN (SELECT id FROM products)
+                ORDER BY gap
+                LIMIT 1
+            """) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return row[0]
+
+            # No gaps found - get the next ID after the highest existing ID
+            async with db.execute("SELECT MAX(id) FROM products") as cursor:
+                row = await cursor.fetchone()
+                max_id = row[0] if row and row[0] else 0
+                return max_id + 1
+
     async def add_product(
         self,
         file_id: str,
@@ -495,18 +523,25 @@ class Database:
         subcategory: Optional[str] = None,
         bot_username: Optional[str] = None
     ) -> int:
-        """Add a new product to the database."""
+        """Add a new product to the database with ID recycling.
+
+        Finds and reuses the lowest available ID (including gaps from deleted products)
+        instead of always appending to the end. This keeps menu numbers clean and low.
+        """
         async with aiosqlite.connect(self.db_path) as db:
             try:
+                # Get the next free ID (reusing gaps if they exist)
+                next_id = await self.get_next_free_id()
+
                 cursor = await db.execute("""
-                    INSERT INTO products (file_id, file_type, caption, message_id, chat_id, 
+                    INSERT INTO products (id, file_id, file_type, caption, message_id, chat_id,
                                         media_group_id, additional_file_ids, additional_message_ids, category, subcategory, bot_username, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (file_id, file_type, caption or "", message_id, chat_id, 
-                      media_group_id, additional_file_ids, additional_message_ids, category, subcategory, 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (next_id, file_id, file_type, caption or "", message_id, chat_id,
+                      media_group_id, additional_file_ids, additional_message_ids, category, subcategory,
                       self.normalize_bot_username(bot_username), datetime.now()))
                 await db.commit()
-                product_id = cursor.lastrowid
+                product_id = next_id
                 logger.info(f"Product added: ID={product_id}, message_id={message_id}, category={category}, bot={bot_username}")
                 return product_id
             except aiosqlite.IntegrityError:
@@ -650,13 +685,16 @@ class Database:
                 return [dict(row) for row in rows]
     
     async def delete_product(self, product_id: int) -> bool:
-        """Delete a product by ID."""
+        """Delete a product by ID and reclaim database space."""
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute("DELETE FROM products WHERE id = ?", (product_id,))
             await db.commit()
             deleted = cursor.rowcount > 0
             if deleted:
                 logger.info(f"Product deleted: ID={product_id}")
+                # Reclaim space from the database
+                await db.execute("VACUUM")
+                logger.debug("Database space reclaimed via VACUUM")
             return deleted
     
     async def get_product_by_message(self, message_id: int, chat_id: int) -> Optional[Dict[str, Any]]:
@@ -940,13 +978,17 @@ class Database:
                 return result
     
     async def update_product_category(self, product_id: int, category: str, subcategory: Optional[str] = None):
-        """Update a product's category and subcategory."""
+        """Update a product's category, subcategory, and timestamp.
+
+        Updates created_at to current time so recategorized products move up in lists,
+        indicating fresh or restocked inventory.
+        """
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
-                UPDATE products SET category = ?, subcategory = ? WHERE id = ?
-            """, (category, subcategory, product_id))
+                UPDATE products SET category = ?, subcategory = ?, created_at = ? WHERE id = ?
+            """, (category, subcategory, datetime.now(), product_id))
             await db.commit()
-            
+
             # Remove from pending categorization if it exists
             await db.execute("""
                 DELETE FROM pending_categorization WHERE product_id = ?
