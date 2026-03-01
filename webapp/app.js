@@ -1434,6 +1434,13 @@
     }
 
     function hideAllViews() {
+        // Stop any playing media
+        document.querySelectorAll('video, audio').forEach(media => {
+            if (!media.paused) {
+                media.pause();
+            }
+        });
+
         document.querySelectorAll('.view').forEach(view => {
             view.style.display = 'none';
         });
@@ -2248,16 +2255,18 @@
                     const video = document.createElement('video');
                     video.controls = true;
                     video.playsInline = true;
+                    video.setAttribute('playsinline', ''); // Force inline playback
                     video.muted = true; // Must be set before src for mobile autoplay
                     video.autoplay = true; // Attribute needed for mobile browser autoplay
-                    // Use metadata preload for faster initial display - loads metadata (duration, dimensions)
-                    // without buffering video data, reducing initial load time and bandwidth usage
-                    video.preload = 'metadata';
+                    // Use auto preload for faster buffering and reduced load time
+                    video.preload = 'auto';
                     video.style.maxWidth = '100%';
                     video.style.maxHeight = '500px';
                     video.style.width = '100%';
                     video.style.height = 'auto';
                     video.style.display = 'none'; // Hide until loaded
+                    video.style.zIndex = '10';             // Ensure it sits on top
+                    video.style.position = 'relative';     // Ensure z-index applies
                     
                     // Use MediaRequestManager for intelligent request handling
                     mediaRequestManager.request(mediaUrl, product.id, index)
