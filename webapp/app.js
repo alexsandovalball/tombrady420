@@ -1434,6 +1434,13 @@
     }
 
     function hideAllViews() {
+        // Pause any playing media before hiding views
+        document.querySelectorAll('.view video, .view audio').forEach(media => {
+            if (!media.paused) {
+                media.pause();
+            }
+        });
+
         document.querySelectorAll('.view').forEach(view => {
             view.style.display = 'none';
         });
