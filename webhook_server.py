@@ -584,6 +584,8 @@ async def serve_robots_txt():
         "Disallow: /api/\n"
         "Disallow: /webhook\n"
         "Disallow: /webhook/\n"
+        "Disallow: /webapp\n"
+        "Disallow: /webapp/\n"
         "\n"
         f"Sitemap: {_STOREFRONT_DOMAIN}/sitemap.xml\n"
     )
@@ -635,8 +637,29 @@ async def serve_sitemap_xml():
 
 
 @app.get("/", response_class=HTMLResponse)
+@app.head("/", response_class=HTMLResponse)
 async def serve_homepage(request: Request):
     """Serve the homepage with default Storefront SEO metadata."""
+    ctx = _build_seo_context(
+        title="Top Shelf Cali Plug – Premium Cannabis Storefront",
+        desc="Browse our premium cannabis catalog. Order directly via Telegram.",
+        url=_STOREFRONT_DOMAIN,
+    )
+    ctx["request"] = request
+    return templates.TemplateResponse("index.html", ctx)
+
+
+@app.get("/webapp/index.html", response_class=HTMLResponse)
+@app.get("/webapp/", response_class=HTMLResponse)
+@app.get("/webapp", response_class=HTMLResponse)
+async def serve_webapp(request: Request):
+    """Serve the WebApp for Telegram Mini Apps.
+
+    This renders the same index.html template as the homepage, but at the
+    /webapp/index.html path that Telegram bots reference via WEB_APP_URL.
+    Keeps backward compatibility with the original webapp path while the
+    clearnet storefront is served at /.
+    """
     ctx = _build_seo_context(
         title="Top Shelf Cali Plug – Premium Cannabis Storefront",
         desc="Browse our premium cannabis catalog. Order directly via Telegram.",
@@ -839,19 +862,6 @@ def _normalize_contact(contact: str) -> str:
         return ""
     contact = contact.strip()
     return contact[1:] if contact.startswith("@") else contact
-
-
-@app.get("/")
-@app.head("/")
-async def root():
-    """Health check endpoint."""
-    bot_count = len(getattr(app.state, "bot_apps", []))
-    return {
-        "status": "running",
-        "bot": "Telegram Media Catalog Bot",
-        "mode": "webhook",
-        "bot_instances": bot_count
-    }
 
 
 @app.get("/api/categories")
