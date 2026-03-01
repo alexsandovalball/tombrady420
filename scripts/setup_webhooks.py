@@ -7,8 +7,8 @@ import os
 import sys
 import requests
 
-# Dynamically add project to path
-project_root = os.path.dirname(os.path.abspath(__file__))
+# Dynamically add project root to path (script lives in scripts/ subfolder)
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
 def setup_webhooks():
