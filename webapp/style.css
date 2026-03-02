@@ -48,8 +48,15 @@ body::before {
     padding: 20px 12px 40px;
     background-color: color-mix(in srgb, var(--tg-theme-bg-color) 82%, transparent);
     backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
     position: relative;
     z-index: 1;
+}
+
+@supports not (background-color: color-mix(in srgb, #000 50%, #fff 50%)) {
+    .container {
+        background-color: var(--tg-theme-bg-color);
+    }
 }
 
 .header {
