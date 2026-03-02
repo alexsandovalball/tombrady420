@@ -805,6 +805,7 @@ async def serve_category_page(category_name: str, request: Request):
             "caption": p.get("caption") or "",
             "category": p.get("category") or "",
             "subcategory": p.get("subcategory") or "",
+            "subcategory_display": get_subcategory_display_name(p.get("subcategory")) if p.get("subcategory") else "",
             "slug": _generate_slug(p.get("caption") or ""),
         }
         for p in products
@@ -1128,6 +1129,7 @@ async def get_products(
             "caption": caption,
             "category": product.get("category") or "",
             "subcategory": product.get("subcategory") or "",
+            "subcategory_display": get_subcategory_display_name(product.get("subcategory"), lang) if product.get("subcategory") else "",
             "created_at": product.get("created_at"),
             "media_count": len(media_info),
             "media_info": media_info,  # Include full media info with types
@@ -1173,6 +1175,7 @@ async def get_catalog(request: Request, limit: int = 24, offset: int = 0):
             "caption": product.get("caption") or "",
             "category": product.get("category") or "",
             "subcategory": product.get("subcategory") or "",
+            "subcategory_display": get_subcategory_display_name(product.get("subcategory")) if product.get("subcategory") else "",
             "created_at": product.get("created_at"),
             "media_count": len(media_info),
             "media_info": media_info,  # Include full media info with types
@@ -1559,6 +1562,7 @@ async def search_products(
                 "caption": product.get("caption") or "",
                 "category": product.get("category") or "",
                 "subcategory": product.get("subcategory") or "",
+                "subcategory_display": get_subcategory_display_name(product.get("subcategory")) if product.get("subcategory") else "",
                 "created_at": product.get("created_at"),
                 "media_count": len(media_info),
                 "media_info": media_info,

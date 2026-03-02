@@ -79,7 +79,7 @@
                     <a href="/product/{{ p.id }}/{{ p.slug }}">
                         <div class="product-title">{{ p.caption.split('\n')[0] if p.caption else 'Product #' ~ p.id }}</div>
                         <div class="product-badge">
-                            {% if p.subcategory %}{{ p.category }} &rsaquo; {{ p.subcategory }}{% else %}{{ p.category }}{% endif %}
+                            {% if p.subcategory %}{{ p.category }} &rsaquo; {{ p.subcategory_display }}{% else %}{{ p.category }}{% endif %}
                         </div>
                     </a>
                 </li>
