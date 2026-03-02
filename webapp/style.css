@@ -46,7 +46,6 @@ body::before {
     max-width: 720px;
     margin: 0 auto;
     padding: 20px 12px 40px;
-    background-color: var(--tg-theme-bg-color);
     background-color: color-mix(in srgb, var(--tg-theme-bg-color) 82%, transparent);
     backdrop-filter: blur(4px);
     position: relative;
