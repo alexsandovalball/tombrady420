@@ -909,4 +909,9 @@ a.btn {
     .container {
         background-color: color-mix(in srgb, var(--tg-theme-bg-color) var(--overlay-mix-main, 82%), black var(--overlay-mix-rest, 18%));
     }
+    @supports not (background-color: color-mix(in srgb, var(--tg-theme-bg-color) var(--overlay-mix-main, 82%), black var(--overlay-mix-rest, 18%))) {
+        .container {
+            background-color: rgba(0, 0, 0, 0.55);
+        }
+    }
 }
