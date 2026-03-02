@@ -14,6 +14,7 @@
         VIDEO_THUMBNAIL_SEEK_TIME: 1,  // 1 second
         VIDEO_THUMBNAIL_SEEK_PERCENT: 0.1,  // 10% of duration
         VIDEO_BOUNDS_BUFFER: 0.1,  // Buffer to stay within video bounds
+        VIDEO_SHORT_DURATION_THRESHOLD: 0.5,  // Videos shorter than this use proportional seek
         VIDEO_LOAD_TIMEOUT_MS: 15000,  // Timeout before showing tap-to-play for slow videos
         USER_DATA_CHECK_INTERVALS: [300, 700, 1500],  // Retry intervals in ms for user data loading
         SEARCH_DEBOUNCE_MS: 400,  // Debounce time for search input
@@ -2124,20 +2125,52 @@
             }
         }
 
+        // Determine the media type for the selected index
+        const selectedMediaType = (item.media_info && Array.isArray(item.media_info) && item.media_info[mediaIndex])
+            ? item.media_info[mediaIndex].type
+            : (item.file_type || 'photo');
+
         const mediaUrl = buildMediaUrl(item, mediaIndex);
         if (mediaUrl) {
-            const img = document.createElement('img');
-            img.src = mediaUrl;
-            img.alt = item.caption || 'Product';
-            img.loading = 'lazy';
-            img.onload = () => {
-                img.classList.add('loaded');
-            };
-            img.onerror = () => {
-                media.classList.add('placeholder');
-                media.textContent = '🖼️';
-            };
-            media.appendChild(img);
+            if (selectedMediaType === 'video') {
+                const vid = document.createElement('video');
+                vid.src = mediaUrl;
+                vid.muted = true;
+                vid.playsInline = true;
+                vid.preload = 'metadata';
+                vid.addEventListener('loadedmetadata', () => {
+                    if (vid.duration < CONFIG.VIDEO_SHORT_DURATION_THRESHOLD) {
+                        vid.currentTime = Math.max(0, vid.duration * CONFIG.VIDEO_THUMBNAIL_SEEK_PERCENT);
+                        return;
+                    }
+                    const seekTime = Math.min(CONFIG.VIDEO_THUMBNAIL_SEEK_TIME, vid.duration * CONFIG.VIDEO_THUMBNAIL_SEEK_PERCENT);
+                    vid.currentTime = Math.max(0, Math.min(seekTime, vid.duration - CONFIG.VIDEO_BOUNDS_BUFFER));
+                });
+                vid.onerror = () => {
+                    media.classList.add('placeholder');
+                    media.textContent = '🎬';
+                };
+                media.appendChild(vid);
+
+                // Play icon overlay for video cards
+                const playOverlay = document.createElement('div');
+                playOverlay.className = 'card-video-play-overlay';
+                playOverlay.textContent = '▶️';
+                media.appendChild(playOverlay);
+            } else {
+                const img = document.createElement('img');
+                img.src = mediaUrl;
+                img.alt = item.caption || 'Product';
+                img.loading = 'lazy';
+                img.onload = () => {
+                    img.classList.add('loaded');
+                };
+                img.onerror = () => {
+                    media.classList.add('placeholder');
+                    media.textContent = '🖼️';
+                };
+                media.appendChild(img);
+            }
         } else {
             media.classList.add('placeholder');
             media.textContent = '🖼️';
@@ -2513,7 +2546,7 @@
                         // Set currentTime after metadata is loaded for reliable thumbnail
                         thumbVideo.addEventListener('loadedmetadata', () => {
                             // For very short videos, use a minimal safe seek
-                            if (thumbVideo.duration < 0.5) {
+                            if (thumbVideo.duration < CONFIG.VIDEO_SHORT_DURATION_THRESHOLD) {
                                 thumbVideo.currentTime = Math.max(0, thumbVideo.duration * CONFIG.VIDEO_THUMBNAIL_SEEK_PERCENT);
                                 return;
                             }
