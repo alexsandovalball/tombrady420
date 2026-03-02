@@ -2287,15 +2287,6 @@
                         url: mediaUrl
                     });
                     
-                    // Show loading indicator
-                    const loadingDiv = document.createElement('div');
-                    loadingDiv.className = 'media-loading';
-                    loadingDiv.innerHTML = `
-                        <div class="media-loading-icon">⏳</div>
-                        <div class="media-loading-text">Loading video...</div>
-                    `;
-                    mediaViewer.appendChild(loadingDiv);
-                    
                     const video = document.createElement('video');
                     video.controls = true;
                     video.playsInline = true;
@@ -2308,14 +2299,24 @@
                     video.style.maxHeight = '500px';
                     video.style.width = '100%';
                     video.style.height = 'auto';
-                    video.style.display = 'none'; // Hide until loaded
-                    video.style.zIndex = '10';             // Ensure it sits on top
-                    video.style.position = 'relative';     // Ensure z-index applies
                     
                     // Set video src directly so the browser can stream via HTTP Range requests.
                     // This avoids downloading the entire video as a blob before playback,
                     // which was causing slow loading and failures on larger files.
                     video.src = mediaUrl;
+                    
+                    // Append video to DOM first so the browser can begin buffering
+                    // and trigger autoplay. The loading overlay (z-index:5) will cover it.
+                    mediaViewer.appendChild(video);
+                    
+                    // Show loading indicator on top of the video
+                    const loadingDiv = document.createElement('div');
+                    loadingDiv.className = 'media-loading';
+                    loadingDiv.innerHTML = `
+                        <div class="media-loading-icon">⏳</div>
+                        <div class="media-loading-text">Loading video...</div>
+                    `;
+                    mediaViewer.appendChild(loadingDiv);
                     
                     // Track if video has been shown to avoid duplicate handling
                     let videoShown = false;
@@ -2323,7 +2324,6 @@
                         if (videoShown) return;
                         videoShown = true;
                         loadingDiv.style.display = 'none';
-                        video.style.display = 'block';
                     };
                     
                     // Show video as soon as we have any data to play
@@ -2420,8 +2420,6 @@
                             media_index: index
                         });
                     });
-                    
-                    mediaViewer.appendChild(video);
                 } else {
                     const img = document.createElement('img');
                     img.src = mediaUrl;
