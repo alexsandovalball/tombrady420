@@ -840,22 +840,32 @@
     }
 
     function openContactsLink() {
-        if (!state.orderLink) {
-            logger.log('contacts', 'no_link', 'warn', 'No order link configured');
+        // Try orderLink first, fall back to orderContact if not set
+        let link = state.orderLink;
+        
+        // If no order_link is set, construct one from order_contact
+        if (!link && state.orderContact) {
+            const contact = state.orderContact.replace(/^@/, '');
+            link = `https://t.me/${contact}`;
+            logger.log('contacts', 'using_order_contact', 'info', '', { contact: state.orderContact, constructed_link: link });
+        }
+        
+        if (!link) {
+            logger.log('contacts', 'no_link', 'warn', 'No order link or contact configured');
             tg.showAlert('Contact link not configured. Please contact the admin.');
             return;
         }
 
-        logger.log('contacts', 'opening_link', 'info', '', { link: state.orderLink });
+        logger.log('contacts', 'opening_link', 'info', '', { link: link });
 
         // Open the link in a new window/tab
         // Telegram WebApp will handle this appropriately based on the platform
         try {
-            tg.openLink(state.orderLink);
+            tg.openLink(link);
         } catch (err) {
-            logger.error('contacts_open_link', err.message, { link: state.orderLink });
+            logger.error('contacts_open_link', err.message, { link: link });
             // Fallback: try opening with window.open
-            window.open(state.orderLink, '_blank');
+            window.open(link, '_blank');
         }
     }
 
