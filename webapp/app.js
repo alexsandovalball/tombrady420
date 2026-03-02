@@ -2312,30 +2312,10 @@
                     video.style.zIndex = '10';             // Ensure it sits on top
                     video.style.position = 'relative';     // Ensure z-index applies
                     
-                    // Use MediaRequestManager for intelligent request handling
-                    mediaRequestManager.request(mediaUrl, product.id, index)
-                        .then(blobUrl => {
-                            // Set video source from blob URL (deduplicated and cached)
-                            video.src = blobUrl;
-                        })
-                        .catch(error => {
-                            // Handle request error
-                            logger.videoEvent('video_load_error', 'error', error.message, {
-                                product_id: product.id,
-                                media_index: index
-                            });
-                            
-                            mediaViewer.innerHTML = `
-                                <div class="media-error">
-                                    <div class="media-error-icon">⚠️</div>
-                                    <div class="media-error-title">Video Unavailable</div>
-                                    <div class="media-error-details">${error.message}</div>
-                                    <div class="media-error-hint">
-                                        👇 Try the "Get Product in Bot Chat" button below
-                                    </div>
-                                </div>
-                            `;
-                        });
+                    // Set video src directly so the browser can stream via HTTP Range requests.
+                    // This avoids downloading the entire video as a blob before playback,
+                    // which was causing slow loading and failures on larger files.
+                    video.src = mediaUrl;
                     
                     // Track if video has been shown to avoid duplicate handling
                     let videoShown = false;
