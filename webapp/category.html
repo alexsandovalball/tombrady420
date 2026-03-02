@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ seo_title }}</title>
+    <meta name="description" content="{{ seo_desc }}">
+    <link rel="canonical" href="{{ seo_url }}">
+
+    <meta name="robots" content="index, follow">
+    <meta name="googlebot" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
+    <meta name="author" content="Top Shelf Cali Plug">
+    <meta name="keywords" content="{{ seo_keywords }}">
+    <meta name="theme-color" content="#2481cc">
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="{{ seo_title }}">
+    <meta property="og:description" content="{{ seo_desc }}">
+    <meta property="og:image" content="{{ seo_image }}">
+    <meta property="og:url" content="{{ seo_url }}">
+    <meta property="og:site_name" content="Top Shelf Cali Plug">
+    <meta property="og:locale" content="en_US">
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="{{ seo_title }}">
+    <meta name="twitter:description" content="{{ seo_desc }}">
+    <meta name="twitter:image" content="{{ seo_image }}">
+
+    <!-- Schema.org JSON-LD -->
+    <script type="application/ld+json">{{ seo_schema | safe }}</script>
+
+    <!-- Favicon -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%20100%20100%27%3E%3Ctext%20y%3D%27.9em%27%20font-size%3D%2790%27%3E🏈%3C%2Ftext%3E%3C%2Fsvg%3E">
+
+    <link rel="stylesheet" href="/assets/style.css">
+    <style>
+        .cat-page { max-width: 800px; margin: 0 auto; padding: 1rem; }
+        .cat-page header { margin-bottom: 1.5rem; }
+        .cat-page header a { text-decoration: none; color: inherit; }
+        .cat-page h1 { font-size: 1.8rem; margin: 0.5rem 0; }
+        .cat-subtitle { color: var(--text-secondary, #888); margin: 0 0 1.5rem; }
+        .subcat-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.5rem; }
+        .subcat-list li { background: var(--card-bg, #1e1e1e); border-radius: 8px; padding: 0.4rem 0.8rem; font-size: 0.9rem; }
+        .product-list { list-style: none; padding: 0; }
+        .product-list li { border-bottom: 1px solid var(--border, #333); padding: 0.75rem 0; }
+        .product-list li a { text-decoration: none; color: var(--text-primary, #fff); display: block; }
+        .product-list li a:hover { color: var(--accent, #2481cc); }
+        .product-title { font-weight: 600; }
+        .product-badge { font-size: 0.8rem; color: var(--text-secondary, #888); margin-top: 0.2rem; }
+        .cta-btn { display: inline-block; margin: 1.5rem 0; padding: 0.75rem 1.5rem; background: #2481cc; color: #fff; border-radius: 8px; text-decoration: none; font-weight: 600; }
+        .cat-footer { margin-top: 2rem; border-top: 1px solid var(--border, #333); padding-top: 1rem; font-size: 0.9rem; }
+        .cat-footer a { color: var(--accent, #2481cc); text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="cat-page">
+        <header>
+            <a href="/">🏈 Tom Brady Menu</a>
+            <h1>{{ category_display }}</h1>
+            <p class="cat-subtitle">{{ total }} product{% if total != 1 %}s{% endif %} available &mdash; Order via Telegram</p>
+        </header>
+
+        {% if subcategories %}
+        <section>
+            <ul class="subcat-list">
+                {% for s in subcategories %}
+                <li>{{ s.display }} ({{ s.count }})</li>
+                {% endfor %}
+            </ul>
+        </section>
+        {% endif %}
+
+        <section>
+            <ul class="product-list">
+                {% for p in products %}
+                <li>
+                    <a href="/product/{{ p.id }}/{{ p.slug }}">
+                        <div class="product-title">{{ p.caption.split('\n')[0] if p.caption else 'Product #' ~ p.id }}</div>
+                        <div class="product-badge">
+                            {% if p.subcategory %}{{ p.category }} &rsaquo; {{ p.subcategory }}{% else %}{{ p.category }}{% endif %}
+                        </div>
+                    </a>
+                </li>
+                {% endfor %}
+            </ul>
+        </section>
+
+        <a class="cta-btn" href="{{ telegram_bot_url }}">Browse Full Catalog in Telegram</a>
+
+        <footer class="cat-footer">
+            <a href="/">&larr; Back to Homepage</a>
+        </footer>
+    </div>
+</body>
+</html>
