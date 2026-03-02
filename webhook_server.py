@@ -9,6 +9,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import urllib.parse
 import tempfile
 from pathlib import Path
@@ -484,6 +485,16 @@ _STOREFRONT_BOT_USERNAME = os.getenv("BOT_USERNAME", "").lstrip("@")
 _STOREFRONT_DOMAIN = os.getenv("STOREFRONT_DOMAIN", "https://topshelfcaliplug.com")
 
 
+def _generate_slug(caption: str) -> str:
+    """Generate a URL-safe slug from a product caption."""
+    if not caption:
+        return "product"
+    first_line = caption.split('\n')[0].strip()
+    slug = re.sub(r'[^a-z0-9]+', '-', first_line.lower()).strip('-')
+    slug = slug[:60].rstrip('-')
+    return slug or "product"
+
+
 def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
                         product: Optional[dict] = None, deep_link: str = "",
                         keywords: str = "", category: str = "") -> dict:
@@ -599,7 +610,7 @@ async def serve_robots_txt():
 
 @app.get("/sitemap.xml", response_class=Response)
 async def serve_sitemap_xml():
-    """Dynamically generate a sitemap.xml including homepage and all product pages."""
+    """Dynamically generate a sitemap.xml including homepage, category, and all product pages."""
     from datetime import date
     today = date.today().isoformat()
     products = await _catalog_db.get_all_products()
@@ -614,6 +625,15 @@ async def serve_sitemap_xml():
             f"  </url>"
         )
     ]
+    for category in get_all_categories():
+        urls.append(
+            f"  <url>\n"
+            f"    <loc>{_STOREFRONT_DOMAIN}/category/{urllib.parse.quote(category)}</loc>\n"
+            f"    <lastmod>{today}</lastmod>\n"
+            f"    <changefreq>weekly</changefreq>\n"
+            f"    <priority>0.9</priority>\n"
+            f"  </url>"
+        )
     for p in products:
         pid = p.get("id") or p.get("product_id")
         if pid is None:
@@ -623,9 +643,10 @@ async def serve_sitemap_xml():
             lastmod = lastmod.split("T")[0]
         elif not isinstance(lastmod, str):
             lastmod = today
+        slug = _generate_slug(p.get("caption") or "")
         urls.append(
             f"  <url>\n"
-            f"    <loc>{_STOREFRONT_DOMAIN}/product/{pid}</loc>\n"
+            f"    <loc>{_STOREFRONT_DOMAIN}/product/{pid}/{slug}</loc>\n"
             f"    <lastmod>{lastmod}</lastmod>\n"
             f"    <changefreq>monthly</changefreq>\n"
             f"    <priority>0.8</priority>\n"
@@ -696,7 +717,7 @@ async def serve_product_page(product_id: int, request: Request):
         media_ids = []
     seo_image = f"{_STOREFRONT_DOMAIN}/api/media/{product_id}/0" if media_ids else ""
 
-    product_url = f"{_STOREFRONT_DOMAIN}/product/{product_id}"
+    product_url = f"{_STOREFRONT_DOMAIN}/product/{product_id}/{_generate_slug(caption)}"
     deep_link = f"https://t.me/{_STOREFRONT_BOT_USERNAME}?start=product_{product_id}"
 
     ctx = _build_seo_context(
@@ -718,6 +739,108 @@ async def serve_product_page(product_id: int, request: Request):
     )
     ctx["request"] = request
     return templates.TemplateResponse("index.html", ctx)
+
+
+@app.get("/product/{product_id}/{slug}", response_class=HTMLResponse)
+async def serve_product_page_with_slug(product_id: int, slug: str, request: Request):
+    """Serve an individual product page using a slug URL — delegates to serve_product_page."""
+    return await serve_product_page(product_id, request)
+
+
+@app.get("/category/{category_name}", response_class=HTMLResponse)
+async def serve_category_page(category_name: str, request: Request):
+    """Serve a server-rendered category landing page for SEO crawlability."""
+    # Case-insensitive match against canonical category names
+    all_categories = get_all_categories()
+    matched_category = next(
+        (c for c in all_categories if c.lower() == category_name.lower()),
+        None,
+    )
+    if matched_category is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found")
+
+    display_name = get_category_display_name(matched_category)
+    subcategories = get_subcategories(matched_category)
+
+    # Fetch products for this category (limit 50 for the page)
+    products = await _catalog_db.get_products_by_category(matched_category, limit=50)
+    total = await _catalog_db.count_products_by_category(matched_category)
+
+    # Get subcategory counts
+    all_subcategories_data = await _catalog_db.get_all_subcategories_with_counts()
+    subcategory_counts = {
+        item["subcategory"]: item["count"]
+        for item in all_subcategories_data.get(matched_category, [])
+    }
+
+    category_url = f"{_STOREFRONT_DOMAIN}/category/{urllib.parse.quote(matched_category)}"
+
+    # Build keyword list from category + subcategory names
+    subcat_names = ", ".join(subcategories) if subcategories else ""
+    keywords = ", ".join(filter(None, [
+        display_name,
+        subcat_names,
+        "Top Shelf Cali Plug",
+        "buy online",
+    ]))
+
+    ctx = _build_seo_context(
+        title=f"{display_name} | Top Shelf Cali Plug",
+        desc=f"Browse our {display_name} collection. {total} products available. Order via Telegram.",
+        url=category_url,
+        keywords=keywords,
+    )
+
+    # Attach extra context for the category template
+    ctx["request"] = request
+    ctx["category_name"] = matched_category
+    ctx["category_display"] = display_name
+    ctx["subcategories"] = [
+        {"name": s, "display": get_subcategory_display_name(s), "count": subcategory_counts.get(s, 0)}
+        for s in subcategories
+    ]
+    ctx["products"] = [
+        {
+            "id": p.get("id") or p.get("product_id"),
+            "caption": p.get("caption") or "",
+            "category": p.get("category") or "",
+            "subcategory": p.get("subcategory") or "",
+            "slug": _generate_slug(p.get("caption") or ""),
+        }
+        for p in products
+    ]
+    ctx["total"] = total
+    ctx["telegram_bot_url"] = f"https://t.me/{_STOREFRONT_BOT_USERNAME}"
+    ctx["storefront_domain"] = _STOREFRONT_DOMAIN
+
+    # Build ItemList + BreadcrumbList schema
+    item_list_schema = {
+        "@context": "https://schema.org",
+        "@type": "ItemList",
+        "name": display_name,
+        "url": category_url,
+        "numberOfItems": total,
+        "itemListElement": [
+            {
+                "@type": "ListItem",
+                "position": i + 1,
+                "url": f"{_STOREFRONT_DOMAIN}/product/{p['id']}/{p['slug']}",
+                "name": (p["caption"].split("\n")[0].strip() if p["caption"] else f"Product #{p['id']}"),
+            }
+            for i, p in enumerate(ctx["products"])
+        ],
+    }
+    breadcrumb_schema = {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            {"@type": "ListItem", "position": 1, "name": "Home", "item": f"{_STOREFRONT_DOMAIN}/"},
+            {"@type": "ListItem", "position": 2, "name": display_name, "item": category_url},
+        ],
+    }
+    ctx["seo_schema"] = json.dumps({"@context": "https://schema.org", "@graph": [item_list_schema, breadcrumb_schema]})
+
+    return templates.TemplateResponse("category.html", ctx)
 
 
 def _get_primary_bot(request: Request, required: bool = True):
