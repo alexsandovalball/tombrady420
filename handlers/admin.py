@@ -1027,6 +1027,91 @@ async def handle_setcontact_input(update: Update, context: ContextTypes.DEFAULT_
     logger.info(f"Admin {user_id} updated order contact to: {contact}")
 
 
+async def setlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /setlink command - set the order link URL (admin only)."""
+    user_id = update.effective_user.id
+
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            "❌ This command is only available for administrators."
+        )
+        return
+
+    # Get current link
+    current_link = await db.get_order_link()
+
+    # Escape the current link for markdown v1
+    escaped_link = escape_markdown_v1(current_link) if current_link else "Not set"
+
+    try:
+        await update.message.reply_text(
+            f"🔗 **Set Order Link**\n\n"
+            f"Current link: {escaped_link}\n\n"
+            f"Please enter the new link URL (e.g., https://t.me/username or any URL):",
+            parse_mode="Markdown"
+        )
+    except BadRequest as e:
+        logger.warning(f"Markdown parse error in setlink_command, retrying without parse_mode: {e}")
+        await update.message.reply_text(
+            f"🔗 Set Order Link\n\n"
+            f"Current link: {current_link if current_link else 'Not set'}\n\n"
+            f"Please enter the new link URL (e.g., https://t.me/username or any URL):"
+        )
+
+    # Store state for next message
+    context.user_data['awaiting_link'] = True
+    logger.info(f"Admin {user_id} initiated setlink command")
+
+
+async def handle_setlink_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the link URL input from admin."""
+    user_id = update.effective_user.id
+
+    if not is_admin(user_id):
+        return
+
+    if not context.user_data.get('awaiting_link'):
+        return
+
+    link = update.message.text.strip()
+
+    # Validate format (must be a URL)
+    if not (link.startswith('http://') or link.startswith('https://') or link.startswith('tg://')):
+        await update.message.reply_text(
+            "❌ Invalid format. Link must be a valid URL starting with http://, https://, or tg://\n\n"
+            "Examples:\n"
+            "• https://t.me/username\n"
+            "• https://example.com/contact\n\n"
+            "Please try again or use /setlink to restart."
+        )
+        return
+
+    # Save to database
+    await db.set_order_link(link)
+
+    # Clear state
+    context.user_data['awaiting_link'] = False
+
+    # Escape link for markdown v1
+    escaped_link = escape_markdown_v1(link)
+
+    try:
+        await update.message.reply_text(
+            f"✅ Order link updated successfully!\n\n"
+            f"New link: {escaped_link}\n\n"
+            f"This link will be used in the webapp 'OUR CONTACTS' button.",
+            parse_mode="Markdown"
+        )
+    except BadRequest as e:
+        logger.warning(f"Markdown parse error in handle_setlink_input, retrying without parse_mode: {e}")
+        await update.message.reply_text(
+            f"✅ Order link updated successfully!\n\n"
+            f"New link: {link}\n\n"
+            f"This link will be used in the webapp 'OUR CONTACTS' button."
+        )
+    logger.info(f"Admin {user_id} updated order link to: {link}")
+
+
 async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /clearcache command - clear the file ID cache (admin only)."""
     user_id = update.effective_user.id
@@ -1463,94 +1548,6 @@ async def prunebots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in prunebots command: {e}", exc_info=True)
         await update.message.reply_text(
             "❌ An error occurred while pruning bot users."
-        )
-
-
-async def integrity_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /integritycheck command - report catalog integrity metrics (admin only, read-only).
-
-    Reports:
-    - Count of products with NULL or blank media_group_id
-    - Count of duplicate file_id entries (should be zero)
-    - Top media_group_id groups by size (to spot anomalies)
-    """
-    user_id = update.effective_user.id
-
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
-
-    try:
-        async with aiosqlite.connect(db.db_path) as conn:
-            # Count products with NULL or blank media_group_id
-            async with conn.execute(
-                "SELECT COUNT(*) FROM products WHERE media_group_id IS NULL OR media_group_id = ''"
-            ) as cursor:
-                row = await cursor.fetchone()
-                null_media_group_count = row[0] if row else 0
-
-            # Count duplicate file_id entries
-            async with conn.execute("""
-                SELECT COUNT(*) FROM (
-                    SELECT file_id FROM products
-                    GROUP BY file_id HAVING COUNT(*) > 1
-                )
-            """) as cursor:
-                row = await cursor.fetchone()
-                duplicate_file_id_count = row[0] if row else 0
-
-            # Top media_group_id groups by size (exclude NULL/blank)
-            async with conn.execute("""
-                SELECT media_group_id, COUNT(*) AS cnt
-                FROM products
-                WHERE media_group_id IS NOT NULL AND media_group_id != ''
-                GROUP BY media_group_id
-                ORDER BY cnt DESC
-                LIMIT 5
-            """) as cursor:
-                top_groups = await cursor.fetchall()
-
-        # Format top groups
-        if top_groups:
-            top_groups_text = "\n".join(
-                f"  • {mgid}: {cnt} product(s)"
-                for mgid, cnt in top_groups
-            )
-        else:
-            top_groups_text = "  (none)"
-
-        report = (
-            f"🔍 **Catalog Integrity Report**\n\n"
-            f"📦 Products without media_group_id: {null_media_group_count}\n"
-            f"⚠️ Duplicate file_id entries: {duplicate_file_id_count}\n\n"
-            f"📊 Top media_group_id groups by size:\n{top_groups_text}"
-        )
-
-        logger.info(
-            f"Integrity check by admin {user_id}: "
-            f"null_media_group={null_media_group_count}, "
-            f"duplicate_file_id={duplicate_file_id_count}, "
-            f"top_groups={top_groups}"
-        )
-
-        try:
-            await update.message.reply_text(report, parse_mode="Markdown")
-        except BadRequest as e:
-            logger.warning(f"Markdown parse error in integrity_check, retrying: {e}")
-            report_no_md = (
-                f"🔍 Catalog Integrity Report\n\n"
-                f"📦 Products without media_group_id: {null_media_group_count}\n"
-                f"⚠️ Duplicate file_id entries: {duplicate_file_id_count}\n\n"
-                f"📊 Top media_group_id groups by size:\n{top_groups_text}"
-            )
-            await update.message.reply_text(report_no_md)
-
-    except Exception as e:
-        logger.error(f"Error in integrity_check command: {e}", exc_info=True)
-        await update.message.reply_text(
-            "❌ An error occurred while running the integrity check."
         )
 
 

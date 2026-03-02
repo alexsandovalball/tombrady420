@@ -16,10 +16,12 @@ logger = logging.getLogger(__name__)
 
 # Default values
 DEFAULT_ORDER_CONTACT = '@FLYAWAYPEP'
+DEFAULT_ORDER_LINK = 'https://t.me/FLYAWAYPEP'
 
 # In-memory caches for frequently accessed data
 _user_language_cache: Dict[int, Tuple[str, datetime]] = {}
 _order_contact_cache: Optional[Tuple[str, datetime]] = None
+_order_link_cache: Optional[Tuple[str, datetime]] = None
 _cache_lock = asyncio.Lock()
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
@@ -1891,7 +1893,49 @@ class Database:
         # Invalidate cache
         async with _cache_lock:
             _order_contact_cache = (contact, datetime.now())
-    
+
+    async def get_order_link(self) -> str:
+        """Get the order link URL from settings with caching."""
+        global _order_link_cache
+
+        # Check cache first
+        async with _cache_lock:
+            if _order_link_cache is not None:
+                link, cached_at = _order_link_cache
+                # Return cached value if not expired
+                if datetime.now() - cached_at < timedelta(seconds=CACHE_TTL_SECONDS):
+                    return link
+
+        # Cache miss or expired - query database
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT value FROM bot_settings WHERE key = 'order_link'
+            """) as cursor:
+                row = await cursor.fetchone()
+                link = row[0] if row else DEFAULT_ORDER_LINK
+
+        # Update cache
+        async with _cache_lock:
+            _order_link_cache = (link, datetime.now())
+
+        return link
+
+    async def set_order_link(self, link: str):
+        """Set the order link URL in settings and invalidate cache."""
+        global _order_link_cache
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT OR REPLACE INTO bot_settings (key, value, updated_at)
+                VALUES ('order_link', ?, ?)
+            """, (link, datetime.now()))
+            await db.commit()
+            logger.info(f"Order link updated to: {link}")
+
+        # Invalidate cache
+        async with _cache_lock:
+            _order_link_cache = (link, datetime.now())
+
     async def get_bot_file_id(
         self,
         source_chat_id: int,
@@ -2175,12 +2219,13 @@ class Database:
 
 async def clear_database_caches():
     """Clear all in-memory database caches. Useful for testing or after bulk updates."""
-    global _user_language_cache, _order_contact_cache
-    
+    global _user_language_cache, _order_contact_cache, _order_link_cache
+
     async with _cache_lock:
         _user_language_cache.clear()
         _order_contact_cache = None
-    
+        _order_link_cache = None
+
     logger.info("Database caches cleared")
 
 

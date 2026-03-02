@@ -1114,10 +1114,11 @@ async def get_products(
             EXCLUDED_FROM_ALL_PRODUCTS, limit=limit, offset=offset
         )
         total = await _catalog_db.count_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
-    
+
     order_contact = await _catalog_db.get_order_contact()
     order_contact_username = _normalize_contact(order_contact)
-    
+    order_link = await _catalog_db.get_order_link()
+
     items = []
     for product in products:
         media_info = _collect_media_info(product)
@@ -1149,7 +1150,8 @@ async def get_products(
             "total": total,
             "bot": bot.username if bot and getattr(bot, "username", None) else None,
             "order_contact": order_contact,
-            "order_contact_username": order_contact_username
+            "order_contact_username": order_contact_username,
+            "order_link": order_link
         }),
         media_type="application/json",
         headers={"Cache-Control": "public, max-age=30"}
