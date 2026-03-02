@@ -18,11 +18,18 @@ ADMIN_COMMANDS_FALLBACK = (
     "\n\n👨‍💼 Admin Commands:\n"
     "• /start - Welcome message\n"
     "• /menu - View catalog\n"
+    "• /language - Change bot language\n"
     "• /users - Manage users\n"
+    "• /botusers - View users by bot instance\n"
     "• /send - Send message to user\n"
     "• /broadcast - Broadcast to all users\n"
+    "• /block - Block a user\n"
+    "• /unblock - Unblock a user\n"
     "• /setcontact - Set order contact\n"
+    "• /setlink - Set contacts link\n"
     "• /recategorize - Recategorize products\n"
+    "• /clearcache - Clear file ID cache\n"
+    "• /prunebots - Prune inactive bot users\n"
     "• /nuke - Delete all products"
 )
 

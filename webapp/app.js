@@ -450,6 +450,7 @@
         searchResults: [],
         totalProducts: 0,
         orderContact: null,
+        orderLink: null,
         allProductsCount: 0,
         userLanguage: 'en',
         isSubscribed: true,
@@ -838,6 +839,26 @@
         return contact.startsWith('@') ? contact.slice(1) : contact;
     }
 
+    function openContactsLink() {
+        if (!state.orderLink) {
+            logger.log('contacts', 'no_link', 'warn', 'No order link configured');
+            tg.showAlert('Contact link not configured. Please contact the admin.');
+            return;
+        }
+
+        logger.log('contacts', 'opening_link', 'info', '', { link: state.orderLink });
+
+        // Open the link in a new window/tab
+        // Telegram WebApp will handle this appropriately based on the platform
+        try {
+            tg.openLink(state.orderLink);
+        } catch (err) {
+            logger.error('contacts_open_link', err.message, { link: state.orderLink });
+            // Fallback: try opening with window.open
+            window.open(state.orderLink, '_blank');
+        }
+    }
+
     // Helper: Deduplicated JSON fetch to prevent duplicate API calls
     // This caches the parsed JSON data, not the Response object, to avoid
     // "Body is disturbed or locked" errors when multiple consumers call .json()
@@ -1012,6 +1033,7 @@
                 if (response.ok) {
                     const data = await response.json();
                     state.orderContact = data.order_contact || null;
+                    state.orderLink = data.order_link || null;
                     state.botUsername = data.bot || null;
                     logger.apiCall('load_initial_data', 'success', { 
                         endpoint: '/api/products',
@@ -1456,6 +1478,9 @@
                 break;
             case 'language':
                 showLanguageSelection();
+                break;
+            case 'contacts':
+                openContactsLink();
                 break;
         }
     }

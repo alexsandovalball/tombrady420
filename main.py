@@ -31,8 +31,8 @@ from handlers.admin import (
     delete_product, nuke_command, recategorize_command,
     users_command, show_users_page, build_users_bot_selection_menu,
     block_command, unblock_command, send_command, broadcast_command,
-    setcontact_command, handle_setcontact_input, clearcache_command,
-    botusers_command, prunebots_command, integrity_check
+    setcontact_command, handle_setcontact_input, setlink_command, handle_setlink_input,
+    clearcache_command, botusers_command, prunebots_command
 )
 from handlers.inline import handle_inline_query, handle_chosen_inline_result
 from translations.language_config import is_valid_language, LANGUAGE_DISPLAY
@@ -1693,7 +1693,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_admin(user_id) and context.user_data.get('awaiting_contact'):
         await handle_setcontact_input(update, context)
         return
-    
+
+    # Check if admin is setting link
+    if is_admin(user_id) and context.user_data.get('awaiting_link'):
+        await handle_setlink_input(update, context)
+        return
+
     # Check if admin is in broadcast workflow
     if is_admin(user_id) and 'broadcast_mode' in context.user_data:
         from handlers.admin import handle_broadcast_workflow
@@ -1811,19 +1816,23 @@ async def setup_bot_commands(bot):
         BotCommand("subscribe", "Enable product notifications"),
         BotCommand("unsubscribe", "Disable product notifications"),
     ]
-    
+
     # Define admin commands (available to admins only)
     # These appear in the command menu ONLY for admin users
-    admin_commands = user_commands + [
+    # Note: subscribe/unsubscribe are excluded as admins don't need notifications
+    admin_commands = [
+        BotCommand("start", "Start the bot and select language"),
+        BotCommand("menu", "Browse the product catalog"),
+        BotCommand("language", "Change bot language"),
         BotCommand("users", "View and manage bot users"),
         BotCommand("botusers", "View users grouped by bot instance"),
         BotCommand("send", "Send a message to a specific user"),
         BotCommand("broadcast", "Send a message to all users"),
         BotCommand("setcontact", "Set order contact username"),
+        BotCommand("setlink", "Set contacts link URL"),
         BotCommand("recategorize", "Categorize uncategorized products"),
         BotCommand("clearcache", "Clear file ID cache"),
         BotCommand("prunebots", "Prune users from inactive bots"),
-        BotCommand("integritycheck", "Run catalog integrity check"),
         BotCommand("nuke", "Delete all products (use with caution)"),
     ]
     
@@ -1889,7 +1898,6 @@ def main():
     application.add_handler(CommandHandler("users", users_command))
     application.add_handler(CommandHandler("botusers", botusers_command))
     application.add_handler(CommandHandler("prunebots", prunebots_command))
-    application.add_handler(CommandHandler("integritycheck", integrity_check))
     application.add_handler(CommandHandler("subscribe", subscribe_command))
     application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
     application.add_handler(CommandHandler("block", block_command))
@@ -1897,6 +1905,7 @@ def main():
     application.add_handler(CommandHandler("send", send_command))
     application.add_handler(CommandHandler("broadcast", broadcast_command))
     application.add_handler(CommandHandler("setcontact", setcontact_command))
+    application.add_handler(CommandHandler("setlink", setlink_command))
     application.add_handler(CommandHandler("clearcache", clearcache_command))
     
     # Channel post handler (for monitoring channel)
