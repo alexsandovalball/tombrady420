@@ -12,6 +12,7 @@ import os
 import re
 import urllib.parse
 import tempfile
+from collections import OrderedDict
 from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import List, Optional
@@ -191,16 +192,23 @@ _media_cache = MediaCache(MEDIA_CACHE_DIR, MEDIA_CACHE_MAX_SIZE_MB, MEDIA_CACHE_
 # Lightweight in-memory cache for resolved bot-specific file_ids.
 # Keyed by (source_chat_id, source_message_id, file_index, bot_username) → resolved_file_id.
 # Avoids repeated DB lookups across consecutive HTTP Range 206 requests for the same media.
-# Bounded to _RESOLVED_FILE_ID_CACHE_MAX entries; evicts all on overflow to prevent unbounded growth.
-_resolved_file_id_cache: dict = {}
+# Bounded to _RESOLVED_FILE_ID_CACHE_MAX entries with LRU eviction.
+_resolved_file_id_cache: OrderedDict = OrderedDict()
 _RESOLVED_FILE_ID_CACHE_MAX = 2000
 
 
 def _cache_resolved_file_id(key: tuple, file_id: str) -> None:
-    """Insert a resolved file_id into the in-memory cache, evicting all entries if full."""
-    if len(_resolved_file_id_cache) >= _RESOLVED_FILE_ID_CACHE_MAX:
-        _resolved_file_id_cache.clear()
-    _resolved_file_id_cache[key] = file_id
+    """Insert a resolved file_id into the in-memory cache with LRU eviction."""
+    if key in _resolved_file_id_cache:
+        # Move to end (most recently used)
+        _resolved_file_id_cache.move_to_end(key)
+        _resolved_file_id_cache[key] = file_id
+    else:
+        # Add new entry
+        _resolved_file_id_cache[key] = file_id
+        # Evict oldest if over capacity (LRU)
+        if len(_resolved_file_id_cache) > _RESOLVED_FILE_ID_CACHE_MAX:
+            _resolved_file_id_cache.popitem(last=False)
 
 def get_bot_applications() -> List[Application]:
     """Get all bot application instances."""
@@ -805,6 +813,7 @@ async def serve_category_page(category_name: str, request: Request):
             "caption": p.get("caption") or "",
             "category": p.get("category") or "",
             "subcategory": p.get("subcategory") or "",
+            "subcategory_display": get_subcategory_display_name(p.get("subcategory")) if p.get("subcategory") else "",
             "slug": _generate_slug(p.get("caption") or ""),
         }
         for p in products
@@ -1128,6 +1137,7 @@ async def get_products(
             "caption": caption,
             "category": product.get("category") or "",
             "subcategory": product.get("subcategory") or "",
+            "subcategory_display": get_subcategory_display_name(product.get("subcategory"), lang) if product.get("subcategory") else "",
             "created_at": product.get("created_at"),
             "media_count": len(media_info),
             "media_info": media_info,  # Include full media info with types
@@ -1173,6 +1183,7 @@ async def get_catalog(request: Request, limit: int = 24, offset: int = 0):
             "caption": product.get("caption") or "",
             "category": product.get("category") or "",
             "subcategory": product.get("subcategory") or "",
+            "subcategory_display": get_subcategory_display_name(product.get("subcategory")) if product.get("subcategory") else "",
             "created_at": product.get("created_at"),
             "media_count": len(media_info),
             "media_info": media_info,  # Include full media info with types
@@ -1559,6 +1570,7 @@ async def search_products(
                 "caption": product.get("caption") or "",
                 "category": product.get("category") or "",
                 "subcategory": product.get("subcategory") or "",
+                "subcategory_display": get_subcategory_display_name(product.get("subcategory")) if product.get("subcategory") else "",
                 "created_at": product.get("created_at"),
                 "media_count": len(media_info),
                 "media_info": media_info,

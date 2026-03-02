@@ -2119,7 +2119,7 @@
         const meta = document.createElement('p');
         meta.className = 'card-meta';
         const category = item.category || 'Uncategorized';
-        const subcategory = item.subcategory ? ` • ${item.subcategory}` : '';
+        const subcategory = item.subcategory_display ? ` • ${item.subcategory_display}` : '';
         meta.textContent = `${category}${subcategory}`;
 
         const footer = document.createElement('div');
@@ -2195,7 +2195,7 @@
         category.className = 'card-meta';
         category.style.marginBottom = '16px';
         const categoryText = product.category || 'Uncategorized';
-        const subcategoryText = product.subcategory ? ` • ${product.subcategory}` : '';
+        const subcategoryText = product.subcategory_display ? ` • ${product.subcategory_display}` : '';
         category.textContent = `${categoryText}${subcategoryText}`;
         detailContent.appendChild(category);
 
