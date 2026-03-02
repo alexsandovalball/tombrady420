@@ -44,6 +44,7 @@ from main import (
     send_command,
     broadcast_command,
     setcontact_command,
+    setlink_command,
     clearcache_command,
     channel_post_handler,
     callback_query_handler,
@@ -263,6 +264,7 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     bot_app.add_handler(CommandHandler("send", send_command))
     bot_app.add_handler(CommandHandler("broadcast", broadcast_command))
     bot_app.add_handler(CommandHandler("setcontact", setcontact_command))
+    bot_app.add_handler(CommandHandler("setlink", setlink_command))
     bot_app.add_handler(CommandHandler("clearcache", clearcache_command))
     bot_app.add_handler(CommandHandler("botusers", botusers_command))
     bot_app.add_handler(CommandHandler("prunebots", prunebots_command))
