@@ -260,7 +260,8 @@ h1 {
     justify-content: center;
 }
 
-.card-media img {
+.card-media img,
+.card-media video {
     position: absolute;
     top: 0;
     left: 0;
@@ -268,6 +269,16 @@ h1 {
     height: 100%;
     object-fit: cover;
     background: transparent;
+}
+
+.card-video-play-overlay {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 32px;
+    pointer-events: none;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.6);
 }
 
 /* Image loading optimization */
