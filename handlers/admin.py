@@ -1466,7 +1466,91 @@ async def prunebots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def integrity_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /integritycheck command - report catalog integrity metrics (admin only, read-only).
 
+    Reports:
+    - Count of products with NULL or blank media_group_id
+    - Count of duplicate file_id entries (should be zero)
+    - Top media_group_id groups by size (to spot anomalies)
+    """
+    user_id = update.effective_user.id
 
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            "❌ This command is only available for administrators."
+        )
+        return
+
+    try:
+        async with aiosqlite.connect(db.db_path) as conn:
+            # Count products with NULL or blank media_group_id
+            async with conn.execute(
+                "SELECT COUNT(*) FROM products WHERE media_group_id IS NULL OR media_group_id = ''"
+            ) as cursor:
+                row = await cursor.fetchone()
+                null_media_group_count = row[0] if row else 0
+
+            # Count duplicate file_id entries
+            async with conn.execute("""
+                SELECT COUNT(*) FROM (
+                    SELECT file_id FROM products
+                    GROUP BY file_id HAVING COUNT(*) > 1
+                )
+            """) as cursor:
+                row = await cursor.fetchone()
+                duplicate_file_id_count = row[0] if row else 0
+
+            # Top media_group_id groups by size (exclude NULL/blank)
+            async with conn.execute("""
+                SELECT media_group_id, COUNT(*) AS cnt
+                FROM products
+                WHERE media_group_id IS NOT NULL AND media_group_id != ''
+                GROUP BY media_group_id
+                ORDER BY cnt DESC
+                LIMIT 5
+            """) as cursor:
+                top_groups = await cursor.fetchall()
+
+        # Format top groups
+        if top_groups:
+            top_groups_text = "\n".join(
+                f"  • {mgid}: {cnt} product(s)"
+                for mgid, cnt in top_groups
+            )
+        else:
+            top_groups_text = "  (none)"
+
+        report = (
+            f"🔍 **Catalog Integrity Report**\n\n"
+            f"📦 Products without media_group_id: {null_media_group_count}\n"
+            f"⚠️ Duplicate file_id entries: {duplicate_file_id_count}\n\n"
+            f"📊 Top media_group_id groups by size:\n{top_groups_text}"
+        )
+
+        logger.info(
+            f"Integrity check by admin {user_id}: "
+            f"null_media_group={null_media_group_count}, "
+            f"duplicate_file_id={duplicate_file_id_count}, "
+            f"top_groups={top_groups}"
+        )
+
+        try:
+            await update.message.reply_text(report, parse_mode="Markdown")
+        except BadRequest as e:
+            logger.warning(f"Markdown parse error in integrity_check, retrying: {e}")
+            report_no_md = (
+                f"🔍 Catalog Integrity Report\n\n"
+                f"📦 Products without media_group_id: {null_media_group_count}\n"
+                f"⚠️ Duplicate file_id entries: {duplicate_file_id_count}\n\n"
+                f"📊 Top media_group_id groups by size:\n{top_groups_text}"
+            )
+            await update.message.reply_text(report_no_md)
+
+    except Exception as e:
+        logger.error(f"Error in integrity_check command: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ An error occurred while running the integrity check."
+        )
 
 
