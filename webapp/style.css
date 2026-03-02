@@ -46,16 +46,16 @@ body::before {
     max-width: 720px;
     margin: 0 auto;
     padding: 20px 12px 40px;
-    background-color: color-mix(in srgb, var(--tg-theme-bg-color) 82%, transparent);
+    background-color: color-mix(in srgb, var(--tg-theme-bg-color) 82%, white 18%);
     backdrop-filter: blur(4px);
     -webkit-backdrop-filter: blur(4px);
     position: relative;
     z-index: 1;
 }
 
-@supports not (background-color: color-mix(in srgb, var(--tg-theme-bg-color) 82%, transparent)) {
+@supports not (background-color: color-mix(in srgb, var(--tg-theme-bg-color) 82%, white 18%)) {
     .container {
-        background-color: var(--tg-theme-bg-color);
+        background-color: rgba(255, 255, 255, 0.82);
     }
 }
 
