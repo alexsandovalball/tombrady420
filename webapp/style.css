@@ -7,7 +7,7 @@
     --tg-theme-link-color: #2481cc;
     --tg-theme-button-color: #2481cc;
     --tg-theme-button-text-color: #ffffff;
-    --container-overlay-opacity: 82%;
+    --container-bg-mix-amount: 82;
 }
 
 * {
@@ -47,14 +47,14 @@ body::before {
     max-width: 720px;
     margin: 0 auto;
     padding: 20px 12px 40px;
-    background-color: color-mix(in srgb, var(--tg-theme-bg-color) var(--container-overlay-opacity), transparent);
+    background-color: color-mix(in srgb, var(--tg-theme-bg-color) var(--container-bg-mix-amount)%, transparent);
     backdrop-filter: blur(4px);
     -webkit-backdrop-filter: blur(4px);
     position: relative;
     z-index: 1;
 }
 
-@supports not (background-color: color-mix(in srgb, var(--tg-theme-bg-color) var(--container-overlay-opacity), transparent)) {
+@supports not (background-color: color-mix(in srgb, var(--tg-theme-bg-color) var(--container-bg-mix-amount)%, transparent)) {
     .container {
         background-color: var(--tg-theme-bg-color);
     }
