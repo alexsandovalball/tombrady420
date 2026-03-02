@@ -1049,6 +1049,7 @@
                         endpoint: '/api/products',
                         response_time_ms: responseTime,
                         order_contact: state.orderContact,
+                        order_link: state.orderLink,
                         bot_username: state.botUsername
                     });
                 } else {
