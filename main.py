@@ -32,7 +32,7 @@ from handlers.admin import (
     users_command, show_users_page, build_users_bot_selection_menu,
     block_command, unblock_command, send_command, broadcast_command,
     setcontact_command, handle_setcontact_input, clearcache_command,
-    botusers_command, prunebots_command
+    botusers_command, prunebots_command, integrity_check
 )
 from handlers.inline import handle_inline_query, handle_chosen_inline_result
 from translations.language_config import is_valid_language, LANGUAGE_DISPLAY
@@ -275,7 +275,8 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
         await db.register_media_group(media_group_id, chat_id, product_id)
         category_info = f"category={category}, subcategory={subcategory}" if category else "uncategorized"
         logger.info(
-            f"New media group product saved: ID={product_id}, files={len(file_ids)}, {category_info}"
+            f"New media group product saved: ID={product_id}, files={len(file_ids)}, "
+            f"media_group_id={media_group_id}, {category_info}"
         )
         
         # Notify admins for categorization
@@ -1822,6 +1823,7 @@ async def setup_bot_commands(bot):
         BotCommand("recategorize", "Categorize uncategorized products"),
         BotCommand("clearcache", "Clear file ID cache"),
         BotCommand("prunebots", "Prune users from inactive bots"),
+        BotCommand("integritycheck", "Run catalog integrity check"),
         BotCommand("nuke", "Delete all products (use with caution)"),
     ]
     
@@ -1887,6 +1889,7 @@ def main():
     application.add_handler(CommandHandler("users", users_command))
     application.add_handler(CommandHandler("botusers", botusers_command))
     application.add_handler(CommandHandler("prunebots", prunebots_command))
+    application.add_handler(CommandHandler("integritycheck", integrity_check))
     application.add_handler(CommandHandler("subscribe", subscribe_command))
     application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
     application.add_handler(CommandHandler("block", block_command))

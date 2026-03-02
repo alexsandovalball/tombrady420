@@ -125,11 +125,18 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 logger.error(f"Error parsing additional_file_ids: {e}")
         
         total_media = len(media_list)
+        media_group_id = product.get("media_group_id")
+        logger.info(
+            f"show_product_media: product_id={product_id}, "
+            f"raw_media_count={total_media}, "
+            f"media_group_id={media_group_id}"
+        )
         
         # Try to get bot-specific file IDs if needed
         product_bot = product.get("bot_username")
         current_bot = context.bot.username
         
+        using_copy_path = False
         if (product_bot is None or current_bot is None or product_bot.lower() != current_bot.lower()):
             # Try to get bot-specific file IDs for all media
             additional_message_ids_json = product.get("additional_message_ids")
@@ -156,8 +163,15 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         else:
                             updated_media_list.append((file_id, file_type))
                     media_list = updated_media_list
+                    using_copy_path = True
                 except Exception as e:
                     logger.warning(f"Could not get bot-specific file IDs: {e}")
+        
+        logger.debug(
+            f"show_product_media: product_id={product_id}, "
+            f"deduped_media_count={len(media_list)}, "
+            f"copy_path={using_copy_path}"
+        )
         
         # Build full caption
         full_caption = f"{caption}\n\n📂 {category_info}"
@@ -232,6 +246,10 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 
                 # Send media group if we have any supported media
                 if media_group:
+                    logger.info(
+                        f"show_product_media: product_id={product_id}, "
+                        f"sending media_group with {len(media_group)} items"
+                    )
                     await context.bot.send_media_group(
                         chat_id=update.effective_chat.id,
                         media=media_group
@@ -250,6 +268,10 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     
             except Exception as e:
                 logger.exception(f"Error sending media group: {e}")
+                logger.info(
+                    f"show_product_media: product_id={product_id}, "
+                    f"using album fallback (individual send) for {len(media_list)} items"
+                )
                 # Fallback: send all media individually
                 for idx, (file_id, file_type) in enumerate(media_list):
                     # Add caption only to first media
