@@ -1994,7 +1994,8 @@
             const categoryName = categoryData ? categoryData.display_name : state.currentCategory;
             
             if (state.currentSubcategory) {
-                title = state.currentSubcategory;
+                const subcatData = categoryData?.subcategories?.find(s => s.name === state.currentSubcategory);
+                title = subcatData ? subcatData.display_name : state.currentSubcategory;
             } else {
                 title = categoryName;
             }
@@ -2717,8 +2718,10 @@
             const categoryName = categoryData ? categoryData.display_name : state.currentCategory;
             
             if (state.currentSubcategory) {
+                const subcatData = categoryData?.subcategories?.find(s => s.name === state.currentSubcategory);
+                const subcategoryName = subcatData ? subcatData.display_name : state.currentSubcategory;
                 parts.push(`<a href="#" class="breadcrumb-link" data-action="category">${categoryName}</a>`);
-                parts.push(`<span>${state.currentSubcategory}</span>`);
+                parts.push(`<span>${subcategoryName}</span>`);
             } else if (state.view === 'products') {
                 parts.push(`<span>${categoryName}</span>`);
             } else {
