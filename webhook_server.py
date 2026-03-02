@@ -349,7 +349,9 @@ async def lifespan(app: FastAPI):
         logger.error(str(e))
         raise
     
-    # Initialize all bot applications in parallel for faster startup
+    # Initialize all bot applications in parallel for faster startup.
+    # When BOT_TOKENS contains only one entry, asyncio.gather runs a single task —
+    # fully backward-compatible with single-bot deployments.
     bot_apps = []
     bot_tokens = Config.BOT_TOKENS
     
@@ -472,7 +474,10 @@ app.add_middleware(CacheControlMiddleware)
 # Jinja2 templates for SSR/SEO pages
 templates = Jinja2Templates(directory="webapp")
 
-# Mount static assets (CSS, JS, images) under /assets
+# Mount static assets (CSS, JS, images) under /assets.
+# The root-relative path /assets works regardless of whether a custom domain is configured,
+# because it is resolved server-side relative to the server's own origin — no absolute URL
+# or CUSTOM_DOMAIN setting is required for static file serving to work correctly.
 app.mount("/assets", StaticFiles(directory="webapp"), name="assets")
 
 _STOREFRONT_BOT_USERNAME = os.getenv("BOT_USERNAME", "").lstrip("@")
