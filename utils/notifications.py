@@ -25,24 +25,29 @@ logger = logging.getLogger(__name__)
 
 # Rate limiting configuration
 MAX_NOTIFICATIONS_PER_HOUR = 5  # Maximum notifications per user per hour
-NOTIFICATION_BATCH_SIZE = 10  # Send notifications in batches
-BATCH_DELAY_SECONDS = 3  # Delay between batches to avoid hitting rate limits
+NOTIFICATION_BATCH_SIZE = 25  # Send notifications in batches (increased from 10)
+BATCH_DELAY_SECONDS = 1  # Delay between batches within a group (reduced from 3)
 
 # Queue processing configuration
 PENDING_NOTIFICATIONS_BATCH_LIMIT = 100  # Number of pending notifications to fetch per batch
 
 # Staggered delivery configuration
 ENABLE_STAGGERED_DELIVERY = True  # Enable staggered delivery to avoid spam flags
-STAGGER_GROUP_SIZE = 10  # Number of users per group for staggered delivery
-STAGGER_INTERVAL_SECONDS = 10  # Delay in seconds between groups (reduced from 30 to improve responsiveness)
+STAGGER_GROUP_SIZE = 25  # Number of users per group for staggered delivery (increased from 10)
+STAGGER_INTERVAL_SECONDS = 2  # 2s between groups = ~12.5 msg/s average per bot (42% of Telegram's 30/s hard limit)
+
+# Telegram API rate limit reference (per bot, independent across bots):
+# Hard limit: 30 msg/s. Target utilization: ~42% (12.5 msg/s).
+# Formula: STAGGER_GROUP_SIZE / STAGGER_INTERVAL_SECONDS = msg/s throughput per bot.
+# At 5,000 users/bot: ceil(5000/25) = 200 groups × 2s = ~6.7 min total delivery time.
+# At 45,000 users across 9 bots (parallel): same ~6.7 min (bots run concurrently).
+TELEGRAM_MSGS_PER_SECOND_HARD_LIMIT = 30   # Telegram's documented hard limit per bot
+RATE_LIMIT_SAFETY_FACTOR = 0.42            # Current utilization ratio (12.5/30)
 
 # Custom message rate limiting
 MAX_CUSTOM_MESSAGES_PER_HOUR = 3  # Maximum custom messages per user per hour
-CUSTOM_MESSAGE_BATCH_SIZE = 5  # Send custom messages in smaller batches
-CUSTOM_MESSAGE_DELAY_SECONDS = 5  # Longer delay for custom messages
-
-# Queue processing safety limits
-MAX_QUEUE_PROCESSING_ITERATIONS = 50  # Maximum iterations to prevent infinite loops (50 batches * 100 = 5000 messages max per run)
+CUSTOM_MESSAGE_BATCH_SIZE = 20  # Send custom messages in batches
+CUSTOM_MESSAGE_DELAY_SECONDS = 1  # Delay between batches for custom messages
 
 # Logging configuration
 FILE_ID_PREVIEW_LENGTH = 20  # Number of characters to show when logging file IDs
@@ -654,7 +659,12 @@ class NotificationService:
         sent_count = 0
         
         if ENABLE_STAGGERED_DELIVERY and len(eligible_users) >= STAGGER_GROUP_SIZE:
-            logger.info(f"[Bot @{actual_bot_name}] Using staggered delivery: {len(eligible_users)} users in groups of {STAGGER_GROUP_SIZE}")
+            estimated_seconds = (len(eligible_users) / STAGGER_GROUP_SIZE) * STAGGER_INTERVAL_SECONDS
+            logger.info(
+                f"[Bot @{actual_bot_name}] Using staggered delivery: {len(eligible_users)} users "
+                f"in groups of {STAGGER_GROUP_SIZE} with {STAGGER_INTERVAL_SECONDS}s interval "
+                f"(est. {estimated_seconds:.0f}s / {estimated_seconds/60:.1f}min)"
+            )
             
             # Split users into groups
             user_groups = []
@@ -1140,6 +1150,9 @@ class NotificationService:
             skipped_blocked = 0
             skipped_admin = 0
             
+            from utils.helpers import get_admin_ids
+            admin_ids = get_admin_ids()
+            
             for user in all_users:
                 user_id = user["user_id"]
                 
@@ -1149,8 +1162,7 @@ class NotificationService:
                     continue
                 
                 # Skip admin users
-                from utils.helpers import get_admin_ids
-                if user_id in get_admin_ids():
+                if user_id in admin_ids:
                     skipped_admin += 1
                     continue
                 
@@ -1205,11 +1217,11 @@ class NotificationService:
             # Note: Rate-limited messages stay in queue and will be processed in next scheduled run
             rate_limited_users = set()
             total_fetched = 0
-            iteration_count = 0
+            batch_number = 0
             
             # Loop until all pending messages are processed or no progress can be made
-            while iteration_count < MAX_QUEUE_PROCESSING_ITERATIONS:
-                iteration_count += 1
+            while True:
+                batch_number += 1
                 
                 pending = await self.db.get_pending_custom_messages(limit=100)
                 
@@ -1217,18 +1229,20 @@ class NotificationService:
                     break
                 
                 total_fetched += len(pending)
-                logger.info(f"Processing batch {iteration_count} of {len(pending)} pending custom messages (total fetched: {total_fetched})")
+                logger.info(f"Processing batch {batch_number} of {len(pending)} pending custom messages (total fetched: {total_fetched})")
                 
-                # Bot-first grouping: group ALL messages by bot_username BEFORE processing
+                # Bot-first grouping: bulk-fetch all bot_usernames then group BEFORE processing
                 messages_by_bot = {}
+                user_ids = [message["user_id"] for message in pending]
+                bot_usernames_map = await self.db.get_bot_usernames_for_users(user_ids)
                 for message in pending:
                     user_id = message["user_id"]
-                    bot_username = await self.db.get_bot_username_for_user(user_id)
+                    bot_username = bot_usernames_map.get(user_id)
                     if bot_username not in messages_by_bot:
                         messages_by_bot[bot_username] = []
                     messages_by_bot[bot_username].append(message)
                 
-                logger.info(f"Batch {iteration_count}: grouped into {len(messages_by_bot)} bot(s)")
+                logger.info(f"Batch {batch_number}: grouped into {len(messages_by_bot)} bot(s)")
                 
                 # Process all bots simultaneously using asyncio.gather
                 tasks = []
@@ -1253,12 +1267,8 @@ class NotificationService:
                 # break to avoid infinite loop within this run
                 if not batch_has_messages:
                     logger.info(f"No more messages can be sent in this run (all blocked or rate-limited)")
+                    stats["remaining_unprocessed"] = await self.db.count_pending_custom_messages()
                     break
-            
-            # Log warning if we hit the iteration limit
-            if iteration_count >= MAX_QUEUE_PROCESSING_ITERATIONS:
-                logger.warning(f"Reached maximum queue processing iterations ({MAX_QUEUE_PROCESSING_ITERATIONS}). "
-                              f"Remaining messages will be processed in next run.")
             
             logger.info(f"Custom message queue processed: {stats['sent']} sent, {stats['failed']} failed, "
                        f"{stats['blocked']} blocked, {stats['not_found']} not found, "
@@ -1384,14 +1394,6 @@ class NotificationService:
                 message_text = message["message_text"]
                 message_id = message["id"]
                 
-                # Check if user is blocked
-                is_blocked = await self.db.is_user_blocked(user_id)
-                if is_blocked:
-                    # Mark as sent to remove from queue
-                    await self.db.mark_custom_message_sent(message_id)
-                    stats["blocked"] += 1
-                    continue
-                
                 # Send custom message using the bot application
                 try:
                     await bot_app.bot.send_message(
@@ -1476,6 +1478,7 @@ class NotificationService:
             # Total attempted = sent (including those with markdown errors) + permanent failures
             total_permanent_failures = blocked + not_found
             total_attempted = sent + total_permanent_failures
+            remaining_unprocessed = stats.get("remaining_unprocessed", 0)
             
             # Build summary message
             summary = f"📊 **{operation.title()} Complete**\n\n"
@@ -1510,7 +1513,16 @@ class NotificationService:
             # Calculate success rate based on delivery attempts (excluding rate-limited and unexpected)
             if total_attempted > 0:
                 success_rate = (sent / total_attempted) * 100
-                summary += f"\n📈 **Success Rate:** {success_rate:.1f}%"
+                summary += f"\n📈 **Success Rate (of attempted):** {success_rate:.1f}%"
+            
+            # Show delivery rate using queued count as denominator
+            if total_queued > 0:
+                delivery_rate = (sent / total_queued) * 100
+                summary += f"\n📬 **Delivery Rate:** {delivery_rate:.1f}% of {total_queued} queued"
+            
+            # Warn admin if messages remain pending due to all being blocked/rate-limited
+            if remaining_unprocessed > 0:
+                summary += f"\n\n⚠️ **{remaining_unprocessed} messages still pending in queue.** Run /broadcast again to continue delivery."
             
             await bot.send_message(
                 chat_id=admin_user_id,

@@ -256,8 +256,9 @@ All admin commands are gate-kept by user ID against `ADMIN_IDS` in `.env`.
 
 **Rate limiting configuration** (in `utils/notifications.py`):
 - Max 5 notifications per user per hour
-- Stagger group size: 10 users / 10-second interval
-- Custom message batch size: 5 / 5-second delay
+- Stagger group size: 25 users / 2-second interval (~12.5 msg/s per bot, 42% of Telegram's 30/s hard limit)
+- At 5,000 users per bot: ~6.7 min delivery time; all bots run in parallel so total time = single-bot time
+- Custom message batch size: 20 / 1-second delay
 
 **Safe-send wrappers** (`utils/safe_send.py`) handle all Telegram sends with:
 - Up to 3 retries on `RetryAfter` (429) with bounded jitter (±50%, 1–60 s cap)

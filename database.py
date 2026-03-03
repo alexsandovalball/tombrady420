@@ -1704,6 +1704,15 @@ class Database:
             """, (datetime.now(), message_id))
             await db.commit()
     
+    async def count_pending_custom_messages(self) -> int:
+        """Count remaining unsent messages in the custom message queue."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM custom_message_queue WHERE sent_at IS NULL"
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else 0
+    
     async def get_recent_custom_messages_count(self, user_id: int, minutes: int = 60) -> int:
         """Count custom messages sent to user in the last N minutes."""
         async with aiosqlite.connect(self.db_path) as db:
