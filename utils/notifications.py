@@ -25,16 +25,24 @@ logger = logging.getLogger(__name__)
 
 # Rate limiting configuration
 MAX_NOTIFICATIONS_PER_HOUR = 5  # Maximum notifications per user per hour
-NOTIFICATION_BATCH_SIZE = 10  # Send notifications in batches
-BATCH_DELAY_SECONDS = 3  # Delay between batches to avoid hitting rate limits
+NOTIFICATION_BATCH_SIZE = 25  # Send notifications in batches (increased from 10)
+BATCH_DELAY_SECONDS = 1  # Delay between batches within a group (reduced from 3)
 
 # Queue processing configuration
 PENDING_NOTIFICATIONS_BATCH_LIMIT = 100  # Number of pending notifications to fetch per batch
 
 # Staggered delivery configuration
 ENABLE_STAGGERED_DELIVERY = True  # Enable staggered delivery to avoid spam flags
-STAGGER_GROUP_SIZE = 10  # Number of users per group for staggered delivery
-STAGGER_INTERVAL_SECONDS = 10  # Delay in seconds between groups (reduced from 30 to improve responsiveness)
+STAGGER_GROUP_SIZE = 25  # Number of users per group for staggered delivery (increased from 10)
+STAGGER_INTERVAL_SECONDS = 2  # 2s between groups = ~12.5 msg/s average per bot (42% of Telegram's 30/s hard limit)
+
+# Telegram API rate limit reference (per bot, independent across bots):
+# Hard limit: 30 msg/s. Target utilization: ~42% (12.5 msg/s).
+# Formula: STAGGER_GROUP_SIZE / STAGGER_INTERVAL_SECONDS = msg/s throughput per bot.
+# At 5,000 users/bot: ceil(5000/25) = 200 groups × 2s = ~6.7 min total delivery time.
+# At 45,000 users across 9 bots (parallel): same ~6.7 min (bots run concurrently).
+TELEGRAM_MSGS_PER_SECOND_HARD_LIMIT = 30   # Telegram's documented hard limit per bot
+RATE_LIMIT_SAFETY_FACTOR = 0.42            # Current utilization ratio (12.5/30)
 
 # Custom message rate limiting
 MAX_CUSTOM_MESSAGES_PER_HOUR = 3  # Maximum custom messages per user per hour
@@ -651,7 +659,12 @@ class NotificationService:
         sent_count = 0
         
         if ENABLE_STAGGERED_DELIVERY and len(eligible_users) >= STAGGER_GROUP_SIZE:
-            logger.info(f"[Bot @{actual_bot_name}] Using staggered delivery: {len(eligible_users)} users in groups of {STAGGER_GROUP_SIZE}")
+            estimated_seconds = (len(eligible_users) / STAGGER_GROUP_SIZE) * STAGGER_INTERVAL_SECONDS
+            logger.info(
+                f"[Bot @{actual_bot_name}] Using staggered delivery: {len(eligible_users)} users "
+                f"in groups of {STAGGER_GROUP_SIZE} with {STAGGER_INTERVAL_SECONDS}s interval "
+                f"(est. {estimated_seconds:.0f}s / {estimated_seconds/60:.1f}min)"
+            )
             
             # Split users into groups
             user_groups = []
