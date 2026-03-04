@@ -334,6 +334,9 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_category_subcategory ON products(category, subcategory)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_created_at ON products(created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_media_group_id ON products(media_group_id)")
+            # Composite covering indexes for the most frequent sorted query patterns
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_products_category_created ON products(category, created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_products_cat_subcat_created ON products(category, subcategory, created_at DESC)")
             
             # Bot users indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_notifications ON bot_users(notifications_enabled) WHERE notifications_enabled = 1")
