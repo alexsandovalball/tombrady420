@@ -231,6 +231,41 @@ class TranslationService:
                 return translated
         return translated
     
+    async def translate_batch(self, texts: list, target_lang: str, source_lang: str = "en") -> list:
+        """
+        Translate multiple texts, reusing cached results when available.
+
+        Texts already in the in-memory cache are returned immediately; only the
+        remaining unique uncached texts are sent to the translation API (one call
+        per text, but without extra round-trips for cache hits).
+
+        Args:
+            texts: List of strings to translate
+            target_lang: Target language code
+            source_lang: Source language code (default: 'en')
+
+        Returns:
+            List of translated strings in the same order as ``texts``.
+        """
+        if not texts:
+            return []
+
+        normalized_target = normalize_language_code(target_lang)
+        normalized_source = normalize_language_code(source_lang)
+
+        if normalized_target == normalized_source:
+            return list(texts)
+
+        # Translate each text, leveraging the existing per-text cache and DB cache
+        results = []
+        for text in texts:
+            if not text:
+                results.append(text)
+                continue
+            translated = await self.translate(text, target_lang, source_lang)
+            results.append(translated)
+        return results
+
     def clear_cache(self):
         """Clear the translation cache."""
         self._cache.clear()

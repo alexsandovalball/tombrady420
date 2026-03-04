@@ -10,6 +10,7 @@ import logging
 import mimetypes
 import os
 import re
+import time as _time
 import urllib.parse
 import tempfile
 from collections import OrderedDict
@@ -196,6 +197,18 @@ _media_cache = MediaCache(MEDIA_CACHE_DIR, MEDIA_CACHE_MAX_SIZE_MB, MEDIA_CACHE_
 # Bounded to _RESOLVED_FILE_ID_CACHE_MAX entries with LRU eviction.
 _resolved_file_id_cache: OrderedDict = OrderedDict()
 _RESOLVED_FILE_ID_CACHE_MAX = 2000
+
+# In-memory cache for parsed media info, keyed by product id.
+# Avoids repeated json.loads() on additional_file_ids across requests.
+_media_info_cache: OrderedDict = OrderedDict()
+_MEDIA_INFO_CACHE_MAX = 5000
+
+# In-memory result cache for expensive API list responses.
+# Keyed by a string describing the request parameters.
+# Each entry is (payload_bytes, timestamp).
+_api_result_cache: OrderedDict = OrderedDict()
+_API_RESULT_CACHE_MAX = 100
+_API_RESULT_CACHE_TTL = 30  # seconds
 
 
 def _cache_resolved_file_id(key: tuple, file_id: str) -> None:
@@ -965,6 +978,13 @@ def _collect_media_ids(product: dict) -> List[str]:
 
 def _collect_media_info(product: dict) -> List[dict]:
     """Collect media information (id and type) for a product."""
+    product_id = product.get("id")
+    if product_id is not None:
+        cached = _media_info_cache.get(product_id)
+        if cached is not None:
+            _media_info_cache.move_to_end(product_id)
+            return cached
+
     media_info: List[dict] = []
     
     # Add primary media
@@ -991,6 +1011,11 @@ def _collect_media_info(product: dict) -> List[dict]:
                         media_info.append({"id": item[0], "type": "photo"})
         except Exception:
             logger.warning("Failed to parse additional_file_ids for product %s", product.get("id"))
+
+    if product_id is not None:
+        _media_info_cache[product_id] = media_info
+        if len(_media_info_cache) > _MEDIA_INFO_CACHE_MAX:
+            _media_info_cache.popitem(last=False)
     
     return media_info
 
@@ -1011,6 +1036,19 @@ async def get_categories(request: Request, lang: str = "en"):
     Supports translations via lang parameter.
     """
     _get_validated_init_data(request, allow_preview=True)
+
+    # Check in-memory result cache
+    cache_key = f"categories:{lang}"
+    cached_entry = _api_result_cache.get(cache_key)
+    if cached_entry is not None:
+        payload, ts = cached_entry
+        if _time.monotonic() - ts < _API_RESULT_CACHE_TTL:
+            _api_result_cache.move_to_end(cache_key)
+            return Response(
+                content=payload,
+                media_type="application/json",
+                headers={"Cache-Control": "public, max-age=60"}
+            )
     
     # Get product counts for all categories
     category_counts = await _catalog_db.get_all_category_counts()
@@ -1068,13 +1106,21 @@ async def get_categories(request: Request, lang: str = "en"):
     # Add "All Products" count
     all_products_count = await _catalog_db.count_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
     
+    payload = json.dumps({
+        "categories": categories,
+        "all_products_count": all_products_count
+    })
+
+    # Store in result cache with LRU eviction
+    _api_result_cache[cache_key] = (payload, _time.monotonic())
+    _api_result_cache.move_to_end(cache_key)
+    if len(_api_result_cache) > _API_RESULT_CACHE_MAX:
+        _api_result_cache.popitem(last=False)
+
     # Return with a short cache hint: categories change infrequently so clients
     # can reuse the response for up to 60 seconds before revalidating.
     return Response(
-        content=json.dumps({
-            "categories": categories,
-            "all_products_count": all_products_count
-        }),
+        content=payload,
         media_type="application/json",
         headers={"Cache-Control": "public, max-age=60"}
     )
@@ -1100,6 +1146,19 @@ async def get_products(
     # Bound limit for performance
     limit = max(1, min(limit, 50))
     offset = max(0, offset)
+
+    # Check in-memory result cache (keyed by all request params including lang)
+    cache_key = f"products:{category}:{subcategory}:{limit}:{offset}:{lang}"
+    cached_entry = _api_result_cache.get(cache_key)
+    if cached_entry is not None:
+        payload, ts = cached_entry
+        if _time.monotonic() - ts < _API_RESULT_CACHE_TTL:
+            _api_result_cache.move_to_end(cache_key)
+            return Response(
+                content=payload,
+                media_type="application/json",
+                headers={"Cache-Control": "public, max-age=30"}
+            )
     
     # Fetch products based on filters
     if category and subcategory:
@@ -1121,20 +1180,18 @@ async def get_products(
     order_contact_username = _normalize_contact(order_contact)
     order_link = await _catalog_db.get_order_link()
 
+    # Batch-translate all captions in a single pass to reduce overhead
+    captions = [p.get("caption") or "" for p in products]
+    if lang and lang != "en":
+        try:
+            captions = await translation_service.translate_batch(captions, lang, source_lang="en")
+        except Exception as e:
+            logger.debug(f"Batch caption translation failed: {e}")
+            # Fall back to original captions
+
     items = []
-    for product in products:
+    for product, caption in zip(products, captions):
         media_info = _collect_media_info(product)
-        
-        # Get caption and translate if needed
-        caption = product.get("caption") or ""
-        if lang and lang != "en" and caption:
-            try:
-                # Translate caption using translation service
-                caption = await translation_service.translate(caption, lang, source_lang="en")
-            except Exception as e:
-                logger.debug(f"Failed to translate caption for product {product.get('id')}: {e}")
-                # Fall back to original caption
-        
         items.append({
             "id": product.get("id"),
             "caption": caption,
@@ -1146,15 +1203,23 @@ async def get_products(
             "media_info": media_info,  # Include full media info with types
         })
     
+    payload = json.dumps({
+        "items": items,
+        "total": total,
+        "bot": bot.username if bot and getattr(bot, "username", None) else None,
+        "order_contact": order_contact,
+        "order_contact_username": order_contact_username,
+        "order_link": order_link
+    })
+
+    # Store in result cache with LRU eviction
+    _api_result_cache[cache_key] = (payload, _time.monotonic())
+    _api_result_cache.move_to_end(cache_key)
+    if len(_api_result_cache) > _API_RESULT_CACHE_MAX:
+        _api_result_cache.popitem(last=False)
+
     return Response(
-        content=json.dumps({
-            "items": items,
-            "total": total,
-            "bot": bot.username if bot and getattr(bot, "username", None) else None,
-            "order_contact": order_contact,
-            "order_contact_username": order_contact_username,
-            "order_link": order_link
-        }),
+        content=payload,
         media_type="application/json",
         headers={"Cache-Control": "public, max-age=30"}
     )
