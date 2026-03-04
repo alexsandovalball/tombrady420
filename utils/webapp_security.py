@@ -9,7 +9,24 @@ import logging
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qsl
 
+from pydantic import BaseModel, ValidationError
+
 logger = logging.getLogger(__name__)
+
+
+class TelegramUser(BaseModel):
+    """Strongly-typed representation of the Telegram WebApp user object."""
+
+    model_config = {"extra": "ignore"}
+
+    id: int
+    first_name: str
+    last_name: Optional[str] = None
+    username: Optional[str] = None
+    language_code: Optional[str] = None
+    is_premium: Optional[bool] = None
+    allows_write_to_pm: Optional[bool] = None
+    photo_url: Optional[str] = None
 
 
 def verify_init_data(init_data: str, bot_token: str) -> bool:
@@ -99,15 +116,17 @@ def parse_init_data(init_data: str) -> Dict[str, Any]:
     
     try:
         parsed = dict(parse_qsl(init_data))
-        
-        # Parse user JSON if present
+
+        # Parse and validate user JSON if present
         if 'user' in parsed:
             try:
-                parsed['user'] = json.loads(parsed['user'])
-            except (json.JSONDecodeError, TypeError) as e:
+                raw_user = json.loads(parsed['user'])
+                parsed['user'] = TelegramUser.model_validate(raw_user)
+            except (json.JSONDecodeError, TypeError, ValidationError) as e:
                 logger.error(f"Failed to parse user JSON from initData: {e}")
-                # Keep the raw user string if JSON parsing fails
-                
+                # Remove the invalid user entry so callers see None instead of a raw string
+                parsed.pop('user', None)
+
         return parsed
     except Exception as e:
         logger.error(f"Critical error parsing initData: {e}", exc_info=True)

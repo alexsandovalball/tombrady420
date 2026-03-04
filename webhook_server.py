@@ -33,7 +33,7 @@ from main import (
     post_init,
     setup_bot_commands,
 )
-from utils.webapp_security import verify_init_data, parse_init_data
+from utils.webapp_security import verify_init_data, parse_init_data, TelegramUser
 from database import Database
 from utils.helpers import get_channel_id, get_channel_username, get_file_id_cache_size, get_bot_specific_file_id, register_bot_handlers
 from utils.categories import get_all_categories, get_category_display_name, get_subcategory_display_name, get_subcategories, EXCLUDED_FROM_ALL_PRODUCTS
@@ -159,6 +159,25 @@ class MediaCache:
             except Exception as e:
                 logger.warning(f"Error clearing cache: {e}")
 
+    async def prune_expired(self):
+        """Delete files whose mtime exceeds the configured TTL."""
+        async with self.lock:
+            try:
+                now = _time.time()
+                pruned = 0
+                for file_path in self.cache_dir.iterdir():
+                    if file_path.is_file():
+                        try:
+                            if now - file_path.stat().st_mtime > self.ttl_seconds:
+                                file_path.unlink()
+                                pruned += 1
+                        except (OSError, FileNotFoundError):
+                            pass
+                if pruned:
+                    logger.info(f"Media cache pruned {pruned} expired file(s)")
+            except Exception as e:
+                logger.warning(f"Error during media cache pruning: {e}")
+
 # Global media cache instance
 _media_cache = MediaCache(MEDIA_CACHE_DIR, MEDIA_CACHE_MAX_SIZE_MB, MEDIA_CACHE_TTL_HOURS)
 
@@ -268,6 +287,26 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     return bot_app
 
 
+async def _media_cache_prune_loop():
+    """Background task: sweep MEDIA_CACHE_DIR every hour for TTL-expired files."""
+    while True:
+        await asyncio.sleep(3600)  # 1 hour
+        try:
+            await _media_cache.prune_expired()
+        except Exception as e:
+            logger.warning(f"Media cache prune loop error: {e}")
+
+
+async def _wal_checkpoint_loop():
+    """Background task: checkpoint the SQLite WAL file every 15 minutes."""
+    while True:
+        await asyncio.sleep(900)  # 15 minutes
+        try:
+            await _catalog_db.checkpoint_wal()
+        except Exception as e:
+            logger.warning(f"WAL checkpoint loop error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan - startup and shutdown."""
@@ -336,9 +375,20 @@ async def lifespan(app: FastAPI):
             )
         else:
             logger.info(f"File ID cache contains {cache_size} entries")
-    
+
+    # Start background maintenance tasks
+    _bg_tasks = [
+        asyncio.create_task(_media_cache_prune_loop(), name="media_cache_prune"),
+        asyncio.create_task(_wal_checkpoint_loop(), name="wal_checkpoint"),
+    ]
+
     yield
-    
+
+    # Cancel background maintenance tasks
+    for task in _bg_tasks:
+        task.cancel()
+    await asyncio.gather(*_bg_tasks, return_exceptions=True)
+
     # Shutdown
     logger.info("Shutting down bot applications...")
     for idx, bot_app in enumerate(app.state.bot_apps):
@@ -430,7 +480,7 @@ def _generate_slug(caption: str) -> str:
 
 def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
                         product: Optional[dict] = None, deep_link: str = "",
-                        keywords: str = "", category: str = "") -> dict:
+                        keywords: str = "", category: str = "", og_type: str = "website") -> dict:
     """Build template context dict for SSR SEO pages."""
     if product:
         product_url = url or _STOREFRONT_DOMAIN
@@ -519,6 +569,7 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
         "seo_url": url,
         "seo_schema": schema,
         "seo_keywords": keywords or default_keywords,
+        "og_type": og_type,
         "telegram_deep_link": deep_link or f"https://t.me/{_STOREFRONT_BOT_USERNAME}",
     }
 
@@ -643,12 +694,7 @@ async def serve_product_page(product_id: int, request: Request):
     seo_desc = " ".join(lines[1:]) if len(lines) > 1 else seo_title
 
     # Prefer photo file_id represented as a media URL served by this server
-    media_ids_json = product.get("media_ids") or "[]"
-    try:
-        media_ids = json.loads(media_ids_json) if isinstance(media_ids_json, str) else media_ids_json
-    except Exception:
-        media_ids = []
-    seo_image = f"{_STOREFRONT_DOMAIN}/api/media/{product_id}/0" if media_ids else ""
+    seo_image = f"{_STOREFRONT_DOMAIN}/api/media/{product_id}/0" if product.get("file_id") else ""
 
     product_url = f"{_STOREFRONT_DOMAIN}/product/{product_id}/{_generate_slug(caption)}"
     deep_link = f"https://t.me/{_STOREFRONT_BOT_USERNAME}?start=product_{product_id}"
@@ -660,6 +706,7 @@ async def serve_product_page(product_id: int, request: Request):
         url=product_url,
         product=product,
         deep_link=deep_link,
+        og_type="product",
         keywords=", ".join(filter(None, [
             product.get("category", ""),
             product.get("subcategory", ""),
@@ -1709,8 +1756,8 @@ async def get_user_info(request: Request):
         # Parse user info from initData
         parsed_data = parse_init_data(init_data)
         user_data = parsed_data.get("user")
-        
-        if not user_data:
+
+        if not isinstance(user_data, TelegramUser):
             return {
                 "authenticated": False,
                 "user_id": None,
@@ -1718,13 +1765,13 @@ async def get_user_info(request: Request):
                 "first_name": None,
                 "last_name": None
             }
-        
+
         # Extract user information
-        user_id = user_data.get("id")
-        username = user_data.get("username")
-        first_name = user_data.get("first_name")
-        last_name = user_data.get("last_name")
-        language_code = user_data.get("language_code")
+        user_id = user_data.id
+        username = user_data.username
+        first_name = user_data.first_name
+        last_name = user_data.last_name
+        language_code = user_data.language_code
         
         return {
             "authenticated": True,
@@ -1766,11 +1813,11 @@ async def track_webapp_user(request: Request):
         if not user_id and init_data:
             parsed_data = parse_init_data(init_data)
             user_data = parsed_data.get("user")
-            if user_data:
-                user_id = user_data.get("id")
-                username = username or user_data.get("username")
-                first_name = first_name or user_data.get("first_name")
-                last_name = last_name or user_data.get("last_name")
+            if isinstance(user_data, TelegramUser):
+                user_id = user_data.id
+                username = username or user_data.username
+                first_name = first_name or user_data.first_name
+                last_name = last_name or user_data.last_name
         
         if not user_id:
             return {"success": False, "message": "No user_id available"}
