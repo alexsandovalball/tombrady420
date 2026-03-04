@@ -950,7 +950,7 @@ class NotificationService:
                     if bot_specific_id:
                         file_id_to_use = bot_specific_id
                         bot_specific_id_success = True
-                        logger.info(
+                        logger.debug(
                             f"[Media Notification] Using bot-specific file ID: user={user_id}, "
                             f"product={product_id}, type={file_type}"
                         )
@@ -978,7 +978,7 @@ class NotificationService:
                         # Set used_original_file_id if we successfully sent with original file_id
                         if bot_specific_id_attempted and not bot_specific_id_success and file_id_to_use == file_id:
                             used_original_file_id = True
-                        logger.info(
+                        logger.debug(
                             f"[Media Notification] Successfully sent media: user={user_id}, "
                             f"product={product_id}, type={file_type}, "
                             f"bot_specific_attempted={bot_specific_id_attempted}, "
