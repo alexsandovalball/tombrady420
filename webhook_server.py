@@ -414,20 +414,39 @@ app = FastAPI(
 from fastapi.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
+_WP_BLOCKED_PATHS = (
+    "/wp-admin",
+    "/wordpress",
+    "/wp-login.php",
+    "/wp-includes",
+    "/wp-content",
+    "/xmlrpc.php",
+)
+
+class WordPressBlockMiddleware(BaseHTTPMiddleware):
+    """Block requests targeting WordPress-specific paths used by vulnerability scanners."""
+    async def dispatch(self, request, call_next):
+        if request.url.path.startswith(_WP_BLOCKED_PATHS):
+            return Response(status_code=404)
+        return await call_next(request)
+
 class CacheControlMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
         
         # Add cache headers for static assets
         if request.url.path.startswith('/assets/'):
-            # No cache for dynamic code files to ensure updates reflect immediately
-            if request.url.path.endswith(('.js', '.css', '.html')):
-                response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-                response.headers['Pragma'] = 'no-cache'
-                response.headers['Expires'] = '0'
+            # Cache CSS and JS for 1 hour to reduce backend load and decrease latency
+            if request.url.path.endswith(('.js', '.css')):
+                response.headers['Cache-Control'] = 'public, max-age=3600'
             # Cache images for 1 day (can be cached longer as they rarely change)
             elif request.url.path.endswith(('.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico')):
                 response.headers['Cache-Control'] = 'public, max-age=86400'
+            elif request.url.path.endswith('.html'):
+                response.headers['Cache-Control'] = 'no-cache'
+        elif request.url.path in ('/webapp', '/webapp/', '/webapp/index.html'):
+            # Allow conditional revalidation for the webapp entry point
+            response.headers['Cache-Control'] = 'no-cache'
 
         # Security headers for HTML responses
         content_type = response.headers.get('content-type', '')
@@ -452,8 +471,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         
         return response
 
-app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(CacheControlMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(WordPressBlockMiddleware)
 
 # Jinja2 templates for SSR/SEO pages
 templates = Jinja2Templates(directory="webapp")
