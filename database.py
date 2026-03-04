@@ -1715,6 +1715,63 @@ class Database:
             ) as cursor:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
+
+    async def count_pending_notifications(self) -> int:
+        """Count remaining unsent notifications in the notification queue."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM notification_queue WHERE sent_at IS NULL"
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else 0
+
+    async def count_pending_notifications_by_bot(self, top_n: int = 5) -> List[Dict[str, Any]]:
+        """
+        Count pending (unsent) notifications grouped by bot_username.
+
+        Joins notification_queue with bot_users to determine which bot each user
+        is assigned to.  Returns up to `top_n` bots ordered by count descending.
+
+        Returns:
+            List of dicts with keys 'bot_username' and 'pending'.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT bu.bot_username, COUNT(*) AS pending
+                FROM notification_queue nq
+                LEFT JOIN bot_users bu ON bu.user_id = nq.user_id
+                WHERE nq.sent_at IS NULL
+                GROUP BY bu.bot_username
+                ORDER BY pending DESC
+                LIMIT ?
+            """, (top_n,)) as cursor:
+                rows = await cursor.fetchall()
+        return [{"bot_username": row["bot_username"], "pending": row["pending"]} for row in rows]
+
+    async def count_pending_custom_messages_by_bot(self, top_n: int = 5) -> List[Dict[str, Any]]:
+        """
+        Count pending (unsent) custom messages grouped by bot_username.
+
+        Joins custom_message_queue with bot_users to determine which bot each user
+        is assigned to.  Returns up to `top_n` bots ordered by count descending.
+
+        Returns:
+            List of dicts with keys 'bot_username' and 'pending'.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT bu.bot_username, COUNT(*) AS pending
+                FROM custom_message_queue cmq
+                LEFT JOIN bot_users bu ON bu.user_id = cmq.user_id
+                WHERE cmq.sent_at IS NULL
+                GROUP BY bu.bot_username
+                ORDER BY pending DESC
+                LIMIT ?
+            """, (top_n,)) as cursor:
+                rows = await cursor.fetchall()
+        return [{"bot_username": row["bot_username"], "pending": row["pending"]} for row in rows]
     
     async def get_recent_custom_messages_count(self, user_id: int, minutes: int = 60) -> int:
         """Count custom messages sent to user in the last N minutes."""

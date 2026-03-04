@@ -17,6 +17,7 @@ from database import Database
 from utils.categories import get_category_display_name, get_subcategory_display_name, NOTIFICATION_EXCLUDED_CATEGORIES
 from utils.helpers import get_admin_ids, get_bot_specific_file_id
 from utils.safe_send import safe_send_message, safe_send_photo, safe_send_video, safe_send_animation, safe_send_document, handle_send_exception
+from utils.rate_limiter import RateLimiter
 from translations.translator import translate_text_async
 from configs.config import Config
 import emojis
@@ -48,6 +49,13 @@ RATE_LIMIT_SAFETY_FACTOR = 0.42            # Current utilization ratio (12.5/30)
 MAX_CUSTOM_MESSAGES_PER_HOUR = 3  # Maximum custom messages per user per hour
 CUSTOM_MESSAGE_BATCH_SIZE = 20  # Send custom messages in batches
 CUSTOM_MESSAGE_DELAY_SECONDS = 1  # Delay between batches for custom messages
+
+# Per-bot token-bucket rate limiter configuration
+BOT_SEND_RATE_PER_SEC = 10  # Steady-state message rate per bot (tokens/second)
+BOT_SEND_BURST = 20          # Maximum burst size per bot (tokens)
+
+# Global concurrency cap: maximum number of bot workers running simultaneously
+MAX_CONCURRENT_BOT_WORKERS = 5
 
 # Logging configuration
 FILE_ID_PREVIEW_LENGTH = 20  # Number of characters to show when logging file IDs
@@ -121,6 +129,10 @@ class NotificationService:
         self._notification_queue = asyncio.Queue()  # FIFO queue for notification requests
         self._queue_worker_task = None  # Background worker task
         self._is_processing = False  # Track if worker is currently processing
+        # Per-bot token-bucket rate limiters keyed by normalised bot username
+        self._bot_rate_limiters: Dict[str, RateLimiter] = {}
+        # Global semaphore to cap concurrent bot worker coroutines
+        self._bot_worker_semaphore = asyncio.Semaphore(MAX_CONCURRENT_BOT_WORKERS)
     
     @staticmethod
     def _is_markdown_parse_error(error: BadRequest) -> bool:
@@ -136,6 +148,24 @@ class NotificationService:
             "parse entities",
             "markdown"
         ])
+
+    def _get_bot_rate_limiter(self, bot_username: Optional[str]) -> RateLimiter:
+        """
+        Return (creating if needed) the RateLimiter for the given bot.
+
+        Args:
+            bot_username: Normalised bot username or None for the primary bot.
+
+        Returns:
+            Per-bot RateLimiter instance.
+        """
+        key = bot_username.lower().lstrip('@') if bot_username else 'primary'
+        if key not in self._bot_rate_limiters:
+            self._bot_rate_limiters[key] = RateLimiter(
+                rate_per_sec=BOT_SEND_RATE_PER_SEC,
+                burst=BOT_SEND_BURST,
+            )
+        return self._bot_rate_limiters[key]
 
     async def _start_queue_worker(self):
         """Start the background queue worker if not already running."""
@@ -532,13 +562,15 @@ class NotificationService:
                     f"Unique users in batch: {unique_users_in_batch}, notifications: {len(deduplicated)}"
                 )
 
-                # Process all bots simultaneously using asyncio.gather
-                tasks = []
-                for bot_username, bot_notifications in notifications_by_bot.items():
-                    task = self._process_bot_notifications(
-                        bot_username, bot_notifications, rate_limited_users
-                    )
-                    tasks.append(task)
+                # Process bots concurrently but cap parallelism via semaphore for fair scheduling
+                async def _run_bot_notifications(bot_username, notifications):
+                    async with self._bot_worker_semaphore:
+                        return await self._process_bot_notifications(bot_username, notifications, rate_limited_users)
+
+                tasks = [
+                    _run_bot_notifications(bot_username, bot_notifications)
+                    for bot_username, bot_notifications in notifications_by_bot.items()
+                ]
 
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -738,11 +770,13 @@ class NotificationService:
         """
         sent_count = 0
         bot_name = get_bot_username(bot_app)
+        limiter = self._get_bot_rate_limiter(bot_name)
         
         logger.info(f"Sending {len(notifications)} notifications via bot @{bot_name}")
         
         for notification in notifications:
             try:
+                await limiter.acquire()
                 success = await self._send_single_notification(bot_app, notification)
                 if success:
                     sent_count += 1
@@ -1244,13 +1278,15 @@ class NotificationService:
                 
                 logger.info(f"Batch {batch_number}: grouped into {len(messages_by_bot)} bot(s)")
                 
-                # Process all bots simultaneously using asyncio.gather
-                tasks = []
-                for bot_username, bot_messages in messages_by_bot.items():
-                    task = self._process_bot_custom_messages(
-                        bot_username, bot_messages, stats, rate_limited_users
-                    )
-                    tasks.append(task)
+                # Process bots concurrently but cap parallelism via semaphore for fair scheduling
+                async def _run_bot_custom(bot_username, messages):
+                    async with self._bot_worker_semaphore:
+                        return await self._process_bot_custom_messages(bot_username, messages, stats, rate_limited_users)
+
+                tasks = [
+                    _run_bot_custom(bot_username, bot_messages)
+                    for bot_username, bot_messages in messages_by_bot.items()
+                ]
                 
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 
@@ -1385,9 +1421,11 @@ class NotificationService:
             stats: Shared stats dictionary (updated in place)
         """
         bot_name = get_bot_username(bot_app)
+        limiter = self._get_bot_rate_limiter(bot_name)
         logger.info(f"Sending {len(messages)} custom messages via bot @{bot_name}")
         
         for message in messages:
+            await limiter.acquire()
             markdown_error_occurred = False
             try:
                 user_id = message["user_id"]
@@ -1480,6 +1518,15 @@ class NotificationService:
             total_attempted = sent + total_permanent_failures
             remaining_unprocessed = stats.get("remaining_unprocessed", 0)
             
+            # Fetch live pending counts from the database
+            try:
+                pending_notifications = await self.db.count_pending_notifications()
+                pending_custom = await self.db.count_pending_custom_messages()
+            except Exception as e:
+                logger.warning(f"Failed to fetch pending queue counts for admin summary: {e}")
+                pending_notifications = 0
+                pending_custom = 0
+
             # Build summary message
             summary = f"📊 **{operation.title()} Complete**\n\n"
             summary += f"✅ **Successfully Sent:** {sent}\n"
@@ -1523,6 +1570,25 @@ class NotificationService:
             # Warn admin if messages remain pending due to all being blocked/rate-limited
             if remaining_unprocessed > 0:
                 summary += f"\n\n⚠️ **{remaining_unprocessed} messages still pending in queue.** Run /broadcast again to continue delivery."
+
+            # Show overall queue depths
+            summary += f"\n\n📋 **Queue Remaining:**\n"
+            summary += f"• Notifications: {pending_notifications}\n"
+            summary += f"• Custom messages: {pending_custom}\n"
+
+            # Per-bot breakdown (top 5 bots by pending count)
+            try:
+                if operation == "broadcast":
+                    bot_pending = await self.db.count_pending_custom_messages_by_bot(top_n=5)
+                else:
+                    bot_pending = await self.db.count_pending_notifications_by_bot(top_n=5)
+                if bot_pending:
+                    summary += "\n**Pending by Bot:**\n"
+                    for entry in bot_pending:
+                        label = entry["bot_username"] or "primary"
+                        summary += f"• @{label}: {entry['pending']}\n"
+            except Exception as e:
+                logger.warning(f"Failed to fetch per-bot pending breakdown for admin summary: {e}")
             
             await bot.send_message(
                 chat_id=admin_user_id,
