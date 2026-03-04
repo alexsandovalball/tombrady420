@@ -4,20 +4,13 @@ Main entry point for the Telegram media catalog bot.
 import logging
 import asyncio
 import json
-import aiosqlite
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat, MenuButtonWebApp, WebAppInfo
 from telegram.ext import (
     Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    InlineQueryHandler,
-    ChosenInlineResultHandler,
-    filters,
     ContextTypes
 )
-from telegram.error import TelegramError, BadRequest
+from telegram.error import TelegramError
 
 from configs.config import Config, ConfigError
 from database import Database
@@ -46,7 +39,8 @@ from utils.helpers import (
     get_admin_ids,
     is_admin,
     get_user_display_name,
-    escape_markdown_v1
+    escape_markdown_v1,
+    register_bot_handlers
 )
 from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES
 from utils.notifications import NotificationService
@@ -675,64 +669,7 @@ def main():
     application = Application.builder().token(bot_token).post_init(post_init).build()
     
     # Register handlers
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("menu", menu_command))
-    application.add_handler(CommandHandler("language", language_command))
-    application.add_handler(CommandHandler("nuke", nuke_command))
-    application.add_handler(CommandHandler("recategorize", recategorize_command))
-    application.add_handler(CommandHandler("users", users_command))
-    application.add_handler(CommandHandler("botusers", botusers_command))
-    application.add_handler(CommandHandler("prunebots", prunebots_command))
-    application.add_handler(CommandHandler("subscribe", subscribe_command))
-    application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
-    application.add_handler(CommandHandler("block", block_command))
-    application.add_handler(CommandHandler("unblock", unblock_command))
-    application.add_handler(CommandHandler("send", send_command))
-    application.add_handler(CommandHandler("broadcast", broadcast_command))
-    application.add_handler(CommandHandler("setcontact", setcontact_command))
-    application.add_handler(CommandHandler("setlink", setlink_command))
-    application.add_handler(CommandHandler("clearcache", clearcache_command))
-    
-    # Channel post handler (for monitoring channel)
-    channel_id = get_channel_id()
-    channel_username = get_channel_username()
-    
-    if channel_id:
-        # Use channel ID filter
-        channel_filter = filters.Chat(chat_id=channel_id)
-    elif channel_username:
-        # Use channel username filter
-        channel_filter = filters.Chat(username=channel_username.lstrip("@"))
-    else:
-        logger.warning("No CHANNEL_ID or CHANNEL_USERNAME set. Channel monitoring disabled.")
-        channel_filter = None
-    
-    if channel_filter:
-        application.add_handler(
-            MessageHandler(
-                channel_filter & filters.ChatType.CHANNEL,
-                channel_post_handler
-            )
-        )
-        logger.info(f"Channel monitoring enabled for: {channel_id or channel_username}")
-    
-    # Callback query handler (for inline buttons)
-    application.add_handler(CallbackQueryHandler(callback_query_handler))
-    
-    # Inline query handler (for @bot search in any chat)
-    application.add_handler(InlineQueryHandler(handle_inline_query))
-    application.add_handler(ChosenInlineResultHandler(handle_chosen_inline_result))
-
-    # Message handler (for search queries)
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
-            message_handler
-        )
-    )
-    
-    # Error handler
-    application.add_error_handler(error_handler)
+    register_bot_handlers(application)
     
     # Start the bot in polling mode
     logger.info("Starting bot in polling mode...")

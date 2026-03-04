@@ -32,39 +32,10 @@ from configs.config import Config, ConfigError
 from main import (
     post_init,
     setup_bot_commands,
-    start_command,
-    menu_command,
-    language_command,
-    subscribe_command,
-    unsubscribe_command,
-    nuke_command,
-    recategorize_command,
-    users_command,
-    block_command,
-    unblock_command,
-    send_command,
-    broadcast_command,
-    setcontact_command,
-    setlink_command,
-    clearcache_command,
-    channel_post_handler,
-    callback_query_handler,
-    message_handler,
-    error_handler
 )
-from handlers.admin import botusers_command, prunebots_command
-from handlers.inline import handle_inline_query, handle_chosen_inline_result
 from utils.webapp_security import verify_init_data, parse_init_data
 from database import Database
-from telegram.ext import (
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    InlineQueryHandler,
-    ChosenInlineResultHandler,
-    filters
-)
-from utils.helpers import get_channel_id, get_channel_username, get_file_id_cache_size, get_bot_specific_file_id
+from utils.helpers import get_channel_id, get_channel_username, get_file_id_cache_size, get_bot_specific_file_id, register_bot_handlers
 from utils.categories import get_all_categories, get_category_display_name, get_subcategory_display_name, get_subcategories, EXCLUDED_FROM_ALL_PRODUCTS
 from translations.translator import get_translated_string_async, translation_service
 
@@ -264,68 +235,7 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     bot_app = Application.builder().token(bot_token).request(request).build()
     
     # Register handlers
-    bot_app.add_handler(CommandHandler("start", start_command))
-    bot_app.add_handler(CommandHandler("menu", menu_command))
-    bot_app.add_handler(CommandHandler("language", language_command))
-    bot_app.add_handler(CommandHandler("nuke", nuke_command))
-    bot_app.add_handler(CommandHandler("recategorize", recategorize_command))
-    bot_app.add_handler(CommandHandler("users", users_command))
-    bot_app.add_handler(CommandHandler("subscribe", subscribe_command))
-    bot_app.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
-    bot_app.add_handler(CommandHandler("block", block_command))
-    bot_app.add_handler(CommandHandler("unblock", unblock_command))
-    bot_app.add_handler(CommandHandler("send", send_command))
-    bot_app.add_handler(CommandHandler("broadcast", broadcast_command))
-    bot_app.add_handler(CommandHandler("setcontact", setcontact_command))
-    bot_app.add_handler(CommandHandler("setlink", setlink_command))
-    bot_app.add_handler(CommandHandler("clearcache", clearcache_command))
-    bot_app.add_handler(CommandHandler("botusers", botusers_command))
-    bot_app.add_handler(CommandHandler("prunebots", prunebots_command))
-    
-    # Channel post handler (for monitoring channel)
-    # Only the primary bot (bot_index == 0) should monitor the channel and send categorization requests
-    if bot_index == 0:
-        channel_id = get_channel_id()
-        channel_username = get_channel_username()
-        
-        if channel_id:
-            # Use channel ID filter
-            channel_filter = filters.Chat(chat_id=channel_id)
-        elif channel_username:
-            # Use channel username filter
-            channel_filter = filters.Chat(username=channel_username.lstrip("@"))
-        else:
-            logger.warning("No CHANNEL_ID or CHANNEL_USERNAME set. Channel monitoring disabled.")
-            channel_filter = None
-        
-        if channel_filter:
-            bot_app.add_handler(
-                MessageHandler(
-                    channel_filter & filters.ChatType.CHANNEL,
-                    channel_post_handler
-                )
-            )
-            logger.info(f"Channel monitoring enabled for primary bot: {channel_id or channel_username}")
-    else:
-        logger.info(f"Channel monitoring DISABLED for secondary bot {bot_index} (only primary bot monitors channel)")
-    
-    # Callback query handler (for inline buttons)
-    bot_app.add_handler(CallbackQueryHandler(callback_query_handler))
-
-    # Inline query handler (for @bot search in any chat)
-    bot_app.add_handler(InlineQueryHandler(handle_inline_query))
-    bot_app.add_handler(ChosenInlineResultHandler(handle_chosen_inline_result))
-
-    # Message handler (for search queries)
-    bot_app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
-            message_handler
-        )
-    )
-    
-    # Error handler
-    bot_app.add_error_handler(error_handler)
+    register_bot_handlers(bot_app, bot_index)
     
     # Initialize the application
     # IMPORTANT: Must be called before any bot API methods (like set_my_commands)
@@ -1899,41 +1809,61 @@ async def track_webapp_user(request: Request):
         return {"success": False, "message": "Failed to track user"}
 
 
+async def process_webhook_request(request: Request, bot_index: int):
+    """Process an incoming Telegram webhook update for the given bot index.
+
+    Shared implementation used by both the /webhook and /webhook/{bot_index} endpoints
+    to eliminate duplicated parsing, logging, and error-handling logic.
+
+    Args:
+        request: The incoming FastAPI Request object.
+        bot_index: Index into request.app.state.bot_apps for the target bot.
+
+    Returns:
+        A fastapi.Response with an appropriate HTTP status code.
+    """
+    if not hasattr(request.app.state, "bot_apps") or not request.app.state.bot_apps:
+        logger.error("Bot applications not initialized")
+        return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    if bot_index >= len(request.app.state.bot_apps):
+        logger.error(
+            f"Invalid bot index: {bot_index}. "
+            f"Available bots: 0-{len(request.app.state.bot_apps) - 1}"
+        )
+        return Response(status_code=status.HTTP_404_NOT_FOUND)
+
+    try:
+        json_data = await request.json()
+        bot_app = request.app.state.bot_apps[bot_index]
+        update = Update.de_json(json_data, bot_app.bot)
+
+        if update.message:
+            logger.info(f"Bot {bot_index}: Processing message update from user {update.message.from_user.id}")
+        elif update.callback_query:
+            logger.info(
+                f"Bot {bot_index}: Processing callback query from user "
+                f"{update.callback_query.from_user.id}: {update.callback_query.data}"
+            )
+        elif update.channel_post:
+            logger.info(f"Bot {bot_index}: Processing channel post from chat {update.channel_post.chat.id}")
+        else:
+            logger.info(f"Bot {bot_index}: Processing update type: {update.update_id}")
+
+        await bot_app.process_update(update)
+
+        logger.info(f"Bot {bot_index}: Webhook request processed successfully")
+        return Response(status_code=status.HTTP_200_OK)
+    except Exception as e:
+        logger.error(f"Error processing webhook update for bot {bot_index}: {e}", exc_info=True)
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @app.post("/webhook")
 async def webhook(request: Request):
     """Handle incoming webhook updates from Telegram for the primary bot (bot 0)."""
     logger.info("Received webhook request for primary bot")
-    
-    # Check if bots are initialized
-    if not hasattr(request.app.state, "bot_apps") or not request.app.state.bot_apps:
-        logger.error("Bot applications not initialized")
-        return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
-    
-    try:
-        # Parse the update
-        json_data = await request.json()
-        # Use the first bot (primary bot at index 0)
-        bot_app = request.app.state.bot_apps[0]
-        update = Update.de_json(json_data, bot_app.bot)
-        
-        # Log update details
-        if update.message:
-            logger.info(f"Processing message update from user {update.message.from_user.id}")
-        elif update.callback_query:
-            logger.info(f"Processing callback query from user {update.callback_query.from_user.id}: {update.callback_query.data}")
-        elif update.channel_post:
-            logger.info(f"Processing channel post from chat {update.channel_post.chat.id}")
-        else:
-            logger.info(f"Processing update type: {update.update_id}")
-        
-        # Process the update
-        await bot_app.process_update(update)
-        
-        logger.info("Webhook request processed successfully for primary bot")
-        return Response(status_code=status.HTTP_200_OK)
-    except Exception as e:
-        logger.error(f"Error processing webhook update for primary bot: {e}", exc_info=True)
-        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return await process_webhook_request(request, 0)
 
 
 @app.post("/webhook/{bot_index}")
@@ -1944,45 +1874,9 @@ async def webhook_indexed(request: Request, bot_index: int):
     This endpoint handles bots 1, 2, 3, etc.
     """
     logger.info(f"Received webhook request for bot {bot_index}")
-    
-    # Check if bots are initialized
-    if not hasattr(request.app.state, "bot_apps") or not request.app.state.bot_apps:
-        logger.error("Bot applications not initialized")
-        return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
-    
-    # Validate bot index (must be >= 1 for this endpoint)
-    if bot_index >= len(request.app.state.bot_apps):
-        logger.error(f"Invalid bot index: {bot_index}. Available bots: 0-{len(request.app.state.bot_apps) - 1}")
-        return Response(status_code=status.HTTP_404_NOT_FOUND)
-    
     if bot_index == 0:
         logger.warning("Bot 0 should use /webhook endpoint, not /webhook/0. Redirecting...")
-        # Still process it for convenience, but log the warning
-    
-    try:
-        # Parse the update
-        json_data = await request.json()
-        bot_app = request.app.state.bot_apps[bot_index]
-        update = Update.de_json(json_data, bot_app.bot)
-        
-        # Log update details
-        if update.message:
-            logger.info(f"Bot {bot_index}: Processing message update from user {update.message.from_user.id}")
-        elif update.callback_query:
-            logger.info(f"Bot {bot_index}: Processing callback query from user {update.callback_query.from_user.id}: {update.callback_query.data}")
-        elif update.channel_post:
-            logger.info(f"Bot {bot_index}: Processing channel post from chat {update.channel_post.chat.id}")
-        else:
-            logger.info(f"Bot {bot_index}: Processing update type: {update.update_id}")
-        
-        # Process the update
-        await bot_app.process_update(update)
-        
-        logger.info(f"Webhook request processed successfully for bot {bot_index}")
-        return Response(status_code=status.HTTP_200_OK)
-    except Exception as e:
-        logger.error(f"Error processing webhook update for bot {bot_index}: {e}", exc_info=True)
-        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return await process_webhook_request(request, bot_index)
 
 
 @app.get("/health")

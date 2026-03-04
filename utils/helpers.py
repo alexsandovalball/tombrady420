@@ -542,6 +542,89 @@ async def get_bot_specific_file_id(
         return None
 
 
+def register_bot_handlers(application: "Application", bot_index: int = 0):
+    """Register all bot command and message handlers on the given Application instance.
+
+    This shared function eliminates duplicate handler registration between
+    main.py (polling mode) and webhook_server.py (webhook mode).
+
+    Args:
+        application: The telegram.ext.Application instance to register handlers on.
+        bot_index: Index of the bot (0 for primary, 1+ for additional bots).
+                   Only the primary bot (index 0) monitors the channel.
+    """
+    from telegram.ext import (
+        CommandHandler, MessageHandler, CallbackQueryHandler,
+        InlineQueryHandler, ChosenInlineResultHandler, filters
+    )
+    from main import (
+        start_command, menu_command, language_command, nuke_command,
+        recategorize_command, users_command, subscribe_command,
+        unsubscribe_command, block_command, unblock_command, send_command,
+        broadcast_command, setcontact_command, setlink_command,
+        clearcache_command, channel_post_handler, callback_query_handler,
+        message_handler, error_handler
+    )
+    from handlers.admin import botusers_command, prunebots_command
+    from handlers.inline import handle_inline_query, handle_chosen_inline_result
+
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("menu", menu_command))
+    application.add_handler(CommandHandler("language", language_command))
+    application.add_handler(CommandHandler("nuke", nuke_command))
+    application.add_handler(CommandHandler("recategorize", recategorize_command))
+    application.add_handler(CommandHandler("users", users_command))
+    application.add_handler(CommandHandler("botusers", botusers_command))
+    application.add_handler(CommandHandler("prunebots", prunebots_command))
+    application.add_handler(CommandHandler("subscribe", subscribe_command))
+    application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
+    application.add_handler(CommandHandler("block", block_command))
+    application.add_handler(CommandHandler("unblock", unblock_command))
+    application.add_handler(CommandHandler("send", send_command))
+    application.add_handler(CommandHandler("broadcast", broadcast_command))
+    application.add_handler(CommandHandler("setcontact", setcontact_command))
+    application.add_handler(CommandHandler("setlink", setlink_command))
+    application.add_handler(CommandHandler("clearcache", clearcache_command))
+
+    # Channel post handler (primary bot only)
+    if bot_index == 0:
+        channel_id = get_channel_id()
+        channel_username = get_channel_username()
+
+        if channel_id:
+            channel_filter = filters.Chat(chat_id=channel_id)
+        elif channel_username:
+            channel_filter = filters.Chat(username=channel_username.lstrip("@"))
+        else:
+            logger.warning("No CHANNEL_ID or CHANNEL_USERNAME set. Channel monitoring disabled.")
+            channel_filter = None
+
+        if channel_filter:
+            application.add_handler(
+                MessageHandler(
+                    channel_filter & filters.ChatType.CHANNEL,
+                    channel_post_handler
+                )
+            )
+            logger.info(f"Channel monitoring enabled for: {channel_id or channel_username}")
+    else:
+        logger.info(
+            f"Channel monitoring DISABLED for secondary bot {bot_index} "
+            "(only primary bot monitors channel)"
+        )
+
+    application.add_handler(CallbackQueryHandler(callback_query_handler))
+    application.add_handler(InlineQueryHandler(handle_inline_query))
+    application.add_handler(ChosenInlineResultHandler(handle_chosen_inline_result))
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
+            message_handler
+        )
+    )
+    application.add_error_handler(error_handler)
+
+
 async def clear_file_id_cache():
     """Clear the bot-specific file ID cache (useful for forcing refresh of old entries)."""
     from database import Database
