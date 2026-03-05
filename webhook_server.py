@@ -568,6 +568,10 @@ app.mount("/assets", StaticFiles(directory="webapp"), name="assets")
 _STOREFRONT_BOT_USERNAME = os.getenv("BOT_USERNAME", "").lstrip("@")
 _STOREFRONT_DOMAIN = os.getenv("STOREFRONT_DOMAIN", "https://topshelfcaliplug.com")
 
+# Default Open Graph image with football emoji 🏈 for link previews
+# Using a data URI with SVG ensures the emoji shows in social media previews
+_DEFAULT_OG_IMAGE = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='0.9em' font-size='90'%3E🏈%3C/text%3E%3C/svg%3E"
+
 
 def _generate_slug(caption: str) -> str:
     """Generate a URL-safe slug from a product caption."""
@@ -666,7 +670,7 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
     return {
         "seo_title": title,
         "seo_desc": desc,
-        "seo_image": image,
+        "seo_image": image or _DEFAULT_OG_IMAGE,  # Use default football emoji if no image provided
         "seo_url": url,
         "seo_schema": schema,
         "seo_keywords": keywords or default_keywords,
