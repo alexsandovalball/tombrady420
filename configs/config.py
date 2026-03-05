@@ -108,7 +108,7 @@ class ConfigClass:
         self.WEB_APP_URL = config('WEB_APP_URL', default=None)
         if not self.WEB_APP_URL and self.WEBHOOK_URL:
             self.WEB_APP_URL = self.WEBHOOK_URL.rstrip('/') + '/webapp/index.html'
-        
+
         self._loaded = True
     
     def validate(self) -> None:

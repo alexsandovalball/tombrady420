@@ -10,6 +10,7 @@ import logging
 import mimetypes
 import os
 import re
+import secrets
 import time as _time
 import urllib.parse
 import tempfile
@@ -56,6 +57,62 @@ MEDIA_CACHE_TTL_HOURS = int(os.getenv("MEDIA_CACHE_TTL_HOURS", "24"))  # 24 hour
 
 # Create cache directory if it doesn't exist
 MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+class WebhookIPRateLimiter:
+    """Token-bucket rate limiter keyed per client IP for webhook endpoints.
+
+    Each unique IP address gets its own token bucket.  Tokens refill at
+    ``max_requests / window_seconds`` per second up to a maximum of ``max_requests``
+    (burst equals the steady-state window quota, so a single IP can burst up to the
+    full window allowance before being rate-limited).
+    ``is_allowed`` is non-blocking: it returns True immediately if a token is
+    available, or False if the bucket is empty (caller should respond 429).
+
+    Old buckets are evicted when the number of tracked IPs exceeds ``_MAX_BUCKETS``
+    to prevent unbounded memory growth.
+    """
+
+    _MAX_BUCKETS = 10_000  # evict oldest entries beyond this count
+    # Default: 100 requests per 60-second window per IP
+    _DEFAULT_MAX_REQUESTS = 100
+    _DEFAULT_WINDOW_SECONDS = 60
+
+    def __init__(
+        self,
+        max_requests: int = _DEFAULT_MAX_REQUESTS,
+        window_seconds: int = _DEFAULT_WINDOW_SECONDS,
+    ) -> None:
+        if max_requests <= 0:
+            raise ValueError("max_requests must be positive")
+        if window_seconds <= 0:
+            raise ValueError("window_seconds must be positive")
+        self._rate = max_requests / window_seconds  # tokens per second
+        self._burst = max_requests
+        # ip -> [tokens: float, last_refill: float] ordered by insertion/access
+        self._buckets: OrderedDict = OrderedDict()
+        self._lock = asyncio.Lock()
+
+    async def is_allowed(self, ip: str) -> bool:
+        """Return True if the request is within limits, False if rate limited."""
+        async with self._lock:
+            now = _time.monotonic()
+            if ip not in self._buckets:
+                # Evict oldest entry if at capacity
+                if len(self._buckets) >= self._MAX_BUCKETS:
+                    self._buckets.popitem(last=False)
+                self._buckets[ip] = [float(self._burst) - 1, now]
+                return True
+            tokens, last_refill = self._buckets[ip]
+            elapsed = now - last_refill
+            tokens = min(self._burst, tokens + elapsed * self._rate)
+            # Move to end (most-recently-used) for LRU ordering
+            self._buckets.move_to_end(ip)
+            if tokens >= 1:
+                self._buckets[ip] = [tokens - 1, now]
+                return True
+            self._buckets[ip] = [tokens, now]
+            return False
 
 class MediaCache:
     """Simple LRU file cache for media files with size and TTL management."""
@@ -239,6 +296,11 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     Args:
         bot_token: The Telegram bot token
         bot_index: Index of the bot (0 for primary, 1+ for additional bots)
+
+    Returns:
+        A tuple of (Application, secret_token) where secret_token is the
+        randomly generated value registered with Telegram for this bot, or
+        None if webhook mode is not active.
     """
     logger.info(f"Setting up bot application {bot_index}...")
     
@@ -269,22 +331,26 @@ async def setup_application(bot_token: str, bot_index: int = 0):
         # For secondary bots, set commands
         await setup_bot_commands(bot_app.bot)
     
-    # Set webhook
+    # Set webhook with a freshly generated secret token so every deployment
+    # automatically authenticates Telegram's requests without any env-var setup.
+    webhook_secret_token: Optional[str] = None
     webhook_url = Config.WEBHOOK_URL
     if webhook_url:
         # Primary bot uses /webhook, additional bots use /webhook/1, /webhook/2, etc.
         webhook_path = "/webhook" if bot_index == 0 else f"/webhook/{bot_index}"
+        webhook_secret_token = secrets.token_hex(32)
         await bot_app.bot.set_webhook(
             url=f"{webhook_url}{webhook_path}",
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
+            drop_pending_updates=True,
+            secret_token=webhook_secret_token,
         )
         logger.info(f"Webhook set for bot {bot_index}: {webhook_url}{webhook_path}")
     else:
         logger.warning("WEBHOOK_URL not set. Webhook may not work properly.")
     
     logger.info(f"Bot application {bot_index} initialized successfully")
-    return bot_app
+    return bot_app, webhook_secret_token
 
 
 async def _media_cache_prune_loop():
@@ -339,17 +405,19 @@ async def lifespan(app: FastAPI):
     
     bot_apps = []  # Initialize before gather for exception handler
     try:
-        # Initialize all bots concurrently
-        bot_apps = await asyncio.gather(*setup_tasks)
+        # Initialize all bots concurrently; each returns (Application, secret_token)
+        results = await asyncio.gather(*setup_tasks)
+        bot_apps = [app_instance for app_instance, _ in results]
+        webhook_secret_tokens = [tok for _, tok in results]
         logger.info(f"All {len(bot_apps)} bot(s) initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize bots: {e}", exc_info=True)
         # Clean up any successfully initialized bots
-        for app in bot_apps:
-            if app:
+        for item in bot_apps:
+            if item:
                 try:
-                    await app.stop()
-                    await app.shutdown()
+                    await item.stop()
+                    await item.shutdown()
                 except Exception:
                     pass
         raise
@@ -358,6 +426,12 @@ async def lifespan(app: FastAPI):
     _bot_applications = bot_apps
     
     app.state.bot_apps = bot_apps
+
+    # Store the per-bot secret tokens generated during set_webhook
+    app.state.webhook_secret_tokens = webhook_secret_tokens
+
+    # Initialize the per-IP rate limiter with hardcoded defaults (100 req/min)
+    app.state.webhook_rate_limiter = WebhookIPRateLimiter()
     
     # Log bot usernames for debugging
     for idx, bot_app in enumerate(bot_apps):
@@ -1889,6 +1963,55 @@ async def process_webhook_request(request: Request, bot_index: int):
     Returns:
         A fastapi.Response with an appropriate HTTP status code.
     """
+    # --- Rate limiting (per real client IP) ---
+    # When the server sits behind a reverse proxy or CDN (common with custom domains),
+    # request.client.host is the proxy's IP.  Use X-Forwarded-For / X-Real-IP to
+    # recover the originating IP so each real caller gets its own rate-limit bucket.
+    # Requests where no IP can be determined are grouped under "unknown" — they are
+    # still subject to rate limiting (all share one bucket), not bypassed.
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        # X-Forwarded-For may be a comma-separated list; the leftmost entry is the client
+        client_ip = forwarded_for.split(",")[0].strip()
+    else:
+        client_ip = (
+            request.headers.get("X-Real-IP")
+            or (request.client.host if request.client else "unknown")
+        )
+    rate_limiter: Optional[WebhookIPRateLimiter] = getattr(
+        request.app.state, "webhook_rate_limiter", None
+    )
+    if rate_limiter is not None:
+        if not await rate_limiter.is_allowed(client_ip):
+            logger.warning(f"Rate limit exceeded for IP {client_ip} on /webhook bot {bot_index}")
+            return Response(status_code=status.HTTP_429_TOO_MANY_REQUESTS)
+
+    # --- Secret token verification ---
+    secret_tokens: List[Optional[str]] = getattr(
+        request.app.state, "webhook_secret_tokens", []
+    )
+    expected_token: Optional[str] = (
+        secret_tokens[bot_index]
+        if bot_index < len(secret_tokens)
+        else None
+    )
+    if expected_token:
+        incoming_token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+        # compare_digest requires both operands to be the same type; guard against
+        # missing / non-string values before encoding to avoid TypeErrors.
+        if not isinstance(incoming_token, str) or not secrets.compare_digest(
+            incoming_token.encode(), expected_token.encode()
+        ):
+            logger.warning(
+                f"Invalid or missing X-Telegram-Bot-Api-Secret-Token from IP {client_ip} "
+                f"for bot {bot_index}"
+            )
+            return Response(status_code=status.HTTP_401_UNAUTHORIZED)
+    else:
+        logger.debug(
+            f"No secret token configured for bot {bot_index}; skipping header verification."
+        )
+
     if not hasattr(request.app.state, "bot_apps") or not request.app.state.bot_apps:
         logger.error("Bot applications not initialized")
         return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
