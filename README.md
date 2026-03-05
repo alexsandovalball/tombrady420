@@ -435,7 +435,6 @@ All configuration is loaded from environment variables via `python-decouple`. Co
 | `BOT_TOKENS` | — | — | Comma-separated list of all tokens (overrides individual vars) |
 | `BOT_TOKEN_1` … `BOT_TOKEN_10` | — | — | Additional bot tokens (multi-bot) |
 | `ADMIN_IDS` | ✅ | — | Comma-separated Telegram user IDs with admin access |
-| `PRIMARY_ADMIN_ID` | — | First in ADMIN_IDS | Receives notification summaries |
 | `CHANNEL_ID` | ✅* | — | Numeric channel ID (e.g. `-1001234567890`) |
 | `CHANNEL_USERNAME` | ✅* | — | Channel username (alternative to CHANNEL_ID) |
 | `DB_PATH` | — | `catalog.db` | SQLite file path |
