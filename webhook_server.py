@@ -568,9 +568,12 @@ app.mount("/assets", StaticFiles(directory="webapp"), name="assets")
 _STOREFRONT_BOT_USERNAME = os.getenv("BOT_USERNAME", "").lstrip("@")
 _STOREFRONT_DOMAIN = os.getenv("STOREFRONT_DOMAIN", "https://topshelfcaliplug.com")
 
-# Default Open Graph image with football emoji 🏈 for link previews
-# Using a data URI with SVG ensures the emoji shows in social media previews
-_DEFAULT_OG_IMAGE = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='0.9em' font-size='90'%3E🏈%3C/text%3E%3C/svg%3E"
+# Default Open Graph image with football emoji 🏈 for link previews.
+# Must be an absolute HTTPS URL — data: URIs are rejected by all social media crawlers
+# (WhatsApp, iMessage, Twitter/X, Facebook, Discord, Slack, Telegram, etc.).
+_DEFAULT_OG_IMAGE = f"{_STOREFRONT_DOMAIN}/og-image.png"
+_OG_IMAGE_WIDTH = 600
+_OG_IMAGE_HEIGHT = 315
 
 
 def _generate_slug(caption: str) -> str:
@@ -667,10 +670,15 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
             ],
         })
     default_keywords = "premium catalog, online shop, Telegram store, Top Shelf Cali Plug, buy online, product catalog"
+    resolved_image = image or _DEFAULT_OG_IMAGE
+    # Include image dimensions only for the default OG image (product images have unknown dimensions)
+    is_default_image = not image
     return {
         "seo_title": title,
         "seo_desc": desc,
-        "seo_image": image or _DEFAULT_OG_IMAGE,  # Use default football emoji if no image provided
+        "seo_image": resolved_image,
+        "seo_image_width": _OG_IMAGE_WIDTH if is_default_image else None,
+        "seo_image_height": _OG_IMAGE_HEIGHT if is_default_image else None,
         "seo_url": url,
         "seo_schema": schema,
         "seo_keywords": keywords or default_keywords,
@@ -678,6 +686,29 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
         "telegram_deep_link": deep_link or f"https://t.me/{_STOREFRONT_BOT_USERNAME}",
     }
 
+
+
+@app.get("/og-image.png", response_class=Response)
+async def serve_og_image():
+    """Serve the football emoji OG image for social media link previews.
+
+    Returns a static PNG file with football branding. Social media crawlers
+    (WhatsApp, iMessage, Twitter/X, Facebook, Discord, Slack, Telegram) require
+    a real HTTP/HTTPS URL — data: URIs are never fetched by these crawlers.
+    """
+    import pathlib
+    image_path = pathlib.Path(__file__).parent / "webapp" / "og-football.png"
+    if not image_path.exists():
+        raise HTTPException(status_code=404, detail="OG image not found")
+    image_bytes = image_path.read_bytes()
+    return Response(
+        content=image_bytes,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "Content-Length": str(len(image_bytes)),
+        },
+    )
 
 
 @app.get("/robots.txt", response_class=Response)
