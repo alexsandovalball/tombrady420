@@ -625,6 +625,76 @@ class Database:
             async with db.execute(sql_query, (f"%{query}%",)) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
+
+    async def search_products_filtered(
+        self,
+        query: str,
+        excluded_categories: List[str],
+        limit: int = 24,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Search caption, category, and subcategory while excluding certain categories.
+
+        Uses the optimized connection (busy_timeout + cache_size) to avoid
+        repeating PRAGMA setup at every call site.
+        """
+        pattern = f"%{query.lower()}%"
+        placeholders = ",".join("?" * len(excluded_categories))
+        sql = f"""
+            SELECT * FROM products
+            WHERE (LOWER(caption) LIKE ? OR LOWER(category) LIKE ? OR LOWER(subcategory) LIKE ?)
+              AND (category IS NULL OR category = '' OR category NOT IN ({placeholders}))
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+        """
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                sql, (pattern, pattern, pattern, *excluded_categories, limit, offset)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    async def count_products_filtered(
+        self,
+        query: str,
+        excluded_categories: List[str],
+    ) -> int:
+        """Count products matching search_products_filtered criteria."""
+        pattern = f"%{query.lower()}%"
+        placeholders = ",".join("?" * len(excluded_categories))
+        sql = f"""
+            SELECT COUNT(*) FROM products
+            WHERE (LOWER(caption) LIKE ? OR LOWER(category) LIKE ? OR LOWER(subcategory) LIKE ?)
+              AND (category IS NULL OR category = '' OR category NOT IN ({placeholders}))
+        """
+        async with self.get_connection() as db:
+            async with db.execute(sql, (pattern, pattern, pattern, *excluded_categories)) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else 0
+
+    async def get_user_subscription(self, user_id: int) -> Optional[bool]:
+        """Return the is_subscribed flag for user_id, or None if user not found."""
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT is_subscribed FROM bot_users WHERE user_id = ?", (user_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return bool(row["is_subscribed"]) if row else None
+
+    async def update_user_subscription(self, user_id: int, is_subscribed: bool) -> None:
+        """Upsert the is_subscribed flag for user_id (atomic INSERT OR REPLACE)."""
+        value = 1 if is_subscribed else 0
+        async with self.get_connection() as db:
+            await db.execute(
+                """
+                INSERT INTO bot_users (user_id, is_subscribed) VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET is_subscribed = excluded.is_subscribed
+                """,
+                (user_id, value),
+            )
+            await db.commit()
     
     async def get_all_products_for_search(self) -> List[Dict[str, Any]]:
         """

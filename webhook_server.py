@@ -3,13 +3,15 @@ Webhook server for Telegram bot using FastAPI and uvicorn.
 This allows the bot to receive updates via webhooks instead of polling,
 which is more suitable for serverless deployments like Render.com.
 """
-import aiosqlite
 import asyncio
+import hashlib
 import json
 import logging
 import mimetypes
 import os
 import re
+import secrets
+import shutil
 import time as _time
 import urllib.parse
 import tempfile
@@ -51,11 +53,67 @@ _catalog_db = Database()
 
 # Media cache configuration
 MEDIA_CACHE_DIR = Path(os.getenv("MEDIA_CACHE_DIR", "/tmp/media_cache"))
-MEDIA_CACHE_MAX_SIZE_MB = int(os.getenv("MEDIA_CACHE_MAX_SIZE_MB", "500"))  # 500MB default
-MEDIA_CACHE_TTL_HOURS = int(os.getenv("MEDIA_CACHE_TTL_HOURS", "24"))  # 24 hours default
+MEDIA_CACHE_MAX_SIZE_MB = int(os.getenv("MEDIA_CACHE_MAX_SIZE_MB", "100"))  # 100MB default
+MEDIA_CACHE_TTL_HOURS = int(os.getenv("MEDIA_CACHE_TTL_HOURS", "6"))  # 6 hours default
 
 # Create cache directory if it doesn't exist
 MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+class WebhookIPRateLimiter:
+    """Token-bucket rate limiter keyed per client IP for webhook endpoints.
+
+    Each unique IP address gets its own token bucket.  Tokens refill at
+    ``max_requests / window_seconds`` per second up to a maximum of ``max_requests``
+    (burst equals the steady-state window quota, so a single IP can burst up to the
+    full window allowance before being rate-limited).
+    ``is_allowed`` is non-blocking: it returns True immediately if a token is
+    available, or False if the bucket is empty (caller should respond 429).
+
+    Old buckets are evicted when the number of tracked IPs exceeds ``_MAX_BUCKETS``
+    to prevent unbounded memory growth.
+    """
+
+    _MAX_BUCKETS = 10_000  # evict oldest entries beyond this count
+    # Default: 100 requests per 60-second window per IP
+    _DEFAULT_MAX_REQUESTS = 100
+    _DEFAULT_WINDOW_SECONDS = 60
+
+    def __init__(
+        self,
+        max_requests: int = _DEFAULT_MAX_REQUESTS,
+        window_seconds: int = _DEFAULT_WINDOW_SECONDS,
+    ) -> None:
+        if max_requests <= 0:
+            raise ValueError("max_requests must be positive")
+        if window_seconds <= 0:
+            raise ValueError("window_seconds must be positive")
+        self._rate = max_requests / window_seconds  # tokens per second
+        self._burst = max_requests
+        # ip -> [tokens: float, last_refill: float] ordered by insertion/access
+        self._buckets: OrderedDict = OrderedDict()
+        self._lock = asyncio.Lock()
+
+    async def is_allowed(self, ip: str) -> bool:
+        """Return True if the request is within limits, False if rate limited."""
+        async with self._lock:
+            now = _time.monotonic()
+            if ip not in self._buckets:
+                # Evict oldest entry if at capacity
+                if len(self._buckets) >= self._MAX_BUCKETS:
+                    self._buckets.popitem(last=False)
+                self._buckets[ip] = [float(self._burst) - 1, now]
+                return True
+            tokens, last_refill = self._buckets[ip]
+            elapsed = now - last_refill
+            tokens = min(self._burst, tokens + elapsed * self._rate)
+            # Move to end (most-recently-used) for LRU ordering
+            self._buckets.move_to_end(ip)
+            if tokens >= 1:
+                self._buckets[ip] = [tokens - 1, now]
+                return True
+            self._buckets[ip] = [tokens, now]
+            return False
 
 class MediaCache:
     """Simple LRU file cache for media files with size and TTL management."""
@@ -69,7 +127,6 @@ class MediaCache:
     def _get_cache_path(self, file_id: str) -> Path:
         """Get cache file path for a file_id."""
         # Use hash to avoid filesystem issues with special characters
-        import hashlib
         hash_name = hashlib.sha256(file_id.encode()).hexdigest()
         return self.cache_dir / hash_name
 
@@ -102,7 +159,6 @@ class MediaCache:
             cache_path = self._get_cache_path(file_id)
 
             # Copy file to cache
-            import shutil
             shutil.copy2(source_path, cache_path)
 
             # Evict old files if cache is too large
@@ -186,12 +242,12 @@ _media_cache = MediaCache(MEDIA_CACHE_DIR, MEDIA_CACHE_MAX_SIZE_MB, MEDIA_CACHE_
 # Avoids repeated DB lookups across consecutive HTTP Range 206 requests for the same media.
 # Bounded to _RESOLVED_FILE_ID_CACHE_MAX entries with LRU eviction.
 _resolved_file_id_cache: OrderedDict = OrderedDict()
-_RESOLVED_FILE_ID_CACHE_MAX = 2000
+_RESOLVED_FILE_ID_CACHE_MAX = 500
 
 # In-memory cache for parsed media info, keyed by product id.
 # Avoids repeated json.loads() on additional_file_ids across requests.
 _media_info_cache: OrderedDict = OrderedDict()
-_MEDIA_INFO_CACHE_MAX = 5000
+_MEDIA_INFO_CACHE_MAX = 500
 
 # In-memory result cache for expensive API list responses.
 # Keyed by a string describing the request parameters.
@@ -213,6 +269,14 @@ def _cache_resolved_file_id(key: tuple, file_id: str) -> None:
         # Evict oldest if over capacity (LRU)
         if len(_resolved_file_id_cache) > _RESOLVED_FILE_ID_CACHE_MAX:
             _resolved_file_id_cache.popitem(last=False)
+
+
+def _api_result_cache_set(key: str, payload: str) -> None:
+    """Insert an API result into the shared LRU cache with eviction."""
+    _api_result_cache[key] = (payload, _time.monotonic())
+    _api_result_cache.move_to_end(key)
+    if len(_api_result_cache) > _API_RESULT_CACHE_MAX:
+        _api_result_cache.popitem(last=False)
 
 def get_bot_applications() -> List[Application]:
     """Get all bot application instances."""
@@ -239,6 +303,11 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     Args:
         bot_token: The Telegram bot token
         bot_index: Index of the bot (0 for primary, 1+ for additional bots)
+
+    Returns:
+        A tuple of (Application, secret_token) where secret_token is the
+        randomly generated value registered with Telegram for this bot, or
+        None if webhook mode is not active.
     """
     logger.info(f"Setting up bot application {bot_index}...")
     
@@ -269,22 +338,26 @@ async def setup_application(bot_token: str, bot_index: int = 0):
         # For secondary bots, set commands
         await setup_bot_commands(bot_app.bot)
     
-    # Set webhook
+    # Set webhook with a freshly generated secret token so every deployment
+    # automatically authenticates Telegram's requests without any env-var setup.
+    webhook_secret_token: Optional[str] = None
     webhook_url = Config.WEBHOOK_URL
     if webhook_url:
         # Primary bot uses /webhook, additional bots use /webhook/1, /webhook/2, etc.
         webhook_path = "/webhook" if bot_index == 0 else f"/webhook/{bot_index}"
+        webhook_secret_token = secrets.token_hex(32)
         await bot_app.bot.set_webhook(
             url=f"{webhook_url}{webhook_path}",
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
+            drop_pending_updates=True,
+            secret_token=webhook_secret_token,
         )
         logger.info(f"Webhook set for bot {bot_index}: {webhook_url}{webhook_path}")
     else:
         logger.warning("WEBHOOK_URL not set. Webhook may not work properly.")
     
     logger.info(f"Bot application {bot_index} initialized successfully")
-    return bot_app
+    return bot_app, webhook_secret_token
 
 
 async def _media_cache_prune_loop():
@@ -339,17 +412,19 @@ async def lifespan(app: FastAPI):
     
     bot_apps = []  # Initialize before gather for exception handler
     try:
-        # Initialize all bots concurrently
-        bot_apps = await asyncio.gather(*setup_tasks)
+        # Initialize all bots concurrently; each returns (Application, secret_token)
+        results = await asyncio.gather(*setup_tasks)
+        bot_apps = [app_instance for app_instance, _ in results]
+        webhook_secret_tokens = [tok for _, tok in results]
         logger.info(f"All {len(bot_apps)} bot(s) initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize bots: {e}", exc_info=True)
         # Clean up any successfully initialized bots
-        for app in bot_apps:
-            if app:
+        for item in bot_apps:
+            if item:
                 try:
-                    await app.stop()
-                    await app.shutdown()
+                    await item.stop()
+                    await item.shutdown()
                 except Exception:
                     pass
         raise
@@ -358,6 +433,12 @@ async def lifespan(app: FastAPI):
     _bot_applications = bot_apps
     
     app.state.bot_apps = bot_apps
+
+    # Store the per-bot secret tokens generated during set_webhook
+    app.state.webhook_secret_tokens = webhook_secret_tokens
+
+    # Initialize the per-IP rate limiter with hardcoded defaults (100 req/min)
+    app.state.webhook_rate_limiter = WebhookIPRateLimiter()
     
     # Log bot usernames for debugging
     for idx, bot_app in enumerate(bot_apps):
@@ -666,10 +747,8 @@ async def serve_sitemap_xml():
     return Response(content=sitemap, media_type="application/xml")
 
 
-@app.get("/", response_class=HTMLResponse)
-@app.head("/", response_class=HTMLResponse)
-async def serve_homepage(request: Request):
-    """Serve the homepage with default Storefront SEO metadata."""
+def _serve_storefront_index(request: Request) -> HTMLResponse:
+    """Render the main storefront index.html with default SEO metadata."""
     ctx = _build_seo_context(
         title="Top Shelf Cali Plug – Premium Cannabis Storefront",
         desc="Browse our premium cannabis catalog. Order directly via Telegram.",
@@ -677,6 +756,13 @@ async def serve_homepage(request: Request):
     )
     ctx["request"] = request
     return templates.TemplateResponse("index.html", ctx)
+
+
+@app.get("/", response_class=HTMLResponse)
+@app.head("/", response_class=HTMLResponse)
+async def serve_homepage(request: Request):
+    """Serve the homepage with default Storefront SEO metadata."""
+    return _serve_storefront_index(request)
 
 
 @app.get("/webapp/index.html", response_class=HTMLResponse)
@@ -690,13 +776,7 @@ async def serve_webapp(request: Request):
     Keeps backward compatibility with the original webapp path while the
     clearnet storefront is served at /.
     """
-    ctx = _build_seo_context(
-        title="Top Shelf Cali Plug – Premium Cannabis Storefront",
-        desc="Browse our premium cannabis catalog. Order directly via Telegram.",
-        url=_STOREFRONT_DOMAIN,
-    )
-    ctx["request"] = request
-    return templates.TemplateResponse("index.html", ctx)
+    return _serve_storefront_index(request)
 
 
 @app.get("/product/{product_id}", response_class=HTMLResponse)
@@ -927,32 +1007,6 @@ def _get_validated_init_data(request: Request, allow_preview: bool = False) -> t
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid init data")
 
 
-def _collect_media_ids(product: dict) -> List[str]:
-    """Collect primary and additional file_ids for a product."""
-    media_ids: List[str] = []
-    
-    primary_id = product.get("file_id")
-    if primary_id:
-        media_ids.append(primary_id)
-    
-    additional_raw = product.get("additional_file_ids")
-    if additional_raw:
-        try:
-            additional_ids = json.loads(additional_raw)
-            if isinstance(additional_ids, list):
-                # Handle both string file_ids and (file_id, file_type) tuples
-                for item in additional_ids:
-                    if isinstance(item, str):
-                        media_ids.append(item)
-                    elif isinstance(item, (list, tuple)) and len(item) >= 1:
-                        # Extract file_id from (file_id, file_type) tuple
-                        media_ids.append(item[0])
-        except Exception:
-            logger.warning("Failed to parse additional_file_ids for product %s", product.get("id"))
-    
-    return media_ids
-
-
 def _collect_media_info(product: dict) -> List[dict]:
     """Collect media information (id and type) for a product."""
     product_id = product.get("id")
@@ -1088,11 +1142,7 @@ async def get_categories(request: Request, lang: str = "en"):
         "all_products_count": all_products_count
     })
 
-    # Store in result cache with LRU eviction
-    _api_result_cache[cache_key] = (payload, _time.monotonic())
-    _api_result_cache.move_to_end(cache_key)
-    if len(_api_result_cache) > _API_RESULT_CACHE_MAX:
-        _api_result_cache.popitem(last=False)
+    _api_result_cache_set(cache_key, payload)
 
     # Return with a short cache hint: categories change infrequently so clients
     # can reuse the response for up to 60 seconds before revalidating.
@@ -1189,61 +1239,13 @@ async def get_products(
         "order_link": order_link
     })
 
-    # Store in result cache with LRU eviction
-    _api_result_cache[cache_key] = (payload, _time.monotonic())
-    _api_result_cache.move_to_end(cache_key)
-    if len(_api_result_cache) > _API_RESULT_CACHE_MAX:
-        _api_result_cache.popitem(last=False)
+    _api_result_cache_set(cache_key, payload)
 
     return Response(
         content=payload,
         media_type="application/json",
         headers={"Cache-Control": "public, max-age=30"}
     )
-
-
-@app.get("/api/catalog")
-async def get_catalog(request: Request, limit: int = 24, offset: int = 0):
-    """
-    Read-only catalog endpoint for the WebApp.
-    Returns lightweight product metadata; media is streamed via the media endpoint.
-    DEPRECATED: Use /api/products instead for better filtering support.
-    """
-    _get_validated_init_data(request)
-    bot = _get_primary_bot(request)
-    
-    # Bound limit for performance
-    limit = max(1, min(limit, 50))
-    offset = max(0, offset)
-    
-    products = await _catalog_db.get_all_products(limit=limit, offset=offset)
-    total = await _catalog_db.count_products()
-    order_contact = await _catalog_db.get_order_contact()
-    order_contact_username = _normalize_contact(order_contact)
-    
-    items = []
-    for product in products:
-        media_info = _collect_media_info(product)
-        items.append({
-            "id": product.get("id"),
-            "caption": product.get("caption") or "",
-            "category": product.get("category") or "",
-            "subcategory": product.get("subcategory") or "",
-            "subcategory_display": get_subcategory_display_name(product.get("subcategory")) if product.get("subcategory") else "",
-            "created_at": product.get("created_at"),
-            "media_count": len(media_info),
-            "media_info": media_info,  # Include full media info with types
-        })
-    
-    return {
-        "items": items,
-        "total": total,
-        "bot": bot.username if bot and getattr(bot, "username", None) else None,
-        "order_contact": order_contact,
-        "order_contact_username": order_contact_username
-    }
-
-
 
 
 @app.get("/api/catalog/{product_id}/media/{media_index}")
@@ -1271,11 +1273,8 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
     if media_index < 0 or media_index >= len(media_info):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Media not found")
 
-    # Note: We validate against media_info length which should match media_ids
-    # This ensures we have both the media type info and the file_id
-    media_ids = _collect_media_ids(product)
-    file_id = media_ids[media_index]
     media_type_info = media_info[media_index]
+    file_id = media_type_info["id"]
     is_video = media_type_info.get('type') == 'video'
 
     # Resolve bot-specific file_id for multi-bot scenarios
@@ -1551,60 +1550,11 @@ async def search_products(
     excluded_categories = ['DATEDPROOFS', 'CLIENTTOUCHDOWNS', 'ANNOUNCEMENTS']
     
     try:
-        # Use database search for efficiency
-        query_lower = q.lower()
-        
-        # Search across all products
-        async with aiosqlite.connect(_catalog_db.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            # Apply the same pragmas used by the optimized DB connection to ensure
-            # consistent performance: WAL mode allows concurrent reads, 10 MB page cache
-            # reduces disk I/O, and NORMAL sync is safe under WAL.
-            await db.execute("PRAGMA journal_mode=WAL")
-            await db.execute("PRAGMA busy_timeout=30000")
-            await db.execute("PRAGMA cache_size=-10000")
-            await db.execute("PRAGMA synchronous=NORMAL")
-            await db.execute("PRAGMA temp_store=MEMORY")
-            # Build placeholders for excluded categories
-            placeholders = ','.join('?' * len(excluded_categories))
-            
-            # Count total matching results (excluding specific categories)
-            count_query = f"""
-                SELECT COUNT(*) as count FROM products 
-                WHERE (LOWER(caption) LIKE ? 
-                OR LOWER(category) LIKE ? 
-                OR LOWER(subcategory) LIKE ?)
-                AND (category IS NULL OR category = '' OR category NOT IN ({placeholders}))
-            """
-            search_pattern = f"%{query_lower}%"
-            
-            async with db.execute(
-                count_query, 
-                (search_pattern, search_pattern, search_pattern, *excluded_categories)
-            ) as cursor:
-                count_row = await cursor.fetchone()
-                total = count_row["count"] if count_row else 0
-            
-            # Fetch matching products with pagination (excluding specific categories)
-            search_query = f"""
-                SELECT * FROM products 
-                WHERE (LOWER(caption) LIKE ? 
-                OR LOWER(category) LIKE ? 
-                OR LOWER(subcategory) LIKE ?)
-                AND (category IS NULL OR category = '' OR category NOT IN ({placeholders}))
-                ORDER BY created_at DESC
-                LIMIT ? OFFSET ?
-            """
-            
-            products = []
-            async with db.execute(
-                search_query, 
-                (search_pattern, search_pattern, search_pattern, *excluded_categories, limit, offset)
-            ) as cursor:
-                rows = await cursor.fetchall()
-                for row in rows:
-                    products.append(dict(row))
-        
+        total = await _catalog_db.count_products_filtered(q, excluded_categories)
+        products = await _catalog_db.search_products_filtered(
+            q, excluded_categories, limit=limit, offset=offset
+        )
+
         order_contact = await _catalog_db.get_order_contact()
         order_contact_username = _normalize_contact(order_contact)
         
@@ -1640,18 +1590,9 @@ async def get_user_subscription(request: Request, user_id: int):
     _get_validated_init_data(request, allow_preview=False)  # Require auth for user data
     
     try:
-        async with aiosqlite.connect(_catalog_db.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(
-                "SELECT is_subscribed FROM bot_users WHERE user_id = ?",
-                (user_id,)
-            ) as cursor:
-                row = await cursor.fetchone()
-                if row:
-                    return {"is_subscribed": bool(row["is_subscribed"])}
-                else:
-                    # User not in database, default to subscribed
-                    return {"is_subscribed": True}
+        result = await _catalog_db.get_user_subscription(user_id)
+        # User not in database → default to subscribed
+        return {"is_subscribed": result if result is not None else True}
     except Exception as e:
         logger.exception(f"Error getting user subscription: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get subscription status")
@@ -1670,26 +1611,7 @@ async def update_user_subscription(request: Request):
         if not user_id:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="user_id required")
         
-        async with aiosqlite.connect(_catalog_db.db_path) as db:
-            # Check if user exists
-            async with db.execute("SELECT user_id FROM bot_users WHERE user_id = ?", (user_id,)) as cursor:
-                exists = await cursor.fetchone()
-            
-            if exists:
-                # Update existing user
-                await db.execute(
-                    "UPDATE bot_users SET is_subscribed = ? WHERE user_id = ?",
-                    (1 if is_subscribed else 0, user_id)
-                )
-            else:
-                # Create new user record
-                await db.execute(
-                    "INSERT INTO bot_users (user_id, is_subscribed) VALUES (?, ?)",
-                    (user_id, 1 if is_subscribed else 0)
-                )
-            
-            await db.commit()
-            
+        await _catalog_db.update_user_subscription(int(user_id), bool(is_subscribed))
         logger.info(f"User {user_id} subscription updated to: {is_subscribed}")
         return {"success": True, "is_subscribed": is_subscribed}
         
@@ -1889,6 +1811,55 @@ async def process_webhook_request(request: Request, bot_index: int):
     Returns:
         A fastapi.Response with an appropriate HTTP status code.
     """
+    # --- Rate limiting (per real client IP) ---
+    # When the server sits behind a reverse proxy or CDN (common with custom domains),
+    # request.client.host is the proxy's IP.  Use X-Forwarded-For / X-Real-IP to
+    # recover the originating IP so each real caller gets its own rate-limit bucket.
+    # Requests where no IP can be determined are grouped under "unknown" — they are
+    # still subject to rate limiting (all share one bucket), not bypassed.
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        # X-Forwarded-For may be a comma-separated list; the leftmost entry is the client
+        client_ip = forwarded_for.split(",")[0].strip()
+    else:
+        client_ip = (
+            request.headers.get("X-Real-IP")
+            or (request.client.host if request.client else "unknown")
+        )
+    rate_limiter: Optional[WebhookIPRateLimiter] = getattr(
+        request.app.state, "webhook_rate_limiter", None
+    )
+    if rate_limiter is not None:
+        if not await rate_limiter.is_allowed(client_ip):
+            logger.warning(f"Rate limit exceeded for IP {client_ip} on /webhook bot {bot_index}")
+            return Response(status_code=status.HTTP_429_TOO_MANY_REQUESTS)
+
+    # --- Secret token verification ---
+    secret_tokens: List[Optional[str]] = getattr(
+        request.app.state, "webhook_secret_tokens", []
+    )
+    expected_token: Optional[str] = (
+        secret_tokens[bot_index]
+        if bot_index < len(secret_tokens)
+        else None
+    )
+    if expected_token:
+        incoming_token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+        # compare_digest requires both operands to be the same type; guard against
+        # missing / non-string values before encoding to avoid TypeErrors.
+        if not isinstance(incoming_token, str) or not secrets.compare_digest(
+            incoming_token.encode(), expected_token.encode()
+        ):
+            logger.warning(
+                f"Invalid or missing X-Telegram-Bot-Api-Secret-Token from IP {client_ip} "
+                f"for bot {bot_index}"
+            )
+            return Response(status_code=status.HTTP_401_UNAUTHORIZED)
+    else:
+        logger.debug(
+            f"No secret token configured for bot {bot_index}; skipping header verification."
+        )
+
     if not hasattr(request.app.state, "bot_apps") or not request.app.state.bot_apps:
         logger.error("Bot applications not initialized")
         return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
