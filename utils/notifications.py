@@ -448,6 +448,7 @@ class NotificationService:
             total_duplicates_removed = 0
             batch_number = 0
             rate_limited_users = set()  # Track users who hit rate limits in this run
+            per_bot_sent: Dict[str, int] = {}  # Track successful deliveries per bot username
             # Tracks duplicates across batches for this processing run
             seen_user_product_global = set()
             # Queue processing runs as a single task; DB unique constraint prevents new duplicates
@@ -482,7 +483,8 @@ class NotificationService:
                         "sent": total_sent_count,
                         "attempted": total_notifications_attempted,
                         "rate_limited": len(rate_limited_users),
-                        "duplicates_removed": total_duplicates_removed
+                        "duplicates_removed": total_duplicates_removed,
+                        "per_bot_sent": per_bot_sent
                     }
 
                 total_notifications_attempted += len(pending)
@@ -535,7 +537,8 @@ class NotificationService:
                         "sent": total_sent_count,
                         "attempted": total_notifications_attempted,
                         "rate_limited": len(rate_limited_users),
-                        "duplicates_removed": total_duplicates_removed
+                        "duplicates_removed": total_duplicates_removed,
+                        "per_bot_sent": per_bot_sent
                     }
 
                 # Bot-first grouping: group ALL notifications by bot_username BEFORE processing
@@ -576,12 +579,16 @@ class NotificationService:
 
                 # Aggregate results
                 sent_count = 0
+                bot_keys = list(notifications_by_bot.keys())
                 for i, result in enumerate(results):
                     if isinstance(result, Exception):
-                        bot_name = list(notifications_by_bot.keys())[i]
+                        bot_name = bot_keys[i]
                         logger.error(f"Error processing notifications for bot @{bot_name or 'primary'}: {result}")
                     else:
                         sent_count += result
+                        if result > 0:
+                            bot_label = bot_keys[i] or "primary"
+                            per_bot_sent[bot_label] = per_bot_sent.get(bot_label, 0) + result
 
                 total_sent_count += sent_count
                 logger.info(
@@ -611,7 +618,8 @@ class NotificationService:
                 "sent": total_sent_count if 'total_sent_count' in locals() else 0,
                 "attempted": total_notifications_attempted if 'total_notifications_attempted' in locals() else 0,
                 "rate_limited": len(rate_limited_users) if 'rate_limited_users' in locals() else 0,
-                "duplicates_removed": total_duplicates_removed if 'total_duplicates_removed' in locals() else 0
+                "duplicates_removed": total_duplicates_removed if 'total_duplicates_removed' in locals() else 0,
+                "per_bot_sent": per_bot_sent if 'per_bot_sent' in locals() else {}
             }
 
     async def _process_bot_notifications(
@@ -1513,10 +1521,12 @@ class NotificationService:
             # Note: 'sent' count includes messages sent successfully with markdown AND
             # messages that had markdown errors but were sent as plain text.
             # markdown_errors is tracked separately to show how many needed the fallback.
-            # Total attempted = sent (including those with markdown errors) + permanent failures
             total_permanent_failures = blocked + not_found
-            total_attempted = sent + total_permanent_failures
+            actual_attempted = stats.get("attempted", 0)
+            if actual_attempted == 0:
+                actual_attempted = sent + total_permanent_failures + unexpected_errors + rate_limited
             remaining_unprocessed = stats.get("remaining_unprocessed", 0)
+            per_bot_sent = stats.get("per_bot_sent", {})
             
             # Fetch live pending counts from the database
             try:
@@ -1530,6 +1540,7 @@ class NotificationService:
             # Build summary message
             summary = f"📊 **{operation.title()} Complete**\n\n"
             summary += f"✅ **Successfully Sent:** {sent}\n"
+            summary += f"📈 **Total Attempted:** {actual_attempted}\n"
             
             # Show total permanent failures
             if total_permanent_failures > 0:
@@ -1557,10 +1568,10 @@ class NotificationService:
                 if unexpected_errors > 0:
                     summary += f"• Unexpected errors (will retry): {unexpected_errors}\n"
             
-            # Calculate success rate based on delivery attempts (excluding rate-limited and unexpected)
-            if total_attempted > 0:
-                success_rate = (sent / total_attempted) * 100
-                summary += f"\n📈 **Success Rate (of attempted):** {success_rate:.1f}%"
+            # Calculate success rate based on actual attempts (including rate-limited and unexpected errors)
+            if actual_attempted > 0:
+                success_rate = (sent / actual_attempted) * 100
+                summary += f"\n**Success Rate:** {success_rate:.1f}%"
             
             # Show delivery rate using queued count as denominator
             if total_queued > 0:
@@ -1589,6 +1600,12 @@ class NotificationService:
                         summary += f"• @{label}: {entry['pending']}\n"
             except Exception as e:
                 logger.warning(f"Failed to fetch per-bot pending breakdown for admin summary: {e}")
+
+            # Per-bot delivered breakdown from this run's stats
+            if per_bot_sent:
+                summary += "\n🤖 **Deliveries per Bot:**\n"
+                for bot_username, count in per_bot_sent.items():
+                    summary += f"• @{bot_username}: {count}\n"
             
             await bot.send_message(
                 chat_id=admin_user_id,
