@@ -10,7 +10,7 @@ import logging
 import time
 from typing import List, Dict, Any, Optional, Tuple
 
-from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
+from telegram import Update, InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
 from database import Database
@@ -75,14 +75,23 @@ def _build_product_article(
 
     description = f"Category: {category}"
 
-    # Deep link that opens THIS bot instance with the product view
-    deep_link_url = f"https://t.me/{bot_username}?start=product_{product_id}"
+    # Build the inline button: prefer Web App URL if configured, else bot deep link
+    web_app_url = Config.WEB_APP_URL
+    if web_app_url:
+        product_url = f"{web_app_url.rstrip('/')}/product/{product_id}"
+        button_text = "🛍️ View in Web App"
+    else:
+        product_url = f"https://t.me/{bot_username}?start=product_{product_id}"
+        button_text = "🛍️ View in bot"
+
+    reply_markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton(button_text, url=product_url)
+    ]])
 
     message_text = (
         f"📦 *{title_escaped}*\n"
         f"📂 {category_escaped}\n"
-        f"🆔 ID: {product_id}\n\n"
-        f"[View in bot]({deep_link_url})"
+        f"🆔 ID: {product_id}"
     )
 
     return InlineQueryResultArticle(
@@ -93,6 +102,7 @@ def _build_product_article(
             message_text=message_text,
             parse_mode="Markdown",
         ),
+        reply_markup=reply_markup,
     )
 
 
