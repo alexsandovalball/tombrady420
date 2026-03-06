@@ -173,6 +173,46 @@ class NotificationService:
             self._queue_worker_task = asyncio.create_task(self._queue_worker())
             logger.info("Notification queue worker started")
 
+    async def _send_admin_summary_safe(self, fallback_bot, admin_id: int, stats: Dict[str, int], operation: str):
+        """
+        Safely send an admin summary, always preferring the primary bot application.
+
+        Resolves the primary bot via ``_get_bot_applications()`` and falls back to
+        ``fallback_bot`` when no registered applications are available.  The entire
+        call is wrapped in a ``try/except`` so a delivery failure never bubbles up
+        to the caller.
+
+        Args:
+            fallback_bot: Bot instance to use when no primary application is found.
+            admin_id: Telegram user ID of the admin to message.
+            stats: Statistics dict to pass through to ``_send_admin_summary``.
+            operation: Human-readable label for the operation (e.g. "broadcast").
+        """
+        bot_app_for_admin = None
+        try:
+            bot_apps = self._get_bot_applications()
+            if bot_apps:
+                bot_app_for_admin = bot_apps[0]
+                bot_for_summary = bot_app_for_admin.bot
+                logger.info(f"Sending admin summary via primary bot @{get_bot_username(bot_app_for_admin)}")
+            else:
+                logger.info("No bot applications available, falling back to context.bot for admin summary")
+                bot_for_summary = fallback_bot
+
+            await self._send_admin_summary(bot_for_summary, admin_id, stats, operation=operation)
+            logger.info(
+                f"Admin summary sent successfully: {stats.get('sent', 0)} sent, "
+                f"{stats.get('attempted', 0)} attempted, "
+                f"{stats.get('rate_limited', 0)} rate-limited, "
+                f"{stats.get('duplicates_removed', 0)} duplicates removed"
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to send admin summary via "
+                f"@{get_bot_username(bot_app_for_admin) if bot_app_for_admin else 'context.bot'}: {e}",
+                exc_info=True
+            )
+
     async def _queue_worker(self):
         """Background worker that processes notification requests sequentially from the FIFO queue."""
         logger.info("Notification queue worker loop started")
@@ -191,35 +231,12 @@ class NotificationService:
                     admin_ids = get_admin_ids()
                     if admin_ids and stats["sent"] > 0:
                         admin_id = admin_ids[0]
-                        bot_app_for_admin = None
-                        try:
-                            bot_apps = self._get_bot_applications()
-                            if bot_apps:
-                                bot_app_for_admin = bot_apps[0]
-                                bot_for_summary = bot_app_for_admin.bot
-                                logger.info(f"Sending admin summary via primary bot @{get_bot_username(bot_app_for_admin)}")
-                            else:
-                                logger.info("No bot applications available, falling back to context.bot for admin summary")
-                                bot_for_summary = context.bot
-
-                            await self._send_admin_summary(
-                                bot_for_summary,
-                                admin_id,
-                                stats,
-                                operation="product notification"
-                            )
-                            logger.info(
-                                f"Admin summary sent successfully: {stats['sent']} sent, "
-                                f"{stats['attempted']} attempted, "
-                                f"{stats['rate_limited']} rate-limited, "
-                                f"{stats['duplicates_removed']} duplicates removed"
-                            )
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to send admin summary via "
-                                f"@{get_bot_username(bot_app_for_admin) if bot_app_for_admin else 'context.bot'}: {e}",
-                                exc_info=True
-                            )
+                        await self._send_admin_summary_safe(
+                            context.bot,
+                            admin_id,
+                            stats,
+                            operation="product notification"
+                        )
                 except Exception as e:
                     logger.error(f"Error processing notification for product {product_id}: {e}", exc_info=True)
                 finally:
@@ -1237,8 +1254,8 @@ class NotificationService:
             stats["skipped_admin"] = skipped_admin
             
             # Send summary to admin if requested
-            if admin_user_id and context.bot:
-                await self._send_admin_summary(context.bot, admin_user_id, stats, "broadcast")
+            if admin_user_id:
+                await self._send_admin_summary_safe(context.bot, admin_user_id, stats, "broadcast")
             
             return stats
             
