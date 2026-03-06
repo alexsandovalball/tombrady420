@@ -1283,6 +1283,62 @@ async def get_products(
     )
 
 
+@app.get("/api/products/{product_id}")
+async def get_product_detail(request: Request, product_id: int, lang: str = "en"):
+    """Return JSON details for a single product by ID.
+
+    Used by the webapp to load a product from a deep link (e.g. when the user
+    opens the bot via ``?start=product_<id>`` or taps "View in Web App").
+    """
+    _get_validated_init_data(request, allow_preview=True)
+    bot = _get_primary_bot(request, required=False)
+
+    product = await _catalog_db.get_product(product_id)
+    if not product:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+
+    caption = product.get("caption") or ""
+    if lang and lang != "en":
+        try:
+            caption = await translation_service.translate(caption, lang, source_lang="en")
+        except Exception:
+            pass  # Fall back to original caption
+
+    media_info = _collect_media_info(product)
+    order_contact = await _catalog_db.get_order_contact()
+    order_link = await _catalog_db.get_order_link()
+
+    storefront_url = (
+        f"{_STOREFRONT_DOMAIN}/product/{product_id}"
+        if _STOREFRONT_DOMAIN
+        else None
+    )
+    bot_username = _STOREFRONT_BOT_USERNAME or (bot.username if bot else None) or ""
+    bot_deep_link = f"https://t.me/{bot_username}?start=product_{product_id}" if bot_username else None
+
+    payload = json.dumps({
+        "id": product.get("id"),
+        "caption": caption,
+        "category": product.get("category") or "",
+        "subcategory": product.get("subcategory") or "",
+        "subcategory_display": get_subcategory_display_name(product.get("subcategory"), lang) if product.get("subcategory") else "",
+        "created_at": product.get("created_at"),
+        "media_count": len(media_info),
+        "media_info": media_info,
+        "bot": bot.username if bot and getattr(bot, "username", None) else None,
+        "order_contact": order_contact,
+        "order_link": order_link,
+        "storefront_url": storefront_url,
+        "bot_deep_link": bot_deep_link,
+    })
+
+    return Response(
+        content=payload,
+        media_type="application/json",
+        headers={"Cache-Control": "public, max-age=30"},
+    )
+
+
 @app.get("/api/catalog/{product_id}/media/{media_index}")
 async def stream_catalog_media(request: Request, product_id: int, media_index: int):
     """

@@ -28,6 +28,7 @@ class ConfigClass:
         self.USE_WEBHOOK: bool = False
         self.WEBHOOK_URL: Optional[str] = None
         self.WEB_APP_URL: Optional[str] = None
+        self.STOREFRONT_DOMAIN: Optional[str] = None
         self.ORDER_CONTACT: str = '@FLYAWAYPEP'  # Configurable order contact
         self._load_config()
     
@@ -108,6 +109,15 @@ class ConfigClass:
         self.WEB_APP_URL = config('WEB_APP_URL', default=None)
         if not self.WEB_APP_URL and self.WEBHOOK_URL:
             self.WEB_APP_URL = self.WEBHOOK_URL.rstrip('/') + '/webapp/index.html'
+
+        # Load STOREFRONT_DOMAIN - canonical public domain for product deep links
+        # Falls back to CUSTOM_DOMAIN (legacy alias) then WEBHOOK_URL
+        self.STOREFRONT_DOMAIN = (
+            config('STOREFRONT_DOMAIN', default=None)
+            or config('CUSTOM_DOMAIN', default=None)
+        )
+        if not self.STOREFRONT_DOMAIN and self.WEBHOOK_URL:
+            self.STOREFRONT_DOMAIN = self.WEBHOOK_URL.rstrip('/')
 
         self._loaded = True
     

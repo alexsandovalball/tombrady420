@@ -46,6 +46,10 @@ _DEBOUNCE_DELAY = 0.1  # 100ms debounce
 _user_query_tasks: Dict[int, asyncio.Task] = {}
 _user_query_tasks_lock = asyncio.Lock()
 
+# Maximum inline results per page – small enough to load quickly,
+# large enough to be useful.
+_INLINE_PAGE_SIZE = 5
+
 
 async def _get_cached_products() -> List[Dict[str, Any]]:
     """Return cached product list, refreshing if stale."""
@@ -63,6 +67,32 @@ async def _get_cached_products() -> List[Dict[str, Any]]:
 # Result builders
 # ---------------------------------------------------------------------------
 
+def _build_product_url(product_id: int, bot_username: str) -> tuple[Optional[str], Optional[str]]:
+    """Return ``(storefront_url, bot_deep_link)`` for a product.
+
+    ``storefront_url`` uses ``STOREFRONT_DOMAIN`` so that the "View in Web App"
+    button opens the canonical product page served by the FastAPI storefront
+    (which has a real ``/product/{id}`` route) rather than a raw webapp path.
+    ``bot_deep_link`` always points to the Telegram bot via ``t.me``.
+    """
+    bot_deep_link = f"https://t.me/{bot_username}?start=product_{product_id}" if bot_username else None
+    storefront_domain = Config.STOREFRONT_DOMAIN
+    if storefront_domain:
+        storefront_url = f"{storefront_domain.rstrip('/')}/product/{product_id}"
+    else:
+        # Fall back to WEB_APP_URL base if no dedicated storefront domain is set
+        web_app_url = Config.WEB_APP_URL
+        if web_app_url:
+            # Strip the trailing filename (e.g. "/webapp/index.html") to get the root
+            base = web_app_url.rstrip('/')
+            if base.endswith('/index.html'):
+                base = base[:base.rfind('/')]
+            storefront_url = f"{base}/product/{product_id}"
+        else:
+            storefront_url = None
+    return storefront_url, bot_deep_link
+
+
 async def _build_product_article(
     product: Dict[str, Any],
     bot_username: str,
@@ -75,10 +105,10 @@ async def _build_product_article(
     product was indexed by a different bot instance (multi-bot deployment) we
     consult the persistent DB cache for a bot-specific file_id; if none is
     available we fall back to ``InlineQueryResultArticle`` (with a
-    ``thumbnail_url`` when the web-app is configured).
+    ``thumbnail_url`` when the storefront domain is configured).
 
     For non-photo products we always return an ``InlineQueryResultArticle``,
-    optionally with a ``thumbnail_url`` constructed from the web-app URL.
+    optionally with a ``thumbnail_url`` constructed from the storefront URL.
     """
     product_id = product.get("id")
     caption = product.get("caption") or ""
@@ -96,21 +126,16 @@ async def _build_product_article(
 
     description = f"Category: {category}"
 
-    # Build the inline buttons:
-    web_app_url = Config.WEB_APP_URL
+    # Build the inline buttons using the correct domain for deep links
+    storefront_url, bot_deep_link = _build_product_url(product_id, bot_username)
+
     buttons = []
-
-    # Always build bot deep link
-    bot_deep_link = f"https://t.me/{bot_username}?start=product_{product_id}"
-
-    if web_app_url:
-        product_url = f"{web_app_url.rstrip('/')}/product/{product_id}"
-        buttons.append(InlineKeyboardButton("🛍️ View in Web App", url=product_url))
+    if storefront_url:
+        buttons.append(InlineKeyboardButton("🛍️ View in Web App", url=storefront_url))
+    if bot_deep_link:
         buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
-    else:
-        buttons.append(InlineKeyboardButton("🛍️ View in bot", url=bot_deep_link))
 
-    reply_markup = InlineKeyboardMarkup([buttons])
+    reply_markup = InlineKeyboardMarkup([buttons]) if buttons else None
 
     # Caption / message text shown when the result is shared (no ID shown to users)
     caption_text = (
@@ -132,10 +157,13 @@ async def _build_product_article(
                 reply_markup=reply_markup,
             )
 
-    # --- Fallback: article with optional thumbnail ---
+    # --- Fallback: article with thumbnail from storefront ---
+    # Use the storefront /api/catalog URL for the thumbnail so the image loads
+    # quickly for the (up to _INLINE_PAGE_SIZE) results shown.
     thumbnail_url: Optional[str] = None
-    if web_app_url and file_type == "photo":
-        thumbnail_url = f"{web_app_url.rstrip('/')}/api/catalog/{product_id}/media/0"
+    storefront_domain = Config.STOREFRONT_DOMAIN or (Config.WEBHOOK_URL or "").rstrip('/')
+    if storefront_domain and file_type == "photo":
+        thumbnail_url = f"{storefront_domain.rstrip('/')}/api/catalog/{product_id}/media/0"
 
     return InlineQueryResultArticle(
         id=f"product_{product_id}",
@@ -334,22 +362,29 @@ async def _process_inline_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     start_time = time.monotonic()
     query = (inline_query.query or "").strip()
+    # Pagination: Telegram passes the value we set as next_offset back as offset
+    try:
+        offset = max(0, int(inline_query.offset)) if inline_query.offset else 0
+    except (ValueError, TypeError):
+        offset = 0
     user_id = inline_query.from_user.id
     bot_username = get_bot_username(context) or ""
 
     logger.info(
-        "Inline query from user %s via bot @%s: %r",
+        "Inline query from user %s via bot @%s: %r (offset=%s)",
         user_id,
         bot_username,
         query,
+        offset,
     )
 
     try:
         if query:
-            results = await _handle_query_search(query, bot_username, context)
+            results, next_offset = await _handle_query_search(query, bot_username, context, offset)
             is_empty = False
         else:
             results = await _handle_empty_query(bot_username, context)
+            next_offset = ""
             is_empty = True
 
         # Calculate latency
@@ -385,6 +420,7 @@ async def _process_inline_query(update: Update, context: ContextTypes.DEFAULT_TY
             results=results,
             cache_time=30,
             is_personal=False,
+            next_offset=next_offset,
             **_extra,
         )
     except Exception as exc:
@@ -434,9 +470,12 @@ async def _handle_query_search(
     query: str,
     bot_username: str,
     context: ContextTypes.DEFAULT_TYPE,
-) -> List[InlineQueryResult]:
-    """
-    Return fuzzy-search results for a non-empty query.
+    offset: int = 0,
+) -> tuple[List[InlineQueryResult], str]:
+    """Return fuzzy-search results for a non-empty query with pagination.
+
+    Returns ``(results, next_offset)`` where ``next_offset`` is an empty string
+    when there are no more results.
 
     Supports query prefixes:
     - cat:name or category:name -> search by category
@@ -454,11 +493,10 @@ async def _handle_query_search(
         if query_lower.startswith("cat:") or query_lower.startswith("category:"):
             category_query = query_lower.split(":", 1)[1].strip() if ":" in query_lower else ""
             if category_query:
-                # Filter products by category (fuzzy match)
                 matched = [
                     p for p in products
                     if category_query in (p.get("category") or "").lower()
-                ][:50]
+                ]
             else:
                 matched = []
 
@@ -473,16 +511,15 @@ async def _handle_query_search(
 
         # New arrivals keyword
         elif query_lower == "new":
-            matched = products[:10]  # First 10 newest products
+            matched = products  # sorted by created_at DESC
 
         # Popular keyword
         elif query_lower == "popular":
-            matched = products[:10]  # First 10 products (heuristic)
+            matched = products
 
         # Default: fuzzy search
         else:
-            # Lower score_cutoff to 60 for broader matches, relying on two-stage ranking
-            matched = fuzzy_search_products(products, query, score_cutoff=60, limit=50)
+            matched = fuzzy_search_products(products, query, score_cutoff=60, limit=None)
 
     except Exception as exc:
         logger.error("Error searching products for inline query: %s", exc)
@@ -492,23 +529,38 @@ async def _handle_query_search(
         # Return a friendly 'no results' article
         # Escape user query to prevent Markdown injection
         query_escaped = escape_markdown_v1(query)
-        return [
-            InlineQueryResultArticle(
-                id="no_results",
-                title="❌ No products found",
-                description=f'No results for "{query}"',
-                input_message_content=InputTextMessageContent(
-                    message_text=f"❌ No products found for *{query_escaped}*.",
-                    parse_mode="Markdown",
-                ),
-            )
-        ]
+        return (
+            [
+                InlineQueryResultArticle(
+                    id="no_results",
+                    title="❌ No products found",
+                    description=f'No results for "{query}"',
+                    input_message_content=InputTextMessageContent(
+                        message_text=f"❌ No products found for *{query_escaped}*.",
+                        parse_mode="Markdown",
+                    ),
+                )
+            ],
+            "",
+        )
 
-    return list(await asyncio.gather(*[_build_product_article(p, bot_username, context) for p in matched[:50]]))
+    # Apply pagination: slice _INLINE_PAGE_SIZE results from the current offset
+    page_items = matched[offset: offset + _INLINE_PAGE_SIZE]
+    next_page_start = offset + _INLINE_PAGE_SIZE
+    next_offset = str(next_page_start) if next_page_start < len(matched) else ""
+
+    results = list(await asyncio.gather(*[_build_product_article(p, bot_username, context) for p in page_items]))
+    return results, next_offset
 
 
 async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle ChosenInlineResult events for analytics."""
+    """Handle ChosenInlineResult events.
+
+    Logs the selection for analytics and sends a private follow-up message to
+    the user who chose the result.  The follow-up includes a media preview
+    (photo when available) and buttons to open the product in the web app and
+    in the bot – all without any external state store (no Redis required).
+    """
     chosen = update.chosen_inline_result
     if not chosen:
         return
@@ -535,3 +587,55 @@ async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFA
         )
     except Exception as exc:
         logger.warning("Failed to log chosen inline result: %s", exc)
+
+    # Send a private follow-up message for product selections so the user gets
+    # a media preview and action buttons in their own chat with the bot.
+    if not result_id.startswith("product_"):
+        return
+
+    try:
+        product_id = int(result_id.split("_", 1)[1])
+    except (ValueError, IndexError):
+        return
+
+    try:
+        product = await db.get_product(product_id)
+        if not product:
+            return
+
+        caption = product.get("caption") or ""
+        title = caption[:60] + "…" if len(caption) > 60 else caption
+        title_escaped = escape_markdown_v1(title)
+        category_escaped = escape_markdown_v1(product.get("category") or "Uncategorized")
+        caption_text = f"📦 *{title_escaped}*\n📂 {category_escaped}"
+
+        # Build action buttons using correct domain
+        storefront_url, bot_deep_link = _build_product_url(product_id, bot_username)
+        buttons = []
+        if storefront_url:
+            buttons.append(InlineKeyboardButton("🛍️ View in Web App", url=storefront_url))
+        if bot_deep_link:
+            buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
+        reply_markup = InlineKeyboardMarkup([buttons]) if buttons else None
+
+        file_id = product.get("file_id")
+        file_type = product.get("file_type") or ""
+
+        if file_id and file_type == "photo":
+            await context.bot.send_photo(
+                chat_id=user_id,
+                photo=file_id,
+                caption=caption_text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup,
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=caption_text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup,
+            )
+    except Exception as exc:
+        # Common failure: user hasn't started the bot yet – silently ignore.
+        logger.debug("Could not send post-selection message to user %s: %s", user_id, exc)
