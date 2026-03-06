@@ -233,3 +233,39 @@ class TestMediaGroupId:
         # isolation (which would require a schema change).
         retrieved = await in_memory_db.get_or_create_media_group_product("mg_shared", -801)
         assert retrieved == pid_b
+
+
+# ---------------------------------------------------------------------------
+# get_bot_usernames_for_users – case-insensitive grouping
+# ---------------------------------------------------------------------------
+
+class TestGetBotUsernamesForUsers:
+    @pytest.mark.asyncio
+    async def test_bot_usernames_returned_as_lowercase(self, in_memory_db):
+        """get_bot_usernames_for_users must normalize bot_username to lowercase
+        so that the admin summary groups e.g. 'TomBrady007bot' and
+        'tombradyoo7bot' under a single key."""
+        # Insert two users whose bot_username values differ only in case.
+        await in_memory_db.track_user(1001, bot_username="TomBrady007Bot")
+        await in_memory_db.track_user(1002, bot_username="tombradyoo7bot")
+
+        result = await in_memory_db.get_bot_usernames_for_users([1001, 1002])
+
+        assert result[1001] == "tombrady007bot"
+        assert result[1001] == result[1001].lower()
+        assert result[1002] == result[1002].lower()
+
+    @pytest.mark.asyncio
+    async def test_same_bot_different_case_produces_single_group(self, in_memory_db):
+        """Notifications for users of the same bot (mixed-case) must collapse
+        into a single group when building the per-bot summary."""
+        await in_memory_db.track_user(2001, bot_username="MyBot")
+        await in_memory_db.track_user(2002, bot_username="mybot")
+
+        result = await in_memory_db.get_bot_usernames_for_users([2001, 2002])
+
+        # Both values should be identical (lowercased) so they map to one key.
+        assert result[2001] == "mybot"
+        assert result[2002] == "mybot"
+        unique_bot_names = set(result.values())
+        assert len(unique_bot_names) == 1
