@@ -3,6 +3,7 @@ Notification service for sending product notifications to users.
 Implements rate limiting to respect Telegram's anti-spam policies.
 Supports multi-bot delivery - sends messages through the bot each user started.
 """
+import html
 import logging
 import asyncio
 import uuid
@@ -1539,114 +1540,112 @@ class NotificationService:
     
     async def _send_admin_summary(self, bot, admin_user_id: int, stats: Dict[str, int], operation: str = "broadcast"):
         """Send a summary message to the admin with delivery statistics."""
+        total_queued = stats.get("queued", 0)
+        sent = stats.get("sent", 0)
+        failed = stats.get("failed", 0)
+        blocked = stats.get("blocked", 0)
+        not_found = stats.get("not_found", 0)
+        rate_limited = stats.get("rate_limited", 0)
+        markdown_errors = stats.get("markdown_errors", 0)
+        unexpected_errors = stats.get("unexpected_errors", 0)
+        skipped_blocked = stats.get("skipped_blocked", 0)
+        skipped_admin = stats.get("skipped_admin", 0)
+
+        # Calculate totals
+        # Note: 'sent' count includes messages sent successfully with markdown AND
+        # messages that had markdown errors but were sent as plain text.
+        # markdown_errors is tracked separately to show how many needed the fallback.
+        total_permanent_failures = blocked + not_found
+        actual_attempted = stats.get("attempted", 0)
+        if actual_attempted == 0:
+            actual_attempted = sent + total_permanent_failures + unexpected_errors + rate_limited
+        remaining_unprocessed = stats.get("remaining_unprocessed", 0)
+        per_bot_sent = stats.get("per_bot_sent", {})
+
+        # Fetch live pending counts from the database
         try:
-            total_queued = stats.get("queued", 0)
-            sent = stats.get("sent", 0)
-            failed = stats.get("failed", 0)
-            blocked = stats.get("blocked", 0)
-            not_found = stats.get("not_found", 0)
-            rate_limited = stats.get("rate_limited", 0)
-            markdown_errors = stats.get("markdown_errors", 0)
-            unexpected_errors = stats.get("unexpected_errors", 0)
-            skipped_blocked = stats.get("skipped_blocked", 0)
-            skipped_admin = stats.get("skipped_admin", 0)
-            
-            # Calculate totals
-            # Note: 'sent' count includes messages sent successfully with markdown AND
-            # messages that had markdown errors but were sent as plain text.
-            # markdown_errors is tracked separately to show how many needed the fallback.
-            total_permanent_failures = blocked + not_found
-            actual_attempted = stats.get("attempted", 0)
-            if actual_attempted == 0:
-                actual_attempted = sent + total_permanent_failures + unexpected_errors + rate_limited
-            remaining_unprocessed = stats.get("remaining_unprocessed", 0)
-            per_bot_sent = stats.get("per_bot_sent", {})
-            
-            # Fetch live pending counts from the database
-            try:
-                pending_notifications = await self.db.count_pending_notifications()
-                pending_custom = await self.db.count_pending_custom_messages()
-            except Exception as e:
-                logger.warning(f"Failed to fetch pending queue counts for admin summary: {e}")
-                pending_notifications = 0
-                pending_custom = 0
-
-            # Build summary message
-            summary = f"📊 **{operation.title()} Complete**\n\n"
-            summary += f"✅ **Successfully Sent:** {sent}\n"
-            summary += f"📈 **Total Attempted:** {actual_attempted}\n"
-            
-            # Show total permanent failures
-            if total_permanent_failures > 0:
-                summary += f"❌ **Permanent Failures:** {total_permanent_failures}\n"
-            
-            if total_queued > 0:
-                summary += f"\n📝 **Queued:** {total_queued}\n"
-            
-            if skipped_blocked > 0:
-                summary += f"⛔ **Skipped (blocked):** {skipped_blocked}\n"
-            
-            if skipped_admin > 0:
-                summary += f"👨‍💼 **Skipped (admins):** {skipped_admin}\n"
-            
-            if blocked > 0 or not_found > 0 or rate_limited > 0 or markdown_errors > 0 or unexpected_errors > 0:
-                summary += f"\n**Delivery Details:**\n"
-                if blocked > 0:
-                    summary += f"• Blocked by user: {blocked}\n"
-                if not_found > 0:
-                    summary += f"• Chat/user not found: {not_found}\n"
-                if rate_limited > 0:
-                    summary += f"• Rate limited (queued): {rate_limited}\n"
-                if markdown_errors > 0:
-                    summary += f"• Markdown errors (sent as plain text): {markdown_errors}\n"
-                if unexpected_errors > 0:
-                    summary += f"• Unexpected errors (will retry): {unexpected_errors}\n"
-            
-            # Calculate success rate based on actual attempts (including rate-limited and unexpected errors)
-            if actual_attempted > 0:
-                success_rate = (sent / actual_attempted) * 100
-                summary += f"\n**Success Rate:** {success_rate:.1f}%"
-            
-            # Show delivery rate using queued count as denominator
-            if total_queued > 0:
-                delivery_rate = (sent / total_queued) * 100
-                summary += f"\n📬 **Delivery Rate:** {delivery_rate:.1f}% of {total_queued} queued"
-            
-            # Warn admin if messages remain pending due to all being blocked/rate-limited
-            if remaining_unprocessed > 0:
-                summary += f"\n\n⚠️ **{remaining_unprocessed} messages still pending in queue.** Run /broadcast again to continue delivery."
-
-            # Show overall queue depths
-            summary += f"\n\n📋 **Queue Remaining:**\n"
-            summary += f"• Notifications: {pending_notifications}\n"
-            summary += f"• Custom messages: {pending_custom}\n"
-
-            # Per-bot breakdown (top 5 bots by pending count)
-            try:
-                if operation == "broadcast":
-                    bot_pending = await self.db.count_pending_custom_messages_by_bot(top_n=5)
-                else:
-                    bot_pending = await self.db.count_pending_notifications_by_bot(top_n=5)
-                if bot_pending:
-                    summary += "\n**Pending by Bot:**\n"
-                    for entry in bot_pending:
-                        label = entry["bot_username"] or "primary"
-                        summary += f"• @{label}: {entry['pending']}\n"
-            except Exception as e:
-                logger.warning(f"Failed to fetch per-bot pending breakdown for admin summary: {e}")
-
-            # Per-bot delivered breakdown from this run's stats
-            if per_bot_sent:
-                summary += "\n🤖 **Deliveries per Bot:**\n"
-                for bot_username, count in per_bot_sent.items():
-                    summary += f"• @{bot_username}: {count}\n"
-            
-            await bot.send_message(
-                chat_id=admin_user_id,
-                text=summary,
-                parse_mode="Markdown"
-            )
-            logger.info(f"Sent delivery summary to admin {admin_user_id}")
-            
+            pending_notifications = await self.db.count_pending_notifications()
+            pending_custom = await self.db.count_pending_custom_messages()
         except Exception as e:
-            logger.error(f"Failed to send admin summary: {e}", exc_info=True)
+            logger.warning(f"Failed to fetch pending queue counts for admin summary: {e}")
+            pending_notifications = 0
+            pending_custom = 0
+
+        # Build summary message using HTML parse mode to avoid Markdown issues
+        # with dynamic values that may contain special characters (_, *, [, ], etc.)
+        op_escaped = html.escape(operation.title())
+        summary = f"📊 <b>{op_escaped} Complete</b>\n\n"
+        summary += f"✅ <b>Successfully Sent:</b> {sent}\n"
+        summary += f"📈 <b>Total Attempted:</b> {actual_attempted}\n"
+
+        # Show total permanent failures
+        if total_permanent_failures > 0:
+            summary += f"❌ <b>Permanent Failures:</b> {total_permanent_failures}\n"
+
+        if total_queued > 0:
+            summary += f"\n📝 <b>Queued:</b> {total_queued}\n"
+
+        if skipped_blocked > 0:
+            summary += f"⛔ <b>Skipped (blocked):</b> {skipped_blocked}\n"
+
+        if skipped_admin > 0:
+            summary += f"👨‍💼 <b>Skipped (admins):</b> {skipped_admin}\n"
+
+        if blocked > 0 or not_found > 0 or rate_limited > 0 or markdown_errors > 0 or unexpected_errors > 0:
+            summary += f"\n<b>Delivery Details:</b>\n"
+            if blocked > 0:
+                summary += f"• Blocked by user: {blocked}\n"
+            if not_found > 0:
+                summary += f"• Chat/user not found: {not_found}\n"
+            if rate_limited > 0:
+                summary += f"• Rate limited (queued): {rate_limited}\n"
+            if markdown_errors > 0:
+                summary += f"• Markdown errors (sent as plain text): {markdown_errors}\n"
+            if unexpected_errors > 0:
+                summary += f"• Unexpected errors (will retry): {unexpected_errors}\n"
+
+        # Calculate success rate based on actual attempts (including rate-limited and unexpected errors)
+        if actual_attempted > 0:
+            success_rate = (sent / actual_attempted) * 100
+            summary += f"\n<b>Success Rate:</b> {success_rate:.1f}%"
+
+        # Show delivery rate using queued count as denominator
+        if total_queued > 0:
+            delivery_rate = (sent / total_queued) * 100
+            summary += f"\n📬 <b>Delivery Rate:</b> {delivery_rate:.1f}% of {total_queued} queued"
+
+        # Warn admin if messages remain pending due to all being blocked/rate-limited
+        if remaining_unprocessed > 0:
+            summary += f"\n\n⚠️ <b>{remaining_unprocessed} messages still pending in queue.</b> Run /broadcast again to continue delivery."
+
+        # Show overall queue depths
+        summary += f"\n\n📋 <b>Queue Remaining:</b>\n"
+        summary += f"• Notifications: {pending_notifications}\n"
+        summary += f"• Custom messages: {pending_custom}\n"
+
+        # Per-bot breakdown (top 5 bots by pending count)
+        try:
+            if operation == "broadcast":
+                bot_pending = await self.db.count_pending_custom_messages_by_bot(top_n=5)
+            else:
+                bot_pending = await self.db.count_pending_notifications_by_bot(top_n=5)
+            if bot_pending:
+                summary += "\n<b>Pending by Bot:</b>\n"
+                for entry in bot_pending:
+                    label = html.escape(entry["bot_username"] or "primary")
+                    summary += f"• @{label}: {entry['pending']}\n"
+        except Exception as e:
+            logger.warning(f"Failed to fetch per-bot pending breakdown for admin summary: {e}")
+
+        # Per-bot delivered breakdown from this run's stats
+        if per_bot_sent:
+            summary += "\n🤖 <b>Deliveries per Bot:</b>\n"
+            for bot_username, count in per_bot_sent.items():
+                summary += f"• @{html.escape(bot_username)}: {count}\n"
+
+        await bot.send_message(
+            chat_id=admin_user_id,
+            text=summary,
+            parse_mode="HTML"
+        )
+        logger.info(f"Sent delivery summary to admin {admin_user_id}")
