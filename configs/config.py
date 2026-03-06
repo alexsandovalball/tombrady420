@@ -8,10 +8,6 @@ from decouple import config, Csv, UndefinedValueError
 
 logger = logging.getLogger(__name__)
 
-# Default storefront domain used when STOREFRONT_DOMAIN, CUSTOM_DOMAIN,
-# WEB_APP_URL and WEBHOOK_URL are all absent or unparseable.
-_DEFAULT_STOREFRONT_DOMAIN = 'https://topshelfcaliplug.com'
-
 
 class ConfigError(Exception):
     """Custom exception for configuration errors."""
@@ -34,7 +30,7 @@ class ConfigClass:
         self.WEBHOOK_URL: Optional[str] = None
         self.WEB_APP_URL: Optional[str] = None
         self.STOREFRONT_DOMAIN: Optional[str] = None
-        self.ORDER_CONTACT: str = '@FLYAWAYPEP'  # Configurable order contact
+        self.ORDER_CONTACT: Optional[str] = None  # Configurable order contact
         self._load_config()
     
     def _load_config(self):
@@ -108,7 +104,7 @@ class ConfigClass:
         self.DB_PATH = config('DB_PATH', default='catalog.db')
         self.USE_WEBHOOK = config('USE_WEBHOOK', default=False, cast=bool)
         self.WEBHOOK_URL = config('WEBHOOK_URL', default=None)
-        self.ORDER_CONTACT = config('ORDER_CONTACT', default='@FLYAWAYPEP')
+        self.ORDER_CONTACT = config('ORDER_CONTACT', default=None)
         
         # Load WEB_APP_URL - if not set, derive from WEBHOOK_URL (existing behaviour)
         self.WEB_APP_URL = config('WEB_APP_URL', default=None)
@@ -136,7 +132,7 @@ class ConfigClass:
                         derived = f"{p.scheme}://{p.netloc}"
             except Exception:  # urlparse is safe, but guard against unexpected input
                 derived = None
-            self.STOREFRONT_DOMAIN = derived or _DEFAULT_STOREFRONT_DOMAIN
+            self.STOREFRONT_DOMAIN = derived
 
         # Ensure WEB_APP_URL exists (so Telegram MenuButton still works) even
         # when it was not derivable from WEBHOOK_URL above.

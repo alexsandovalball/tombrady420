@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 # Only '?' characters are interpolated into SQL — never user data.
 _EXCLUDED_PLACEHOLDERS = ','.join('?' * len(EXCLUDED_FROM_ALL_PRODUCTS))
 
-# Default values
-DEFAULT_ORDER_CONTACT = '@FLYAWAYPEP'
-DEFAULT_ORDER_LINK = 'https://t.me/FLYAWAYPEP'
+# Default values (empty — operators set these via /setcontact and /setlink)
+DEFAULT_ORDER_CONTACT = ''
+DEFAULT_ORDER_LINK = ''
 
 # In-memory caches for frequently accessed data
 _user_language_cache: Dict[int, Tuple[str, datetime]] = {}

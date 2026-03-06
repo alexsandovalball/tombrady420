@@ -138,8 +138,8 @@ Key-value store for runtime-configurable settings:
 
 | Key | Default | Set by |
 |-----|---------|--------|
-| `order_contact` | `@FLYAWAYPEP` | `/setcontact` |
-| `order_link` | `https://t.me/FLYAWAYPEP` | `/setlink` |
+| `order_contact` | `@yourusername` | `/setcontact` |
+| `order_link` | `https://t.me/yourusername` | `/setlink` |
 
 ### `notifications` table
 
@@ -377,9 +377,9 @@ All endpoints that return product data accept an optional `lang` query parameter
   ],
   "total": 128,
   "bot": "TopShelfBot",
-  "order_contact": "@FLYAWAYPEP",
-  "order_contact_username": "FLYAWAYPEP",
-  "order_link": "https://t.me/FLYAWAYPEP"
+  "order_contact": "@yourusername",
+  "order_contact_username": "yourusername",
+  "order_link": "https://t.me/yourusername"
 }
 ```
 
@@ -441,9 +441,9 @@ All configuration is loaded from environment variables via `python-decouple`. Co
 | `USE_WEBHOOK` | — | `false` | Set `true` for webhook mode |
 | `WEBHOOK_URL` | ✅ (webhook) | — | Public HTTPS URL (e.g. `https://myapp.onrender.com`) |
 | `WEB_APP_URL` | — | `{WEBHOOK_URL}/webapp/index.html` | Telegram Mini App URL |
-| `ORDER_CONTACT` | — | `@FLYAWAYPEP` | Default order contact shown to users |
+| `ORDER_CONTACT` | — | `@yourusername` | Default order contact shown to users |
 | `BOT_USERNAME` | — | — | Used for SEO deep-link generation |
-| `STOREFRONT_DOMAIN` | — | `https://topshelfcaliplug.com` | Canonical domain for sitemap/SEO |
+| `STOREFRONT_DOMAIN` | — | `https://yourdomain.com` | Canonical domain for sitemap/SEO |
 | `CUSTOM_DOMAIN` | — | — | Legacy alias for STOREFRONT_DOMAIN |
 
 ---

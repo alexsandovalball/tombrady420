@@ -320,7 +320,7 @@ The bot supports 7 languages with automatic translation. Key features:
 
 ### User Names and Contact Information
 - **User names are never translated** - they appear exactly as in Telegram profiles
-- **Order contact usernames remain unchanged** - e.g., @FLYAWAYPEP stays the same in all languages
+- **Order contact usernames remain unchanged** - e.g., @yourusername stays the same in all languages
 - This prevents confusion and maintains proper communication channels
 
 ### How It Works
@@ -330,7 +330,7 @@ The bot supports 7 languages with automatic translation. Key features:
 4. Translations are cached for performance
 
 ### Setting Order Contact
-Use `/setcontact` to update the order contact username (default: @FLYAWAYPEP). This contact appears in welcome messages and product views across all languages.
+Use `/setcontact` to update the order contact username (default: @yourusername). This contact appears in welcome messages and product views across all languages.
 
 ## Multi-Bot Setup and Analytics
 
