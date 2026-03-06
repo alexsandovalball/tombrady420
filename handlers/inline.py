@@ -96,18 +96,21 @@ async def _build_product_article(
 
     description = f"Category: {category}"
 
-    # Build the inline button: prefer Web App URL if configured, else bot deep link
+    # Build the inline buttons:
     web_app_url = Config.WEB_APP_URL
+    buttons = []
+
+    # Always build bot deep link
+    bot_deep_link = f"https://t.me/{bot_username}?start=product_{product_id}"
+
     if web_app_url:
         product_url = f"{web_app_url.rstrip('/')}/product/{product_id}"
-        button_text = "🛍️ View in Web App"
+        buttons.append(InlineKeyboardButton("🛍️ View in Web App", url=product_url))
+        buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
     else:
-        product_url = f"https://t.me/{bot_username}?start=product_{product_id}"
-        button_text = "🛍️ View in bot"
+        buttons.append(InlineKeyboardButton("🛍️ View in bot", url=bot_deep_link))
 
-    reply_markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton(button_text, url=product_url)
-    ]])
+    reply_markup = InlineKeyboardMarkup([buttons])
 
     # Caption / message text shown when the result is shared (no ID shown to users)
     caption_text = (
