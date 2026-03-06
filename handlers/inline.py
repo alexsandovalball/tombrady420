@@ -10,7 +10,15 @@ import logging
 import time
 from typing import List, Dict, Any, Optional, Tuple
 
-from telegram import Update, InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import (
+    Update,
+    InlineQueryResult,
+    InlineQueryResultArticle,
+    InlineQueryResultCachedPhoto,
+    InputTextMessageContent,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 from telegram.ext import ContextTypes
 
 from database import Database
@@ -55,14 +63,27 @@ async def _get_cached_products() -> List[Dict[str, Any]]:
 # Result builders
 # ---------------------------------------------------------------------------
 
-def _build_product_article(
+async def _build_product_article(
     product: Dict[str, Any],
     bot_username: str,
-) -> InlineQueryResultArticle:
-    """Build an InlineQueryResultArticle for a single product."""
+    context: ContextTypes.DEFAULT_TYPE,
+) -> InlineQueryResult:
+    """Build an inline result for a single product.
+
+    For photo products, returns an ``InlineQueryResultCachedPhoto`` so that
+    the image thumbnail is rendered directly in the inline picker.  If the
+    product was indexed by a different bot instance (multi-bot deployment) we
+    consult the persistent DB cache for a bot-specific file_id; if none is
+    available we fall back to ``InlineQueryResultArticle`` (with a
+    ``thumbnail_url`` when the web-app is configured).
+
+    For non-photo products we always return an ``InlineQueryResultArticle``,
+    optionally with a ``thumbnail_url`` constructed from the web-app URL.
+    """
     product_id = product.get("id")
     caption = product.get("caption") or ""
     category = product.get("category") or "Uncategorized"
+    file_type = product.get("file_type") or ""
 
     # Truncate caption for display
     title = caption[:60] + "…" if len(caption) > 60 else caption
@@ -88,22 +109,79 @@ def _build_product_article(
         InlineKeyboardButton(button_text, url=product_url)
     ]])
 
-    message_text = (
+    # Caption / message text shown when the result is shared (no ID shown to users)
+    caption_text = (
         f"📦 *{title_escaped}*\n"
-        f"📂 {category_escaped}\n"
-        f"🆔 ID: {product_id}"
+        f"📂 {category_escaped}"
     )
+
+    # --- Attempt rich media result for photo products ---
+    if file_type == "photo":
+        resolved_file_id = await _resolve_file_id_for_inline(product, context)
+        if resolved_file_id:
+            return InlineQueryResultCachedPhoto(
+                id=f"product_{product_id}",
+                photo_file_id=resolved_file_id,
+                title=title,
+                description=description,
+                caption=caption_text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup,
+            )
+
+    # --- Fallback: article with optional thumbnail ---
+    thumbnail_url: Optional[str] = None
+    if web_app_url and file_type == "photo":
+        thumbnail_url = f"{web_app_url.rstrip('/')}/api/catalog/{product_id}/media/0"
 
     return InlineQueryResultArticle(
         id=f"product_{product_id}",
         title=title,
         description=description,
         input_message_content=InputTextMessageContent(
-            message_text=message_text,
+            message_text=caption_text,
             parse_mode="Markdown",
         ),
         reply_markup=reply_markup,
+        thumbnail_url=thumbnail_url,
     )
+
+
+async def _resolve_file_id_for_inline(
+    product: Dict[str, Any],
+    context: ContextTypes.DEFAULT_TYPE,
+) -> Optional[str]:
+    """Return a file_id usable by the current bot for the given product.
+
+    Only consults the persistent DB cache – does **not** trigger an expensive
+    message-forward so that inline query latency stays low.  Returns ``None``
+    if no bot-specific file_id is available.
+    """
+    raw_file_id = product.get("file_id")
+    if not raw_file_id:
+        return None
+
+    product_bot = (product.get("bot_username") or "").lower()
+    current_bot = (context.bot.username or "").lower()
+
+    # Same bot that indexed the product → file_id is already valid.
+    if product_bot and current_bot and product_bot == current_bot:
+        return raw_file_id
+
+    # Different (or unknown) bot – check the persistent DB cache for a
+    # bot-specific file_id without triggering a costly forward.
+    chat_id = product.get("chat_id")
+    message_id = product.get("message_id")
+    if chat_id and message_id and current_bot:
+        try:
+            cached = await db.get_bot_file_id(chat_id, message_id, 0, current_bot)
+            if cached:
+                return cached
+        except Exception as exc:
+            logger.debug("DB cache lookup failed for inline file_id: %s", exc)
+
+    # No bot-specific file_id available – caller will fall back to article.
+    return None
 
 
 def _build_webapp_article(bot_username: str, web_app_url: str) -> InlineQueryResultArticle:
@@ -175,26 +253,28 @@ def _build_top_categories_article(bot_username: str) -> InlineQueryResultArticle
     )
 
 
-def _build_new_arrivals_articles(
+async def _build_new_arrivals_articles(
     products: List[Dict[str, Any]],
     bot_username: str,
+    context: ContextTypes.DEFAULT_TYPE,
     limit: int = 5,
-) -> List[InlineQueryResultArticle]:
-    """Return newest products as articles."""
+) -> List[InlineQueryResult]:
+    """Return newest products as inline results."""
     # Products are sorted by created_at DESC in DB, so first items are newest
     newest = products[:limit]
-    return [_build_product_article(p, bot_username) for p in newest]
+    return list(await asyncio.gather(*[_build_product_article(p, bot_username, context) for p in newest]))
 
 
-def _build_popular_articles(
+async def _build_popular_articles(
     products: List[Dict[str, Any]],
     bot_username: str,
+    context: ContextTypes.DEFAULT_TYPE,
     limit: int = 5,
-) -> List[InlineQueryResultArticle]:
-    """Return trending / most-recently-added products as articles."""
+) -> List[InlineQueryResult]:
+    """Return trending / most-recently-added products as inline results."""
     # Simple heuristic: products are already sorted by created_at DESC in the DB query
     popular = products[:limit]
-    return [_build_product_article(p, bot_username) for p in popular]
+    return list(await asyncio.gather(*[_build_product_article(p, bot_username, context) for p in popular]))
 
 
 # ---------------------------------------------------------------------------
@@ -255,10 +335,10 @@ async def _process_inline_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     try:
         if query:
-            results = await _handle_query_search(query, bot_username)
+            results = await _handle_query_search(query, bot_username, context)
             is_empty = False
         else:
-            results = await _handle_empty_query(bot_username)
+            results = await _handle_empty_query(bot_username, context)
             is_empty = True
 
         # Calculate latency
@@ -305,9 +385,9 @@ async def _process_inline_query(update: Update, context: ContextTypes.DEFAULT_TY
             pass
 
 
-async def _handle_empty_query(bot_username: str) -> List[InlineQueryResultArticle]:
+async def _handle_empty_query(bot_username: str, context: ContextTypes.DEFAULT_TYPE) -> List[InlineQueryResult]:
     """Return default results for an empty inline query with enhanced discoverability."""
-    results: List[InlineQueryResultArticle] = []
+    results: List[InlineQueryResult] = []
 
     # 1. Inline search tips (how to use)
     if bot_username:
@@ -330,9 +410,9 @@ async def _handle_empty_query(bot_username: str) -> List[InlineQueryResultArticl
     try:
         products = await _get_cached_products()
         # Add new arrivals (first 3 products)
-        results.extend(_build_new_arrivals_articles(products, bot_username, limit=3))
+        results.extend(await _build_new_arrivals_articles(products, bot_username, context, limit=3))
         # Add popular/trending (next 3 products)
-        results.extend(_build_popular_articles(products, bot_username, limit=3))
+        results.extend(await _build_popular_articles(products, bot_username, context, limit=3))
     except Exception as exc:
         logger.warning("Could not fetch products for inline empty query: %s", exc)
 
@@ -342,7 +422,8 @@ async def _handle_empty_query(bot_username: str) -> List[InlineQueryResultArticl
 async def _handle_query_search(
     query: str,
     bot_username: str,
-) -> List[InlineQueryResultArticle]:
+    context: ContextTypes.DEFAULT_TYPE,
+) -> List[InlineQueryResult]:
     """
     Return fuzzy-search results for a non-empty query.
 
@@ -412,7 +493,7 @@ async def _handle_query_search(
             )
         ]
 
-    return [_build_product_article(p, bot_username) for p in matched[:50]]
+    return list(await asyncio.gather(*[_build_product_article(p, bot_username, context) for p in matched[:50]]))
 
 
 async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
