@@ -566,7 +566,12 @@ templates = Jinja2Templates(directory="webapp")
 app.mount("/assets", StaticFiles(directory="webapp"), name="assets")
 
 _STOREFRONT_BOT_USERNAME = os.getenv("BOT_USERNAME", "").lstrip("@")
-_STOREFRONT_DOMAIN = os.getenv("STOREFRONT_DOMAIN", "https://topshelfcaliplug.com")
+_STOREFRONT_DOMAIN = os.getenv("STOREFRONT_DOMAIN", "")
+if not _STOREFRONT_DOMAIN:
+    logger.warning(
+        "STOREFRONT_DOMAIN is not set. Sitemap, OG tags, and product deep links will "
+        "not work correctly until this environment variable is configured."
+    )
 
 # Default Open Graph image with football emoji 🏈 for link previews.
 # Must be an absolute HTTPS URL — data: URIs are rejected by all social media crawlers

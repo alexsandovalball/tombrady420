@@ -2,6 +2,7 @@
 Configuration management using python-decouple for secure environment variable handling.
 """
 import logging
+import urllib.parse
 from typing import List, Optional
 from decouple import config, Csv, UndefinedValueError
 
@@ -29,7 +30,7 @@ class ConfigClass:
         self.WEBHOOK_URL: Optional[str] = None
         self.WEB_APP_URL: Optional[str] = None
         self.STOREFRONT_DOMAIN: Optional[str] = None
-        self.ORDER_CONTACT: str = '@FLYAWAYPEP'  # Configurable order contact
+        self.ORDER_CONTACT: Optional[str] = None  # Configurable order contact
         self._load_config()
     
     def _load_config(self):
@@ -103,21 +104,40 @@ class ConfigClass:
         self.DB_PATH = config('DB_PATH', default='catalog.db')
         self.USE_WEBHOOK = config('USE_WEBHOOK', default=False, cast=bool)
         self.WEBHOOK_URL = config('WEBHOOK_URL', default=None)
-        self.ORDER_CONTACT = config('ORDER_CONTACT', default='@FLYAWAYPEP')
+        self.ORDER_CONTACT = config('ORDER_CONTACT', default=None)
         
-        # Load WEB_APP_URL - if not set, derive from WEBHOOK_URL
+        # Load WEB_APP_URL - if not set, derive from WEBHOOK_URL (existing behaviour)
         self.WEB_APP_URL = config('WEB_APP_URL', default=None)
         if not self.WEB_APP_URL and self.WEBHOOK_URL:
             self.WEB_APP_URL = self.WEBHOOK_URL.rstrip('/') + '/webapp/index.html'
 
-        # Load STOREFRONT_DOMAIN - canonical public domain for product deep links
-        # Falls back to CUSTOM_DOMAIN (legacy alias) then WEBHOOK_URL
+        # Load STOREFRONT_DOMAIN - canonical public origin for product deep links.
+        # Falls back to CUSTOM_DOMAIN (legacy alias), then derives the origin
+        # (scheme://host) from WEB_APP_URL or WEBHOOK_URL so that deployments
+        # where only WEBHOOK_URL is set still get a correct storefront origin.
         self.STOREFRONT_DOMAIN = (
             config('STOREFRONT_DOMAIN', default=None)
             or config('CUSTOM_DOMAIN', default=None)
         )
-        if not self.STOREFRONT_DOMAIN and self.WEBHOOK_URL:
-            self.STOREFRONT_DOMAIN = self.WEBHOOK_URL.rstrip('/')
+        if not self.STOREFRONT_DOMAIN:
+            derived: Optional[str] = None
+            try:
+                if self.WEB_APP_URL:
+                    p = urllib.parse.urlparse(self.WEB_APP_URL)
+                    if p.scheme and p.netloc:
+                        derived = f"{p.scheme}://{p.netloc}"
+                if not derived and self.WEBHOOK_URL:
+                    p = urllib.parse.urlparse(self.WEBHOOK_URL)
+                    if p.scheme and p.netloc:
+                        derived = f"{p.scheme}://{p.netloc}"
+            except Exception:  # urlparse is safe, but guard against unexpected input
+                derived = None
+            self.STOREFRONT_DOMAIN = derived
+
+        # Ensure WEB_APP_URL exists (so Telegram MenuButton still works) even
+        # when it was not derivable from WEBHOOK_URL above.
+        if not self.WEB_APP_URL and self.STOREFRONT_DOMAIN:
+            self.WEB_APP_URL = self.STOREFRONT_DOMAIN.rstrip('/') + '/webapp/index.html'
 
         self._loaded = True
     

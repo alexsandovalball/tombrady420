@@ -7,6 +7,7 @@ Bot username is derived from context.bot.username at runtime.
 import asyncio
 import inspect
 import logging
+import re
 import time
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -67,18 +68,29 @@ async def _get_cached_products() -> List[Dict[str, Any]]:
 # Result builders
 # ---------------------------------------------------------------------------
 
-def _build_product_url(product_id: int, bot_username: str) -> tuple[Optional[str], Optional[str]]:
+def _generate_slug_from_caption(caption: str) -> str:
+    """Generate a URL-safe slug from a product caption, matching storefront behaviour."""
+    if not caption:
+        return "product"
+    first_line = caption.split('\n')[0].strip()
+    slug = re.sub(r'[^a-z0-9]+', '-', first_line.lower()).strip('-')
+    slug = slug[:60].rstrip('-')
+    return slug or "product"
+
+
+def _build_product_url(product_id: int, bot_username: str, caption: str = "") -> tuple[Optional[str], Optional[str]]:
     """Return ``(storefront_url, bot_deep_link)`` for a product.
 
     ``storefront_url`` uses ``STOREFRONT_DOMAIN`` so that the "View in Web App"
     button opens the canonical product page served by the FastAPI storefront
-    (which has a real ``/product/{id}`` route) rather than a raw webapp path.
+    (which has a real ``/product/{id}/{slug}`` route) rather than a raw webapp path.
     ``bot_deep_link`` always points to the Telegram bot via ``t.me``.
     """
+    slug = _generate_slug_from_caption(caption)
     bot_deep_link = f"https://t.me/{bot_username}?start=product_{product_id}" if bot_username else None
     storefront_domain = Config.STOREFRONT_DOMAIN
     if storefront_domain:
-        storefront_url = f"{storefront_domain.rstrip('/')}/product/{product_id}"
+        storefront_url = f"{storefront_domain.rstrip('/')}/product/{product_id}/{slug}"
     else:
         # Fall back to WEB_APP_URL base if no dedicated storefront domain is set
         web_app_url = Config.WEB_APP_URL
@@ -87,7 +99,7 @@ def _build_product_url(product_id: int, bot_username: str) -> tuple[Optional[str
             base = web_app_url.rstrip('/')
             if base.endswith('/index.html'):
                 base = base[:base.rfind('/')]
-            storefront_url = f"{base}/product/{product_id}"
+            storefront_url = f"{base}/product/{product_id}/{slug}"
         else:
             storefront_url = None
     return storefront_url, bot_deep_link
@@ -127,7 +139,7 @@ async def _build_product_article(
     description = f"Category: {category}"
 
     # Build the inline buttons using the correct domain for deep links
-    storefront_url, bot_deep_link = _build_product_url(product_id, bot_username)
+    storefront_url, bot_deep_link = _build_product_url(product_id, bot_username, caption)
 
     buttons = []
     if storefront_url:
