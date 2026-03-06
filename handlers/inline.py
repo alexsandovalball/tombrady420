@@ -47,9 +47,11 @@ _DEBOUNCE_DELAY = 0.1  # 100ms debounce
 _user_query_tasks: Dict[int, asyncio.Task] = {}
 _user_query_tasks_lock = asyncio.Lock()
 
-# Maximum inline results per page – small enough to load quickly,
-# large enough to be useful.
-_INLINE_PAGE_SIZE = 5
+# Maximum number of inline results to return to the client.
+# Centralised here so both the per-page slicer and the final answer cap
+# stay in sync without touching helper builders individually.
+INLINE_PAGE_SIZE = 5
+_INLINE_PAGE_SIZE = INLINE_PAGE_SIZE  # Internal alias kept for backward compat
 
 
 async def _get_cached_products() -> List[Dict[str, Any]]:
@@ -171,11 +173,18 @@ async def _build_product_article(
 
     # --- Fallback: article with thumbnail from storefront ---
     # Use the storefront /api/catalog URL for the thumbnail so the image loads
-    # quickly for the (up to _INLINE_PAGE_SIZE) results shown.
+    # quickly for the (up to INLINE_PAGE_SIZE) results shown.
     thumbnail_url: Optional[str] = None
     storefront_domain = Config.STOREFRONT_DOMAIN or (Config.WEBHOOK_URL or "").rstrip('/')
     if storefront_domain and file_type == "photo":
         thumbnail_url = f"{storefront_domain.rstrip('/')}/api/catalog/{product_id}/media/0"
+    elif file_type == "photo" and not storefront_domain:
+        logger.warning(
+            "Falling back to article without thumbnail for product %s: "
+            "STOREFRONT_DOMAIN is not set. Set STOREFRONT_DOMAIN to a public URL "
+            "that serves /api/catalog/{id}/media/0 to enable inline thumbnails.",
+            product_id,
+        )
 
     return InlineQueryResultArticle(
         id=f"product_{product_id}",
@@ -202,6 +211,10 @@ async def _resolve_file_id_for_inline(
     """
     raw_file_id = product.get("file_id")
     if not raw_file_id:
+        logger.debug(
+            "No raw_file_id for product %s – will fall back to article result",
+            product.get("id"),
+        )
         return None
 
     product_bot = (product.get("bot_username") or "").lower()
@@ -220,6 +233,11 @@ async def _resolve_file_id_for_inline(
             cached = await db.get_bot_file_id(chat_id, message_id, 0, current_bot)
             if cached:
                 return cached
+            logger.debug(
+                "DB cache miss for inline file_id: product=%s bot=%s – will fall back to article result",
+                product.get("id"),
+                current_bot,
+            )
         except Exception as exc:
             logger.debug("DB cache lookup failed for inline file_id: %s", exc)
 
@@ -423,6 +441,21 @@ async def _process_inline_query(update: Update, context: ContextTypes.DEFAULT_TY
         if "switch_pm_text" in _answer_params and "switch_pm_parameter" in _answer_params:
             _extra["switch_pm_text"] = "📋 Open Full Catalog"
             _extra["switch_pm_parameter"] = "inline"
+
+        # Enforce the global page-size cap before answering.
+        # This prevents helper builders (empty query, category browse, etc.)
+        # from accidentally sending more results than the configured limit.
+        # Verify locally: perform an inline query that used to return many rows
+        # and confirm the picker shows at most INLINE_PAGE_SIZE entries.
+        total_results = len(results)
+        if total_results > INLINE_PAGE_SIZE:
+            logger.debug(
+                "Trimming inline results from %d to %d (INLINE_PAGE_SIZE cap)",
+                total_results,
+                INLINE_PAGE_SIZE,
+            )
+            results = results[:INLINE_PAGE_SIZE]
+            next_offset = ""  # pagination disabled when cap is enforced; implement robust offsets in a follow-up if needed
 
         # Cache settings:
         # - is_personal=False: Results are identical for all users (no per-user personalization)
