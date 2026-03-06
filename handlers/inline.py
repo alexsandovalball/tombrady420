@@ -10,7 +10,15 @@ import logging
 import time
 from typing import List, Dict, Any, Optional, Tuple
 
-from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InlineQueryResultArticle,
+    InlineQueryResultCachedPhoto,
+    InlineQueryResultCachedVideo,
+    InputTextMessageContent,
+)
 from telegram.ext import ContextTypes
 
 from database import Database
@@ -58,11 +66,19 @@ async def _get_cached_products() -> List[Dict[str, Any]]:
 def _build_product_article(
     product: Dict[str, Any],
     bot_username: str,
-) -> InlineQueryResultArticle:
-    """Build an InlineQueryResultArticle for a single product."""
+) -> "InlineQueryResultArticle | InlineQueryResultCachedPhoto | InlineQueryResultCachedVideo":
+    """Build an inline result for a single product.
+
+    Returns an InlineQueryResultCachedPhoto or InlineQueryResultCachedVideo when
+    the product has a file_id, providing a rich preview with a "View in bot"
+    button.  Falls back to InlineQueryResultArticle when file_id is absent or
+    the file_type is not supported.
+    """
     product_id = product.get("id")
     caption = product.get("caption") or ""
     category = product.get("category") or "Uncategorized"
+    file_id = product.get("file_id")
+    file_type = (product.get("file_type") or "").lower()
 
     # Truncate caption for display
     title = caption[:60] + "…" if len(caption) > 60 else caption
@@ -78,6 +94,36 @@ def _build_product_article(
     # Deep link that opens THIS bot instance with the product view
     deep_link_url = f"https://t.me/{bot_username}?start=product_{product_id}"
 
+    caption_text = (
+        f"📦 *{title_escaped}*\n"
+        f"📂 {category_escaped}\n"
+        f"🆔 ID: {product_id}"
+    )
+
+    reply_markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("👁 View in bot", url=deep_link_url)]]
+    )
+
+    if file_id and file_type == "photo":
+        return InlineQueryResultCachedPhoto(
+            id=f"product_{product_id}",
+            photo_file_id=file_id,
+            caption=caption_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup,
+        )
+
+    if file_id and file_type == "video":
+        return InlineQueryResultCachedVideo(
+            id=f"product_{product_id}",
+            video_file_id=file_id,
+            title=title,
+            caption=caption_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup,
+        )
+
+    # Fallback: no file_id or unsupported type → plain article
     message_text = (
         f"📦 *{title_escaped}*\n"
         f"📂 {category_escaped}\n"
