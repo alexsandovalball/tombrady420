@@ -191,18 +191,35 @@ class NotificationService:
                     admin_ids = get_admin_ids()
                     if admin_ids and stats["sent"] > 0:
                         admin_id = admin_ids[0]
-                        await self._send_admin_summary(
-                            context.bot,
-                            admin_id,
-                            stats,
-                            operation="product notification"
-                        )
-                        logger.info(
-                            f"Admin summary sent: {stats['sent']} sent, "
-                            f"{stats['attempted']} attempted, "
-                            f"{stats['rate_limited']} rate-limited, "
-                            f"{stats['duplicates_removed']} duplicates removed"
-                        )
+                        bot_app_for_admin = None
+                        try:
+                            bot_apps = self._get_bot_applications()
+                            if bot_apps:
+                                bot_app_for_admin = bot_apps[0]
+                                bot_for_summary = bot_app_for_admin.bot
+                                logger.info(f"Sending admin summary via primary bot @{get_bot_username(bot_app_for_admin)}")
+                            else:
+                                logger.info("No bot applications available, falling back to context.bot for admin summary")
+                                bot_for_summary = context.bot
+
+                            await self._send_admin_summary(
+                                bot_for_summary,
+                                admin_id,
+                                stats,
+                                operation="product notification"
+                            )
+                            logger.info(
+                                f"Admin summary sent successfully: {stats['sent']} sent, "
+                                f"{stats['attempted']} attempted, "
+                                f"{stats['rate_limited']} rate-limited, "
+                                f"{stats['duplicates_removed']} duplicates removed"
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to send admin summary via "
+                                f"@{get_bot_username(bot_app_for_admin) if bot_app_for_admin else 'context.bot'}: {e}",
+                                exc_info=True
+                            )
                 except Exception as e:
                     logger.error(f"Error processing notification for product {product_id}: {e}", exc_info=True)
                 finally:
