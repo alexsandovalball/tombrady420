@@ -585,7 +585,9 @@ class NotificationService:
                 for notification in deduplicated:
                     user_id = notification["user_id"]
                     bot_username = bot_usernames_map.get(user_id)
-                    # Normalize: None means primary bot
+                    # Normalize: None means primary bot; lowercase for case-insensitive grouping
+                    if bot_username is not None:
+                        bot_username = bot_username.lower()
                     if bot_username not in notifications_by_bot:
                         notifications_by_bot[bot_username] = []
                     notifications_by_bot[bot_username].append(notification)
@@ -1315,6 +1317,9 @@ class NotificationService:
                 for message in pending:
                     user_id = message["user_id"]
                     bot_username = bot_usernames_map.get(user_id)
+                    # Normalize: lowercase for case-insensitive grouping
+                    if bot_username is not None:
+                        bot_username = bot_username.lower()
                     if bot_username not in messages_by_bot:
                         messages_by_bot[bot_username] = []
                     messages_by_bot[bot_username].append(message)

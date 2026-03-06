@@ -1202,7 +1202,7 @@ class Database:
         placeholders = ','.join('?' * len(user_ids))
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(f"""
-                SELECT user_id, bot_username FROM bot_users WHERE user_id IN ({placeholders})
+                SELECT user_id, LOWER(bot_username) FROM bot_users WHERE user_id IN ({placeholders})
             """, tuple(user_ids)) as cursor:
                 rows = await cursor.fetchall()
         result = {row[0]: row[1] for row in rows}
