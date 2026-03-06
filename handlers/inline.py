@@ -96,18 +96,21 @@ async def _build_product_article(
 
     description = f"Category: {category}"
 
-    # Build the inline button: prefer Web App URL if configured, else bot deep link
+    # Build the inline buttons:
     web_app_url = Config.WEB_APP_URL
+    buttons = []
+
+    # Always build bot deep link
+    bot_deep_link = f"https://t.me/{bot_username}?start=product_{product_id}"
+
     if web_app_url:
         product_url = f"{web_app_url.rstrip('/')}/product/{product_id}"
-        button_text = "🛍️ View in Web App"
+        buttons.append(InlineKeyboardButton("🛍️ View in Web App", url=product_url))
+        buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
     else:
-        product_url = f"https://t.me/{bot_username}?start=product_{product_id}"
-        button_text = "🛍️ View in bot"
+        buttons.append(InlineKeyboardButton("🛍️ View in bot", url=bot_deep_link))
 
-    reply_markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton(button_text, url=product_url)
-    ]])
+    reply_markup = InlineKeyboardMarkup([buttons])
 
     # Caption / message text shown when the result is shared (no ID shown to users)
     caption_text = (
@@ -187,6 +190,7 @@ async def _resolve_file_id_for_inline(
 def _build_webapp_article(bot_username: str, web_app_url: str) -> InlineQueryResultArticle:
     """Return an 'Open WebApp / Shop' entry."""
     deep_link = f"https://t.me/{bot_username}?start=webapp"
+    clean_web_app_url = web_app_url.rstrip("/")
     return InlineQueryResultArticle(
         id="open_webapp",
         title="🛍️ Open Shop",
@@ -195,6 +199,10 @@ def _build_webapp_article(bot_username: str, web_app_url: str) -> InlineQueryRes
             message_text=f"🛍️ [Open the Shop]({deep_link})",
             parse_mode="Markdown",
         ),
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🛍️ Open Web App", url=clean_web_app_url),
+            InlineKeyboardButton("🤖 Open in Bot", url=deep_link),
+        ]]),
     )
 
 
@@ -209,6 +217,9 @@ def _build_browse_categories_article(bot_username: str) -> InlineQueryResultArti
             message_text=f"📂 [Browse categories in bot]({deep_link})",
             parse_mode="Markdown",
         ),
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📂 Browse Categories", url=deep_link),
+        ]]),
     )
 
 
@@ -221,7 +232,7 @@ def _build_inline_tips_article(bot_username: str) -> InlineQueryResultArticle:
         description="Learn how to search effectively",
         input_message_content=InputTextMessageContent(
             message_text=(
-                f"💡 **Inline Search Tips**\n\n"
+                f"💡 *Inline Search Tips*\n\n"
                 f"• Type product names: `{bot_mention} cartridge`\n"
                 f"• Search by category: `cat:edibles` or `category:flower`\n"
                 f"• Find by ID: `id:123`\n"
@@ -244,7 +255,7 @@ def _build_top_categories_article(bot_username: str) -> InlineQueryResultArticle
         description="Browse by category",
         input_message_content=InputTextMessageContent(
             message_text=(
-                f"📂 **Top Categories**\n\n"
+                f"📂 *Top Categories*\n\n"
                 f"{category_list}\n\n"
                 f"Try searching: `cat:cartridges` or just type a category name!"
             ),
@@ -411,8 +422,8 @@ async def _handle_empty_query(bot_username: str, context: ContextTypes.DEFAULT_T
         products = await _get_cached_products()
         # Add new arrivals (first 3 products)
         results.extend(await _build_new_arrivals_articles(products, bot_username, context, limit=3))
-        # Add popular/trending (next 3 products)
-        results.extend(await _build_popular_articles(products, bot_username, context, limit=3))
+        # Add popular/trending (next 3 products – skip new-arrivals slice to avoid duplicate IDs)
+        results.extend(await _build_popular_articles(products[3:], bot_username, context, limit=3))
     except Exception as exc:
         logger.warning("Could not fetch products for inline empty query: %s", exc)
 

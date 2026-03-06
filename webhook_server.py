@@ -733,7 +733,7 @@ async def serve_sitemap_xml():
     """Dynamically generate a sitemap.xml including homepage, category, and all product pages."""
     from datetime import date
     today = date.today().isoformat()
-    products = await _catalog_db.get_all_products()
+    products = await _catalog_db.get_all_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
 
     urls = [
         (
@@ -1580,14 +1580,11 @@ async def search_products(
     # Bound limit for performance
     limit = max(1, min(limit, 50))
     offset = max(0, offset)
-    
-    # Categories to exclude from search results
-    excluded_categories = ['DATEDPROOFS', 'CLIENTTOUCHDOWNS', 'ANNOUNCEMENTS']
-    
+
     try:
-        total = await _catalog_db.count_products_filtered(q, excluded_categories)
+        total = await _catalog_db.count_products_filtered(q, EXCLUDED_FROM_ALL_PRODUCTS)
         products = await _catalog_db.search_products_filtered(
-            q, excluded_categories, limit=limit, offset=offset
+            q, EXCLUDED_FROM_ALL_PRODUCTS, limit=limit, offset=offset
         )
 
         order_contact = await _catalog_db.get_order_contact()
