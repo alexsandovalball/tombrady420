@@ -11,8 +11,13 @@ import asyncio
 import uuid
 
 from configs.config import Config
+from utils.categories import EXCLUDED_FROM_ALL_PRODUCTS
 
 logger = logging.getLogger(__name__)
+
+# Pre-computed SQL placeholder string for EXCLUDED_FROM_ALL_PRODUCTS.
+# Only '?' characters are interpolated into SQL — never user data.
+_EXCLUDED_PLACEHOLDERS = ','.join('?' * len(EXCLUDED_FROM_ALL_PRODUCTS))
 
 # Default values
 DEFAULT_ORDER_CONTACT = '@FLYAWAYPEP'
@@ -612,17 +617,20 @@ class Database:
                 return row[0] if row else 0
     
     async def search_products(self, query: str, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
-        """Search products by caption (for fuzzy search filtering)."""
+        """Search products by caption (for fuzzy search filtering).
+        Excludes products from Dated Proofs, Client Touchdowns, and Announcements categories.
+        """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            sql_query = """
+            sql_query = f"""
                 SELECT * FROM products 
-                WHERE caption LIKE ? 
+                WHERE caption LIKE ?
+                  AND (category IS NULL OR category = '' OR category NOT IN ({_EXCLUDED_PLACEHOLDERS}))
                 ORDER BY created_at DESC
             """
             if limit:
                 sql_query += f" LIMIT {limit} OFFSET {offset}"
-            async with db.execute(sql_query, (f"%{query}%",)) as cursor:
+            async with db.execute(sql_query, (f"%{query}%", *EXCLUDED_FROM_ALL_PRODUCTS)) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
 
@@ -701,21 +709,16 @@ class Database:
         Get all products for fuzzy search (no pagination).
         Excludes products from Dated Proofs, Client Touchdowns, and Announcements categories.
         """
-        # Categories to exclude from search results
-        excluded_categories = ['DATEDPROOFS', 'CLIENTTOUCHDOWNS', 'ANNOUNCEMENTS']
-        
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            
-            # Build placeholders for SQL query
-            placeholders = ','.join('?' * len(excluded_categories))
+
             query = f"""
                 SELECT * FROM products 
-                WHERE (category IS NULL OR category = '' OR category NOT IN ({placeholders}))
+                WHERE (category IS NULL OR category = '' OR category NOT IN ({_EXCLUDED_PLACEHOLDERS}))
                 ORDER BY created_at DESC
             """
-            
-            async with db.execute(query, excluded_categories) as cursor:
+
+            async with db.execute(query, EXCLUDED_FROM_ALL_PRODUCTS) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
     
