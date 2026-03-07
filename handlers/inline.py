@@ -14,8 +14,6 @@ from telegram import (
     Update,
     InlineQueryResult,
     InlineQueryResultArticle,
-    InlineQueryResultCachedPhoto,
-    InlineQueryResultCachedVideo,
     InputTextMessageContent,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -85,16 +83,14 @@ async def _build_product_article(
 ) -> InlineQueryResult:
     """Build an inline result for a single product.
 
-    For photo products, returns an ``InlineQueryResultCachedPhoto`` so that
-    the image thumbnail is rendered directly in the inline picker.  For video
-    products, returns an ``InlineQueryResultCachedVideo`` so the video preview
-    appears in the picker.  If the product was indexed by a different bot
-    instance (multi-bot deployment) we consult the persistent DB cache for a
-    bot-specific file_id; if none is available we fall back to
-    ``InlineQueryResultArticle`` (with a ``thumbnail_url`` when the storefront
-    domain is configured).
+    Always returns an ``InlineQueryResultArticle`` so that tapping the result
+    auto-sends immediately on both iOS and Android (media-rich cached results
+    require an extra confirmation tap on Android).  When the storefront domain
+    is configured and the product has photo/video media, a ``thumbnail_url`` is
+    included so the image preview still appears in the inline picker.
 
-    For products without media we always return an ``InlineQueryResultArticle``.
+    A follow-up DM with the actual media is delivered via
+    ``handle_chosen_inline_result``.
     """
     product_id = product.get("id")
     caption = product.get("caption") or ""
@@ -129,32 +125,7 @@ async def _build_product_article(
         f"📂 {category_escaped}"
     )
 
-    # --- Attempt rich media result for photo/video products ---
-    if file_type in ("photo", "video"):
-        resolved_file_id = await _resolve_file_id_for_inline(product, context)
-        if resolved_file_id:
-            if file_type == "photo":
-                return InlineQueryResultCachedPhoto(
-                    id=f"product_{product_id}",
-                    photo_file_id=resolved_file_id,
-                    title=title,
-                    description=description,
-                    caption=caption_text,
-                    parse_mode="Markdown",
-                    reply_markup=reply_markup,
-                )
-            else:  # video
-                return InlineQueryResultCachedVideo(
-                    id=f"product_{product_id}",
-                    video_file_id=resolved_file_id,
-                    title=title,
-                    description=description,
-                    caption=caption_text,
-                    parse_mode="Markdown",
-                    reply_markup=reply_markup,
-                )
-
-    # --- Fallback: article with thumbnail from storefront ---
+    # --- Article with thumbnail from storefront ---
     # Use the storefront /api/catalog URL for the thumbnail so the image loads
     # quickly for the (up to INLINE_PAGE_SIZE) results shown.
     thumbnail_url: Optional[str] = None
@@ -173,78 +144,6 @@ async def _build_product_article(
         reply_markup=reply_markup,
         thumbnail_url=thumbnail_url,
     )
-
-
-async def _resolve_file_id_for_inline(
-    product: Dict[str, Any],
-    context: ContextTypes.DEFAULT_TYPE,
-) -> Optional[str]:
-    """Return a file_id usable by the current bot for the given product.
-
-    Checks the persistent DB cache first; on a cache miss, triggers a
-    message-forward via ``get_bot_specific_file_id`` to populate the cache
-    and returns the resolved file_id.  Returns ``None`` only if forwarding
-    explicitly fails or the product has no media.
-    """
-    raw_file_id = product.get("file_id")
-    if not raw_file_id:
-        logger.debug(
-            "No raw_file_id for product %s – will fall back to article result",
-            product.get("id"),
-        )
-        return None
-
-    product_bot = (product.get("bot_username") or "").lower()
-    current_bot = (context.bot.username or "").lower()
-
-    # Same bot that indexed the product → file_id is already valid.
-    if product_bot and current_bot and product_bot == current_bot:
-        return raw_file_id
-
-    # Different (or unknown) bot – check the persistent DB cache first; on a
-    # miss, trigger forwarding to populate the cache for future queries.
-    chat_id = product.get("chat_id")
-    message_id = product.get("message_id")
-    if chat_id and message_id and current_bot:
-        try:
-            cached = await db.get_bot_file_id(chat_id, message_id, 0, current_bot)
-            if cached:
-                return cached
-
-            # Cache miss: trigger forwarding to populate cache.
-            logger.debug(
-                "DB cache miss for inline file_id: product=%s bot=%s – triggering forward",
-                product.get("id"),
-                current_bot,
-            )
-
-            file_type = product.get("file_type")
-            if file_type in ("photo", "video"):
-                resolved = await get_bot_specific_file_id(
-                    context,
-                    chat_id,
-                    message_id,
-                    file_type,
-                    file_index=0,
-                )
-                if resolved:
-                    logger.debug(
-                        "Successfully resolved file_id for inline: product=%s bot=%s",
-                        product.get("id"),
-                        current_bot,
-                    )
-                    return resolved
-                else:
-                    logger.warning(
-                        "Failed to resolve file_id for inline: product=%s bot=%s",
-                        product.get("id"),
-                        current_bot,
-                    )
-        except Exception as exc:
-            logger.warning("Error resolving file_id for inline: %s", exc, exc_info=True)
-
-    # No bot-specific file_id available – caller will fall back to article.
-    return None
 
 
 def _build_webapp_article(bot_username: str, web_app_url: str) -> InlineQueryResultArticle:
