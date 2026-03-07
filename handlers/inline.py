@@ -42,14 +42,14 @@ _product_cache_lock = asyncio.Lock()
 # Per-user debouncing and task cancellation
 # Maps user_id -> (task, timestamp) for in-flight inline query tasks
 # ---------------------------------------------------------------------------
-_DEBOUNCE_DELAY = 0.1  # 100ms debounce
+_DEBOUNCE_DELAY = 0.5  # 500ms debounce
 _user_query_tasks: Dict[int, asyncio.Task] = {}
 _user_query_tasks_lock = asyncio.Lock()
 
 # Maximum number of inline results to return to the client.
 # Centralised here so both the per-page slicer and the final answer cap
 # stay in sync without touching helper builders individually.
-INLINE_PAGE_SIZE = 5
+INLINE_PAGE_SIZE = 10
 _INLINE_PAGE_SIZE = INLINE_PAGE_SIZE  # Internal alias kept for backward compat
 
 
@@ -116,6 +116,8 @@ async def _build_product_article(
     buttons = []
     if bot_deep_link:
         buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
+    if Config.WEB_APP_URL:
+        buttons.append(InlineKeyboardButton("🌐 Open WebApp", url=Config.WEB_APP_URL))
 
     reply_markup = InlineKeyboardMarkup([buttons]) if buttons else None
 
