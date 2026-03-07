@@ -387,8 +387,22 @@ async def get_bot_specific_file_id(
     )
     
     if cached_file_id:
-        logger.debug(f"Using cached file ID for bot {bot_username}, message {source_message_id}, index {file_index}")
-        return cached_file_id
+        try:
+            await bot.get_file(cached_file_id)
+            logger.debug(f"Using cached file ID for bot {bot_username}, message {source_message_id}, index {file_index}")
+            return cached_file_id
+        except TelegramError as e:
+            logger.warning(
+                f"Cached file ID invalid for bot {bot_username}, msg {source_message_id}: {e}. "
+                f"Clearing cache and refetching..."
+            )
+            await db.delete_bot_file_id_cache_entry(
+                source_chat_id,
+                source_message_id,
+                file_index,
+                bot_username
+            )
+            # Fall through to re-fetch the file ID
     
     # Cache miss - need to get bot-specific file ID by forwarding
     admin_ids = get_admin_ids()

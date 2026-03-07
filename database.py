@@ -254,6 +254,16 @@ class Database:
                     UNIQUE(source_chat_id, source_message_id, file_index, bot_username)
                 )
             """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS bot_instances (
+                    bot_username TEXT PRIMARY KEY,
+                    bot_id INTEGER NOT NULL,
+                    token_hash TEXT NOT NULL,
+                    first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS inline_queries (
@@ -2142,7 +2152,64 @@ class Database:
             await db.commit()
             logger.info(f"Cleared {deleted} bot file ID cache entries")
             return deleted
-    
+
+    async def delete_bot_file_id_cache_entry(
+        self,
+        source_chat_id: int,
+        source_message_id: int,
+        file_index: int,
+        bot_username: str
+    ):
+        """Delete a specific bot file ID cache entry (used when cached ID is invalid)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                DELETE FROM bot_file_id_cache
+                WHERE source_chat_id = ? AND source_message_id = ? 
+                  AND file_index = ? AND bot_username = ?
+            """, (source_chat_id, source_message_id, file_index, self.normalize_bot_username(bot_username)))
+            await db.commit()
+            logger.debug(f"Deleted invalid cache entry: bot={bot_username}, msg={source_message_id}, idx={file_index}")
+
+    async def clear_bot_file_id_cache_for_bot(self, bot_username: str) -> int:
+        """Clear all cached file IDs for a specific bot username."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM bot_file_id_cache WHERE bot_username = ?",
+                (self.normalize_bot_username(bot_username),)
+            )
+            deleted = cursor.rowcount
+            await db.commit()
+            logger.info(f"Cleared {deleted} bot file ID cache entries for @{bot_username}")
+            return deleted
+
+    async def register_bot_instance(self, bot_username: str, bot_id: int, token_hash: str):
+        """Register or update a bot instance record."""
+        now = datetime.now()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO bot_instances (bot_username, bot_id, token_hash, first_seen, last_seen)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(bot_username) DO UPDATE SET
+                    bot_id = excluded.bot_id,
+                    token_hash = excluded.token_hash,
+                    last_seen = excluded.last_seen
+            """, (self.normalize_bot_username(bot_username), bot_id, token_hash, now, now))
+            await db.commit()
+            logger.debug(f"Registered bot instance: @{bot_username} (id={bot_id})")
+
+    async def has_bot_token_changed(self, bot_username: str, token_hash: str) -> bool:
+        """Check if the bot token has changed since last run. Returns True if changed."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT token_hash FROM bot_instances WHERE bot_username = ?",
+                (self.normalize_bot_username(bot_username),)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row is None:
+                    # First time seeing this bot — not a change
+                    return False
+                return row[0] != token_hash
+
     async def get_users_with_inactive_bots(self, active_bot_usernames: List[str]) -> List[Dict[str, Any]]:
         """
         Get all users associated with bots that are no longer in the active pool.
