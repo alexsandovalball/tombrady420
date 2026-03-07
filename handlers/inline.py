@@ -7,7 +7,6 @@ Bot username is derived from context.bot.username at runtime.
 import asyncio
 import inspect
 import logging
-import re
 import time
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -70,41 +69,12 @@ async def _get_cached_products() -> List[Dict[str, Any]]:
 # Result builders
 # ---------------------------------------------------------------------------
 
-def _generate_slug_from_caption(caption: str) -> str:
-    """Generate a URL-safe slug from a product caption, matching storefront behaviour."""
-    if not caption:
-        return "product"
-    first_line = caption.split('\n')[0].strip()
-    slug = re.sub(r'[^a-z0-9]+', '-', first_line.lower()).strip('-')
-    slug = slug[:60].rstrip('-')
-    return slug or "product"
+def _build_product_url(product_id: int, bot_username: str) -> Optional[str]:
+    """Return the bot deep link for a product.
 
-
-def _build_product_url(product_id: int, bot_username: str, caption: str = "") -> tuple[Optional[str], Optional[str]]:
-    """Return ``(storefront_url, bot_deep_link)`` for a product.
-
-    ``storefront_url`` uses ``STOREFRONT_DOMAIN`` so that the "View in Web App"
-    button opens the canonical product page served by the FastAPI storefront
-    (which has a real ``/product/{id}/{slug}`` route) rather than a raw webapp path.
     ``bot_deep_link`` always points to the Telegram bot via ``t.me``.
     """
-    slug = _generate_slug_from_caption(caption)
-    bot_deep_link = f"https://t.me/{bot_username}?start=product_{product_id}" if bot_username else None
-    storefront_domain = Config.STOREFRONT_DOMAIN
-    if storefront_domain:
-        storefront_url = f"{storefront_domain.rstrip('/')}/product/{product_id}/{slug}"
-    else:
-        # Fall back to WEB_APP_URL base if no dedicated storefront domain is set
-        web_app_url = Config.WEB_APP_URL
-        if web_app_url:
-            # Strip the trailing filename (e.g. "/webapp/index.html") to get the root
-            base = web_app_url.rstrip('/')
-            if base.endswith('/index.html'):
-                base = base[:base.rfind('/')]
-            storefront_url = f"{base}/product/{product_id}/{slug}"
-        else:
-            storefront_url = None
-    return storefront_url, bot_deep_link
+    return f"https://t.me/{bot_username}?start=product_{product_id}" if bot_username else None
 
 
 async def _build_product_article(
@@ -141,11 +111,9 @@ async def _build_product_article(
     description = f"Category: {category}"
 
     # Build the inline buttons using the correct domain for deep links
-    storefront_url, bot_deep_link = _build_product_url(product_id, bot_username, caption)
+    bot_deep_link = _build_product_url(product_id, bot_username)
 
     buttons = []
-    if storefront_url:
-        buttons.append(InlineKeyboardButton("🛍️ View in Web App", url=storefront_url))
     if bot_deep_link:
         buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
 
@@ -178,13 +146,6 @@ async def _build_product_article(
     storefront_domain = Config.STOREFRONT_DOMAIN or (Config.WEBHOOK_URL or "").rstrip('/')
     if storefront_domain and file_type == "photo":
         thumbnail_url = f"{storefront_domain.rstrip('/')}/api/catalog/{product_id}/media/0"
-    elif file_type == "photo" and not storefront_domain:
-        logger.warning(
-            "Falling back to article without thumbnail for product %s: "
-            "STOREFRONT_DOMAIN is not set. Set STOREFRONT_DOMAIN to a public URL "
-            "that serves /api/catalog/{id}/media/0 to enable inline thumbnails.",
-            product_id,
-        )
 
     return InlineQueryResultArticle(
         id=f"product_{product_id}",
@@ -246,9 +207,8 @@ async def _resolve_file_id_for_inline(
 
 
 def _build_webapp_article(bot_username: str, web_app_url: str) -> InlineQueryResultArticle:
-    """Return an 'Open WebApp / Shop' entry."""
+    """Return an 'Open Shop / Bot' entry."""
     deep_link = f"https://t.me/{bot_username}?start=webapp"
-    clean_web_app_url = web_app_url.rstrip("/")
     return InlineQueryResultArticle(
         id="open_webapp",
         title="🛍️ Open Shop",
@@ -258,7 +218,6 @@ def _build_webapp_article(bot_username: str, web_app_url: str) -> InlineQueryRes
             parse_mode="Markdown",
         ),
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🛍️ Open Web App", url=clean_web_app_url),
             InlineKeyboardButton("🤖 Open in Bot", url=deep_link),
         ]]),
     )
@@ -655,10 +614,8 @@ async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFA
         caption_text = f"📦 *{title_escaped}*\n📂 {category_escaped}"
 
         # Build action buttons using correct domain
-        storefront_url, bot_deep_link = _build_product_url(product_id, bot_username)
+        bot_deep_link = _build_product_url(product_id, bot_username)
         buttons = []
-        if storefront_url:
-            buttons.append(InlineKeyboardButton("🛍️ View in Web App", url=storefront_url))
         if bot_deep_link:
             buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
         reply_markup = InlineKeyboardMarkup([buttons]) if buttons else None
