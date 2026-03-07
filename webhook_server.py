@@ -493,6 +493,7 @@ app = FastAPI(
 
 # Add middleware to set cache headers for static files
 from fastapi.middleware import Middleware
+from fastapi.middleware.gzip import GZipMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
 _WP_BLOCKED_PATHS = (
@@ -555,6 +556,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 app.add_middleware(CacheControlMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(WordPressBlockMiddleware)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Jinja2 templates for SSR/SEO pages
 templates = Jinja2Templates(directory="webapp")

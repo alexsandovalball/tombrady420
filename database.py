@@ -382,6 +382,12 @@ class Database:
             # Translation cache indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_translation_cache_lookup ON translation_cache(source_text, source_lang, target_lang)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_translation_cache_last_used ON translation_cache(last_used DESC)")
+
+            # Bot file ID cache indexes
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_file_id_cache_bot_username ON bot_file_id_cache(bot_username)")
+
+            # Bot users language index
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_language_code ON bot_users(language_code)")
             
             logger.info("Database indexes created successfully")
             
@@ -708,12 +714,15 @@ class Database:
         """
         Get all products for fuzzy search (no pagination).
         Excludes products from Dated Proofs, Client Touchdowns, and Announcements categories.
+        Only fetches columns needed for search and inline result building.
         """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
 
             query = f"""
-                SELECT * FROM products 
+                SELECT id, caption, category, subcategory, file_id, file_type,
+                       bot_username, chat_id, message_id, created_at
+                FROM products
                 WHERE (category IS NULL OR category = '' OR category NOT IN ({_EXCLUDED_PLACEHOLDERS}))
                 ORDER BY created_at DESC
             """

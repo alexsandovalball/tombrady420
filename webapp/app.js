@@ -15,9 +15,9 @@
         VIDEO_THUMBNAIL_SEEK_PERCENT: 0.1,  // 10% of duration
         VIDEO_BOUNDS_BUFFER: 0.1,  // Buffer to stay within video bounds
         VIDEO_SHORT_DURATION_THRESHOLD: 0.5,  // Videos shorter than this use proportional seek
-        VIDEO_LOAD_TIMEOUT_MS: 15000,  // Timeout before showing tap-to-play for slow videos
+        VIDEO_LOAD_TIMEOUT_MS: 10000,  // Timeout before showing tap-to-play for slow videos
         USER_DATA_CHECK_INTERVALS: [300, 700, 1500],  // Retry intervals in ms for user data loading
-        SEARCH_DEBOUNCE_MS: 400,  // Debounce time for search input
+        SEARCH_DEBOUNCE_MS: 300,  // Debounce time for search input
         WEBAPP_CLOSE_DELAY_MS: 1500,  // Delay before closing webapp after successful product send
         ERROR_DISPLAY_MS: 4000,  // Duration to show error messages on buttons
         INITIAL_DATA_TIMEOUT_MS: 10000,  // Timeout for initial data load to prevent infinite loading
