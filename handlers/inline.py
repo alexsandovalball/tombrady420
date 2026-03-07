@@ -181,9 +181,10 @@ async def _resolve_file_id_for_inline(
 ) -> Optional[str]:
     """Return a file_id usable by the current bot for the given product.
 
-    Only consults the persistent DB cache – does **not** trigger an expensive
-    message-forward so that inline query latency stays low.  Returns ``None``
-    if no bot-specific file_id is available.
+    Checks the persistent DB cache first; on a cache miss, triggers a
+    message-forward via ``get_bot_specific_file_id`` to populate the cache
+    and returns the resolved file_id.  Returns ``None`` only if forwarding
+    explicitly fails or the product has no media.
     """
     raw_file_id = product.get("file_id")
     if not raw_file_id:
@@ -200,8 +201,8 @@ async def _resolve_file_id_for_inline(
     if product_bot and current_bot and product_bot == current_bot:
         return raw_file_id
 
-    # Different (or unknown) bot – check the persistent DB cache for a
-    # bot-specific file_id without triggering a costly forward.
+    # Different (or unknown) bot – check the persistent DB cache first; on a
+    # miss, trigger forwarding to populate the cache for future queries.
     chat_id = product.get("chat_id")
     message_id = product.get("message_id")
     if chat_id and message_id and current_bot:
@@ -209,13 +210,38 @@ async def _resolve_file_id_for_inline(
             cached = await db.get_bot_file_id(chat_id, message_id, 0, current_bot)
             if cached:
                 return cached
+
+            # Cache miss: trigger forwarding to populate cache.
             logger.debug(
-                "DB cache miss for inline file_id: product=%s bot=%s – will fall back to article result",
+                "DB cache miss for inline file_id: product=%s bot=%s – triggering forward",
                 product.get("id"),
                 current_bot,
             )
+
+            file_type = product.get("file_type")
+            if file_type in ("photo", "video"):
+                resolved = await get_bot_specific_file_id(
+                    context,
+                    chat_id,
+                    message_id,
+                    file_type,
+                    file_index=0,
+                )
+                if resolved:
+                    logger.debug(
+                        "Successfully resolved file_id for inline: product=%s bot=%s",
+                        product.get("id"),
+                        current_bot,
+                    )
+                    return resolved
+                else:
+                    logger.warning(
+                        "Failed to resolve file_id for inline: product=%s bot=%s",
+                        product.get("id"),
+                        current_bot,
+                    )
         except Exception as exc:
-            logger.debug("DB cache lookup failed for inline file_id: %s", exc)
+            logger.warning("Error resolving file_id for inline: %s", exc, exc_info=True)
 
     # No bot-specific file_id available – caller will fall back to article.
     return None
@@ -635,6 +661,10 @@ async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFA
                 product_bot = product.get("bot_username")
                 current_bot_username = bot_username or context.bot.username
                 if product_bot and current_bot_username and product_bot.lower() != current_bot_username.lower():
+                    logger.debug(
+                        "Product %s indexed by different bot (%s), resolving for %s",
+                        product_id, product_bot, current_bot_username,
+                    )
                     bot_specific_id = await get_bot_specific_file_id(
                         context,
                         product.get("chat_id"),
@@ -644,8 +674,20 @@ async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFA
                     )
                     if bot_specific_id:
                         file_id = bot_specific_id
+                        logger.debug("Resolved bot-specific file_id for product %s", product_id)
+                    else:
+                        logger.warning(
+                            "Failed to resolve bot-specific file_id for product %s - will attempt with original file_id",
+                            product_id,
+                        )
 
-                if file_type == "photo":
+                # Validate file_id before attempting send.
+                if not file_id:
+                    logger.error(
+                        "file_id is None for product %s (file_type=%s), cannot send media",
+                        product_id, file_type,
+                    )
+                elif file_type == "photo":
                     await context.bot.send_photo(
                         chat_id=user_id,
                         photo=file_id,
@@ -655,6 +697,7 @@ async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFA
                         disable_notification=True,
                     )
                     media_sent = True
+                    logger.debug("Sent photo for product %s to user %s", product_id, user_id)
                 elif file_type == "video":
                     await context.bot.send_video(
                         chat_id=user_id,
@@ -665,9 +708,11 @@ async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFA
                         disable_notification=True,
                     )
                     media_sent = True
+                    logger.debug("Sent video for product %s to user %s", product_id, user_id)
             except Exception as media_error:
-                logger.warning(
-                    "Failed to send media preview for product %s: %s", product_id, media_error
+                logger.error(
+                    "Failed to send media preview for product %s: %s (file_id=%s, file_type=%s)",
+                    product_id, media_error, file_id, file_type, exc_info=True,
                 )
 
         if not media_sent:
