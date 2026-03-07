@@ -1126,24 +1126,30 @@ async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Import the cache clearing function
         from utils.helpers import clear_file_id_cache
         
-        # Clear the cache
+        # Clear the database cache
         deleted_count = await clear_file_id_cache()
+
+        # Also clear in-memory caches in webhook_server
+        try:
+            from webhook_server import clear_in_memory_caches
+            cleared_memory = clear_in_memory_caches()
+            memory_msg = f"\nCleared {cleared_memory} in-memory cache entries."
+        except ImportError:
+            memory_msg = ""
         
         try:
             await update.message.reply_text(
                 f"✅ **File ID cache cleared successfully!**\n\n"
-                f"Removed {deleted_count} cached file ID entries.\n"
-                f"Old product entries will now refresh their media on next view.\n"
-                f"This is useful after adding secondary bots as channel admins.",
+                f"Removed {deleted_count} database cache entries.{memory_msg}\n"
+                f"Media will be re-fetched on next access.",
                 parse_mode="Markdown"
             )
         except BadRequest as e:
             logger.warning(f"Markdown parse error in clearcache_command, retrying without parse_mode: {e}")
             await update.message.reply_text(
                 f"✅ File ID cache cleared successfully!\n\n"
-                f"Removed {deleted_count} cached file ID entries.\n"
-                f"Old product entries will now refresh their media on next view.\n"
-                f"This is useful after adding secondary bots as channel admins."
+                f"Removed {deleted_count} database cache entries.{memory_msg}\n"
+                f"Media will be re-fetched on next access."
             )
         logger.info(f"Admin {user_id} cleared the file ID cache ({deleted_count} entries)")
         

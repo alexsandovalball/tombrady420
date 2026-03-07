@@ -278,6 +278,20 @@ def _api_result_cache_set(key: str, payload: str) -> None:
     if len(_api_result_cache) > _API_RESULT_CACHE_MAX:
         _api_result_cache.popitem(last=False)
 
+
+def clear_in_memory_caches() -> int:
+    """Clear all in-memory caches. Returns total entries cleared."""
+    global _resolved_file_id_cache, _media_info_cache, _api_result_cache
+
+    total = len(_resolved_file_id_cache) + len(_media_info_cache) + len(_api_result_cache)
+
+    _resolved_file_id_cache.clear()
+    _media_info_cache.clear()
+    _api_result_cache.clear()
+
+    logger.info(f"Cleared {total} in-memory cache entries")
+    return total
+
 def get_bot_applications() -> List[Application]:
     """Get all bot application instances."""
     return _bot_applications
@@ -329,6 +343,25 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     # IMPORTANT: Must be called before any bot API methods (like set_my_commands)
     await bot_app.initialize()
     await bot_app.start()
+
+    # Detect token changes and clear stale file ID cache if needed
+    try:
+        bot_username = bot_app.bot.username
+        bot_id = bot_app.bot.id
+        token_hash = hashlib.sha256(bot_token.encode()).hexdigest()[:16]
+
+        from database import Database
+        _db = Database()
+        if await _db.has_bot_token_changed(bot_username, token_hash):
+            logger.warning(
+                f"Bot token changed for @{bot_username}! Clearing stale file ID cache..."
+            )
+            cleared = await _db.clear_bot_file_id_cache_for_bot(bot_username)
+            logger.info(f"Cleared {cleared} stale cache entries for @{bot_username}")
+
+        await _db.register_bot_instance(bot_username, bot_id, token_hash)
+    except Exception as e:
+        logger.warning(f"Could not perform bot token change detection: {e}")
     
     # Initialize database and set bot commands (only once for the primary bot)
     # NOTE: This must happen AFTER bot_app.initialize() to avoid "Frozen_method_invalid" errors
