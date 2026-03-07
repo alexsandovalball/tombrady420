@@ -15,6 +15,7 @@ from telegram import (
     InlineQueryResult,
     InlineQueryResultArticle,
     InlineQueryResultCachedPhoto,
+    InlineQueryResultCachedVideo,
     InputTextMessageContent,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -24,7 +25,7 @@ from telegram.ext import ContextTypes
 from database import Database
 from configs.config import Config
 from utils.fuzzy_search import fuzzy_search_products
-from utils.helpers import get_bot_username, escape_markdown_v1
+from utils.helpers import get_bot_username, escape_markdown_v1, get_bot_specific_file_id
 from utils.categories import get_all_categories
 
 logger = logging.getLogger(__name__)
@@ -85,14 +86,15 @@ async def _build_product_article(
     """Build an inline result for a single product.
 
     For photo products, returns an ``InlineQueryResultCachedPhoto`` so that
-    the image thumbnail is rendered directly in the inline picker.  If the
-    product was indexed by a different bot instance (multi-bot deployment) we
-    consult the persistent DB cache for a bot-specific file_id; if none is
-    available we fall back to ``InlineQueryResultArticle`` (with a
-    ``thumbnail_url`` when the storefront domain is configured).
+    the image thumbnail is rendered directly in the inline picker.  For video
+    products, returns an ``InlineQueryResultCachedVideo`` so the video preview
+    appears in the picker.  If the product was indexed by a different bot
+    instance (multi-bot deployment) we consult the persistent DB cache for a
+    bot-specific file_id; if none is available we fall back to
+    ``InlineQueryResultArticle`` (with a ``thumbnail_url`` when the storefront
+    domain is configured).
 
-    For non-photo products we always return an ``InlineQueryResultArticle``,
-    optionally with a ``thumbnail_url`` constructed from the storefront URL.
+    For products without media we always return an ``InlineQueryResultArticle``.
     """
     product_id = product.get("id")
     caption = product.get("caption") or ""
@@ -127,26 +129,37 @@ async def _build_product_article(
         f"📂 {category_escaped}"
     )
 
-    # --- Attempt rich media result for photo products ---
-    if file_type == "photo":
+    # --- Attempt rich media result for photo/video products ---
+    if file_type in ("photo", "video"):
         resolved_file_id = await _resolve_file_id_for_inline(product, context)
         if resolved_file_id:
-            return InlineQueryResultCachedPhoto(
-                id=f"product_{product_id}",
-                photo_file_id=resolved_file_id,
-                title=title,
-                description=description,
-                caption=caption_text,
-                parse_mode="Markdown",
-                reply_markup=reply_markup,
-            )
+            if file_type == "photo":
+                return InlineQueryResultCachedPhoto(
+                    id=f"product_{product_id}",
+                    photo_file_id=resolved_file_id,
+                    title=title,
+                    description=description,
+                    caption=caption_text,
+                    parse_mode="Markdown",
+                    reply_markup=reply_markup,
+                )
+            else:  # video
+                return InlineQueryResultCachedVideo(
+                    id=f"product_{product_id}",
+                    video_file_id=resolved_file_id,
+                    title=title,
+                    description=description,
+                    caption=caption_text,
+                    parse_mode="Markdown",
+                    reply_markup=reply_markup,
+                )
 
     # --- Fallback: article with thumbnail from storefront ---
     # Use the storefront /api/catalog URL for the thumbnail so the image loads
     # quickly for the (up to INLINE_PAGE_SIZE) results shown.
     thumbnail_url: Optional[str] = None
     storefront_domain = Config.STOREFRONT_DOMAIN or (Config.WEBHOOK_URL or "").rstrip('/')
-    if storefront_domain and file_type == "photo":
+    if storefront_domain and file_type in ("photo", "video"):
         thumbnail_url = f"{storefront_domain.rstrip('/')}/api/catalog/{product_id}/media/0"
 
     return InlineQueryResultArticle(
@@ -353,25 +366,20 @@ async def _process_inline_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     start_time = time.monotonic()
     query = (inline_query.query or "").strip()
-    # Pagination: Telegram passes the value we set as next_offset back as offset
-    try:
-        offset = max(0, int(inline_query.offset)) if inline_query.offset else 0
-    except (ValueError, TypeError):
-        offset = 0
     user_id = inline_query.from_user.id
     bot_username = get_bot_username(context) or ""
 
     logger.info(
-        "Inline query from user %s via bot @%s: %r (offset=%s)",
+        "Inline query from user %s via bot @%s: %r",
         user_id,
         bot_username,
         query,
-        offset,
     )
 
     try:
         if query:
-            results, next_offset = await _handle_query_search(query, bot_username, context, offset)
+            results = await _handle_query_search(query, bot_username, context)
+            next_offset = ""
             is_empty = False
         else:
             results = await _handle_empty_query(bot_username, context)
@@ -476,12 +484,10 @@ async def _handle_query_search(
     query: str,
     bot_username: str,
     context: ContextTypes.DEFAULT_TYPE,
-    offset: int = 0,
-) -> tuple[List[InlineQueryResult], str]:
-    """Return fuzzy-search results for a non-empty query with pagination.
+) -> List[InlineQueryResult]:
+    """Return fuzzy-search results for a non-empty query (no pagination).
 
-    Returns ``(results, next_offset)`` where ``next_offset`` is an empty string
-    when there are no more results.
+    Returns at most ``INLINE_PAGE_SIZE`` results.  Pagination is disabled.
 
     Supports query prefixes:
     - cat:name or category:name -> search by category
@@ -535,28 +541,22 @@ async def _handle_query_search(
         # Return a friendly 'no results' article
         # Escape user query to prevent Markdown injection
         query_escaped = escape_markdown_v1(query)
-        return (
-            [
-                InlineQueryResultArticle(
-                    id="no_results",
-                    title="❌ No products found",
-                    description=f'No results for "{query}"',
-                    input_message_content=InputTextMessageContent(
-                        message_text=f"❌ No products found for *{query_escaped}*.",
-                        parse_mode="Markdown",
-                    ),
-                )
-            ],
-            "",
-        )
+        return [
+            InlineQueryResultArticle(
+                id="no_results",
+                title="❌ No products found",
+                description=f'No results for "{query}"',
+                input_message_content=InputTextMessageContent(
+                    message_text=f"❌ No products found for *{query_escaped}*.",
+                    parse_mode="Markdown",
+                ),
+            )
+        ]
 
-    # Apply pagination: slice _INLINE_PAGE_SIZE results from the current offset
-    page_items = matched[offset: offset + _INLINE_PAGE_SIZE]
-    next_page_start = offset + _INLINE_PAGE_SIZE
-    next_offset = str(next_page_start) if next_page_start < len(matched) else ""
-
+    # Cap before building articles so we don't do unnecessary async work.
+    page_items = matched[:INLINE_PAGE_SIZE]
     results = list(await asyncio.gather(*[_build_product_article(p, bot_username, context) for p in page_items]))
-    return results, next_offset
+    return results
 
 
 async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -620,25 +620,63 @@ async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFA
         buttons = []
         if bot_deep_link:
             buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
+        if Config.WEB_APP_URL:
+            buttons.append(InlineKeyboardButton("🌐 Open WebApp", url=Config.WEB_APP_URL))
         reply_markup = InlineKeyboardMarkup([buttons]) if buttons else None
 
         file_id = product.get("file_id")
         file_type = product.get("file_type") or ""
+        media_sent = False
 
-        if file_id and file_type == "photo":
-            await context.bot.send_photo(
-                chat_id=user_id,
-                photo=file_id,
-                caption=caption_text,
-                parse_mode="Markdown",
-                reply_markup=reply_markup,
-            )
-        else:
+        if file_id and file_type in ("photo", "video"):
+            try:
+                # If the product was indexed by a different bot instance, attempt
+                # to resolve a file_id that is valid for the current bot.
+                product_bot = product.get("bot_username")
+                current_bot_username = bot_username or context.bot.username
+                if product_bot and current_bot_username and product_bot.lower() != current_bot_username.lower():
+                    bot_specific_id = await get_bot_specific_file_id(
+                        context,
+                        product.get("chat_id"),
+                        product.get("message_id"),
+                        file_type,
+                        file_index=0,
+                    )
+                    if bot_specific_id:
+                        file_id = bot_specific_id
+
+                if file_type == "photo":
+                    await context.bot.send_photo(
+                        chat_id=user_id,
+                        photo=file_id,
+                        caption=caption_text,
+                        parse_mode="Markdown",
+                        reply_markup=reply_markup,
+                        disable_notification=True,
+                    )
+                    media_sent = True
+                elif file_type == "video":
+                    await context.bot.send_video(
+                        chat_id=user_id,
+                        video=file_id,
+                        caption=caption_text,
+                        parse_mode="Markdown",
+                        reply_markup=reply_markup,
+                        disable_notification=True,
+                    )
+                    media_sent = True
+            except Exception as media_error:
+                logger.warning(
+                    "Failed to send media preview for product %s: %s", product_id, media_error
+                )
+
+        if not media_sent:
             await context.bot.send_message(
                 chat_id=user_id,
                 text=caption_text,
                 parse_mode="Markdown",
                 reply_markup=reply_markup,
+                disable_notification=True,
             )
     except Exception as exc:
         # Common failure: user hasn't started the bot yet – silently ignore.
