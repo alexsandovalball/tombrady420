@@ -387,7 +387,7 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_file_id_cache_bot_username ON bot_file_id_cache(bot_username)")
 
             # Bot users language index
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_language_code ON bot_users(language_code)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_language_code ON bot_users(language)")
             
             logger.info("Database indexes created successfully")
             
