@@ -18,7 +18,7 @@ import tempfile
 from collections import OrderedDict
 from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -40,6 +40,8 @@ from database import Database
 from utils.helpers import get_channel_id, get_channel_username, get_file_id_cache_size, get_bot_specific_file_id, register_bot_handlers
 from utils.categories import get_all_categories, get_category_display_name, get_subcategory_display_name, get_subcategories, EXCLUDED_FROM_ALL_PRODUCTS
 from translations.translator import get_translated_string_async, translation_service
+from utils.metrics import metrics
+from configs.telegram_ip_whitelist import is_telegram_ip
 
 # Configure logging
 from configs.logging_config import configure_logging
@@ -296,6 +298,93 @@ def get_bot_applications() -> List[Application]:
     """Get all bot application instances."""
     return _bot_applications
 
+# ---------------------------------------------------------------------------
+# Bot-config hot-reload (configs/bots.json)
+# ---------------------------------------------------------------------------
+# Operators can override the runtime-generated secret tokens by placing a
+# configs/bots.json file (git-ignored; see configs/bots.example.json).
+# The server reloads this file every 30 s so that bot replacements or
+# secret-token rotations take effect without a full container restart.
+#
+# Schema (array under "bots" key):
+#   { "bot_index": 0, "bot_username": "ExampleBot", "secret_token": "…" }
+#
+# When an entry is present for a given bot_index, its secret_token OVERRIDES
+# the runtime-generated token that was registered with Telegram at startup.
+# If the file does not exist or an entry is missing, the runtime token is used.
+
+_BOTS_CONFIG_PATH = Path(__file__).parent / "configs" / "bots.json"
+
+# Populated by _load_bots_config() and refreshed by the background loop.
+# Maps bot_index (int) → secret_token (str | None)
+_bots_config_tokens: Dict[int, Optional[str]] = {}
+_bots_config_lock = asyncio.Lock()
+
+
+def _load_bots_config() -> Dict[int, Optional[str]]:
+    """Synchronously load configs/bots.json; return mapping of bot_index → token.
+
+    Returns an empty dict if the file does not exist (fall-through to runtime tokens).
+    Errors are logged and an empty dict is returned so callers degrade gracefully.
+    """
+    if not _BOTS_CONFIG_PATH.exists():
+        return {}
+    try:
+        with _BOTS_CONFIG_PATH.open(encoding="utf-8") as fh:
+            data = json.load(fh)
+        mapping: Dict[int, Optional[str]] = {}
+        for entry in data.get("bots", []):
+            idx = entry.get("bot_index")
+            tok = entry.get("secret_token") or None
+            if isinstance(idx, int) and tok:
+                mapping[idx] = tok
+        return mapping
+    except Exception as exc:
+        logger.error("[bots_config] Failed to load %s: %s", _BOTS_CONFIG_PATH, exc)
+        return {}
+
+
+async def _bots_config_reload_loop() -> None:
+    """Background task: reload configs/bots.json every 30 s.
+
+    File I/O is dispatched to a thread pool via asyncio.to_thread() to avoid
+    blocking the event loop during the synchronous open() call.
+    """
+    global _bots_config_tokens
+    while True:
+        await asyncio.sleep(30)
+        try:
+            new_mapping = await asyncio.to_thread(_load_bots_config)
+        except Exception as exc:
+            logger.error("[bots_config] Reload failed: %s", exc)
+            continue
+        async with _bots_config_lock:
+            _bots_config_tokens = new_mapping
+        if new_mapping:
+            logger.debug("[bots_config] Reloaded %d bot token override(s)", len(new_mapping))
+
+
+def _get_expected_secret_token(
+    bot_index: int,
+    runtime_tokens: List[Optional[str]],
+) -> Optional[str]:
+    """Return the expected secret token for *bot_index*.
+
+    Priority:
+      1. Override from configs/bots.json (hot-reloadable, no restart required)
+      2. Runtime token generated at startup by setup_application()
+    """
+    # Check hot-reloadable override first
+    override = _bots_config_tokens.get(bot_index)
+    if override:
+        return override
+    # Fall back to runtime-generated token
+    if bot_index < len(runtime_tokens):
+        return runtime_tokens[bot_index]
+    return None
+
+
+
 def get_bot_usernames() -> List[str]:
     """Get list of bot usernames for all registered bots (normalized to lowercase)."""
     usernames = []
@@ -474,6 +563,18 @@ async def lifespan(app: FastAPI):
 
     # Initialize the per-IP rate limiter with hardcoded defaults (100 req/min)
     app.state.webhook_rate_limiter = WebhookIPRateLimiter()
+
+    # Load bot-config overrides from configs/bots.json (if present) at startup
+    global _bots_config_tokens
+    _bots_config_tokens = _load_bots_config()
+    if _bots_config_tokens:
+        logger.info(
+            "[bots_config] Loaded %d bot token override(s) from %s",
+            len(_bots_config_tokens),
+            _BOTS_CONFIG_PATH,
+        )
+    else:
+        logger.debug("[bots_config] No bots.json overrides found; using runtime tokens")
     
     # Log bot usernames for debugging
     for idx, bot_app in enumerate(bot_apps):
@@ -496,6 +597,7 @@ async def lifespan(app: FastAPI):
     _bg_tasks = [
         asyncio.create_task(_media_cache_prune_loop(), name="media_cache_prune"),
         asyncio.create_task(_wal_checkpoint_loop(), name="wal_checkpoint"),
+        asyncio.create_task(_bots_config_reload_loop(), name="bots_config_reload"),
     ]
 
     yield
@@ -1215,6 +1317,7 @@ async def get_categories(request: Request, lang: str = "en"):
     Returns the hierarchical category structure matching the bot's menu.
     Supports translations via lang parameter.
     """
+    _t0 = _time.monotonic()
     _get_validated_init_data(request, allow_preview=True)
 
     # Check in-memory result cache
@@ -1224,6 +1327,7 @@ async def get_categories(request: Request, lang: str = "en"):
         payload, ts = cached_entry
         if _time.monotonic() - ts < _API_RESULT_CACHE_TTL:
             _api_result_cache.move_to_end(cache_key)
+            metrics.record("api_categories", (_time.monotonic() - _t0) * 1000)
             return Response(
                 content=payload,
                 media_type="application/json",
@@ -1295,6 +1399,7 @@ async def get_categories(request: Request, lang: str = "en"):
 
     # Return with a short cache hint: categories change infrequently so clients
     # can reuse the response for up to 60 seconds before revalidating.
+    metrics.record("api_categories", (_time.monotonic() - _t0) * 1000)
     return Response(
         content=payload,
         media_type="application/json",
@@ -1316,6 +1421,7 @@ async def get_products(
     If no filters provided, returns all products (excluding EXCLUDED_FROM_ALL_PRODUCTS).
     Supports translations via lang parameter.
     """
+    _t0 = _time.monotonic()
     _get_validated_init_data(request, allow_preview=True)
     bot = _get_primary_bot(request, required=False)
     
@@ -1330,6 +1436,7 @@ async def get_products(
         payload, ts = cached_entry
         if _time.monotonic() - ts < _API_RESULT_CACHE_TTL:
             _api_result_cache.move_to_end(cache_key)
+            metrics.record("api_products", (_time.monotonic() - _t0) * 1000)
             return Response(
                 content=payload,
                 media_type="application/json",
@@ -1390,6 +1497,7 @@ async def get_products(
 
     _api_result_cache_set(cache_key, payload)
 
+    metrics.record("api_products", (_time.monotonic() - _t0) * 1000)
     return Response(
         content=payload,
         media_type="application/json",
@@ -2013,12 +2121,10 @@ async def process_webhook_request(request: Request, bot_index: int):
     Returns:
         A fastapi.Response with an appropriate HTTP status code.
     """
-    # --- Rate limiting (per real client IP) ---
+    # --- Resolve real client IP ---
     # When the server sits behind a reverse proxy or CDN (common with custom domains),
     # request.client.host is the proxy's IP.  Use X-Forwarded-For / X-Real-IP to
     # recover the originating IP so each real caller gets its own rate-limit bucket.
-    # Requests where no IP can be determined are grouped under "unknown" — they are
-    # still subject to rate limiting (all share one bucket), not bypassed.
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
         # X-Forwarded-For may be a comma-separated list; the leftmost entry is the client
@@ -2028,23 +2134,34 @@ async def process_webhook_request(request: Request, bot_index: int):
             request.headers.get("X-Real-IP")
             or (request.client.host if request.client else "unknown")
         )
-    rate_limiter: Optional[WebhookIPRateLimiter] = getattr(
-        request.app.state, "webhook_rate_limiter", None
-    )
-    if rate_limiter is not None:
-        if not await rate_limiter.is_allowed(client_ip):
-            logger.warning(f"Rate limit exceeded for IP {client_ip} on /webhook bot {bot_index}")
-            return Response(status_code=status.HTTP_429_TOO_MANY_REQUESTS)
+
+    # --- Rate limiting: skip for Telegram IPs, apply for everyone else ---
+    # Telegram-originating IPs are whitelisted and never rate-limited on the
+    # webhook path — they are already authenticated by the secret-token check below.
+    # Requests from non-Telegram IPs (including scanners and curious humans) are
+    # subject to the per-IP rate limiter to limit abuse.
+    from_telegram = is_telegram_ip(client_ip)
+    if not from_telegram:
+        rate_limiter: Optional[WebhookIPRateLimiter] = getattr(
+            request.app.state, "webhook_rate_limiter", None
+        )
+        if rate_limiter is not None:
+            if not await rate_limiter.is_allowed(client_ip):
+                logger.warning(
+                    "Rate limit exceeded for non-Telegram IP %s on /webhook bot %d",
+                    client_ip,
+                    bot_index,
+                )
+                return Response(status_code=status.HTTP_429_TOO_MANY_REQUESTS)
 
     # --- Secret token verification ---
-    secret_tokens: List[Optional[str]] = getattr(
+    # Use _get_expected_secret_token() so that configs/bots.json overrides are
+    # applied (hot-reloadable every 30 s) before falling back to runtime tokens.
+    runtime_tokens: List[Optional[str]] = getattr(
         request.app.state, "webhook_secret_tokens", []
     )
-    expected_token: Optional[str] = (
-        secret_tokens[bot_index]
-        if bot_index < len(secret_tokens)
-        else None
-    )
+    expected_token: Optional[str] = _get_expected_secret_token(bot_index, runtime_tokens)
+
     if expected_token:
         incoming_token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
         # compare_digest requires both operands to be the same type; guard against
@@ -2052,14 +2169,24 @@ async def process_webhook_request(request: Request, bot_index: int):
         if not isinstance(incoming_token, str) or not secrets.compare_digest(
             incoming_token.encode(), expected_token.encode()
         ):
-            logger.warning(
-                f"Invalid or missing X-Telegram-Bot-Api-Secret-Token from IP {client_ip} "
-                f"for bot {bot_index}"
+            # Log a header-level summary for easy searching without exposing the token.
+            # Tag: [WEBHOOK_401] — grep-friendly for alerting pipelines.
+            header_present = isinstance(incoming_token, str)
+            header_length = len(incoming_token) if header_present else 0
+            logger_security.warning(
+                "[WEBHOOK_401] bot=%d ip=%s telegram_ip=%s "
+                "header_present=%s header_length=%d",
+                bot_index,
+                client_ip,
+                from_telegram,
+                header_present,
+                header_length,
             )
             return Response(status_code=status.HTTP_401_UNAUTHORIZED)
     else:
         logger.debug(
-            f"No secret token configured for bot {bot_index}; skipping header verification."
+            "No secret token configured for bot %d; skipping header verification.",
+            bot_index,
         )
 
     if not hasattr(request.app.state, "bot_apps") or not request.app.state.bot_apps:
@@ -2124,6 +2251,26 @@ async def webhook_indexed(request: Request, bot_index: int):
 async def health():
     """Health check endpoint for deployment platforms."""
     return {"status": "healthy"}
+
+
+@app.get("/_internal/metrics")
+async def internal_metrics():
+    """Return per-endpoint latency metrics (count, avg_ms, p95_ms).
+
+    This endpoint is intended for internal monitoring and alerting only.
+    The data is per-process and best-effort in multi-worker deployments.
+
+    Example response::
+
+        {
+            "uptime_seconds": 3600.5,
+            "endpoints": {
+                "api_products": {"count": 120, "avg_ms": 245.3, "p95_ms": 498.7},
+                "api_categories": {"count": 45, "avg_ms": 180.1, "p95_ms": 390.2}
+            }
+        }
+    """
+    return metrics.snapshot()
 
 
 if __name__ == "__main__":

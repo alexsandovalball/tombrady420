@@ -269,3 +269,117 @@ class TestGlobalRateLimiter:
         for _ in range(100):
             resp = client.get("/api/x", headers={"X-Real-IP": "8.8.8.8"})
             assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# TelegramIPWhitelist tests
+# ---------------------------------------------------------------------------
+
+class TestTelegramIPWhitelist:
+    """Tests for configs.telegram_ip_whitelist.is_telegram_ip()."""
+
+    def test_known_telegram_ips_match(self):
+        from configs.telegram_ip_whitelist import is_telegram_ip
+        # 91.108.x.x is a well-known Telegram subnet
+        assert is_telegram_ip("91.108.5.11") is True
+        assert is_telegram_ip("91.108.5.120") is True
+        assert is_telegram_ip("91.108.5.34") is True
+        assert is_telegram_ip("149.154.160.1") is True
+
+    def test_non_telegram_ips_excluded(self):
+        from configs.telegram_ip_whitelist import is_telegram_ip
+        assert is_telegram_ip("8.8.8.8") is False
+        assert is_telegram_ip("1.1.1.1") is False
+        assert is_telegram_ip("31.13.115.10") is False
+
+    def test_unknown_string_returns_false(self):
+        from configs.telegram_ip_whitelist import is_telegram_ip
+        assert is_telegram_ip("unknown") is False
+        assert is_telegram_ip("") is False
+        assert is_telegram_ip("not-an-ip") is False
+
+
+# ---------------------------------------------------------------------------
+# MetricsCollector tests
+# ---------------------------------------------------------------------------
+
+class TestMetricsCollector:
+    """Tests for utils.metrics.MetricsCollector."""
+
+    def setup_method(self):
+        from utils.metrics import MetricsCollector
+        self.m = MetricsCollector()
+
+    def test_record_and_snapshot_single(self):
+        self.m.record("ep1", 100.0)
+        snap = self.m.snapshot()
+        assert "ep1" in snap["endpoints"]
+        assert snap["endpoints"]["ep1"]["count"] == 1
+        assert snap["endpoints"]["ep1"]["avg_ms"] == pytest.approx(100.0)
+
+    def test_avg_computed_correctly(self):
+        self.m.record("ep", 100.0)
+        self.m.record("ep", 200.0)
+        snap = self.m.snapshot()
+        assert snap["endpoints"]["ep"]["avg_ms"] == pytest.approx(150.0)
+
+    def test_p95_approximation(self):
+        # 20 values: 10 at 100ms, 10 at 900ms → p95 should be in the high bucket
+        for _ in range(10):
+            self.m.record("ep", 100.0)
+        for _ in range(10):
+            self.m.record("ep", 900.0)
+        snap = self.m.snapshot()
+        assert snap["endpoints"]["ep"]["p95_ms"] >= 800.0
+
+    def test_reset_clears_data(self):
+        self.m.record("ep", 200.0)
+        self.m.reset()
+        snap = self.m.snapshot()
+        assert snap["endpoints"] == {}
+
+    def test_uptime_positive(self):
+        snap = self.m.snapshot()
+        assert snap["uptime_seconds"] >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# PIIRedactFilter tests
+# ---------------------------------------------------------------------------
+
+class TestPIIRedactFilter:
+    """Tests for utils.logging_filters.PIIRedactFilter."""
+
+    def _apply(self, msg: str) -> str:
+        import logging
+        from utils.logging_filters import PIIRedactFilter
+        f = PIIRedactFilter()
+        record = logging.LogRecord("t", logging.INFO, "", 0, msg, (), None)
+        f.filter(record)
+        return record.msg
+
+    def test_user_id_masked(self):
+        out = self._apply("user_id=8589411468 event=test")
+        assert "8589411468" not in out
+        assert "user_id=" in out  # prefix preserved
+
+    def test_username_masked(self):
+        out = self._apply("username=caliweed0caliplug0 event=test")
+        assert "caliplug0" not in out
+        assert "username=c***" in out
+
+    def test_photo_url_masked(self):
+        out = self._apply('photo_url="https://t.me/i/userpic/320/xyz.svg"')
+        assert "t.me" not in out
+        assert "<redacted>" in out
+
+    def test_no_pii_passes_through(self):
+        msg = "event=api_call action=load_categories status=success"
+        out = self._apply(msg)
+        assert out == msg
+
+    def test_multiple_pii_fields_in_one_message(self):
+        out = self._apply("user_id=123456 username=alice photo_url=\"http://x.com/a.jpg\"")
+        assert "123456" not in out
+        assert "alice" not in out  # only first char kept
+        assert "x.com" not in out
