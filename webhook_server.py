@@ -528,22 +528,86 @@ app = FastAPI(
 from fastapi.middleware import Middleware
 from fastapi.middleware.gzip import GZipMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from middleware.rate_limiter import GlobalRateLimiter
 
-_WP_BLOCKED_PATHS = (
+# Dedicated security logger – separate from the normal access log
+logger_security = logging.getLogger("security")
+
+# WordPress / CMS vulnerability scanner path patterns.
+# Checked via str.startswith() or substring match depending on the pattern.
+_WP_PREFIX_PATTERNS = (
     "/wp-admin",
-    "/wordpress",
-    "/wp-login.php",
     "/wp-includes",
     "/wp-content",
+    "/wp-login.php",
+    "/wp-config.php",
+    "/wp-json",
+    "/wordpress",
+    "/wp1",
+    "/wp2",
     "/xmlrpc.php",
+    "/setup-config.php",
+    "/.well-known/wp-",
+    "/blog/wp-",
+    "/web/wp-",
+    "/website/wp-",
+    "/news/wp-",
+    "/shop/wp-",
+    "/site/wp-",
+    "/cms/wp-",
+    "/sito/wp-",
+    "/test/wp-",
+    "/2019/wp-",
+    "/2020/wp-",
+    "/2021/wp-",
+    "/2022/wp-",
 )
 
-class WordPressBlockMiddleware(BaseHTTPMiddleware):
-    """Block requests targeting WordPress-specific paths used by vulnerability scanners."""
+# Substring patterns that can appear anywhere in the path
+_WP_SUBSTR_PATTERNS = (
+    "wlwmanifest.xml",
+)
+
+# Metrics counter – approximate (per-process, not shared across workers).
+# In a single asyncio event loop the increment is safe; in multi-worker
+# deployments each process maintains its own count, which is acceptable for
+# monitoring purposes.
+_wp_block_counter: int = 0
+
+
+class SecurityMiddleware(BaseHTTPMiddleware):
+    """Block WordPress/CMS vulnerability scanner requests at the earliest middleware layer.
+
+    Returns ``410 Gone`` (instead of ``404 Not Found``) to signal permanent removal,
+    which causes well-behaved scanners to drop this host from their target list.
+    All blocked requests are logged to the dedicated ``security`` logger.
+    """
+
     async def dispatch(self, request, call_next):
-        if request.url.path.startswith(_WP_BLOCKED_PATHS):
-            return Response(status_code=404)
+        global _wp_block_counter
+        path = request.url.path
+        path_lower = path.lower()
+
+        blocked = path_lower.startswith(_WP_PREFIX_PATTERNS) or any(
+            s in path_lower for s in _WP_SUBSTR_PATTERNS
+        )
+
+        if blocked:
+            _wp_block_counter += 1
+            client_ip = (
+                request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+                or request.headers.get("X-Real-IP")
+                or (request.client.host if request.client else "unknown")
+            )
+            ua = request.headers.get("User-Agent", "-")
+            logger_security.warning(
+                f"WordPress scan blocked – ip={client_ip} path={path} "
+                f"ua={ua!r} total_blocked={_wp_block_counter}"
+            )
+            return Response(status_code=410)
+
         return await call_next(request)
+
 
 class CacheControlMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
@@ -586,10 +650,18 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         
         return response
 
-app.add_middleware(CacheControlMiddleware)
-app.add_middleware(RequestLoggingMiddleware)
-app.add_middleware(WordPressBlockMiddleware)
+# Middleware stack – order matters: FastAPI applies these in reverse registration
+# order, so the last registered runs first.  We want:
+#   SecurityMiddleware (outermost – reject scans before any other work)
+#   GlobalRateLimiter
+#   CacheControlMiddleware
+#   RequestLoggingMiddleware
+#   GZipMiddleware (innermost)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(CacheControlMiddleware)
+app.add_middleware(GlobalRateLimiter)
+app.add_middleware(SecurityMiddleware)
 
 # Jinja2 templates for SSR/SEO pages
 templates = Jinja2Templates(directory="webapp")
