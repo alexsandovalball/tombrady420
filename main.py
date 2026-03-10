@@ -535,7 +535,15 @@ async def cleanup_task(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def post_init(application: Application, skip_commands: bool = False):
-    """Initialize database and start background tasks."""
+    """Initialize database and start background tasks.
+
+    Args:
+        application: The PTB Application instance.
+        skip_commands: If True, skip bot command setup.  This flag is kept for
+            backward compatibility but should not be used; always call
+            setup_bot_commands **before** set_webhook to avoid the
+            Frozen_method_invalid error (see webhook_server.setup_application).
+    """
     await db.init_db()
     logger.info("Database initialized")
     
@@ -543,7 +551,9 @@ async def post_init(application: Application, skip_commands: bool = False):
     translation_service.set_database(db)
     logger.info("Translation service configured with database caching")
     
-    # Set bot commands for the command menu (skip if called from webhook setup)
+    # Set bot commands for the command menu.
+    # NOTE: Must always be called BEFORE set_webhook; once set_webhook is called
+    # PTB marks the bot as frozen and subsequent API calls raise Frozen_method_invalid.
     if not skip_commands:
         await setup_bot_commands(application.bot)
     
