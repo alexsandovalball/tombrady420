@@ -50,3 +50,7 @@ temp_*
 htmlcov/
 .pytest_cache/
 .tox/
+
+# Live bot-token mapping — contains secrets; never commit the real file.
+# Copy configs/bots.example.json → configs/bots.json and fill in real values.
+configs/bots.json

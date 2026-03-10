@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "Copy this file to configs/bots.json (which is git-ignored) and fill in real values.",
+    "The server reloads bots.json every 30 s, so you can update bot tokens or usernames",
+    "without a full container restart — just edit the file and the new values take effect.",
+    "",
+    "Fields per bot entry:",
+    "  bot_index   : integer index matching the /webhook/{bot_index} path (0 = /webhook)",
+    "  bot_username: Telegram @username (without @), used for logging and file-ID routing",
+    "  secret_token: the X-Telegram-Bot-Api-Secret-Token expected in each webhook POST.",
+    "                If omitted or null the server falls back to the runtime-generated token.",
+    "",
+    "Update procedure when a bot is replaced / redeployed:",
+    "  1. Create a new bot via @BotFather and note the new token.",
+    "  2. Run setup_webhooks.py (or call setWebhook manually) with the new token.",
+    "     Pass a stable secret_token you choose (e.g. openssl rand -hex 32).",
+    "  3. Update the matching entry in configs/bots.json with the new secret_token.",
+    "  4. Within ~30 s the server picks up the new token — no restart required."
+  ],
+  "bots": [
+    {
+      "bot_index": 0,
+      "bot_username": "ExampleBot",
+      "secret_token": "REPLACE_WITH_REAL_SECRET_TOKEN_HEX_64_CHARS"
+    },
+    {
+      "bot_index": 1,
+      "bot_username": "ExampleBot2",
+      "secret_token": "REPLACE_WITH_REAL_SECRET_TOKEN_HEX_64_CHARS"
+    }
+  ]
+}
