@@ -534,7 +534,7 @@ async def cleanup_task(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error in cleanup task: {e}")
 
 
-async def post_init(application: Application):
+async def post_init(application: Application, skip_commands: bool = False):
     """Initialize database and start background tasks."""
     await db.init_db()
     logger.info("Database initialized")
@@ -543,8 +543,9 @@ async def post_init(application: Application):
     translation_service.set_database(db)
     logger.info("Translation service configured with database caching")
     
-    # Set bot commands for the command menu
-    await setup_bot_commands(application.bot)
+    # Set bot commands for the command menu (skip if called from webhook setup)
+    if not skip_commands:
+        await setup_bot_commands(application.bot)
     
     # Start cleanup task
     asyncio.create_task(cleanup_task(application))

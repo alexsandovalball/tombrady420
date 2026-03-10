@@ -364,9 +364,9 @@ async def setup_application(bot_token: str, bot_index: int = 0):
         logger.warning(f"Could not perform bot token change detection: {e}")
     
     # Initialize database (only once for the primary bot)
-    # NOTE: This must happen AFTER bot_app.initialize() to avoid "Frozen_method_invalid" errors
+    # NOTE: Skip command setup here - it will be done after webhook setup
     if bot_index == 0:
-        await post_init(bot_app)
+        await post_init(bot_app, skip_commands=True)
 
     # Set webhook with a freshly generated secret token so every deployment
     # automatically authenticates Telegram's requests without any env-var setup.
@@ -386,11 +386,8 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     else:
         logger.warning("WEBHOOK_URL not set. Webhook may not work properly.")
 
-    # Set bot commands AFTER webhook is configured
-    # For secondary bots (bot_index > 0), set commands here
-    # For primary bot (bot_index == 0), commands are set in post_init
-    if bot_index > 0:
-        await setup_bot_commands(bot_app.bot)
+    # Set bot commands AFTER webhook is configured for ALL bots (primary and secondary)
+    await setup_bot_commands(bot_app.bot)
 
     logger.info(f"Bot application {bot_index} initialized successfully")
     return bot_app, webhook_secret_token
