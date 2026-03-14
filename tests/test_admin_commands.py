@@ -238,8 +238,10 @@ class TestReinitializeBots:
             await webhook_server.reinitialize_bots(fake_fastapi_app)
             history = webhook_server._webhook_secret_history.copy()
 
-        # The previous secret must be stored in history so tolerance-window accepts it
-        assert history.get(0) == old_secret
+        # The previous secret must be stored in history so tolerance-window accepts it.
+        # history[bot_index] = [previous_token, current_token]
+        assert history.get(0) is not None
+        assert history.get(0)[0] == old_secret
 
 
 # ---------------------------------------------------------------------------

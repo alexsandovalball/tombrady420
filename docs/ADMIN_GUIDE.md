@@ -59,7 +59,38 @@ Prune users from inactive/deleted bots (admin only)
 - **Safety**: Preserves all data from active bots
 - **Use case**: Run after replacing or removing bot tokens
 
-### `/nuke`
+### `/reinitbots`
+Reinitialise all bot Application instances at runtime (admin only).
+Use this whenever a Telegram bot token is replaced, rotated, or a bot is deleted and
+recreated — without needing to redeploy the service.
+
+**Subcommands:**
+
+| Subcommand | Effect |
+|---|---|
+| `/reinitbots` | Show usage instructions |
+| `/reinitbots dryrun` | Display expected webhook secret prefix (first 8 chars) for each bot index and the previous prefix (if a reinit has occurred this session). **No changes made.** |
+| `/reinitbots confirm` | Stop all running bot instances, recreate them from `BOT_TOKENS`, and re-register webhooks. Runs in the background. |
+
+**No new environment variables are required.** The command uses the existing
+`ADMIN_IDS` (`is_admin`) check — only users listed in `ADMIN_IDS` can run it.
+
+**Operator rollout checklist (after replacing a bot token):**
+1. Update `BOT_TOKEN` / `BOT_TOKEN_N` (or `BOT_TOKENS`) in your hosting environment.
+2. From a Telegram account listed in `ADMIN_IDS`, send `/reinitbots confirm`.
+3. Check service logs for `"Webhook set for bot N"` lines and the new secret-token prefix.
+4. Run `/reinitbots dryrun` to confirm the expected prefix matches what Telegram will send.
+5. Optionally: revoke the old token only after verifying the new one works end-to-end.
+
+**Rollback:** Either restart the service with the previous config (the webhook secret is
+deterministic from the token, so the old token's secret is automatically restored), or run
+`/reinitbots confirm` again after restoring the original token.
+
+**Security note:** The previous webhook secret is kept in-memory only and exists solely to
+avoid transient 401 errors during the brief overlap window after a reinitialisation.  It is
+not persisted to disk or database, and is lost on restart — this is intentional and safe.
+
+
 Delete ALL products from catalog (admin only)
 - **Double confirmation required!**
 - First confirmation: "Are you sure?"

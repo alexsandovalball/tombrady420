@@ -53,6 +53,11 @@ logger = logging.getLogger(__name__)
 _bot_applications = []
 _catalog_db = Database()
 
+# Per-process counter for webhook 401 rejections (in-memory, not persisted).
+# Useful for setting alerts: check logs for [WEBHOOK_401] or watch this counter
+# via the /_internal/metrics endpoint (recorded under "webhook_401" endpoint name).
+_webhook_401_counter: int = 0
+
 # Media cache configuration
 MEDIA_CACHE_DIR = Path(os.getenv("MEDIA_CACHE_DIR", "/tmp/media_cache"))
 MEDIA_CACHE_MAX_SIZE_MB = int(os.getenv("MEDIA_CACHE_MAX_SIZE_MB", "100"))  # 100MB default
@@ -307,8 +312,10 @@ def get_bot_applications() -> List[Application]:
 # previous token is simply gone, which is safe because Telegram will always use
 # the new token after set_webhook() succeeds.
 #
-# Structure: { bot_index: previous_secret_token_or_None }
-_webhook_secret_history: Dict[int, Optional[str]] = {}
+# Structure: { bot_index: [previous_secret_or_None, current_secret_or_None] }
+# history[bot_index][0] = previous token (for tolerance window)
+# history[bot_index][1] = current token at time of last reinit (informational)
+_webhook_secret_history: Dict[int, List[Optional[str]]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -480,10 +487,13 @@ async def reinitialize_bots(fastapi_app=None) -> dict:
         # Preserve the previous webhook secret in history so in-flight requests
         # using the old token are not immediately rejected.
         prev_token: Optional[str] = old_runtime_tokens[idx] if idx < len(old_runtime_tokens) else None
-        _webhook_secret_history[idx] = prev_token
+        # history[idx] = [previous, current]; store prev before we know the new current
+        _webhook_secret_history[idx] = [prev_token, None]
 
         try:
             bot_app, webhook_secret_token = await setup_application(token, bot_index=idx)
+            # Now rotate: previous = what was current, current = new token
+            _webhook_secret_history[idx] = [prev_token, webhook_secret_token]
             _bot_applications.append(bot_app)
             new_secret_tokens.append(webhook_secret_token)
             logger.info(
@@ -2287,7 +2297,8 @@ async def process_webhook_request(request: Request, bot_index: int):
         # are not immediately rejected.  History is in-memory only and expires on
         # restart, so this does not weaken long-term security.
         if not token_valid:
-            prev_token: Optional[str] = _webhook_secret_history.get(bot_index)
+            prev_entry: Optional[List[Optional[str]]] = _webhook_secret_history.get(bot_index)
+            prev_token: Optional[str] = prev_entry[0] if (prev_entry and len(prev_entry) > 0) else None
             if prev_token and isinstance(incoming_token, str):
                 token_valid = secrets.compare_digest(
                     incoming_token.encode(), prev_token.encode()
@@ -2316,6 +2327,10 @@ async def process_webhook_request(request: Request, bot_index: int):
                 expected_prefix,
                 incoming_prefix,
             )
+            # Increment per-process 401 counter for observability / alerting.
+            global _webhook_401_counter
+            _webhook_401_counter += 1
+            metrics.record("webhook_401", 0)
             return Response(status_code=status.HTTP_401_UNAUTHORIZED)
     else:
         logger.debug(
@@ -2398,13 +2413,17 @@ async def internal_metrics():
 
         {
             "uptime_seconds": 3600.5,
+            "webhook_401_total": 3,
             "endpoints": {
                 "api_products": {"count": 120, "avg_ms": 245.3, "p95_ms": 498.7},
-                "api_categories": {"count": 45, "avg_ms": 180.1, "p95_ms": 390.2}
+                "api_categories": {"count": 45, "avg_ms": 180.1, "p95_ms": 390.2},
+                "webhook_401": {"count": 3, "avg_ms": 0.0, "p95_ms": 0.0}
             }
         }
     """
-    return metrics.snapshot()
+    snap = metrics.snapshot()
+    snap["webhook_401_total"] = _webhook_401_counter
+    return snap
 
 
 if __name__ == "__main__":

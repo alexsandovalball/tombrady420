@@ -1562,6 +1562,7 @@ async def reinitbots_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     Usage:
       /reinitbots           — show confirmation instructions
+      /reinitbots dryrun    — show current & previous webhook secret prefixes (no changes)
       /reinitbots confirm   — stop and recreate all bot Applications
 
     This is useful when a Telegram bot token has been replaced or rotated.
@@ -1577,8 +1578,44 @@ async def reinitbots_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     args = context.args or []
+    subcommand = args[0].lower() if args else ""
 
-    if args and args[0].lower() == "confirm":
+    if subcommand == "dryrun":
+        # Show current and previous webhook secret prefixes per bot index.
+        # Deferred import to avoid circular import at module load time.
+        try:
+            from webhook_server import _webhook_secret_history, get_bot_usernames
+            from configs.config import Config
+        except ImportError as e:
+            await update.message.reply_text(f"❌ Could not import webhook_server: {e}")
+            return
+
+        tokens = getattr(Config, "BOT_TOKENS", []) or []
+        if not tokens:
+            await update.message.reply_text("⚠️ No BOT_TOKENS configured.")
+            return
+
+        lines = ["🔍 *Webhook Secret Dry-Run* (no changes made)\n"]
+        for idx, token in enumerate(tokens):
+            # Derive the expected secret from the token (same logic as setup_application)
+            import hashlib
+            current_secret = hashlib.sha256(token.encode()).hexdigest()[:64]
+            current_prefix = current_secret[:8]
+
+            history = _webhook_secret_history.get(idx, [None, None])
+            prev_secret = history[0]  # [previous, current]; always a list due to default
+            prev_prefix = prev_secret[:8] if prev_secret else "none"
+
+            lines.append(
+                f"Bot {idx}: current prefix=`{current_prefix}` | prev prefix=`{prev_prefix}`"
+            )
+        try:
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        except Exception:
+            await update.message.reply_text("\n".join(lines))
+        return
+
+    if subcommand == "confirm":
         # Acknowledge immediately; the reinit runs in the background so that
         # the Telegram reply is returned before the current bot app is restarted.
         await update.message.reply_text(
@@ -1587,10 +1624,19 @@ async def reinitbots_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "for progress and any errors."
         )
         try:
+            # Deferred import to avoid circular import at module load time.
             from webhook_server import reinitialize_bots
 
             async def _run_reinit():
                 try:
+                    # Pass None for fastapi_app: the Telegram handler doesn't have a
+                    # reference to the FastAPI app instance.  reinitialize_bots will
+                    # update _bot_applications (the module-level global), but
+                    # app.state.bot_apps won't be refreshed.  On the next webhook
+                    # request FastAPI will still use the old state reference.
+                    # Operators can restart the service to fully synchronize state,
+                    # or call reinitialize_bots with the FastAPI app from a custom
+                    # startup/admin HTTP endpoint.
                     result = await reinitialize_bots(None)
                     logger.info("Background reinitialisation complete: %s", result)
                 except Exception:
@@ -1618,7 +1664,8 @@ async def reinitbots_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "This command stops all running bot instances and recreates them from "
         "the current `BOT_TOKENS` configuration.  Use it after replacing a "
         "Telegram bot token.\n\n"
-        "To proceed, run:\n`/reinitbots confirm`",
+        "• `/reinitbots dryrun` — show expected webhook secret prefixes (no changes)\n"
+        "• `/reinitbots confirm` — stop and recreate all bots",
         parse_mode="Markdown",
     )
 
