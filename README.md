@@ -228,7 +228,24 @@ All admin commands are gate-kept by user ID against `ADMIN_IDS` in `.env`.
 | `/recategorize` | Sends up to 10 categorization prompts for products missing a subcategory. Run repeatedly to process all. |
 | `/clearcache` | Clears the `bot_file_id_cache` table. Use if media stops loading after changing bot tokens. |
 | `/prunebots` | Preview (default) or confirm-delete of users and products associated with inactive/removed bot instances. |
+| `/reinitbots` | Stop and recreate all bot instances from the current `BOT_TOKENS` configuration. Use after replacing a Telegram bot token. Requires `/reinitbots confirm` to execute. Admin-only (uses existing `ADMIN_IDS`). |
 | `/nuke` | Double-confirmed deletion of **all** products. Channel messages are untouched. |
+
+**Bot reinitialisation (`/reinitbots`):**
+
+When Telegram deletes a bot or you replace a bot token, use `/reinitbots confirm` from any
+admin account to reload all bots at runtime without a redeploy:
+
+1. The command stops each running `Application` object cleanly.
+2. `setup_application()` is called for each token in `BOT_TOKENS`, which re-registers webhooks with fresh deterministic secret tokens.
+3. A short **previous-secret tolerance window** is kept in-memory: any webhook request signed with the _old_ secret is still accepted for the lifetime of the current process so in-flight Telegram deliveries are not lost during rotation.
+4. No new environment variables are required — the command uses the existing `ADMIN_IDS` / `is_admin()` check.
+
+**Recommended workflow after replacing a bot token:**
+1. Update `BOT_TOKEN` / `BOT_TOKEN_N` in your hosting environment.
+2. From a Telegram account listed in `ADMIN_IDS`, send `/reinitbots confirm`.
+3. Check service logs for `"Webhook set for bot N"` lines and the new secret-token prefix.
+4. If needed, check `/botusers` to confirm the new bot username appears.
 
 **Category assignment flow (post-product):**
 1. Admin receives a DM with the new product's caption and an inline keyboard.

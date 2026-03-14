@@ -9,9 +9,13 @@ from telegram.ext import ContextTypes
 from telegram.error import Forbidden, BadRequest, TelegramError
 
 from configs.config import Config
+from database import Database
 import emojis
 
 logger = logging.getLogger(__name__)
+
+# Module-level database singleton — avoids creating a new connection object per call.
+_db = Database()
 
 # Admin commands fallback text constant (hardcoded for consistency across deploys)
 ADMIN_COMMANDS_FALLBACK = (
@@ -30,6 +34,7 @@ ADMIN_COMMANDS_FALLBACK = (
     "• /recategorize - Recategorize products\n"
     "• /clearcache - Clear file ID cache\n"
     "• /prunebots - Prune inactive bot users\n"
+    "• /reinitbots - Reinitialise all bot instances\n"
     "• /nuke - Delete all products"
 )
 
@@ -134,9 +139,7 @@ async def get_user_lang_async(user_id: int) -> str:
     Returns:
         User's preferred language code
     """
-    from database import Database
-    db = Database()
-    return await db.get_user_language(user_id)
+    return await _db.get_user_language(user_id)
 
 
 def get_file_id_and_type(update: Update) -> tuple[Optional[str], Optional[str]]:
@@ -328,9 +331,6 @@ async def get_bot_specific_file_id(
     Returns:
         Bot-specific file ID or None if forwarding fails
     """
-    from database import Database
-    db = Database()
-    
     # Extract bot from context or use directly.
     # Check isinstance(Bot) first because Bot/ExtBot also exposes a `.bot` property
     # that returns a User object (from get_me()), which would cause the hasattr
@@ -379,7 +379,7 @@ async def get_bot_specific_file_id(
         return None
     
     # Check persistent database cache first
-    cached_file_id = await db.get_bot_file_id(
+    cached_file_id = await _db.get_bot_file_id(
         source_chat_id,
         source_message_id,
         file_index,
@@ -396,7 +396,7 @@ async def get_bot_specific_file_id(
                 f"Cached file ID invalid for bot {bot_username}, msg {source_message_id}: {e}. "
                 f"Clearing cache and refetching..."
             )
-            await db.delete_bot_file_id_cache_entry(
+            await _db.delete_bot_file_id_cache_entry(
                 source_chat_id,
                 source_message_id,
                 file_index,
@@ -455,7 +455,7 @@ async def get_bot_specific_file_id(
         
         if file_id:
             # Cache the result in database for persistence
-            await db.cache_bot_file_id(
+            await _db.cache_bot_file_id(
                 source_chat_id,
                 source_message_id,
                 file_index,
@@ -571,16 +571,22 @@ def register_bot_handlers(application: "Application", bot_index: int = 0):
         CommandHandler, MessageHandler, CallbackQueryHandler,
         InlineQueryHandler, ChosenInlineResultHandler, filters
     )
-    from main import (
-        start_command, menu_command, language_command, nuke_command,
-        recategorize_command, users_command, subscribe_command,
-        unsubscribe_command, block_command, unblock_command, send_command,
-        broadcast_command, setcontact_command, setlink_command,
-        clearcache_command, channel_post_handler, callback_query_handler,
-        message_handler, error_handler
+    # Import command handlers directly from their defining modules to avoid the
+    # circular dependency: utils/helpers.py → main.py → utils/helpers.py.
+    # Only the four core update-routing handlers (channel_post_handler,
+    # callback_query_handler, message_handler, error_handler) still live in main.py
+    # because they orchestrate cross-cutting concerns that belong there.
+    from handlers.start import start_command, subscribe_command, unsubscribe_command
+    from handlers.menu import menu_command
+    from handlers.language import language_command
+    from handlers.admin import (
+        nuke_command, recategorize_command, users_command,
+        block_command, unblock_command, send_command, broadcast_command,
+        setcontact_command, setlink_command, clearcache_command,
+        botusers_command, prunebots_command, reinitbots_command,
     )
-    from handlers.admin import botusers_command, prunebots_command
     from handlers.inline import handle_inline_query, handle_chosen_inline_result
+    from main import channel_post_handler, callback_query_handler, message_handler, error_handler
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("menu", menu_command))
@@ -590,6 +596,7 @@ def register_bot_handlers(application: "Application", bot_index: int = 0):
     application.add_handler(CommandHandler("users", users_command))
     application.add_handler(CommandHandler("botusers", botusers_command))
     application.add_handler(CommandHandler("prunebots", prunebots_command))
+    application.add_handler(CommandHandler("reinitbots", reinitbots_command))
     application.add_handler(CommandHandler("subscribe", subscribe_command))
     application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
     application.add_handler(CommandHandler("block", block_command))
@@ -641,18 +648,14 @@ def register_bot_handlers(application: "Application", bot_index: int = 0):
 
 async def clear_file_id_cache():
     """Clear the bot-specific file ID cache (useful for forcing refresh of old entries)."""
-    from database import Database
-    db = Database()
-    deleted = await db.clear_bot_file_id_cache()
+    deleted = await _db.clear_bot_file_id_cache()
     logger.info(f"File ID cache cleared: {deleted} entries removed from database")
     return deleted
 
 
 async def get_file_id_cache_size() -> int:
     """Get the current size of the file ID cache."""
-    from database import Database
-    db = Database()
-    async with db.get_connection() as conn:
+    async with _db.get_connection() as conn:
         async with conn.execute("SELECT COUNT(*) FROM bot_file_id_cache") as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0

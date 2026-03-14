@@ -606,6 +606,7 @@ async def setup_bot_commands(bot):
         BotCommand("recategorize", "Categorize uncategorized products"),
         BotCommand("clearcache", "Clear file ID cache"),
         BotCommand("prunebots", "Prune users from inactive bots"),
+        BotCommand("reinitbots", "Reinitialise all bot instances"),
         BotCommand("nuke", "Delete all products (use with caution)"),
     ]
     

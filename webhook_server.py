@@ -53,6 +53,11 @@ logger = logging.getLogger(__name__)
 _bot_applications = []
 _catalog_db = Database()
 
+# Per-process counter for webhook 401 rejections (in-memory, not persisted).
+# Useful for setting alerts: check logs for [WEBHOOK_401] or watch this counter
+# via the /_internal/metrics endpoint (recorded under "webhook_401" endpoint name).
+_webhook_401_counter: int = 0
+
 # Media cache configuration
 MEDIA_CACHE_DIR = Path(os.getenv("MEDIA_CACHE_DIR", "/tmp/media_cache"))
 MEDIA_CACHE_MAX_SIZE_MB = int(os.getenv("MEDIA_CACHE_MAX_SIZE_MB", "100"))  # 100MB default
@@ -299,6 +304,21 @@ def get_bot_applications() -> List[Application]:
     return _bot_applications
 
 # ---------------------------------------------------------------------------
+# Webhook-secret history (in-memory tolerance window for token rotations)
+# ---------------------------------------------------------------------------
+# Keeps one previous webhook secret per bot index so requests signed with the
+# old token are still accepted for the duration of the current process (i.e.,
+# until the next restart).  History is never persisted to disk — on restart the
+# previous token is simply gone, which is safe because Telegram will always use
+# the new token after set_webhook() succeeds.
+#
+# Structure: { bot_index: [previous_secret_or_None, current_secret_or_None] }
+# history[bot_index][0] = previous token (for tolerance window)
+# history[bot_index][1] = current token at time of last reinit (informational)
+_webhook_secret_history: Dict[int, List[Optional[str]]] = {}
+
+
+# ---------------------------------------------------------------------------
 # Bot-config hot-reload (configs/bots.json)
 # ---------------------------------------------------------------------------
 # Operators can override the runtime-generated secret tokens by placing a
@@ -398,6 +418,106 @@ def get_bot_usernames() -> List[str]:
             else:
                 logger.warning(f"Bot application has no 'bot' attribute")
     return usernames
+
+
+# ---------------------------------------------------------------------------
+# Bot reinitialisation helpers
+# ---------------------------------------------------------------------------
+
+async def _stop_existing_bots() -> None:
+    """Gracefully stop all running Application objects in _bot_applications.
+
+    Clears both the module-level registry and FastAPI app.state.bot_apps so
+    the server can start fresh. Safe to call even when no bots are running.
+    """
+    global _bot_applications
+    if not _bot_applications:
+        return
+    for bot_app in list(_bot_applications):
+        try:
+            if hasattr(bot_app, "stop"):
+                await bot_app.stop()
+            if hasattr(bot_app, "shutdown"):
+                await bot_app.shutdown()
+        except Exception:
+            logger.exception("Error stopping bot application during reinitialisation")
+    _bot_applications = []
+
+
+async def reinitialize_bots(fastapi_app=None) -> dict:
+    """Stop existing bot Applications and recreate them from Config.BOT_TOKENS.
+
+    This is the primary runtime reinitialisation entry point.  It is called by:
+    - the admin /reinitbots command
+    - optionally the _bots_config_reload_loop when AUTO_REINIT_ON_BOTS_CONFIG is set
+
+    Args:
+        fastapi_app: Optional FastAPI application instance.  When provided,
+                     app.state.bot_apps and app.state.webhook_secret_tokens are
+                     kept in sync with the newly created applications.
+
+    Returns:
+        A dict with keys ``created`` (list of indices), ``failed`` (list of
+        indices) and ``errors`` (dict mapping str(index) → error message).
+    """
+    import traceback
+    global _bot_applications, _webhook_secret_history
+
+    summary: dict = {"created": [], "failed": [], "errors": {}}
+    logger.info("Starting bot reinitialisation (stop → setup)")
+
+    # Snapshot the current runtime tokens before teardown so we can preserve
+    # them as "previous" tokens in the history map.
+    old_runtime_tokens: List[Optional[str]] = []
+    if fastapi_app is not None:
+        old_runtime_tokens = list(getattr(fastapi_app.state, "webhook_secret_tokens", []) or [])
+
+    try:
+        await _stop_existing_bots()
+    except Exception:
+        logger.exception("Unexpected error while stopping existing bot applications")
+
+    tokens = getattr(Config, "BOT_TOKENS", []) or []
+    if not tokens:
+        logger.warning("No BOT_TOKENS found in Config during reinitialisation")
+        return {"created": [], "failed": [], "errors": {"no_tokens": "No BOT_TOKENS configured"}}
+
+    new_secret_tokens: List[Optional[str]] = []
+    for idx, token in enumerate(tokens):
+        # Preserve the previous webhook secret in history so in-flight requests
+        # using the old token are not immediately rejected.
+        prev_token: Optional[str] = old_runtime_tokens[idx] if idx < len(old_runtime_tokens) else None
+        # history[idx] = [previous, current]; store prev before we know the new current
+        _webhook_secret_history[idx] = [prev_token, None]
+
+        try:
+            bot_app, webhook_secret_token = await setup_application(token, bot_index=idx)
+            # Now rotate: previous = what was current, current = new token
+            _webhook_secret_history[idx] = [prev_token, webhook_secret_token]
+            _bot_applications.append(bot_app)
+            new_secret_tokens.append(webhook_secret_token)
+            logger.info(
+                "Re-initialised bot %d (webhook secret prefix=%s)",
+                idx,
+                (webhook_secret_token or "")[:8],
+            )
+            summary["created"].append(idx)
+        except Exception as exc:
+            logger.exception("Failed to reinitialise bot %d: %s", idx, exc)
+            new_secret_tokens.append(None)
+            summary["failed"].append(idx)
+            summary["errors"][str(idx)] = str(exc)[:300]
+
+    # Sync FastAPI app.state so webhook verification uses the new tokens.
+    if fastapi_app is not None:
+        try:
+            fastapi_app.state.bot_apps = _bot_applications
+            fastapi_app.state.webhook_secret_tokens = new_secret_tokens
+        except Exception:
+            logger.exception("Could not update FastAPI app.state after reinitialisation")
+
+    logger.info("Bot reinitialisation complete: %s", summary)
+    return summary
 
 
 async def setup_application(bot_token: str, bot_index: int = 0):
@@ -2169,9 +2289,26 @@ async def process_webhook_request(request: Request, bot_index: int):
         incoming_token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
         # compare_digest requires both operands to be the same type; guard against
         # missing / non-string values before encoding to avoid TypeErrors.
-        if not isinstance(incoming_token, str) or not secrets.compare_digest(
+        token_valid = isinstance(incoming_token, str) and secrets.compare_digest(
             incoming_token.encode(), expected_token.encode()
-        ):
+        )
+        # Tolerance window: also accept the previous token for this bot index so
+        # in-flight requests signed with the old secret during a reinitialisation
+        # are not immediately rejected.  History is in-memory only and expires on
+        # restart, so this does not weaken long-term security.
+        if not token_valid:
+            prev_entry: Optional[List[Optional[str]]] = _webhook_secret_history.get(bot_index)
+            prev_token: Optional[str] = prev_entry[0] if (prev_entry and len(prev_entry) > 0) else None
+            if prev_token and isinstance(incoming_token, str):
+                token_valid = secrets.compare_digest(
+                    incoming_token.encode(), prev_token.encode()
+                )
+                if token_valid:
+                    logger.debug(
+                        "bot=%d accepted request using previous webhook secret (tolerance window)",
+                        bot_index,
+                    )
+        if not token_valid:
             # Log a header-level summary for easy searching without exposing the token.
             # Tag: [WEBHOOK_401] — grep-friendly for alerting pipelines.
             header_present = isinstance(incoming_token, str)
@@ -2190,6 +2327,10 @@ async def process_webhook_request(request: Request, bot_index: int):
                 expected_prefix,
                 incoming_prefix,
             )
+            # Increment per-process 401 counter for observability / alerting.
+            global _webhook_401_counter
+            _webhook_401_counter += 1
+            metrics.record("webhook_401", 0)
             return Response(status_code=status.HTTP_401_UNAUTHORIZED)
     else:
         logger.debug(
@@ -2272,13 +2413,17 @@ async def internal_metrics():
 
         {
             "uptime_seconds": 3600.5,
+            "webhook_401_total": 3,
             "endpoints": {
                 "api_products": {"count": 120, "avg_ms": 245.3, "p95_ms": 498.7},
-                "api_categories": {"count": 45, "avg_ms": 180.1, "p95_ms": 390.2}
+                "api_categories": {"count": 45, "avg_ms": 180.1, "p95_ms": 390.2},
+                "webhook_401": {"count": 3, "avg_ms": 0.0, "p95_ms": 0.0}
             }
         }
     """
-    return metrics.snapshot()
+    snap = metrics.snapshot()
+    snap["webhook_401_total"] = _webhook_401_counter
+    return snap
 
 
 if __name__ == "__main__":
