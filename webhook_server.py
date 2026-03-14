@@ -409,8 +409,8 @@ async def setup_application(bot_token: str, bot_index: int = 0):
 
     Returns:
         A tuple of (Application, secret_token) where secret_token is the
-        randomly generated value registered with Telegram for this bot, or
-        None if webhook mode is not active.
+        deterministic value derived from bot_token registered with Telegram for
+        this bot, or None if webhook mode is not active.
     """
     logger.info(f"Setting up bot application {bot_index}...")
     
@@ -469,7 +469,10 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     if webhook_url:
         # Primary bot uses /webhook, additional bots use /webhook/1, /webhook/2, etc.
         webhook_path = "/webhook" if bot_index == 0 else f"/webhook/{bot_index}"
-        webhook_secret_token = secrets.token_hex(32)
+        # Generate a deterministic secret token from the bot token so the same
+        # token is used across redeploys and survives bot replacements — the
+        # secret only changes when the bot token itself changes.
+        webhook_secret_token = hashlib.sha256(bot_token.encode('utf-8')).hexdigest()[:64]
         await bot_app.bot.set_webhook(
             url=f"{webhook_url}{webhook_path}",
             allowed_updates=Update.ALL_TYPES,
