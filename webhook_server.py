@@ -1302,14 +1302,26 @@ async def serve_category_page(category_name: str, request: Request):
 def _get_primary_bot(request: Request, required: bool = True):
     """
     Return the primary bot instance or raise a 503 if unavailable and required.
-    
+
+    Reads from the global _bot_applications list first (updated by reinitialize_bots),
+    falling back to request.app.state.bot_apps only if the global list is empty.
+    This ensures media delivery and other endpoints always use the freshest bot
+    instance after a hot-reload via /reinitbots.
+
     Args:
         request: FastAPI request object
         required: If True, raises HTTPException when bot is not available. If False, returns None.
-    
+
     Returns:
         Bot instance or None if not required and not available
     """
+    global _bot_applications
+
+    # Prioritize the global module-level list (updated by reinitialize_bots)
+    if _bot_applications:
+        return _bot_applications[0].bot
+
+    # Fallback to request state if global list is empty
     bot_apps = getattr(request.app.state, "bot_apps", [])
     if not bot_apps:
         if required:

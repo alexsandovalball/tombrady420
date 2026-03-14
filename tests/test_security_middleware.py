@@ -165,24 +165,66 @@ class TestSecurityMiddleware:
 
 class TestGlobalRateLimiter:
 
-    def test_allows_traffic_within_limit(self):
+    def test_allows_unlimited_normal_traffic(self):
+        """Normal traffic is no longer rate limited - unlimited requests allowed."""
         app = _make_rate_limiter_app(max_requests=5, window_seconds=60)
         client = TestClient(app, raise_server_exceptions=False)
-        for _ in range(5):
+        # Send many requests - all should pass since we removed token bucket limiting
+        for _ in range(100):
             resp = client.get("/api/products", headers={"X-Real-IP": "1.2.3.4"})
             assert resp.status_code == 200
 
-    def test_blocks_after_limit_exceeded(self):
-        app = _make_rate_limiter_app(max_requests=3, window_seconds=60, block_duration=60)
+    def test_blocks_malicious_probes_immediately(self):
+        """Malicious probe paths are immediately auto-blocked."""
+        app = _make_rate_limiter_app(auto_block_duration=3600)
         client = TestClient(app, raise_server_exceptions=False)
-        # First 3 requests should pass
-        for _ in range(3):
-            resp = client.get("/api/test", headers={"X-Real-IP": "10.0.0.1"})
-            assert resp.status_code == 200
-        # Next request should be rate limited
-        resp = client.get("/api/test", headers={"X-Real-IP": "10.0.0.1"})
+
+        # Request for wp-login should be immediately blocked
+        resp = client.get("/wp-login.php", headers={"X-Real-IP": "10.0.0.1"})
         assert resp.status_code == 429
         assert "Retry-After" in resp.headers
+        # Should have long retry-after due to auto-block
+        assert int(resp.headers["Retry-After"]) >= 3600
+
+    @pytest.mark.parametrize("malicious_path", [
+        "/wp-admin/",
+        "/wp-login.php",
+        "/.env",
+        "/.git/config",
+        "/config.json",
+        "/setup.php",
+        "/phpinfo.php",
+        "/admin.php",
+        "/xmlrpc.php",
+        "/wp-config.php",
+        "/some/path/to/.env",  # substring match
+        "/api/config.json",     # substring match
+    ])
+    def test_malicious_probes_blocked(self, malicious_path):
+        """All malicious probe patterns should trigger auto-block."""
+        app = _make_rate_limiter_app(auto_block_duration=3600)
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get(malicious_path, headers={"X-Real-IP": "99.99.99.99"})
+        assert resp.status_code == 429, f"Expected 429 for {malicious_path!r}, got {resp.status_code}"
+        assert int(resp.headers.get("Retry-After", 0)) >= 3600
+
+    def test_auto_blocked_ip_stays_blocked_for_all_requests(self):
+        """Once auto-blocked by a malicious probe, IP is blocked for ALL subsequent requests."""
+        app = _make_rate_limiter_app(auto_block_duration=3600)
+        client = TestClient(app, raise_server_exceptions=False)
+        ip = "5.5.5.5"
+        headers = {"X-Real-IP": ip}
+
+        # First: trigger auto-block with malicious probe
+        resp = client.get("/.env", headers=headers)
+        assert resp.status_code == 429
+
+        # Now try normal requests - should still be blocked
+        resp = client.get("/api/products", headers=headers)
+        assert resp.status_code == 429
+
+        resp = client.get("/", headers=headers)
+        assert resp.status_code == 429
 
     def test_webhook_endpoint_exempt(self):
         app = _make_rate_limiter_app(max_requests=1, window_seconds=60)
@@ -199,69 +241,40 @@ class TestGlobalRateLimiter:
             resp = client.get("/webhook/0", headers={"X-Real-IP": "2.3.4.6"})
             assert resp.status_code == 200
 
-    def test_assets_use_separate_bucket(self):
-        """Exhausting the API bucket must not exhaust the independent assets bucket."""
-        # API limit=1, assets limit=5 – the two layers are independent per IP
+    def test_normal_assets_not_rate_limited(self):
+        """Assets are no longer rate limited - independent buckets removed."""
         app = _make_rate_limiter_app(
             max_requests=1, window_seconds=60,
-            block_duration=3600,
             assets_max_requests=5,
-            auto_block_threshold=100,  # prevent auto-block during this test
         )
         client = TestClient(app, raise_server_exceptions=False)
         ip = "3.3.3.3"
-        # First API request passes
-        resp = client.get("/api/x", headers={"X-Real-IP": ip})
-        assert resp.status_code == 200
-        # Second API request is blocked (API bucket exhausted)
-        resp = client.get("/api/x", headers={"X-Real-IP": ip})
-        assert resp.status_code == 429
-        # Assets bucket is independent – same IP can still fetch assets
-        resp = client.get("/assets/app.js", headers={"X-Real-IP": ip})
-        assert resp.status_code == 200
 
-    def test_auto_block_after_repeated_violations(self):
-        """IP that repeatedly exceeds rate limit gets auto-blocked with long Retry-After."""
-        app = _make_rate_limiter_app(
-            max_requests=1,
-            window_seconds=60,
-            block_duration=900,         # long block, so short-term block triggers violations
-            auto_block_threshold=3,
-            auto_block_window=600,
-            auto_block_duration=3600,
-        )
+        # Both API and assets should allow unlimited requests
+        for _ in range(20):
+            resp = client.get("/api/x", headers={"X-Real-IP": ip})
+            assert resp.status_code == 200
+
+        for _ in range(20):
+            resp = client.get("/assets/app.js", headers={"X-Real-IP": ip})
+            assert resp.status_code == 200
+
+    def test_different_ips_independent_auto_blocks(self):
+        """Different IPs have independent auto-block status."""
+        app = _make_rate_limiter_app(auto_block_duration=3600)
         client = TestClient(app, raise_server_exceptions=False)
-        ip = "5.5.5.5"
-        headers = {"X-Real-IP": ip}
 
-        # Exhaust the bucket (1st token used)
-        client.get("/api/x", headers=headers)
-
-        # First 429 → violation #1 (token bucket empty → short-term block)
-        resp = client.get("/api/x", headers=headers)
-        assert resp.status_code == 429
-
-        # While still in the short-term block, each 429 counts as another violation
-        # violation #2
-        resp = client.get("/api/x", headers=headers)
-        assert resp.status_code == 429
-
-        # violation #3 → should trigger auto-block with long Retry-After
-        resp = client.get("/api/x", headers=headers)
-        assert resp.status_code == 429
-        assert int(resp.headers["Retry-After"]) > 60
-
-    def test_different_ips_independent_buckets(self):
-        app = _make_rate_limiter_app(max_requests=2, window_seconds=60)
-        client = TestClient(app, raise_server_exceptions=False)
-        # Exhaust ip A
-        client.get("/api/x", headers={"X-Real-IP": "6.6.6.6"})
-        client.get("/api/x", headers={"X-Real-IP": "6.6.6.6"})
-        resp_a = client.get("/api/x", headers={"X-Real-IP": "6.6.6.6"})
+        # IP A triggers auto-block with malicious probe
+        resp_a = client.get("/.env", headers={"X-Real-IP": "6.6.6.6"})
         assert resp_a.status_code == 429
-        # IP B should still be allowed
+
+        # IP B should still be allowed for normal requests
         resp_b = client.get("/api/x", headers={"X-Real-IP": "7.7.7.7"})
         assert resp_b.status_code == 200
+
+        # But IP B trying malicious probe also gets blocked
+        resp_b2 = client.get("/.git/config", headers={"X-Real-IP": "7.7.7.7"})
+        assert resp_b2.status_code == 429
 
     def test_disabled_when_max_requests_zero(self):
         app = _make_rate_limiter_app(max_requests=0, window_seconds=60)
