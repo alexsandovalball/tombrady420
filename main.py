@@ -45,6 +45,7 @@ from utils.helpers import (
 from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES
 from utils.notifications import NotificationService
 from utils.safe_send import safe_send_message, safe_edit_message_text
+from utils.primary_instance import is_primary_instance
 
 # Configure logging
 from configs.logging_config import configure_logging
@@ -69,37 +70,9 @@ media_group_locks = {}  # Locks to prevent race conditions in media group proces
 LONG_RUNNING_CALLBACKS = ["broadcast_confirm_all"]  # Callbacks that should not answer query upfront to avoid timeouts
 
 
-def _is_primary_instance(context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """
-    Check if this is the primary bot instance.
-    Only the primary bot (first token in BOT_TOKENS) should create notification queues.
-    
-    Args:
-        context: Telegram context with bot information
-        
-    Returns:
-        True if this is the primary instance, False otherwise
-    """
-    if not hasattr(context, 'bot') or not hasattr(context.bot, 'token'):
-        # If we can't determine, assume it's primary to maintain backward compatibility
-        logger.warning("Unable to determine bot instance, assuming primary")
-        return True
-    
-    current_token = context.bot.token
-    bot_tokens = Config.BOT_TOKENS
-    
-    # Validate BOT_TOKENS is a non-empty list
-    if not bot_tokens or not isinstance(bot_tokens, list) or len(bot_tokens) == 0:
-        # No tokens configured or invalid configuration, assume primary
-        return True
-    
-    # Primary bot is the first token in the list (index 0)
-    is_primary = current_token == bot_tokens[0]
-    
-    if not is_primary:
-        logger.debug(f"Skipping operation - not primary instance (bot token: ...{current_token[-5:]})")
-    
-    return is_primary
+# _is_primary_instance is kept as a thin alias so existing call-sites within
+# this module continue to work without modification.
+_is_primary_instance = is_primary_instance
 
 
 

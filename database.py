@@ -781,16 +781,21 @@ class Database:
                 return [dict(row) for row in rows]
     
     async def delete_product(self, product_id: int) -> bool:
-        """Delete a product by ID and reclaim database space."""
+        """Delete a product by ID.
+
+        Space reclamation (VACUUM) is intentionally omitted here.  Running
+        VACUUM after every deletion is expensive, blocks all writers, and is
+        harmful to latency under load.  SQLite in WAL mode recycles free pages
+        automatically, so no explicit VACUUM is needed for normal operation.
+        If periodic maintenance is required, call ``run_maintenance()`` from a
+        scheduled job instead.
+        """
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute("DELETE FROM products WHERE id = ?", (product_id,))
             await db.commit()
             deleted = cursor.rowcount > 0
             if deleted:
                 logger.info(f"Product deleted: ID={product_id}")
-                # Reclaim space from the database
-                await db.execute("VACUUM")
-                logger.debug("Database space reclaimed via VACUUM")
             return deleted
     
     async def get_product_by_message(self, message_id: int, chat_id: int) -> Optional[Dict[str, Any]]:
@@ -2433,6 +2438,23 @@ class Database:
                 (user_id, result_id, query, bot_username),
             )
             await db.commit()
+
+    async def run_maintenance(self) -> None:
+        """
+        Run optional periodic database maintenance (VACUUM + WAL checkpoint).
+
+        This method is intended for use by a scheduled background job — e.g. a
+        nightly cron or a long-running asyncio task that fires once per day.
+        It must NOT be called automatically on every delete or insert, as VACUUM
+        is an exclusive operation that blocks all readers and writers for its
+        duration.
+
+        Safe to skip entirely if free-page reuse via WAL mode is sufficient.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            await db.execute("VACUUM")
+            logger.info("Database maintenance complete (WAL checkpoint + VACUUM)")
 
 
 async def clear_database_caches():
