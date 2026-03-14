@@ -116,7 +116,14 @@ Queued notification batches are processed sequentially by a background FIFO asyn
 | `bot_username` | TEXT | Username of the posting bot instance |
 | `message_id` | INTEGER | Source channel message ID |
 
-**ID recycling:** `get_next_free_id()` finds the lowest gap (e.g. if IDs 1,2,4 exist → returns 3). `VACUUM` is run after every deletion to reclaim space.
+**ID recycling:** `get_next_free_id()` finds the lowest gap (e.g. if IDs 1,2,4 exist → returns 3).
+
+> **SQLite maintenance note:** `VACUUM` is no longer run automatically after every deletion.
+> Running VACUUM on every delete was expensive, blocked all writers, and caused latency spikes under load.
+> SQLite in WAL mode recycles free pages automatically, so no explicit VACUUM is needed for routine operation.
+> If you want to compact the database, call `await db.run_maintenance()` from a scheduled job (e.g. a nightly
+> cron task). This runs a `WAL_CHECKPOINT(TRUNCATE)` followed by a `VACUUM` in a single connection.
+> No new environment variables are needed — maintenance is opt-in via code.
 
 ### `users` table
 

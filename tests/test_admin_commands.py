@@ -231,6 +231,7 @@ class TestReinitializeBots:
 
         with (
             patch.object(webhook_server, "_bot_applications", []),
+            patch.object(webhook_server, "_webhook_secret_tokens", [old_secret]),
             patch.object(webhook_server, "_webhook_secret_history", {}),
             patch.object(webhook_server, "setup_application", AsyncMock(return_value=(new_app, new_secret))),
             patch.object(webhook_server.Config, "BOT_TOKENS", ["token0"]),

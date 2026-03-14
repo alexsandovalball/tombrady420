@@ -19,47 +19,30 @@ from utils.categories import get_category_display_name, get_subcategory_display_
 from utils.helpers import get_admin_ids, get_bot_specific_file_id
 from utils.safe_send import safe_send_message, safe_send_photo, safe_send_video, safe_send_animation, safe_send_document, handle_send_exception
 from utils.rate_limiter import RateLimiter
+from utils.primary_instance import is_primary_instance
 from translations.translator import translate_text_async
 from configs.config import Config
+from notifications.constants import (
+    MAX_NOTIFICATIONS_PER_HOUR,
+    NOTIFICATION_BATCH_SIZE,
+    BATCH_DELAY_SECONDS,
+    PENDING_NOTIFICATIONS_BATCH_LIMIT,
+    ENABLE_STAGGERED_DELIVERY,
+    STAGGER_GROUP_SIZE,
+    STAGGER_INTERVAL_SECONDS,
+    TELEGRAM_MSGS_PER_SECOND_HARD_LIMIT,
+    RATE_LIMIT_SAFETY_FACTOR,
+    MAX_CUSTOM_MESSAGES_PER_HOUR,
+    CUSTOM_MESSAGE_BATCH_SIZE,
+    CUSTOM_MESSAGE_DELAY_SECONDS,
+    BOT_SEND_RATE_PER_SEC,
+    BOT_SEND_BURST,
+    MAX_CONCURRENT_BOT_WORKERS,
+    FILE_ID_PREVIEW_LENGTH,
+)
 import emojis
 
 logger = logging.getLogger(__name__)
-
-# Rate limiting configuration
-MAX_NOTIFICATIONS_PER_HOUR = 5  # Maximum notifications per user per hour
-NOTIFICATION_BATCH_SIZE = 25  # Send notifications in batches (increased from 10)
-BATCH_DELAY_SECONDS = 1  # Delay between batches within a group (reduced from 3)
-
-# Queue processing configuration
-PENDING_NOTIFICATIONS_BATCH_LIMIT = 100  # Number of pending notifications to fetch per batch
-
-# Staggered delivery configuration
-ENABLE_STAGGERED_DELIVERY = True  # Enable staggered delivery to avoid spam flags
-STAGGER_GROUP_SIZE = 25  # Number of users per group for staggered delivery (increased from 10)
-STAGGER_INTERVAL_SECONDS = 2  # 2s between groups = ~12.5 msg/s average per bot (42% of Telegram's 30/s hard limit)
-
-# Telegram API rate limit reference (per bot, independent across bots):
-# Hard limit: 30 msg/s. Target utilization: ~42% (12.5 msg/s).
-# Formula: STAGGER_GROUP_SIZE / STAGGER_INTERVAL_SECONDS = msg/s throughput per bot.
-# At 5,000 users/bot: ceil(5000/25) = 200 groups × 2s = ~6.7 min total delivery time.
-# At 45,000 users across 9 bots (parallel): same ~6.7 min (bots run concurrently).
-TELEGRAM_MSGS_PER_SECOND_HARD_LIMIT = 30   # Telegram's documented hard limit per bot
-RATE_LIMIT_SAFETY_FACTOR = 0.42            # Current utilization ratio (12.5/30)
-
-# Custom message rate limiting
-MAX_CUSTOM_MESSAGES_PER_HOUR = 3  # Maximum custom messages per user per hour
-CUSTOM_MESSAGE_BATCH_SIZE = 20  # Send custom messages in batches
-CUSTOM_MESSAGE_DELAY_SECONDS = 1  # Delay between batches for custom messages
-
-# Per-bot token-bucket rate limiter configuration
-BOT_SEND_RATE_PER_SEC = 10  # Steady-state message rate per bot (tokens/second)
-BOT_SEND_BURST = 20          # Maximum burst size per bot (tokens)
-
-# Global concurrency cap: maximum number of bot workers running simultaneously
-MAX_CONCURRENT_BOT_WORKERS = 5
-
-# Logging configuration
-FILE_ID_PREVIEW_LENGTH = 20  # Number of characters to show when logging file IDs
 
 
 def get_file_id_preview(file_id: str, max_length: int = FILE_ID_PREVIEW_LENGTH) -> str:
@@ -363,36 +346,8 @@ class NotificationService:
         return self._bot_apps_cache
     
     def _is_primary_instance(self, context: ContextTypes.DEFAULT_TYPE) -> bool:
-        """
-        Check if this is the primary bot instance.
-        Only the primary bot (first token in BOT_TOKENS) should create notification queues.
-        
-        Args:
-            context: Telegram context with bot information
-            
-        Returns:
-            True if this is the primary instance, False otherwise
-        """
-        if not hasattr(context, 'bot') or not hasattr(context.bot, 'token'):
-            # If we can't determine, assume it's primary to maintain backward compatibility
-            logger.warning("Unable to determine bot instance, assuming primary")
-            return True
-        
-        current_token = context.bot.token
-        bot_tokens = Config.BOT_TOKENS
-        
-        # Validate BOT_TOKENS is a non-empty list
-        if not bot_tokens or not isinstance(bot_tokens, list) or len(bot_tokens) == 0:
-            # No tokens configured or invalid configuration, assume primary
-            return True
-        
-        # Primary bot is the first token in the list (index 0)
-        is_primary = current_token == bot_tokens[0]
-        
-        if not is_primary:
-            logger.debug(f"Skipping operation - not primary instance (bot token: ...{current_token[-5:]})")
-        
-        return is_primary
+        """Delegate to the shared primary-instance utility."""
+        return is_primary_instance(context)
     
     async def notify_users_about_product(
         self,
