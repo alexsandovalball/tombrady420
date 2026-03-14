@@ -51,6 +51,7 @@ logger = logging.getLogger(__name__)
 # Global registry for bot applications
 # This allows the notification service to access all bot instances
 _bot_applications = []
+_webhook_secret_tokens: List[Optional[str]] = []
 _catalog_db = Database()
 
 # Per-process counter for webhook 401 rejections (in-memory, not persisted).
@@ -461,16 +462,14 @@ async def reinitialize_bots(fastapi_app=None) -> dict:
         indices) and ``errors`` (dict mapping str(index) → error message).
     """
     import traceback
-    global _bot_applications, _webhook_secret_history
+    global _bot_applications, _webhook_secret_tokens, _webhook_secret_history
 
     summary: dict = {"created": [], "failed": [], "errors": {}}
     logger.info("Starting bot reinitialisation (stop → setup)")
 
     # Snapshot the current runtime tokens before teardown so we can preserve
     # them as "previous" tokens in the history map.
-    old_runtime_tokens: List[Optional[str]] = []
-    if fastapi_app is not None:
-        old_runtime_tokens = list(getattr(fastapi_app.state, "webhook_secret_tokens", []) or [])
+    old_runtime_tokens: List[Optional[str]] = list(_webhook_secret_tokens)
 
     try:
         await _stop_existing_bots()
@@ -507,6 +506,9 @@ async def reinitialize_bots(fastapi_app=None) -> dict:
             new_secret_tokens.append(None)
             summary["failed"].append(idx)
             summary["errors"][str(idx)] = str(exc)[:300]
+
+    # Update module-level global so process_webhook_request always uses fresh tokens.
+    _webhook_secret_tokens = new_secret_tokens
 
     # Sync FastAPI app.state so webhook verification uses the new tokens.
     if fastapi_app is not None:
@@ -630,12 +632,10 @@ async def _wal_checkpoint_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan - startup and shutdown."""
-    global _bot_applications
-    
+    global _bot_applications, _webhook_secret_tokens
+
     # Startup
     logger.info("Starting webhook server...")
-    
-    # Validate configuration on startup
     try:
         Config.validate()
     except ConfigError as e:
@@ -678,6 +678,7 @@ async def lifespan(app: FastAPI):
     
     # Store in global registry for notification service access
     _bot_applications = bot_apps
+    _webhook_secret_tokens = webhook_secret_tokens
     
     app.state.bot_apps = bot_apps
 
@@ -732,7 +733,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down bot applications...")
-    for idx, bot_app in enumerate(app.state.bot_apps):
+    for idx, bot_app in enumerate(_bot_applications):
         try:
             await bot_app.stop()
             await bot_app.shutdown()
@@ -2239,7 +2240,7 @@ async def process_webhook_request(request: Request, bot_index: int):
 
     Args:
         request: The incoming FastAPI Request object.
-        bot_index: Index into request.app.state.bot_apps for the target bot.
+        bot_index: Index into _bot_applications for the target bot.
 
     Returns:
         A fastapi.Response with an appropriate HTTP status code.
@@ -2280,9 +2281,7 @@ async def process_webhook_request(request: Request, bot_index: int):
     # --- Secret token verification ---
     # Use _get_expected_secret_token() so that configs/bots.json overrides are
     # applied (hot-reloadable every 30 s) before falling back to runtime tokens.
-    runtime_tokens: List[Optional[str]] = getattr(
-        request.app.state, "webhook_secret_tokens", []
-    )
+    runtime_tokens: List[Optional[str]] = list(_webhook_secret_tokens)
     expected_token: Optional[str] = _get_expected_secret_token(bot_index, runtime_tokens)
 
     if expected_token:
@@ -2338,20 +2337,20 @@ async def process_webhook_request(request: Request, bot_index: int):
             bot_index,
         )
 
-    if not hasattr(request.app.state, "bot_apps") or not request.app.state.bot_apps:
+    if not _bot_applications:
         logger.error("Bot applications not initialized")
         return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-    if bot_index >= len(request.app.state.bot_apps):
+    if bot_index >= len(_bot_applications):
         logger.error(
             f"Invalid bot index: {bot_index}. "
-            f"Available bots: 0-{len(request.app.state.bot_apps) - 1}"
+            f"Available bots: 0-{len(_bot_applications) - 1}"
         )
         return Response(status_code=status.HTTP_404_NOT_FOUND)
 
     try:
         json_data = await request.json()
-        bot_app = request.app.state.bot_apps[bot_index]
+        bot_app = _bot_applications[bot_index]
         update = Update.de_json(json_data, bot_app.bot)
 
         if update.message:
