@@ -30,6 +30,7 @@ ADMIN_COMMANDS_FALLBACK = (
     "• /recategorize - Recategorize products\n"
     "• /clearcache - Clear file ID cache\n"
     "• /prunebots - Prune inactive bot users\n"
+    "• /reinitbots - Reinitialise all bot instances\n"
     "• /nuke - Delete all products"
 )
 
@@ -579,7 +580,7 @@ def register_bot_handlers(application: "Application", bot_index: int = 0):
         clearcache_command, channel_post_handler, callback_query_handler,
         message_handler, error_handler
     )
-    from handlers.admin import botusers_command, prunebots_command
+    from handlers.admin import botusers_command, prunebots_command, reinitbots_command
     from handlers.inline import handle_inline_query, handle_chosen_inline_result
 
     application.add_handler(CommandHandler("start", start_command))
@@ -590,6 +591,7 @@ def register_bot_handlers(application: "Application", bot_index: int = 0):
     application.add_handler(CommandHandler("users", users_command))
     application.add_handler(CommandHandler("botusers", botusers_command))
     application.add_handler(CommandHandler("prunebots", prunebots_command))
+    application.add_handler(CommandHandler("reinitbots", reinitbots_command))
     application.add_handler(CommandHandler("subscribe", subscribe_command))
     application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
     application.add_handler(CommandHandler("block", block_command))

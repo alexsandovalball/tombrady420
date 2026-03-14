@@ -1557,3 +1557,68 @@ async def prunebots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def reinitbots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /reinitbots command — admin-only bot reinitialisation.
+
+    Usage:
+      /reinitbots           — show confirmation instructions
+      /reinitbots confirm   — stop and recreate all bot Applications
+
+    This is useful when a Telegram bot token has been replaced or rotated.
+    The reinitialisation reads the current Config.BOT_TOKENS values and calls
+    setup_application() for each token so new webhooks are registered.
+    """
+    user_id = update.effective_user.id
+
+    if not is_admin(user_id):
+        await update.message.reply_text(
+            "❌ This command is only available for administrators."
+        )
+        return
+
+    args = context.args or []
+
+    if args and args[0].lower() == "confirm":
+        # Acknowledge immediately; the reinit runs in the background so that
+        # the Telegram reply is returned before the current bot app is restarted.
+        await update.message.reply_text(
+            "🔄 Bot reinitialisation scheduled. All bot instances will be stopped "
+            "and recreated from the current token configuration. Check service logs "
+            "for progress and any errors."
+        )
+        try:
+            from webhook_server import reinitialize_bots
+
+            async def _run_reinit():
+                try:
+                    result = await reinitialize_bots(None)
+                    logger.info("Background reinitialisation complete: %s", result)
+                except Exception:
+                    logger.exception("Background reinitialisation failed")
+
+            asyncio.create_task(_run_reinit())
+        except ImportError:
+            # Running in polling mode — reinitialize_bots is not meaningful outside
+            # webhook mode, but we won't crash the command.
+            logger.warning("reinitbots_command: webhook_server.reinitialize_bots not importable (polling mode?)")
+            await update.message.reply_text(
+                "⚠️ Reinitialisation is only supported in webhook mode. "
+                "No action was taken."
+            )
+        except Exception as exc:
+            logger.error("reinitbots_command: failed to schedule reinit: %s", exc, exc_info=True)
+            await update.message.reply_text(
+                f"❌ Failed to schedule reinitialisation: {exc}"
+            )
+        return
+
+    # No args or unexpected args — show instructions.
+    await update.message.reply_text(
+        "⚠️ *Bot Reinitialisation*\n\n"
+        "This command stops all running bot instances and recreates them from "
+        "the current `BOT_TOKENS` configuration.  Use it after replacing a "
+        "Telegram bot token.\n\n"
+        "To proceed, run:\n`/reinitbots confirm`",
+        parse_mode="Markdown",
+    )
+
