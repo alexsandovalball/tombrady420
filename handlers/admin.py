@@ -11,6 +11,7 @@ from telegram.error import BadRequest
 from database import Database
 from utils.helpers import is_admin, get_channel_id, get_channel_username, escape_markdown_v1
 from utils.safe_send import safe_send_message, safe_edit_message_text
+from utils.decorators import command_admin_required
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -119,16 +120,9 @@ async def build_users_bot_selection_menu():
     return keyboard, message, message_no_md, True, all_bots
 
 
+@command_admin_required
 async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /nuke command - deletes ALL products (admin only) with double confirmation."""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
-    
     # First confirmation
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("⚠️ Yes, I want to nuke", callback_data="nuke_confirm1")],
@@ -157,16 +151,9 @@ async def nuke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+@command_admin_required
 async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /users command - view bot users grouped by bot instance with notification controls (admin only)."""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
-    
     try:
         # Build bot selection menu
         keyboard, message, message_no_md, has_bots, bot_list = await build_users_bot_selection_menu()
@@ -483,6 +470,7 @@ async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE, pro
         )
 
 
+@command_admin_required
 async def recategorize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /recategorize command - send categorization notifications for products needing (re)categorization (admin only).
     
@@ -495,12 +483,6 @@ async def recategorize_command(update: Update, context: ContextTypes.DEFAULT_TYP
     from main import notify_admins_for_categorization
     
     user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
     
     try:
         # Send initial message
@@ -581,6 +563,7 @@ async def recategorize_command(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
 
+@command_admin_required
 async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /block command - block a user from using the bot (admin only).
     
@@ -588,12 +571,6 @@ async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Example: /block 123456789
     """
     user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
     
     # Check arguments
     if not context.args or len(context.args) < 1:
@@ -657,6 +634,7 @@ async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+@command_admin_required
 async def unblock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /unblock command - unblock a user (admin only).
     
@@ -664,12 +642,6 @@ async def unblock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Example: /unblock 123456789
     """
     user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
     
     # Check arguments
     if not context.args or len(context.args) < 1:
@@ -722,6 +694,7 @@ async def unblock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+@command_admin_required
 async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /send command - initiate broadcast to single user (admin only).
     
@@ -734,12 +707,6 @@ async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     6. Send message
     """
     user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
     
     # Start the workflow - ask for user ID
     context.user_data['broadcast_mode'] = 'single_user'
@@ -760,6 +727,7 @@ async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Admin {user_id} started single user broadcast workflow")
 
 
+@command_admin_required
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /broadcast command - initiate broadcast to all users (admin only).
     
@@ -770,12 +738,6 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     4. Send broadcast
     """
     user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
     
     # Start the workflow - ask for message
     context.user_data['broadcast_mode'] = 'all_users'
@@ -796,13 +758,11 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Admin {user_id} started broadcast to all users workflow")
 
 
+@command_admin_required
 async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle the multi-step broadcast workflow for admins."""
     user_id = update.effective_user.id
     message_text = update.message.text
-    
-    if not is_admin(user_id):
-        return
     
     broadcast_mode = context.user_data.get('broadcast_mode')
     broadcast_step = context.user_data.get('broadcast_step')
@@ -945,15 +905,10 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
             logger.info(f"Admin {user_id} awaiting confirmation for broadcast to all users")
 
 
+@command_admin_required
 async def setcontact_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /setcontact command - set the order contact username (admin only)."""
     user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
     
     # Get current contact
     current_contact = await db.get_order_contact()
@@ -981,12 +936,10 @@ async def setcontact_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     logger.info(f"Admin {user_id} initiated setcontact command")
 
 
+@command_admin_required
 async def handle_setcontact_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle the contact username input from admin."""
     user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        return
     
     if not context.user_data.get('awaiting_contact'):
         return
@@ -1027,15 +980,10 @@ async def handle_setcontact_input(update: Update, context: ContextTypes.DEFAULT_
     logger.info(f"Admin {user_id} updated order contact to: {contact}")
 
 
+@command_admin_required
 async def setlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /setlink command - set the order link URL (admin only)."""
     user_id = update.effective_user.id
-
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
 
     # Get current link
     current_link = await db.get_order_link()
@@ -1063,12 +1011,10 @@ async def setlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Admin {user_id} initiated setlink command")
 
 
+@command_admin_required
 async def handle_setlink_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle the link URL input from admin."""
     user_id = update.effective_user.id
-
-    if not is_admin(user_id):
-        return
 
     if not context.user_data.get('awaiting_link'):
         return
@@ -1112,15 +1058,10 @@ async def handle_setlink_input(update: Update, context: ContextTypes.DEFAULT_TYP
     logger.info(f"Admin {user_id} updated order link to: {link}")
 
 
+@command_admin_required
 async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /clearcache command - clear the file ID cache (admin only)."""
     user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
     
     try:
         # Import the cache clearing function
@@ -1160,16 +1101,9 @@ async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 
+@command_admin_required
 async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /botusers command - view users grouped by bot username (admin only)."""
-    user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
-    
     try:
         # Get active bot usernames from webhook server (already lowercase)
         from webhook_server import get_bot_usernames
@@ -1409,15 +1343,10 @@ async def show_bot_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.answer("An error occurred", show_alert=True)
 
 
+@command_admin_required
 async def prunebots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /prunebots command - prune users from inactive/deleted bots (admin only)."""
     user_id = update.effective_user.id
-    
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
     
     try:
         # Get active bot usernames from webhook server
@@ -1557,6 +1486,7 @@ async def prunebots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+@command_admin_required
 async def reinitbots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /reinitbots command — admin-only bot reinitialisation.
 
@@ -1569,14 +1499,6 @@ async def reinitbots_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     The reinitialisation reads the current Config.BOT_TOKENS values and calls
     setup_application() for each token so new webhooks are registered.
     """
-    user_id = update.effective_user.id
-
-    if not is_admin(user_id):
-        await update.message.reply_text(
-            "❌ This command is only available for administrators."
-        )
-        return
-
     args = context.args or []
     subcommand = args[0].lower() if args else ""
 

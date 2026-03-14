@@ -49,7 +49,7 @@ class TestReinitbotsCommand:
         update = _make_update(user_id=99999)
         context = _make_context()
 
-        with patch("handlers.admin.is_admin", return_value=False):
+        with patch("utils.decorators.is_admin", return_value=False):
             await reinitbots_command(update, context)
 
         update.message.reply_text.assert_awaited_once()
@@ -64,7 +64,7 @@ class TestReinitbotsCommand:
         update = _make_update(user_id=1)
         context = _make_context(args=[])
 
-        with patch("handlers.admin.is_admin", return_value=True):
+        with patch("utils.decorators.is_admin", return_value=True):
             await reinitbots_command(update, context)
 
         update.message.reply_text.assert_awaited_once()
@@ -79,7 +79,7 @@ class TestReinitbotsCommand:
         update = _make_update(user_id=1)
         context = _make_context(args=["please"])
 
-        with patch("handlers.admin.is_admin", return_value=True):
+        with patch("utils.decorators.is_admin", return_value=True):
             await reinitbots_command(update, context)
 
         update.message.reply_text.assert_awaited_once()
@@ -97,7 +97,7 @@ class TestReinitbotsCommand:
         fake_reinitialize_bots = AsyncMock(return_value={"created": [0], "failed": [], "errors": {}})
 
         with (
-            patch("handlers.admin.is_admin", return_value=True),
+            patch("utils.decorators.is_admin", return_value=True),
             patch("handlers.admin.asyncio.create_task") as mock_create_task,
             patch("webhook_server.reinitialize_bots", fake_reinitialize_bots, create=True),
             patch.dict("sys.modules", {"webhook_server": MagicMock(reinitialize_bots=fake_reinitialize_bots)}),
@@ -122,7 +122,7 @@ class TestReinitbotsCommand:
             context = _make_context(args=[arg])
 
             with (
-                patch("handlers.admin.is_admin", return_value=True),
+                patch("utils.decorators.is_admin", return_value=True),
                 patch("handlers.admin.asyncio.create_task"),
                 patch.dict("sys.modules", {"webhook_server": MagicMock(reinitialize_bots=AsyncMock())}),
             ):

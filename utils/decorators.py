@@ -1,5 +1,5 @@
 """
-Shared decorators for callback query handler functions.
+Shared decorators for handler functions.
 """
 import functools
 import logging
@@ -7,6 +7,8 @@ import logging
 from utils.helpers import is_admin
 
 logger = logging.getLogger(__name__)
+
+_ADMIN_ONLY_MSG = "❌ This command is only available for administrators."
 
 
 def admin_required(func):
@@ -27,4 +29,25 @@ def admin_required(func):
             await query.answer("❌ Only admins can perform this action.", show_alert=True)
             return
         return await func(update, context, query, user_id, parts)
+    return wrapper
+
+
+def command_admin_required(func):
+    """
+    Decorator for Telegram command handlers that restricts access to admin users.
+
+    Reads ``update.effective_user.id``, checks ``is_admin()``, and replies with a
+    rejection message if the user is not an admin.  The wrapped function is only
+    called when the check passes.
+
+    Expected handler signature::
+
+        async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None: ...
+    """
+    @functools.wraps(func)
+    async def wrapper(update, context):
+        if not is_admin(update.effective_user.id):
+            await update.message.reply_text(_ADMIN_ONLY_MSG)
+            return
+        return await func(update, context)
     return wrapper

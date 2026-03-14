@@ -15,8 +15,12 @@ from html import escape as escape_html
 from telegram import Bot, Message, Update
 from telegram.error import TelegramError, BadRequest, Forbidden, RetryAfter
 from telegram.helpers import escape_markdown as escape_markdown_v2
+from database import Database
 
 logger = logging.getLogger(__name__)
+
+# Module-level database singleton — avoids creating a new connection object per user-cleanup call.
+_db = Database()
 
 # Constants for rate limiting and user cleanup
 MAX_RETRIES = 3
@@ -99,9 +103,7 @@ async def handle_send_exception(exception: Exception, user_id: int, operation: s
     # If user should be removed, trigger DB cleanup
     if should_remove:
         try:
-            from database import Database
-            db = Database()
-            await db.delete_user(user_id)
+            await _db.delete_user(user_id)
             logger.info(f"[User Cleanup] Removed user {user_id} from database (reason: {operation} failed)")
             return True
         except Exception as db_error:
@@ -891,11 +893,9 @@ async def handle_handler_error(
 
     # Get user's language and translated error message
     try:
-        from database import Database
         from translations.translator import get_translated_string_async
 
-        db = Database()
-        user_lang = await db.get_user_language(user_id)
+        user_lang = await _db.get_user_language(user_id)
         error_text = await get_translated_string_async("error_occurred", user_lang)
 
         # Send error message based on update type
