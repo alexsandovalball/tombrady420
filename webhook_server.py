@@ -2176,14 +2176,19 @@ async def process_webhook_request(request: Request, bot_index: int):
             # Tag: [WEBHOOK_401] — grep-friendly for alerting pipelines.
             header_present = isinstance(incoming_token, str)
             header_length = len(incoming_token) if header_present else 0
+            expected_prefix = expected_token[:8] if expected_token else "none"
+            incoming_prefix = incoming_token[:8] if header_present else "none"
             logger_security.warning(
                 "[WEBHOOK_401] bot=%d ip=%s telegram_ip=%s "
-                "header_present=%s header_length=%d",
+                "header_present=%s header_length=%d "
+                "expected_prefix=%s incoming_prefix=%s",
                 bot_index,
                 client_ip,
                 from_telegram,
                 header_present,
                 header_length,
+                expected_prefix,
+                incoming_prefix,
             )
             return Response(status_code=status.HTTP_401_UNAUTHORIZED)
     else:
