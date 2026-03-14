@@ -1,26 +1,18 @@
 """
-Global rate limiter middleware with layered rules and auto-blocking.
+Global rate limiter middleware with malicious probe auto-blocking.
 
-Provides a ``GlobalRateLimiter`` middleware that applies different rate limits
-depending on the request path:
+Provides a ``GlobalRateLimiter`` middleware that:
 
-  * Layer 1 – Aggressive limiter for API/storefront routes (``/api/*`` and ``/*``):
-      configurable via env vars, defaults to 30 req / 60 s per IP.
-      Exempt: ``/webhook`` and ``/webhook/*`` paths.
-
-  * Layer 2 – Strict limiter for static assets (``/assets/*``):
-      defaults to 60 req / 60 s per IP.
-
-  * Layer 3 – Webhook-specific rate limiting already handled upstream by
-      ``WebhookIPRateLimiter`` inside each ``/webhook`` handler; not
-      duplicated here.
+  * Allows unlimited requests for normal traffic (no token bucket rate limiting)
+  * Exempt: ``/webhook`` and ``/webhook/*`` paths (handled separately)
+  * Auto-blocks IPs that probe for malicious paths (wp-login, wp-admin, .env, etc.)
 
 Auto-blocking:
-  An IP that exceeds the rate limit ``AUTO_BLOCK_THRESHOLD`` times within
-  ``AUTO_BLOCK_WINDOW`` seconds is automatically blocked for
-  ``AUTO_BLOCK_DURATION`` seconds (applies to all layers).
+  An IP that attempts to access any malicious probe path is immediately blocked
+  for ``AUTO_BLOCK_DURATION`` seconds (default: 1 hour). Previously auto-blocked
+  IPs are rejected on all subsequent requests until the block expires.
 
-All limits and durations are configurable via environment variables.
+All durations are configurable via environment variables.
 """
 
 import asyncio
@@ -51,18 +43,24 @@ _AUTO_BLOCK_DURATION: int = int(os.getenv("AUTO_BLOCK_DURATION", "3600"))  # 1 h
 
 _MAX_BUCKETS: int = 10_000  # LRU eviction threshold
 
+# Malicious probe path patterns - paths commonly probed by bots/scrapers
+_MALICIOUS_PROBE_PATTERNS = {
+    "wp-login", "wp-admin", ".env", ".git", ".php", "setup.php",
+    "config.json", "phpinfo", "admin.php", "xmlrpc.php", "wp-config"
+}
+
 
 class GlobalRateLimiter(BaseHTTPMiddleware):
-    """Layered per-IP rate limiter middleware applied to all non-webhook traffic.
+    """Malicious probe detector and auto-blocker middleware for non-webhook traffic.
 
-    Layer 1: API / storefront routes (``/api/*``, ``/*``) – aggressive limit.
-    Layer 2: Static assets (``/assets/*``) – strict limit.
-    Webhook paths (``/webhook``, ``/webhook/*``) are exempt.
+    This middleware allows unlimited requests for normal traffic but immediately
+    auto-blocks IPs attempting to access malicious probe paths (e.g., wp-login,
+    wp-admin, .env, .git, .php files, etc.) commonly used by bots and scrapers.
 
-    The two layers maintain independent token buckets and short-term block
-    states per IP, so asset scraping and API abuse are tracked separately.
-    A global auto-block kicks in when an IP accumulates repeated violations
-    across any layer within the auto-block window.
+    Webhook paths (``/webhook``, ``/webhook/*``) are exempt and handled separately.
+
+    Auto-blocked IPs are rejected on all subsequent requests for the configured
+    AUTO_BLOCK_DURATION (default: 1 hour).
 
     Rate-limited responses return HTTP 429 with a ``Retry-After`` header.
     """
@@ -119,6 +117,11 @@ class GlobalRateLimiter(BaseHTTPMiddleware):
     def _is_exempt(self, path: str) -> bool:
         """Return True for paths that should bypass global rate limiting."""
         return path == "/webhook" or path.startswith("/webhook/")
+
+    def _is_malicious_probe(self, path: str) -> bool:
+        """Return True if the path contains known malicious probe patterns."""
+        path_lower = path.lower()
+        return any(pattern in path_lower for pattern in _MALICIOUS_PROBE_PATTERNS)
 
     def _check_token_bucket(
         self,
@@ -199,7 +202,6 @@ class GlobalRateLimiter(BaseHTTPMiddleware):
 
         ip = self._get_client_ip(request)
         now = _time.monotonic()
-        is_assets = path.startswith("/assets/")
 
         async with self._lock:
             # 1. Check global auto-block (applies to all layers)
@@ -209,36 +211,10 @@ class GlobalRateLimiter(BaseHTTPMiddleware):
                     return self._rate_limited_response(ip, path, remaining, "auto-blocked")
                 del self._auto_blocked[ip]
 
-            # 2. Select per-layer state
-            layer_blocked = self._assets_blocked if is_assets else self._api_blocked
-            layer_buckets = self._assets_buckets if is_assets else self._buckets
-            layer_rate = self._assets_rate if is_assets else self._rate
-            layer_burst = self._assets_burst if is_assets else self._burst
+            # 2. Check for malicious probe patterns - immediately auto-block
+            if self._is_malicious_probe(path):
+                self._apply_auto_block(ip, now, path)
+                return self._rate_limited_response(ip, path, self._auto_block_duration, "malicious probe")
 
-            # 3. Check per-layer short-term block
-            if ip in layer_blocked:
-                if now < layer_blocked[ip]:
-                    remaining = int(layer_blocked[ip] - now)
-                    # Record violation while persisting in block (helps trigger auto-block)
-                    if self._record_violation(ip, now):
-                        self._apply_auto_block(ip, now, path)
-                        retry_after = self._auto_block_duration
-                    else:
-                        retry_after = remaining
-                    return self._rate_limited_response(ip, path, retry_after, "blocked")
-                del layer_blocked[ip]
-
-            # 4. Apply token-bucket check
-            if not self._check_token_bucket(layer_buckets, ip, layer_rate, layer_burst):
-                should_auto_block = self._record_violation(ip, now)
-                if should_auto_block:
-                    self._apply_auto_block(ip, now, path)
-                    retry_after = self._auto_block_duration
-                else:
-                    if len(layer_blocked) >= _MAX_BUCKETS:
-                        layer_blocked.popitem(last=False)
-                    layer_blocked[ip] = now + self._block_duration
-                    retry_after = self._block_duration
-                return self._rate_limited_response(ip, path, retry_after)
-
+        # 3. Allow all other requests (bypass token bucket and layer blocking)
         return await call_next(request)
