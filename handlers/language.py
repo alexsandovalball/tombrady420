@@ -1,6 +1,7 @@
 """
 Language settings handler.
 """
+import html
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -86,16 +87,16 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
     # Show welcome message in the new language (return to start page)
     user = update.effective_user
     
-    # Get user's full display name - escaped for markdown
-    display_name = get_user_display_name(user, escaped=True)
+    # Get user's full display name - escaped for HTML
+    display_name = html.escape(get_user_display_name(user, escaped=False))
     
     is_subscribed = await db.is_user_subscribed(user_id)
     
     # Get order contact
     order_contact = await db.get_order_contact()
     
-    # Get translated welcome message with contact - name and contact are already escaped
-    escaped_contact = escape_markdown_v1(order_contact)
+    # Get translated welcome message with contact - name and contact are HTML-escaped
+    escaped_contact = html.escape(order_contact)
     welcome_text = await get_translated_string_async("welcome_with_contact", lang_code, name=display_name, contact=escaped_contact)
     
     # Add admin command info for admins
@@ -128,7 +129,7 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
         chat_id=update.effective_chat.id,
         text=welcome_text,
         reply_markup=keyboard,
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
     
     logger.info(f"User {user_id} changed language to {lang_code}")
