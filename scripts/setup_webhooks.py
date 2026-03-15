@@ -56,6 +56,7 @@ def setup_webhooks():
                 'channel_post',
                 'inline_query',
                 'chosen_inline_result',
+                'my_chat_member',
             ]
         }
         

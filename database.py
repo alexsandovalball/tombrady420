@@ -286,6 +286,21 @@ class Database:
                 )
             """)
 
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS broadcast_chats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bot_username TEXT NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    chat_type TEXT NOT NULL,
+                    title TEXT,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    added_by_user_id INTEGER,
+                    UNIQUE(bot_username, chat_id)
+                )
+            """)
+
             # Set default order contact if not exists
             await db.execute("""
                 INSERT OR IGNORE INTO bot_settings (key, value)
@@ -398,7 +413,11 @@ class Database:
 
             # Bot users language index
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_language_code ON bot_users(language)")
-            
+
+            # Broadcast chats indexes
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_chats_bot_username ON broadcast_chats(bot_username)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_chats_enabled ON broadcast_chats(bot_username, enabled) WHERE enabled = 1")
+
             logger.info("Database indexes created successfully")
             
             await db.commit()
@@ -1687,10 +1706,24 @@ class Database:
             return len(user_ids)
     
     async def get_bot_usernames(self) -> List[str]:
-        """Get list of unique bot usernames that have users (normalized to lowercase)."""
+        """
+        Get list of unique bot usernames known to the database, normalized to lowercase.
+
+        Returns the union of:
+        - Bots that have at least one user in ``bot_users``.
+        - Bots that have been registered via ``register_bot_instance`` in
+          ``bot_instances`` (i.e. every bot that has ever started up).
+
+        Using the union ensures that newly-configured bots that haven't yet
+        received any users are still visible in the admin interface and that the
+        "active vs DB" count shown in the logs stays consistent.
+        """
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("""
-                SELECT DISTINCT LOWER(bot_username) FROM bot_users 
+                SELECT LOWER(bot_username) FROM bot_users
+                WHERE bot_username IS NOT NULL AND bot_username != ''
+                UNION
+                SELECT LOWER(bot_username) FROM bot_instances
                 WHERE bot_username IS NOT NULL AND bot_username != ''
                 ORDER BY 1
             """) as cursor:
@@ -2438,6 +2471,126 @@ class Database:
                 (user_id, result_id, query, bot_username),
             )
             await db.commit()
+
+    # ------------------------------------------------------------------
+    # Broadcast chat CRUD methods
+    # ------------------------------------------------------------------
+
+    async def upsert_broadcast_chat(
+        self,
+        bot_username: str,
+        chat_id: int,
+        chat_type: str,
+        title: Optional[str] = None,
+        added_by_user_id: Optional[int] = None,
+    ) -> None:
+        """
+        Insert or update a broadcast destination chat entry.
+
+        When the chat already exists the title and updated_at fields are refreshed
+        but enabled is left unchanged so that an admin-configured preference is not
+        accidentally reset when the bot re-encounters the same chat.
+        """
+        bot_username = self.normalize_bot_username(bot_username)
+        now = datetime.now()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO broadcast_chats
+                    (bot_username, chat_id, chat_type, title, enabled, added_at, updated_at, added_by_user_id)
+                VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+                ON CONFLICT(bot_username, chat_id) DO UPDATE SET
+                    chat_type       = excluded.chat_type,
+                    title           = COALESCE(excluded.title, broadcast_chats.title),
+                    updated_at      = excluded.updated_at,
+                    added_by_user_id = COALESCE(broadcast_chats.added_by_user_id, excluded.added_by_user_id)
+                """,
+                (bot_username, chat_id, chat_type, title, now, now, added_by_user_id),
+            )
+            await db.commit()
+        logger.debug(
+            f"upsert_broadcast_chat: bot=@{bot_username} chat_id={chat_id} type={chat_type}"
+        )
+
+    async def delete_broadcast_chat(self, bot_username: str, chat_id: int) -> int:
+        """Remove a broadcast destination permanently. Returns number of rows deleted."""
+        bot_username = self.normalize_bot_username(bot_username)
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM broadcast_chats WHERE bot_username = ? AND chat_id = ?",
+                (bot_username, chat_id),
+            )
+            await db.commit()
+            deleted = cursor.rowcount
+        logger.debug(
+            f"delete_broadcast_chat: bot=@{bot_username} chat_id={chat_id} deleted={deleted}"
+        )
+        return deleted
+
+    async def set_broadcast_chat_enabled(
+        self, bot_username: str, chat_id: int, enabled: bool
+    ) -> bool:
+        """
+        Enable or disable broadcasting for a specific chat.
+
+        Returns True if the row was found and updated, False if the chat is not
+        registered as a broadcast destination for this bot.
+        """
+        bot_username = self.normalize_bot_username(bot_username)
+        now = datetime.now()
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE broadcast_chats
+                SET enabled = ?, updated_at = ?
+                WHERE bot_username = ? AND chat_id = ?
+                """,
+                (1 if enabled else 0, now, bot_username, chat_id),
+            )
+            await db.commit()
+            updated = cursor.rowcount > 0
+        logger.debug(
+            f"set_broadcast_chat_enabled: bot=@{bot_username} chat_id={chat_id} enabled={enabled} updated={updated}"
+        )
+        return updated
+
+    async def get_broadcast_chats(self, bot_username: str) -> List[Dict[str, Any]]:
+        """Return all broadcast destinations for a bot (both enabled and disabled)."""
+        bot_username = self.normalize_bot_username(bot_username)
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT id, bot_username, chat_id, chat_type, title, enabled,
+                       added_at, updated_at, added_by_user_id
+                FROM broadcast_chats
+                WHERE bot_username = ?
+                ORDER BY added_at ASC
+                """,
+                (bot_username,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    async def get_enabled_broadcast_chats(self, bot_username: str) -> List[Dict[str, Any]]:
+        """Return only enabled broadcast destinations for a bot."""
+        bot_username = self.normalize_bot_username(bot_username)
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT id, bot_username, chat_id, chat_type, title, enabled,
+                       added_at, updated_at, added_by_user_id
+                FROM broadcast_chats
+                WHERE bot_username = ? AND enabled = 1
+                ORDER BY added_at ASC
+                """,
+                (bot_username,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
 
     async def run_maintenance(self) -> None:
         """

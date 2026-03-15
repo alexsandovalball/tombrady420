@@ -211,6 +211,27 @@ class NotificationService:
                     # Process the notification batch (returns stats dict)
                     stats = await self.process_notification_queue(context)
 
+                    # Broadcast to enabled group/channel destinations for every active bot
+                    broadcast_total_sent = 0
+                    broadcast_total_failed = 0
+                    bot_apps = self._get_bot_applications()
+                    for bot_app in bot_apps:
+                        try:
+                            bc_stats = await self.broadcast_product_to_chats(product_id, bot_app)
+                            broadcast_total_sent += bc_stats["sent"]
+                            broadcast_total_failed += bc_stats["failed"]
+                        except Exception as bc_exc:
+                            logger.error(
+                                f"[Broadcast] Error broadcasting product {product_id} "
+                                f"via @{get_bot_username(bot_app)}: {bc_exc}",
+                                exc_info=True,
+                            )
+                    if broadcast_total_sent or broadcast_total_failed:
+                        logger.info(
+                            f"[Broadcast] product {product_id}: "
+                            f"total sent={broadcast_total_sent} failed={broadcast_total_failed}"
+                        )
+
                     # Send admin summary after completing this batch
                     admin_ids = get_admin_ids()
                     if admin_ids and stats["sent"] > 0:
@@ -1108,7 +1129,126 @@ class NotificationService:
             #  - Admin manually triggers notification processing (future feature)
             # This ensures we don't lose messages due to transient issues
             return False
-    
+
+    async def broadcast_product_to_chats(
+        self,
+        product_id: int,
+        bot_app: Application,
+    ) -> Dict[str, int]:
+        """
+        Broadcast a newly-categorised product to all *enabled* broadcast destinations
+        for the given bot instance.
+
+        Sends one message per destination with a brief throttle between sends to
+        stay within Telegram's rate limits.  If a destination has gone stale
+        (Forbidden / chat not found) it is automatically disabled in the DB.
+
+        Args:
+            product_id: ID of the product to broadcast.
+            bot_app: The Application instance whose broadcast_chats should be used.
+
+        Returns:
+            Dict with keys "sent" (int) and "failed" (int).
+        """
+        bot_username = get_bot_username(bot_app)
+        chats = await self.db.get_enabled_broadcast_chats(bot_username)
+        if not chats:
+            logger.debug(f"[Broadcast] @{bot_username}: no enabled broadcast chats")
+            return {"sent": 0, "failed": 0}
+
+        product = await self.db.get_product(product_id)
+        if not product:
+            logger.warning(f"[Broadcast] product {product_id} not found, skipping broadcast")
+            return {"sent": 0, "failed": 0}
+
+        category = product.get("category", "Unknown")
+        subcategory = product.get("subcategory")
+        category_text = get_category_display_name(category)
+        if subcategory:
+            category_text += f" • {get_subcategory_display_name(subcategory, 'en')}"
+
+        caption = product.get("caption", "")
+        caption_preview = caption[:100] + "..." if len(caption) > 100 else caption
+
+        message_text = (
+            f"{emojis.BELL} *New Product Available!*\n\n"
+            f"{emojis.MENU} Category: {category_text}\n"
+            f"{emojis.INFO} {caption_preview}"
+        )
+
+        file_id = product.get("file_id")
+        file_type = product.get("file_type")
+
+        sent = 0
+        failed = 0
+        for chat in chats:
+            chat_id = chat["chat_id"]
+            try:
+                media_sent = False
+                if file_id and file_type:
+                    try:
+                        # Attempt to get a bot-specific file_id for cross-bot compatibility
+                        bot_specific_id = await get_bot_specific_file_id(
+                            bot_app,
+                            product["chat_id"],
+                            product["message_id"],
+                            file_type,
+                            file_index=0,
+                        )
+                        fid = bot_specific_id or file_id
+                        media_sent = await self._send_media_notification(
+                            bot_app, chat_id, file_type, fid, message_text, None, parse_mode="Markdown"
+                        )
+                    except Exception:
+                        media_sent = False
+
+                if not media_sent:
+                    result = await safe_send_message(
+                        bot=bot_app.bot,
+                        chat_id=chat_id,
+                        text=message_text,
+                        parse_mode="Markdown",
+                    )
+                    media_sent = result is not None
+
+                if media_sent:
+                    sent += 1
+                    logger.info(
+                        f"[Broadcast] @{bot_username} → chat {chat_id} "
+                        f"({chat.get('chat_type', '?')} '{chat.get('title', chat_id)}'): OK"
+                    )
+                else:
+                    failed += 1
+
+                # 0.5 s between sends to stay well under Telegram limits
+                await asyncio.sleep(0.5)
+
+            except (Forbidden, TelegramError) as exc:
+                error_msg = str(exc).lower()
+                if any(kw in error_msg for kw in ("forbidden", "kicked", "chat not found", "not enough rights")):
+                    logger.warning(
+                        f"[Broadcast] @{bot_username} → chat {chat_id}: permanent error – "
+                        f"disabling destination. Error: {exc}"
+                    )
+                    await self.db.set_broadcast_chat_enabled(bot_username, chat_id, False)
+                else:
+                    logger.warning(
+                        f"[Broadcast] @{bot_username} → chat {chat_id}: transient error – {exc}"
+                    )
+                failed += 1
+
+            except Exception as exc:
+                logger.error(
+                    f"[Broadcast] @{bot_username} → chat {chat_id}: unexpected error – {exc}",
+                    exc_info=True,
+                )
+                failed += 1
+
+        logger.info(
+            f"[Broadcast] @{bot_username}: product {product_id} – sent={sent} failed={failed}"
+        )
+        return {"sent": sent, "failed": failed}
+
     async def send_custom_message_to_user(
         self,
         context: ContextTypes.DEFAULT_TYPE,

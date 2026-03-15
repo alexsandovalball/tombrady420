@@ -35,6 +35,9 @@ ADMIN_COMMANDS_FALLBACK = (
     "• /clearcache - Clear file ID cache\n"
     "• /prunebots - Prune inactive bot users\n"
     "• /reinitbots - Reinitialise all bot instances\n"
+    "• /enable_broadcasts - Enable broadcasts in this group/channel\n"
+    "• /disable_broadcasts - Disable broadcasts in this group/channel\n"
+    "• /list_broadcasts - List all broadcast destinations\n"
     "• /nuke - Delete all products"
 )
 
@@ -569,7 +572,7 @@ def register_bot_handlers(application: "Application", bot_index: int = 0):
     """
     from telegram.ext import (
         CommandHandler, MessageHandler, CallbackQueryHandler,
-        InlineQueryHandler, ChosenInlineResultHandler, filters
+        InlineQueryHandler, ChosenInlineResultHandler, ChatMemberHandler, filters
     )
     # Import command handlers directly from their defining modules to avoid the
     # circular dependency: utils/helpers.py → main.py → utils/helpers.py.
@@ -584,7 +587,9 @@ def register_bot_handlers(application: "Application", bot_index: int = 0):
         block_command, unblock_command, send_command, broadcast_command,
         setcontact_command, setlink_command, clearcache_command,
         botusers_command, prunebots_command, reinitbots_command,
+        enable_broadcasts_command, disable_broadcasts_command, list_broadcasts_command,
     )
+    from handlers.broadcast import my_chat_member_handler
     from handlers.inline import handle_inline_query, handle_chosen_inline_result
     from main import channel_post_handler, callback_query_handler, message_handler, error_handler
 
@@ -606,6 +611,12 @@ def register_bot_handlers(application: "Application", bot_index: int = 0):
     application.add_handler(CommandHandler("setcontact", setcontact_command))
     application.add_handler(CommandHandler("setlink", setlink_command))
     application.add_handler(CommandHandler("clearcache", clearcache_command))
+    application.add_handler(CommandHandler("enable_broadcasts", enable_broadcasts_command))
+    application.add_handler(CommandHandler("disable_broadcasts", disable_broadcasts_command))
+    application.add_handler(CommandHandler("list_broadcasts", list_broadcasts_command))
+
+    # my_chat_member: fires when the bot's own membership in any chat changes
+    application.add_handler(ChatMemberHandler(my_chat_member_handler, ChatMemberHandler.MY_CHAT_MEMBER))
 
     # Channel post handler (primary bot only)
     if bot_index == 0:

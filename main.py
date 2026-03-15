@@ -580,6 +580,7 @@ async def setup_bot_commands(bot):
         BotCommand("clearcache", "Clear file ID cache"),
         BotCommand("prunebots", "Prune users from inactive bots"),
         BotCommand("reinitbots", "Reinitialise all bot instances"),
+        BotCommand("list_broadcasts", "List group/channel broadcast destinations"),
         BotCommand("nuke", "Delete all products (use with caution)"),
     ]
     
