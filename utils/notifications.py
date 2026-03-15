@@ -1188,12 +1188,12 @@ class NotificationService:
         if bot_deep_link:
             buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
         if Config.WEB_APP_URL:
-            buttons.append(InlineKeyboardButton("🌐 Open WebApp", url=Config.WEB_APP_URL))
+            buttons.append(InlineKeyboardButton("🛍️ Shop", url=Config.WEB_APP_URL))
         reply_markup = InlineKeyboardMarkup([buttons]) if buttons else None
 
         button_details = "".join(
             ([f"\n  - 🔗 View in Bot → {bot_deep_link}"] if bot_deep_link else [])
-            + ([f"\n  - 🌐 Open WebApp → {Config.WEB_APP_URL}"] if Config.WEB_APP_URL else [])
+            + ([f"\n  - 🛍️ Shop → {Config.WEB_APP_URL}"] if Config.WEB_APP_URL else [])
         )
         logger.info(
             f"[Broadcast] Preparing product {product_id} broadcast to {len(chats)} destination(s) "

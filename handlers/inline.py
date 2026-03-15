@@ -119,9 +119,7 @@ async def _build_product_article(
     if bot_deep_link:
         buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
     if Config.WEB_APP_URL:
-        buttons.append(InlineKeyboardButton("🌐 Open WebApp", url=Config.WEB_APP_URL))
-
-    reply_markup = InlineKeyboardMarkup([buttons]) if buttons else None
+        buttons.append(InlineKeyboardButton("🛍️ Shop", url=Config.WEB_APP_URL))
 
     # Caption / message text shown when the result is shared (no ID shown to users)
     caption_text = (
@@ -647,7 +645,7 @@ async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFA
         if bot_deep_link:
             buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
         if Config.WEB_APP_URL:
-            buttons.append(InlineKeyboardButton("🌐 Open WebApp", url=Config.WEB_APP_URL))
+            buttons.append(InlineKeyboardButton("🛍️ Shop", url=Config.WEB_APP_URL))
         reply_markup = InlineKeyboardMarkup([buttons]) if buttons else None
 
         file_id = product.get("file_id")
