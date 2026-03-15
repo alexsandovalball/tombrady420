@@ -120,6 +120,7 @@ async def _build_product_article(
         buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
     if Config.WEB_APP_URL:
         buttons.append(InlineKeyboardButton("🛍️ Shop", url=Config.WEB_APP_URL))
+    reply_markup = InlineKeyboardMarkup([buttons]) if buttons else None
 
     # Caption / message text shown when the result is shared (no ID shown to users)
     caption_text = (
