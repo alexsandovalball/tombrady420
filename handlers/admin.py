@@ -38,23 +38,20 @@ async def build_users_bot_selection_menu():
     if not bot_usernames:
         return None, None, None, False, []
     
-    # Separate active and inactive bots
+    # Collect active bots only
     active_bot_list = []
-    inactive_bot_list = []
     
     for bot_username in bot_usernames:
-        count = await db.get_users_count_by_bot(bot_username)
         if bot_username in active_bots:
+            count = await db.get_users_count_by_bot(bot_username)
             active_bot_list.append((bot_username, count))
-        else:
-            inactive_bot_list.append((bot_username, count))
     
     # Check for untracked users
     untracked_count = await db.get_users_count_by_bot("_untracked_")
     has_untracked = untracked_count > 0
     
-    # Create complete bot list for auto-selection logic
-    all_bots = active_bot_list + inactive_bot_list
+    # Create complete bot list for auto-selection logic (active bots only)
+    all_bots = active_bot_list
     if has_untracked:
         all_bots.append(("_untracked_", untracked_count))
     
@@ -64,13 +61,6 @@ async def build_users_bot_selection_menu():
     # Add active bots first
     for bot_username, count in active_bot_list:
         display_text = f"✅ @{bot_username} ({count} users)"
-        keyboard_buttons.append([
-            InlineKeyboardButton(display_text, callback_data=f"viewusers|{bot_username}|1")
-        ])
-    
-    # Add inactive bots with warning
-    for bot_username, count in inactive_bot_list:
-        display_text = f"⚠️ @{bot_username} ({count} users - INACTIVE)"
         keyboard_buttons.append([
             InlineKeyboardButton(display_text, callback_data=f"viewusers|{bot_username}|1")
         ])
@@ -98,9 +88,6 @@ async def build_users_bot_selection_menu():
         bots_without_users = active_bots_count - active_bots_with_users_count
         message += f"ℹ️ {bots_without_users} active bot(s) have no users yet\n"
     
-    if inactive_bot_list:
-        message += f"⚠️ Inactive Bots: {len(inactive_bot_list)} (users should be pruned)\n"
-    
     message += f"\nSelect a bot to manage its users:"
     
     # Non-markdown version
@@ -111,9 +98,6 @@ async def build_users_bot_selection_menu():
     if active_bots_with_users_count < active_bots_count:
         bots_without_users = active_bots_count - active_bots_with_users_count
         message_no_md += f"ℹ️ {bots_without_users} active bot(s) have no users yet\n"
-    
-    if inactive_bot_list:
-        message_no_md += f"⚠️ Inactive Bots: {len(inactive_bot_list)} (users should be pruned)\n"
     
     message_no_md += f"\nSelect a bot to manage its users:"
     
@@ -1129,16 +1113,13 @@ async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             return
         
-        # Separate active and inactive bots
+        # Collect active bots only
         active_bot_list = []
-        inactive_bot_list = []
         
         for bot_username in bot_usernames:
-            count = await db.get_users_count_by_bot(bot_username)
             if bot_username in active_bots:
+                count = await db.get_users_count_by_bot(bot_username)
                 active_bot_list.append((bot_username, count))
-            else:
-                inactive_bot_list.append((bot_username, count))
         
         # Create keyboard with bot instances
         keyboard_buttons = []
@@ -1146,13 +1127,6 @@ async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Add active bots first
         for bot_username, count in active_bot_list:
             display_text = f"✅ @{bot_username} ({count} users)"
-            keyboard_buttons.append([
-                InlineKeyboardButton(display_text, callback_data=f"viewbotusers|{bot_username}|1")
-            ])
-        
-        # Add inactive bots with warning
-        for bot_username, count in inactive_bot_list:
-            display_text = f"⚠️ @{bot_username} ({count} users - INACTIVE)"
             keyboard_buttons.append([
                 InlineKeyboardButton(display_text, callback_data=f"viewbotusers|{bot_username}|1")
             ])
@@ -1181,9 +1155,6 @@ async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bots_without_users = active_bots_count - active_bots_with_users_count
             message += f"ℹ️ {bots_without_users} active bot(s) have no users yet\n"
         
-        if inactive_bot_list:
-            message += f"⚠️ Inactive Bots: {len(inactive_bot_list)} (users should be pruned)\n"
-        
         message += f"\nSelect a bot to view its users:"
         
         try:
@@ -1202,9 +1173,6 @@ async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if active_bots_with_users_count < active_bots_count:
                 bots_without_users = active_bots_count - active_bots_with_users_count
                 message_no_md += f"ℹ️ {bots_without_users} active bot(s) have no users yet\n"
-            
-            if inactive_bot_list:
-                message_no_md += f"⚠️ Inactive Bots: {len(inactive_bot_list)} (users should be pruned)\n"
             
             message_no_md += f"\nSelect a bot to view its users:"
             
