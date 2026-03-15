@@ -1591,3 +1591,150 @@ async def reinitbots_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         parse_mode="Markdown",
     )
 
+
+
+# ---------------------------------------------------------------------------
+# Broadcast management commands
+# ---------------------------------------------------------------------------
+
+async def _is_chat_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Return True if the command sender is an administrator of the current chat."""
+    try:
+        member = await context.bot.get_chat_member(
+            update.effective_chat.id, update.effective_user.id
+        )
+        return member.status in (
+            member.ADMINISTRATOR,
+            member.OWNER,
+        )
+    except Exception as e:
+        logger.warning(f"Could not verify chat admin status: {e}")
+        return False
+
+
+async def enable_broadcasts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /enable_broadcasts – opt the current group/channel in for broadcasts.
+
+    Only works in non-private chats.  The caller must be a chat administrator
+    (or a global bot admin).
+    """
+    chat = update.effective_chat
+    user_id = update.effective_user.id
+
+    if chat.type == "private":
+        await update.message.reply_text(
+            "ℹ️ This command can only be used inside a group or channel."
+        )
+        return
+
+    # Require the user to be either a global bot admin or a chat admin
+    if not is_admin(user_id) and not await _is_chat_admin(update, context):
+        await update.message.reply_text(
+            "❌ Only chat administrators can enable broadcasts here."
+        )
+        return
+
+    bot_username = context.bot.username
+    chat_id = chat.id
+    chat_type = chat.type
+    title = chat.title or str(chat_id)
+
+    # Ensure the chat is registered (handles the case where the bot was added
+    # before this feature existed and no my_chat_member update was processed)
+    await db.upsert_broadcast_chat(
+        bot_username=bot_username,
+        chat_id=chat_id,
+        chat_type=chat_type,
+        title=title,
+        added_by_user_id=user_id,
+    )
+
+    updated = await db.set_broadcast_chat_enabled(bot_username, chat_id, True)
+    if updated:
+        logger.info(
+            f"enable_broadcasts: @{bot_username} enabled broadcasting to "
+            f"{chat_type} '{title}' (chat_id={chat_id}) by user {user_id}"
+        )
+        await update.message.reply_text(
+            f"✅ Broadcasts enabled for this {chat_type}.\n"
+            "New product notifications will be posted here."
+        )
+    else:
+        await update.message.reply_text(
+            "⚠️ Could not enable broadcasts. Please try again later."
+        )
+
+
+async def disable_broadcasts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /disable_broadcasts – opt the current group/channel out of broadcasts.
+
+    Only works in non-private chats.  The caller must be a chat administrator
+    (or a global bot admin).
+    """
+    chat = update.effective_chat
+    user_id = update.effective_user.id
+
+    if chat.type == "private":
+        await update.message.reply_text(
+            "ℹ️ This command can only be used inside a group or channel."
+        )
+        return
+
+    if not is_admin(user_id) and not await _is_chat_admin(update, context):
+        await update.message.reply_text(
+            "❌ Only chat administrators can disable broadcasts here."
+        )
+        return
+
+    bot_username = context.bot.username
+    chat_id = chat.id
+    title = chat.title or str(chat_id)
+
+    updated = await db.set_broadcast_chat_enabled(bot_username, chat_id, False)
+    if updated:
+        logger.info(
+            f"disable_broadcasts: @{bot_username} disabled broadcasting to "
+            f"'{title}' (chat_id={chat_id}) by user {user_id}"
+        )
+        await update.message.reply_text(
+            "🔕 Broadcasts disabled for this chat."
+        )
+    else:
+        await update.message.reply_text(
+            "ℹ️ This chat was not registered as a broadcast destination."
+        )
+
+
+@command_admin_required
+async def list_broadcasts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /list_broadcasts – show all broadcast destinations for this bot (admin only)."""
+    bot_username = context.bot.username
+    chats = await db.get_broadcast_chats(bot_username)
+
+    if not chats:
+        await update.message.reply_text(
+            f"📭 No broadcast destinations registered for @{bot_username}.\n\n"
+            "Add the bot to a group or channel with admin rights and then run "
+            "/enable_broadcasts there."
+        )
+        return
+
+    lines = [f"📡 *Broadcast destinations for @{bot_username}*\n"]
+    for entry in chats:
+        status = "✅" if entry["enabled"] else "⭕"
+        title = entry["title"] or str(entry["chat_id"])
+        lines.append(
+            f"{status} `{entry['chat_id']}` – {entry['chat_type']} – {title}"
+        )
+
+    lines.append(
+        "\n✅ = enabled  ⭕ = disabled\n"
+        "Run /enable_broadcasts or /disable_broadcasts inside the chat to change."
+    )
+
+    try:
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception:
+        # Fallback without markdown
+        plain = "\n".join(lines).replace("*", "").replace("`", "")
+        await update.message.reply_text(plain)
