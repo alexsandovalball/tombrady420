@@ -27,8 +27,8 @@ When a new product is categorised and the notification pipeline runs, the system
 1. **Add the bot** to the group as a regular member or administrator.
 2. On being added the bot automatically registers the group as a broadcast
    destination (disabled).
-3. A **chat administrator** (or global bot admin) runs `/enable_broadcasts`
-   inside the group to opt in.
+3. **Any member** of the group runs `/enable_broadcasts` inside the group to
+   opt in.
 
 ```
 /enable_broadcasts
@@ -65,8 +65,8 @@ To opt out, run `/disable_broadcasts` in the group.
 
 | Command | Where | Who can use |
 |---|---|---|
-| `/enable_broadcasts` | Group / supergroup | Chat admin or global bot admin |
-| `/disable_broadcasts` | Group / supergroup | Chat admin or global bot admin |
+| `/enable_broadcasts` | Group / supergroup | Any member |
+| `/disable_broadcasts` | Group / supergroup | Any member |
 | `/list_broadcasts` | Any chat | Global bot admin only |
 
 ### `/enable_broadcasts`
@@ -111,12 +111,12 @@ destinations.
 
 ## Security and spam considerations
 
-* Broadcasts are **opt-in**.  No messages are sent to a chat until an admin
+* Broadcasts are **opt-in**.  No messages are sent to a chat until a member
   explicitly runs `/enable_broadcasts`.
-* Only **chat administrators** can opt a chat in or out, preventing ordinary
-  members from subscribing or unsubscribing on behalf of the whole group.
+* Any group or channel member can opt a chat in or out by running
+  `/enable_broadcasts` or `/disable_broadcasts` inside the chat.
 * Global bot admins (configured via `ADMIN_IDS`) can also run the commands
-  from any chat.
+  from any group or channel.
 * If the bot is removed from a chat or loses posting rights, the destination is
   automatically disabled and will no longer receive broadcasts.
 * Telegram's per-second rate limits are respected: a 0.5 s delay is inserted
@@ -152,6 +152,6 @@ The table is created automatically during `db.init_db()` on first startup.
 | Symptom | Cause | Fix |
 |---|---|---|
 | Bot added to group but no entry in `/list_broadcasts` | Bot was added before `my_chat_member` handler was deployed | Run `/enable_broadcasts` in the group; it registers the chat automatically |
-| `/enable_broadcasts` returns "Only chat administrators can enable broadcasts here." | Sender is not a group admin | Have a group admin run the command |
+| `/enable_broadcasts` returns "This command can only be used inside a group or channel." | Command was run in a private chat | Run the command inside the group or channel |
 | Channel does not appear in `/list_broadcasts` | Bot was not added as an admin with *Post Messages* | Make the bot a channel admin with at least the *Post Messages* permission |
 | Broadcasts stop arriving | Bot was kicked or lost rights | Re-add bot with correct permissions and run `/enable_broadcasts` again |
