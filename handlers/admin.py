@@ -1615,8 +1615,8 @@ async def _is_chat_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def enable_broadcasts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /enable_broadcasts – opt the current group/channel in for broadcasts.
 
-    Only works in non-private chats.  The caller must be a chat administrator
-    (or a global bot admin).
+    Only works in non-private chats.  Any member of the group or channel can
+    run this command.
     """
     chat = update.effective_chat
     user_id = update.effective_user.id
@@ -1624,13 +1624,6 @@ async def enable_broadcasts_command(update: Update, context: ContextTypes.DEFAUL
     if chat.type == "private":
         await update.message.reply_text(
             "ℹ️ This command can only be used inside a group or channel."
-        )
-        return
-
-    # Require the user to be either a global bot admin or a chat admin
-    if not is_admin(user_id) and not await _is_chat_admin(update, context):
-        await update.message.reply_text(
-            "❌ Only chat administrators can enable broadcasts here."
         )
         return
 
@@ -1668,8 +1661,8 @@ async def enable_broadcasts_command(update: Update, context: ContextTypes.DEFAUL
 async def disable_broadcasts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /disable_broadcasts – opt the current group/channel out of broadcasts.
 
-    Only works in non-private chats.  The caller must be a chat administrator
-    (or a global bot admin).
+    Only works in non-private chats.  Any member of the group or channel can
+    run this command.
     """
     chat = update.effective_chat
     user_id = update.effective_user.id
@@ -1677,12 +1670,6 @@ async def disable_broadcasts_command(update: Update, context: ContextTypes.DEFAU
     if chat.type == "private":
         await update.message.reply_text(
             "ℹ️ This command can only be used inside a group or channel."
-        )
-        return
-
-    if not is_admin(user_id) and not await _is_chat_admin(update, context):
-        await update.message.reply_text(
-            "❌ Only chat administrators can disable broadcasts here."
         )
         return
 
