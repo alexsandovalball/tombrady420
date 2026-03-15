@@ -1,6 +1,7 @@
 """
 Start command handler.
 """
+import html
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -128,8 +129,8 @@ async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYP
     """Show welcome message for existing users."""
     user = update.effective_user
 
-    # Get user's full display name - escaped for markdown
-    display_name = get_user_display_name(user, escaped=True)
+    # Get user's full display name - escaped for HTML
+    display_name = html.escape(get_user_display_name(user, escaped=False))
 
     # Get user's language preference
     user_lang = await get_user_lang_async(user.id)
@@ -140,8 +141,8 @@ async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYP
     # Get order contact
     order_contact = await db.get_order_contact()
 
-    # Get translated welcome message with contact - name and contact are already escaped
-    escaped_contact = escape_markdown_v1(order_contact)
+    # Get translated welcome message with contact - name and contact are HTML-escaped
+    escaped_contact = html.escape(order_contact)
     welcome_text = await get_translated_string_async("welcome_with_contact", user_lang, name=display_name, contact=escaped_contact)
 
     # Add commands info based on user role
@@ -179,7 +180,7 @@ async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(
         welcome_text,
         reply_markup=keyboard,
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
     logger.info(f"User {user.id} started the bot (language: {user_lang})")
