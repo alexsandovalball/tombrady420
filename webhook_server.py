@@ -901,11 +901,18 @@ templates = Jinja2Templates(directory="webapp")
 app.mount("/assets", StaticFiles(directory="webapp"), name="assets")
 
 _STOREFRONT_BOT_USERNAME = os.getenv("BOT_USERNAME", "").lstrip("@")
-_STOREFRONT_DOMAIN = os.getenv("STOREFRONT_DOMAIN", "")
-if not _STOREFRONT_DOMAIN:
-    logger.warning(
-        "STOREFRONT_DOMAIN is not set. Sitemap, OG tags, and product deep links will "
-        "not work correctly until this environment variable is configured."
+_STOREFRONT_DOMAIN = Config.STOREFRONT_DOMAIN or ""
+if _STOREFRONT_DOMAIN:
+    _domain_source = (
+        "STOREFRONT_DOMAIN env var" if os.getenv("STOREFRONT_DOMAIN")
+        else ("CUSTOM_DOMAIN env var" if os.getenv("CUSTOM_DOMAIN")
+              else "auto-derived from WEBHOOK_URL/WEB_APP_URL")
+    )
+    logger.info(f"Storefront domain: {_STOREFRONT_DOMAIN} (source: {_domain_source})")
+else:
+    logger.info(
+        "Storefront domain not configured; sitemap/OG tags will use relative paths. "
+        "Set WEBHOOK_URL or STOREFRONT_DOMAIN to enable absolute URLs."
     )
 
 # Default Open Graph image with football emoji 🏈 for link previews.
