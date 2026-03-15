@@ -1179,10 +1179,33 @@ class NotificationService:
         file_id = product.get("file_id")
         file_type = product.get("file_type")
 
+        # Build interactive buttons (matching inline mode style)
+        bot_deep_link = (
+            f"https://t.me/{bot_username}?start=product_{product_id}"
+            if bot_username else None
+        )
+        buttons: list = []
+        if bot_deep_link:
+            buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
+        if Config.WEB_APP_URL:
+            buttons.append(InlineKeyboardButton("🌐 Open WebApp", url=Config.WEB_APP_URL))
+        reply_markup = InlineKeyboardMarkup([buttons]) if buttons else None
+
+        button_details = "".join(
+            ([f"\n  - 🔗 View in Bot → {bot_deep_link}"] if bot_deep_link else [])
+            + ([f"\n  - 🌐 Open WebApp → {Config.WEB_APP_URL}"] if Config.WEB_APP_URL else [])
+        )
+        logger.info(
+            f"[Broadcast] Preparing product {product_id} broadcast to {len(chats)} destination(s) "
+            f"via @{bot_username} with {len(buttons)} button(s){button_details}"
+        )
+
         sent = 0
         failed = 0
+        buttons_rendered = 0
         for chat in chats:
             chat_id = chat["chat_id"]
+            chat_label = f"{chat.get('chat_type', '?')} '{chat.get('title', chat_id)}'"
             try:
                 media_sent = False
                 if file_id and file_type:
@@ -1196,8 +1219,12 @@ class NotificationService:
                             file_index=0,
                         )
                         fid = bot_specific_id or file_id
+                        logger.debug(
+                            f"[Broadcast] @{bot_username} → chat {chat_id}: "
+                            f"media={file_type} fid={'cached' if bot_specific_id else 'original'}"
+                        )
                         media_sent = await self._send_media_notification(
-                            bot_app, chat_id, file_type, fid, message_text, None, parse_mode="Markdown"
+                            bot_app, chat_id, file_type, fid, message_text, reply_markup, parse_mode="Markdown"
                         )
                     except Exception:
                         media_sent = False
@@ -1208,17 +1235,23 @@ class NotificationService:
                         chat_id=chat_id,
                         text=message_text,
                         parse_mode="Markdown",
+                        reply_markup=reply_markup,
                     )
                     media_sent = result is not None
 
                 if media_sent:
                     sent += 1
+                    if reply_markup:
+                        buttons_rendered += 1
                     logger.info(
                         f"[Broadcast] @{bot_username} → chat {chat_id} "
-                        f"({chat.get('chat_type', '?')} '{chat.get('title', chat_id)}'): OK"
+                        f"({chat_label}): sent OK (buttons={'yes' if reply_markup else 'no'})"
                     )
                 else:
                     failed += 1
+                    logger.warning(
+                        f"[Broadcast] @{bot_username} → chat {chat_id} ({chat_label}): send returned None"
+                    )
 
                 # 0.5 s between sends to stay well under Telegram limits
                 await asyncio.sleep(0.5)
@@ -1245,7 +1278,8 @@ class NotificationService:
                 failed += 1
 
         logger.info(
-            f"[Broadcast] @{bot_username}: product {product_id} – sent={sent} failed={failed}"
+            f"[Broadcast] Product {product_id} via @{bot_username} complete: "
+            f"sent={sent}, failed={failed}, buttons_rendered={buttons_rendered}"
         )
         return {"sent": sent, "failed": failed}
 
