@@ -396,3 +396,131 @@ class TestPIIRedactFilter:
         assert "123456" not in out
         assert "alice" not in out  # only first char kept
         assert "x.com" not in out
+
+
+# ---------------------------------------------------------------------------
+# RequestDeduplicator tests
+# ---------------------------------------------------------------------------
+
+class TestRequestDeduplicator:
+    """Tests for middleware.request_deduplicator.RequestDeduplicator."""
+
+    def setup_method(self):
+        from middleware.request_deduplicator import RequestDeduplicator
+        self.d = RequestDeduplicator(ttl=5.0)
+
+    def _run(self, coro):
+        import asyncio
+        return asyncio.run(coro)
+
+    def test_first_call_not_duplicate(self):
+        result = self._run(self.d.is_duplicate(0, 100, "browse_category|CONCENTRATES"))
+        assert result is False
+
+    def test_second_call_same_key_is_duplicate(self):
+        self._run(self.d.is_duplicate(0, 100, "browse_category|CONCENTRATES"))
+        result = self._run(self.d.is_duplicate(0, 100, "browse_category|CONCENTRATES"))
+        assert result is True
+
+    def test_different_callback_data_not_duplicate(self):
+        self._run(self.d.is_duplicate(0, 100, "browse_category|CONCENTRATES"))
+        result = self._run(self.d.is_duplicate(0, 100, "browse_category|SHROOMS"))
+        assert result is False
+
+    def test_different_user_not_duplicate(self):
+        self._run(self.d.is_duplicate(0, 100, "product|1174"))
+        result = self._run(self.d.is_duplicate(0, 999, "product|1174"))
+        assert result is False
+
+    def test_different_bot_index_not_duplicate(self):
+        self._run(self.d.is_duplicate(0, 100, "categories"))
+        result = self._run(self.d.is_duplicate(1, 100, "categories"))
+        assert result is False
+
+    def test_expired_entry_not_duplicate(self):
+        from middleware.request_deduplicator import RequestDeduplicator
+        import asyncio
+
+        short_dedup = RequestDeduplicator(ttl=0.05)  # 50ms TTL
+
+        async def run():
+            await short_dedup.is_duplicate(0, 1, "categories")
+            await asyncio.sleep(0.1)  # wait for TTL to expire
+            return await short_dedup.is_duplicate(0, 1, "categories")
+
+        result = asyncio.run(run())
+        assert result is False
+
+    def test_clear_removes_all_entries(self):
+        self._run(self.d.is_duplicate(0, 100, "categories"))
+        self.d.clear()
+        result = self._run(self.d.is_duplicate(0, 100, "categories"))
+        assert result is False
+
+    def test_page_navigation_not_deduplicated(self):
+        """Subcategory pagination with different page numbers must not be deduplicated."""
+        self._run(self.d.is_duplicate(0, 100, "subcategory|CONCENTRATES|LIVE RESIN|1"))
+        result = self._run(self.d.is_duplicate(0, 100, "subcategory|CONCENTRATES|LIVE RESIN|2"))
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# WebhookMonitor tests
+# ---------------------------------------------------------------------------
+
+class TestWebhookMonitor:
+    """Tests for utils.monitoring.WebhookMonitor."""
+
+    def setup_method(self):
+        from utils.monitoring import WebhookMonitor
+        self.m = WebhookMonitor()
+
+    def test_record_success(self):
+        self.m.record(bot_index=0, success=True, duration_ms=100.0)
+        snap = self.m.snapshot()
+        assert snap["bots"]["0"]["success"] == 1
+        assert snap["bots"]["0"]["failure"] == 0
+
+    def test_record_failure(self):
+        self.m.record(bot_index=0, success=False, duration_ms=0.0)
+        snap = self.m.snapshot()
+        assert snap["bots"]["0"]["failure"] == 1
+        assert snap["bots"]["0"]["success"] == 0
+
+    def test_success_rate_calculation(self):
+        self.m.record(0, True, 100.0)
+        self.m.record(0, True, 100.0)
+        self.m.record(0, False, 0.0)
+        snap = self.m.snapshot()
+        assert snap["bots"]["0"]["success_rate"] == pytest.approx(2 / 3, rel=1e-3)
+
+    def test_avg_duration_ms(self):
+        self.m.record(0, True, 100.0)
+        self.m.record(0, True, 200.0)
+        snap = self.m.snapshot()
+        assert snap["bots"]["0"]["avg_duration_ms"] == pytest.approx(150.0)
+
+    def test_multiple_bots_independent(self):
+        self.m.record(0, True, 100.0)
+        self.m.record(1, False, 50.0)
+        snap = self.m.snapshot()
+        assert snap["bots"]["0"]["success"] == 1
+        assert snap["bots"]["1"]["failure"] == 1
+
+    def test_reset_clears_all(self):
+        self.m.record(0, True, 100.0)
+        self.m.reset()
+        snap = self.m.snapshot()
+        assert snap["bots"] == {}
+
+    def test_uptime_positive(self):
+        snap = self.m.snapshot()
+        assert snap["uptime_seconds"] >= 0.0
+
+    def test_record_webhook_result_convenience(self):
+        from utils.monitoring import WebhookMonitor, record_webhook_result
+        # Use a fresh instance to avoid polluting the global singleton
+        m = WebhookMonitor()
+        m.record(3, True, 612.0)
+        snap = m.snapshot()
+        assert snap["bots"]["3"]["total"] == 1
