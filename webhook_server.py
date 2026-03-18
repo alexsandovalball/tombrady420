@@ -41,6 +41,8 @@ from utils.helpers import get_channel_id, get_channel_username, get_file_id_cach
 from utils.categories import get_all_categories, get_category_display_name, get_subcategory_display_name, get_subcategories, EXCLUDED_FROM_ALL_PRODUCTS
 from translations.translator import get_translated_string_async, translation_service
 from utils.metrics import metrics
+from utils.monitoring import monitor as _webhook_monitor, record_webhook_result
+from middleware.request_deduplicator import RequestDeduplicator
 from configs.telegram_ip_whitelist import is_telegram_ip
 
 # Configure logging
@@ -687,6 +689,10 @@ async def lifespan(app: FastAPI):
 
     # Initialize the per-IP rate limiter with hardcoded defaults (100 req/min)
     app.state.webhook_rate_limiter = WebhookIPRateLimiter()
+
+    # Initialize per-callback request deduplicator to prevent double-processing
+    # of identical callback queries (e.g., from Telegram retries or rapid taps).
+    app.state.request_deduplicator = RequestDeduplicator()
 
     # Load bot-config overrides from configs/bots.json (if present) at startup
     global _bots_config_tokens
@@ -2264,6 +2270,9 @@ async def process_webhook_request(request: Request, bot_index: int):
     Returns:
         A fastapi.Response with an appropriate HTTP status code.
     """
+    # --- Unique request ID for log correlation across the processing pipeline ---
+    request_id = secrets.token_hex(8)
+
     # --- Resolve real client IP ---
     # When the server sits behind a reverse proxy or CDN (common with custom domains),
     # request.client.host is the proxy's IP.  Use X-Forwarded-For / X-Real-IP to
@@ -2291,7 +2300,8 @@ async def process_webhook_request(request: Request, bot_index: int):
         if rate_limiter is not None:
             if not await rate_limiter.is_allowed(client_ip):
                 logger.warning(
-                    "Rate limit exceeded for non-Telegram IP %s on /webhook bot %d",
+                    "[%s] Rate limit exceeded for non-Telegram IP %s on /webhook bot %d",
+                    request_id,
                     client_ip,
                     bot_index,
                 )
@@ -2334,9 +2344,10 @@ async def process_webhook_request(request: Request, bot_index: int):
             expected_prefix = expected_token[:8] if expected_token else "none"
             incoming_prefix = incoming_token[:8] if header_present else "none"
             logger_security.warning(
-                "[WEBHOOK_401] bot=%d ip=%s telegram_ip=%s "
+                "[WEBHOOK_401] req=%s bot=%d ip=%s telegram_ip=%s "
                 "header_present=%s header_length=%d "
                 "expected_prefix=%s incoming_prefix=%s",
+                request_id,
                 bot_index,
                 client_ip,
                 from_telegram,
@@ -2357,39 +2368,74 @@ async def process_webhook_request(request: Request, bot_index: int):
         )
 
     if not _bot_applications:
-        logger.error("Bot applications not initialized")
+        logger.error("[%s] Bot applications not initialized", request_id)
         return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
 
     if bot_index >= len(_bot_applications):
         logger.error(
-            f"Invalid bot index: {bot_index}. "
-            f"Available bots: 0-{len(_bot_applications) - 1}"
+            "[%s] Invalid bot index: %d. Available bots: 0-%d",
+            request_id,
+            bot_index,
+            len(_bot_applications) - 1,
         )
         return Response(status_code=status.HTTP_404_NOT_FOUND)
 
+    _t0 = _time.monotonic()
     try:
         json_data = await request.json()
         bot_app = _bot_applications[bot_index]
         update = Update.de_json(json_data, bot_app.bot)
 
         if update.message:
-            logger.info(f"Bot {bot_index}: Processing message update from user {update.message.from_user.id}")
-        elif update.callback_query:
             logger.info(
-                f"Bot {bot_index}: Processing callback query from user "
-                f"{update.callback_query.from_user.id}: {update.callback_query.data}"
+                "[%s] Bot %d: Processing message update from user %s",
+                request_id, bot_index, update.message.from_user.id,
             )
+        elif update.callback_query:
+            user_id = update.callback_query.from_user.id
+            callback_data = update.callback_query.data or ""
+            logger.info(
+                "[%s] Bot %d: Processing callback query from user %s: %s",
+                request_id, bot_index, user_id, callback_data,
+            )
+            # --- Request deduplication for callback queries ---
+            # Prevents accidental double-processing of the same callback when
+            # Telegram retries or the user taps a button twice in quick succession.
+            deduplicator: Optional[RequestDeduplicator] = getattr(
+                request.app.state, "request_deduplicator", None
+            )
+            if deduplicator is not None and await deduplicator.is_duplicate(
+                bot_index, user_id, callback_data
+            ):
+                logger.info(
+                    "[%s] Bot %d: Duplicate callback query suppressed (user=%s data=%r)",
+                    request_id, bot_index, user_id, callback_data,
+                )
+                return Response(status_code=status.HTTP_200_OK)
         elif update.channel_post:
-            logger.info(f"Bot {bot_index}: Processing channel post from chat {update.channel_post.chat.id}")
+            logger.info(
+                "[%s] Bot %d: Processing channel post from chat %s",
+                request_id, bot_index, update.channel_post.chat.id,
+            )
         else:
-            logger.info(f"Bot {bot_index}: Processing update type: {update.update_id}")
+            logger.info(
+                "[%s] Bot %d: Processing update type: %s",
+                request_id, bot_index, update.update_id,
+            )
 
         await bot_app.process_update(update)
 
-        logger.info(f"Bot {bot_index}: Webhook request processed successfully")
+        duration_ms = (_time.monotonic() - _t0) * 1000
+        record_webhook_result(bot_index=bot_index, success=True, duration_ms=duration_ms)
+        logger.info("[%s] Bot %d: Webhook request processed successfully", request_id, bot_index)
         return Response(status_code=status.HTTP_200_OK)
     except Exception as e:
-        logger.error(f"Error processing webhook update for bot {bot_index}: {e}", exc_info=True)
+        duration_ms = (_time.monotonic() - _t0) * 1000
+        record_webhook_result(bot_index=bot_index, success=False, duration_ms=duration_ms)
+        logger.error(
+            "[%s] Error processing webhook update for bot %d: %s",
+            request_id, bot_index, e, exc_info=True,
+        )
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -2436,11 +2482,18 @@ async def internal_metrics():
                 "api_products": {"count": 120, "avg_ms": 245.3, "p95_ms": 498.7},
                 "api_categories": {"count": 45, "avg_ms": 180.1, "p95_ms": 390.2},
                 "webhook_401": {"count": 3, "avg_ms": 0.0, "p95_ms": 0.0}
+            },
+            "webhook_monitor": {
+                "uptime_seconds": 3600.5,
+                "bots": {
+                    "0": {"success": 100, "failure": 2, "success_rate": 0.98, ...}
+                }
             }
         }
     """
     snap = metrics.snapshot()
     snap["webhook_401_total"] = _webhook_401_counter
+    snap["webhook_monitor"] = _webhook_monitor.snapshot()
     return snap
 
 
