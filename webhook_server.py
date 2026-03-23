@@ -1407,6 +1407,29 @@ def _get_validated_init_data(request: Request, allow_preview: bool = False) -> t
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid init data")
 
 
+async def _check_user_not_blocked(init_data: str) -> None:
+    """
+    Raise HTTP 403 if the user identified by init_data is blocked.
+    No-op when init_data is empty (unauthenticated / preview mode).
+    """
+    if not init_data:
+        return
+    try:
+        parsed = parse_init_data(init_data)
+    except Exception:
+        return
+    user_data = parsed.get("user")
+    if not isinstance(user_data, TelegramUser):
+        return
+    user_id = user_data.id
+    if await _catalog_db.is_user_blocked(user_id):
+        logger_security.warning(
+            "[WEBAPP_BLOCKED] user_id=%d attempted WebApp API access while blocked",
+            user_id,
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+
+
 def _collect_media_info(product: dict) -> List[dict]:
     """Collect media information (id and type) for a product."""
     product_id = product.get("id")
@@ -1467,7 +1490,8 @@ async def get_categories(request: Request, lang: str = "en"):
     Supports translations via lang parameter.
     """
     _t0 = _time.monotonic()
-    _get_validated_init_data(request, allow_preview=True)
+    init_data, _ = _get_validated_init_data(request, allow_preview=True)
+    await _check_user_not_blocked(init_data)
 
     # Check in-memory result cache
     cache_key = f"categories:{lang}"
@@ -1571,7 +1595,8 @@ async def get_products(
     Supports translations via lang parameter.
     """
     _t0 = _time.monotonic()
-    _get_validated_init_data(request, allow_preview=True)
+    init_data, _ = _get_validated_init_data(request, allow_preview=True)
+    await _check_user_not_blocked(init_data)
     bot = _get_primary_bot(request, required=False)
     
     # Bound limit for performance
@@ -1661,7 +1686,8 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
     Used by the webapp to load a product from a deep link (e.g. when the user
     opens the bot via ``?start=product_<id>`` or taps "View in Web App").
     """
-    _get_validated_init_data(request, allow_preview=True)
+    init_data, _ = _get_validated_init_data(request, allow_preview=True)
+    await _check_user_not_blocked(init_data)
     bot = _get_primary_bot(request, required=False)
 
     product = await _catalog_db.get_product(product_id)
@@ -1721,7 +1747,8 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
         product_id: Product ID
         media_index: Index of media in product's media array
     """
-    _get_validated_init_data(request, allow_preview=True)
+    init_data, _ = _get_validated_init_data(request, allow_preview=True)
+    await _check_user_not_blocked(init_data)
     bot = _get_primary_bot(request)
 
     # Define size limits
@@ -1999,7 +2026,8 @@ async def search_products(
     Excludes products from Dated Proofs, Client Touchdowns, and Announcements categories.
     Optimized server-side search to reduce client-side processing.
     """
-    _get_validated_init_data(request, allow_preview=True)
+    init_data, _ = _get_validated_init_data(request, allow_preview=True)
+    await _check_user_not_blocked(init_data)
     
     if not q or len(q) < 2:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Query must be at least 2 characters")
@@ -2223,6 +2251,14 @@ async def track_webapp_user(request: Request):
         if not user_id:
             return {"success": False, "message": "No user_id available"}
         
+        # Reject blocked users — do not re-register them in the database
+        if await _catalog_db.is_user_blocked(int(user_id)):
+            logger_security.warning(
+                "[WEBAPP_BLOCKED] user_id=%s attempted /api/user/track while blocked",
+                user_id,
+            )
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+
         # Track user in the bot_users database, using the bot that validated the request
         bot_apps = getattr(request.app.state, "bot_apps", [])
         bot_username = None

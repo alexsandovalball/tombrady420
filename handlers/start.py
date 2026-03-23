@@ -54,9 +54,26 @@ async def _handle_inline_help(
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
+async def _reply_if_blocked(update: Update, user_id: int) -> bool:
+    """Send a blocked message if user is non-admin and blocked. Returns True if blocked."""
+    if is_admin(user_id):
+        return False
+    if await db.is_user_blocked(user_id):
+        await update.message.reply_text(
+            "🚫 You have been blocked from using this bot.\n\n"
+            "If you believe this is an error, please contact an administrator."
+        )
+        return True
+    return False
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     user = update.effective_user
+
+    # Block check — must be before track_user and before showing any UI
+    if await _reply_if_blocked(update, user.id):
+        return
 
     # Handle deep-link payloads passed via /start <payload>
     if context.args:
@@ -190,6 +207,10 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /subscribe command - enable product notifications."""
     user_id = update.effective_user.id
 
+    # Block check
+    if await _reply_if_blocked(update, user_id):
+        return
+
     # Track user
     bot_username = get_bot_username(context)
     await db.track_user(
@@ -219,6 +240,10 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def unsubscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /unsubscribe command - disable product notifications."""
     user_id = update.effective_user.id
+
+    # Block check
+    if await _reply_if_blocked(update, user_id):
+        return
 
     # Get user's language preference
     user_lang = await get_user_lang_async(user_id)
