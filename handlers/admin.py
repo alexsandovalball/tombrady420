@@ -12,6 +12,7 @@ from database import Database
 from utils.helpers import is_admin, get_channel_id, get_channel_username, escape_markdown_v1
 from utils.safe_send import safe_send_message, safe_edit_message_text
 from utils.decorators import command_admin_required
+from middleware.rate_limiter import add_permanent_ip_block, remove_permanent_ip_block
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -586,14 +587,19 @@ async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # Block the user
-        await db.block_user(target_user_id)
+        # Block the user (also persists their known IPs to blocked_ips in DB)
+        blocked_ips = await db.block_user(target_user_id)
+        # Sync in-memory IP block registry so the webapp enforces the block immediately
+        for ip in blocked_ips:
+            add_permanent_ip_block(ip)
         
+        ip_note = f"\n🌐 {len(blocked_ips)} IP address(es) also blocked." if blocked_ips else ""
+
         try:
             await update.message.reply_text(
                 f"✅ **User Blocked**\n\n"
                 f"🆔 User ID: `{target_user_id}`\n\n"
-                f"This user can no longer use the bot.\n"
+                f"This user can no longer use the bot.{ip_note}\n"
                 f"Use `/unblock {target_user_id}` to unblock.",
                 parse_mode="Markdown"
             )
@@ -602,10 +608,10 @@ async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"✅ User Blocked\n\n"
                 f"🆔 User ID: {target_user_id}\n\n"
-                f"This user can no longer use the bot.\n"
+                f"This user can no longer use the bot.{ip_note}\n"
                 f"Use /unblock {target_user_id} to unblock."
             )
-        logger.info(f"Admin {user_id} blocked user {target_user_id}")
+        logger.info(f"Admin {user_id} blocked user {target_user_id} (IPs blocked: {blocked_ips})")
         
     except ValueError:
         await update.message.reply_text(
@@ -648,8 +654,11 @@ async def unblock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         target_user_id = int(context.args[0])
         
-        # Unblock the user
-        await db.unblock_user(target_user_id)
+        # Unblock the user (also removes their IPs from blocked_ips in DB)
+        unblocked_ips = await db.unblock_user(target_user_id)
+        # Sync in-memory IP block registry
+        for ip in unblocked_ips:
+            remove_permanent_ip_block(ip)
         
         try:
             await update.message.reply_text(
@@ -665,7 +674,7 @@ async def unblock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🆔 User ID: {target_user_id}\n\n"
                 f"This user can now use the bot again."
             )
-        logger.info(f"Admin {user_id} unblocked user {target_user_id}")
+        logger.info(f"Admin {user_id} unblocked user {target_user_id} (IPs unblocked: {unblocked_ips})")
         
     except ValueError:
         await update.message.reply_text(
