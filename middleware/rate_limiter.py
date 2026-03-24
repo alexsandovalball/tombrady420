@@ -49,6 +49,42 @@ _MALICIOUS_PROBE_PATTERNS = {
     "config.json", "phpinfo", "admin.php", "xmlrpc.php", "wp-config"
 }
 
+# ---------------------------------------------------------------------------
+# Persistent IP block registry
+# ---------------------------------------------------------------------------
+# Module-level set of permanently blocked IP addresses.  Populated at startup
+# from the ``blocked_ips`` DB table and updated at runtime whenever a user is
+# blocked/unblocked via the admin command.  Checked by GlobalRateLimiter on
+# every non-exempt request.
+
+_permanent_ip_blocks: set = set()
+
+
+def get_client_ip(request: Request) -> str:
+    """Extract the real client IP from a Starlette Request."""
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    return (
+        request.headers.get("X-Real-IP")
+        or (request.client.host if request.client else "unknown")
+    )
+
+
+def add_permanent_ip_block(ip: str) -> None:
+    """Add an IP address to the in-memory permanent block set."""
+    _permanent_ip_blocks.add(ip)
+
+
+def remove_permanent_ip_block(ip: str) -> None:
+    """Remove an IP address from the in-memory permanent block set."""
+    _permanent_ip_blocks.discard(ip)
+
+
+def load_permanent_ip_blocks(ip_list: list) -> None:
+    """Bulk-load a collection of IP addresses into the permanent block set (used at startup)."""
+    _permanent_ip_blocks.update(ip_list)
+
 
 class GlobalRateLimiter(BaseHTTPMiddleware):
     """Malicious probe detector and auto-blocker middleware for non-webhook traffic.
@@ -106,13 +142,7 @@ class GlobalRateLimiter(BaseHTTPMiddleware):
     # ------------------------------------------------------------------
 
     def _get_client_ip(self, request: Request) -> str:
-        forwarded_for = request.headers.get("X-Forwarded-For")
-        if forwarded_for:
-            return forwarded_for.split(",")[0].strip()
-        return (
-            request.headers.get("X-Real-IP")
-            or (request.client.host if request.client else "unknown")
-        )
+        return get_client_ip(request)
 
     def _is_exempt(self, path: str) -> bool:
         """Return True for paths that should bypass global rate limiting."""
@@ -203,18 +233,26 @@ class GlobalRateLimiter(BaseHTTPMiddleware):
         ip = self._get_client_ip(request)
         now = _time.monotonic()
 
+        # 1. Check permanent IP blocks (admin-issued, persisted to DB)
+        if ip in _permanent_ip_blocks:
+            logger_security.warning(
+                "[IP_PERM_BLOCKED] Permanently blocked IP %s attempted access: path=%s",
+                ip, path,
+            )
+            return Response(status_code=403, content=b"Access denied.")
+
         async with self._lock:
-            # 1. Check global auto-block (applies to all layers)
+            # 2. Check global auto-block (applies to all layers)
             if ip in self._auto_blocked:
                 if now < self._auto_blocked[ip]:
                     remaining = int(self._auto_blocked[ip] - now)
                     return self._rate_limited_response(ip, path, remaining, "auto-blocked")
                 del self._auto_blocked[ip]
 
-            # 2. Check for malicious probe patterns - immediately auto-block
+            # 3. Check for malicious probe patterns - immediately auto-block
             if self._is_malicious_probe(path):
                 self._apply_auto_block(ip, now, path)
                 return self._rate_limited_response(ip, path, self._auto_block_duration, "malicious probe")
 
-        # 3. Allow all other requests (bypass token bucket and layer blocking)
+        # 4. Allow all other requests (bypass token bucket and layer blocking)
         return await call_next(request)

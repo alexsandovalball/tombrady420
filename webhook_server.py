@@ -730,6 +730,15 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_bots_config_reload_loop(), name="bots_config_reload"),
     ]
 
+    # Load permanently blocked IPs from the database into the in-memory registry
+    try:
+        blocked_ips = await _catalog_db.get_all_blocked_ips()
+        if blocked_ips:
+            load_permanent_ip_blocks(blocked_ips)
+            logger.info("Loaded %d permanently blocked IP(s) from database", len(blocked_ips))
+    except Exception as _e:
+        logger.warning("Could not load blocked IPs from database: %s", _e)
+
     yield
 
     # Cancel background maintenance tasks
@@ -762,7 +771,7 @@ app = FastAPI(
 from fastapi.middleware import Middleware
 from fastapi.middleware.gzip import GZipMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
-from middleware.rate_limiter import GlobalRateLimiter
+from middleware.rate_limiter import GlobalRateLimiter, get_client_ip, load_permanent_ip_blocks, add_permanent_ip_block, remove_permanent_ip_block
 
 # Dedicated security logger – separate from the normal access log
 logger_security = logging.getLogger("security")
@@ -1407,10 +1416,14 @@ def _get_validated_init_data(request: Request, allow_preview: bool = False) -> t
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid init data")
 
 
-async def _check_user_not_blocked(init_data: str) -> None:
+async def _check_user_not_blocked(init_data: str, client_ip: str = "") -> None:
     """
     Raise HTTP 403 if the user identified by init_data is blocked.
     No-op when init_data is empty (unauthenticated / preview mode).
+
+    When client_ip is provided and the user is authenticated, the IP is
+    recorded in user_ips so it can be blocked alongside the user account if an
+    admin later issues a /block command.
     """
     if not init_data:
         return
@@ -1428,6 +1441,13 @@ async def _check_user_not_blocked(init_data: str) -> None:
             user_id,
         )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+    # Record IP → user mapping for future block enforcement
+    if client_ip and client_ip != "unknown":
+        try:
+            await _catalog_db.record_user_ip(user_id, client_ip)
+        except Exception as _e:
+            logger.debug("Failed to record user IP: %s", _e)
+
 
 
 def _collect_media_info(product: dict) -> List[dict]:
@@ -1491,7 +1511,7 @@ async def get_categories(request: Request, lang: str = "en"):
     """
     _t0 = _time.monotonic()
     init_data, _ = _get_validated_init_data(request, allow_preview=True)
-    await _check_user_not_blocked(init_data)
+    await _check_user_not_blocked(init_data, get_client_ip(request))
 
     # Check in-memory result cache
     cache_key = f"categories:{lang}"
@@ -1596,7 +1616,7 @@ async def get_products(
     """
     _t0 = _time.monotonic()
     init_data, _ = _get_validated_init_data(request, allow_preview=True)
-    await _check_user_not_blocked(init_data)
+    await _check_user_not_blocked(init_data, get_client_ip(request))
     bot = _get_primary_bot(request, required=False)
     
     # Bound limit for performance
@@ -1687,7 +1707,7 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
     opens the bot via ``?start=product_<id>`` or taps "View in Web App").
     """
     init_data, _ = _get_validated_init_data(request, allow_preview=True)
-    await _check_user_not_blocked(init_data)
+    await _check_user_not_blocked(init_data, get_client_ip(request))
     bot = _get_primary_bot(request, required=False)
 
     product = await _catalog_db.get_product(product_id)
@@ -1748,7 +1768,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
         media_index: Index of media in product's media array
     """
     init_data, _ = _get_validated_init_data(request, allow_preview=True)
-    await _check_user_not_blocked(init_data)
+    await _check_user_not_blocked(init_data, get_client_ip(request))
     bot = _get_primary_bot(request)
 
     # Define size limits
@@ -2027,7 +2047,7 @@ async def search_products(
     Optimized server-side search to reduce client-side processing.
     """
     init_data, _ = _get_validated_init_data(request, allow_preview=True)
-    await _check_user_not_blocked(init_data)
+    await _check_user_not_blocked(init_data, get_client_ip(request))
     
     if not q or len(q) < 2:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Query must be at least 2 characters")
@@ -2279,6 +2299,14 @@ async def track_webapp_user(request: Request):
             last_name=last_name,
             bot_username=bot_username
         )
+
+        # Record the client IP so it can be blocked alongside the account later
+        client_ip = get_client_ip(request)
+        if client_ip and client_ip != "unknown":
+            try:
+                await _catalog_db.record_user_ip(int(user_id), client_ip)
+            except Exception as _ip_err:
+                logger.debug("Failed to record user IP in /api/user/track: %s", _ip_err)
         
         logger.info(f"[WebApp] Tracked user {user_id} (username={username}) in bot_users database")
         

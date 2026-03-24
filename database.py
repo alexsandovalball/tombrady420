@@ -301,6 +301,24 @@ class Database:
                 )
             """)
 
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS user_ips (
+                    user_id INTEGER NOT NULL,
+                    ip_address TEXT NOT NULL,
+                    first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, ip_address)
+                )
+            """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS blocked_ips (
+                    ip_address TEXT PRIMARY KEY,
+                    blocked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    reason TEXT
+                )
+            """)
+
             # Set default order contact if not exists
             await db.execute("""
                 INSERT OR IGNORE INTO bot_settings (key, value)
@@ -1630,21 +1648,53 @@ class Database:
         finally:
             await conn.close()
 
-    async def block_user(self, user_id: int):
-        """Block a user from using the bot."""
+    async def block_user(self, user_id: int) -> list:
+        """Block a user from using the bot and block all their known IPs.
+
+        Returns the list of IP addresses that were added to blocked_ips so the
+        caller can update any in-memory IP-block registry.
+        """
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 UPDATE bot_users SET is_blocked = 1 WHERE user_id = ?
             """, (user_id,))
+            # Collect known IPs for this user
+            async with db.execute(
+                "SELECT ip_address FROM user_ips WHERE user_id = ?", (user_id,)
+            ) as cursor:
+                rows = await cursor.fetchall()
+            ip_list = [row[0] for row in rows]
+            # Persist IP blocks
+            if ip_list:
+                await db.executemany(
+                    "INSERT OR IGNORE INTO blocked_ips (ip_address, reason) VALUES (?, ?)",
+                    [(ip, f"blocked_user:{user_id}") for ip in ip_list],
+                )
             await db.commit()
-    
-    async def unblock_user(self, user_id: int):
-        """Unblock a user."""
+        return ip_list
+
+    async def unblock_user(self, user_id: int) -> list:
+        """Unblock a user and remove all their known IPs from blocked_ips.
+
+        Returns the list of IP addresses that were removed from blocked_ips so the
+        caller can update any in-memory IP-block registry.
+        """
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 UPDATE bot_users SET is_blocked = 0 WHERE user_id = ?
             """, (user_id,))
+            async with db.execute(
+                "SELECT ip_address FROM user_ips WHERE user_id = ?", (user_id,)
+            ) as cursor:
+                rows = await cursor.fetchall()
+            ip_list = [row[0] for row in rows]
+            if ip_list:
+                await db.executemany(
+                    "DELETE FROM blocked_ips WHERE ip_address = ?",
+                    [(ip,) for ip in ip_list],
+                )
             await db.commit()
+        return ip_list
     
     async def is_user_blocked(self, user_id: int) -> bool:
         """Check if a user is blocked."""
@@ -1654,6 +1704,37 @@ class Database:
             """, (user_id,)) as cursor:
                 row = await cursor.fetchone()
                 return row[0] == 1 if row else False
+
+    async def record_user_ip(self, user_id: int, ip_address: str) -> None:
+        """Record (or refresh) an IP address for a user.
+
+        Uses INSERT ... ON CONFLICT so that last_seen is always updated while
+        first_seen is preserved from the original insert.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO user_ips (user_id, ip_address)
+                VALUES (?, ?)
+                ON CONFLICT(user_id, ip_address)
+                DO UPDATE SET last_seen = CURRENT_TIMESTAMP
+            """, (user_id, ip_address))
+            await db.commit()
+
+    async def get_user_ips(self, user_id: int) -> list:
+        """Return all IP addresses ever seen for a user."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT ip_address FROM user_ips WHERE user_id = ?", (user_id,)
+            ) as cursor:
+                rows = await cursor.fetchall()
+        return [row[0] for row in rows]
+
+    async def get_all_blocked_ips(self) -> list:
+        """Return all currently blocked IP addresses."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT ip_address FROM blocked_ips") as cursor:
+                rows = await cursor.fetchall()
+        return [row[0] for row in rows]
     
     async def delete_user(self, user_id: int):
         """
