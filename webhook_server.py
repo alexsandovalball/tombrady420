@@ -1152,7 +1152,7 @@ def _serve_storefront_index(request: Request) -> HTMLResponse:
         url=_STOREFRONT_DOMAIN,
     )
     ctx["request"] = request
-    return templates.TemplateResponse("index.html", context=ctx)
+    return templates.TemplateResponse(name="index.html", context=ctx)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1215,7 +1215,7 @@ async def serve_product_page(product_id: int, request: Request):
         category=product.get("category", ""),
     )
     ctx["request"] = request
-    return templates.TemplateResponse("index.html", context=ctx)
+    return templates.TemplateResponse(name="index.html", context=ctx)
 
 
 @app.get("/product/{product_id}/{slug}", response_class=HTMLResponse)
@@ -1318,7 +1318,7 @@ async def serve_category_page(category_name: str, request: Request):
     }
     ctx["seo_schema"] = json.dumps({"@context": "https://schema.org", "@graph": [item_list_schema, breadcrumb_schema]})
 
-    return templates.TemplateResponse("category.html", context=ctx)
+    return templates.TemplateResponse(name="category.html", context=ctx)
 
 
 def _get_primary_bot(request: Request, required: bool = True):
