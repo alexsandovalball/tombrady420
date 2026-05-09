@@ -34,10 +34,9 @@ from utils.categories import (
     get_subcategories,
     get_subcategory_display_name,
 )
-from utils.cache_invalidation import invalidate_webapp_caches
 from utils.decorators import admin_required
 from utils.helpers import is_admin, get_user_display_name, escape_markdown_v1
-from utils.notification_manager import get_notification_service
+from utils.notifications import NotificationService
 from utils.safe_send import safe_send_message, safe_edit_message_text
 import emojis
 
@@ -164,7 +163,7 @@ async def _handle_broadcast_confirm_single(update, context, query, user_id, part
             await query.answer("❌ Message not found. Please start over.", show_alert=True)
             context.user_data.clear()
             return
-        svc = get_notification_service()
+        svc = NotificationService(db)
         success = await svc.send_custom_message_to_user(context, target_user_id, message_text)
         if success:
             await safe_edit_message_text(
@@ -206,7 +205,7 @@ async def _handle_broadcast_confirm_all(update, context, query, user_id, parts):
         ),
         parse_mode="Markdown",
     )
-    svc = get_notification_service()
+    svc = NotificationService(db)
     stats = await svc.broadcast_custom_message(
         context, message_text, exclude_blocked=True, admin_user_id=user_id
     )
@@ -344,7 +343,6 @@ async def _handle_nuke_confirm2(update, context, query, user_id, parts):
                 await conn.commit()
                 deleted_count = cursor.rowcount
                 logger.info(f"Deleted {deleted_count} products from database")
-                invalidate_webapp_caches("catalog nuked")
             except Exception as e:
                 await conn.rollback()
                 logger.error(f"Failed to delete products from database: {e}")
@@ -557,7 +555,6 @@ async def _handle_savecat(update, context, query, user_id, parts):
         subcategory = parts[3] if len(parts) > 3 and parts[3] else None
         user_lang = await db.get_user_language(user_id)
         await db.update_product_category(product_id, category, subcategory)
-        invalidate_webapp_caches(f"product {product_id} categorized")
         category_key = f"category_{category.lower()}"
         translated_category = await get_translated_string_async(category_key, user_lang)
         if translated_category == category_key:
@@ -657,7 +654,7 @@ async def _handle_send_notif_yes(update, context, query, user_id, parts):
             ),
             parse_mode="Markdown",
         )
-        svc = get_notification_service()
+        svc = NotificationService(db)
         asyncio.create_task(svc.notify_users_about_product(context, product_id))
         logger.info(f"Notification service triggered for product {product_id}")
     else:

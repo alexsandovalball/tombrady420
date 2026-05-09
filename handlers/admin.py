@@ -9,7 +9,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 from database import Database
-from utils.cache_invalidation import invalidate_webapp_caches
 from utils.helpers import is_admin, get_channel_id, get_channel_username, escape_markdown_v1
 from utils.safe_send import safe_send_message, safe_edit_message_text
 from utils.decorators import command_admin_required
@@ -409,7 +408,6 @@ async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE, pro
         deleted = await db.delete_product(product_id)
         
         if deleted:
-            invalidate_webapp_caches(f"product {product_id} deleted")
             # Get user's previous page to return to
             catalog_page = await db.get_pagination_state(user_id, "catalog", None)
             back_page = catalog_page or 1
@@ -951,7 +949,6 @@ async def handle_setcontact_input(update: Update, context: ContextTypes.DEFAULT_
     
     # Save to database
     await db.set_order_contact(contact)
-    invalidate_webapp_caches("order contact updated")
     
     # Clear state
     context.user_data['awaiting_contact'] = False
@@ -1030,7 +1027,6 @@ async def handle_setlink_input(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Save to database
     await db.set_order_link(link)
-    invalidate_webapp_caches("order link updated")
 
     # Clear state
     context.user_data['awaiting_link'] = False

@@ -9,7 +9,6 @@ from collections import defaultdict
 import logging
 import asyncio
 import uuid
-import re
 
 from configs.config import Config
 from utils.categories import EXCLUDED_FROM_ALL_PRODUCTS
@@ -133,7 +132,7 @@ class Database:
                     UNIQUE(message_id, chat_id)
                 )
             """)
-
+            
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS pagination_state (
                     user_id INTEGER NOT NULL,
@@ -361,8 +360,6 @@ class Database:
                             logger.debug(f"Column '{column}' already exists in {table} table")
                     else:
                         logger.warning(f"Could not add '{column}' column to {table}: {e}")
-
-            await self._init_product_search_index(db)
             
             # Migrate existing media groups to populate additional_message_ids
             # For media groups created before this fix, infer message IDs from sequential ordering
@@ -443,71 +440,6 @@ class Database:
             
             await db.commit()
             logger.info("Database initialized successfully")
-
-    async def _init_product_search_index(self, db):
-        """Create and backfill the optional FTS5 product search index."""
-        try:
-            await db.execute("""
-                CREATE VIRTUAL TABLE IF NOT EXISTS product_search USING fts5(
-                    caption,
-                    category,
-                    subcategory,
-                    content='products',
-                    content_rowid='id',
-                    tokenize='unicode61'
-                )
-            """)
-            await db.execute("""
-                CREATE TRIGGER IF NOT EXISTS products_ai_search AFTER INSERT ON products BEGIN
-                    INSERT INTO product_search(rowid, caption, category, subcategory)
-                    VALUES (new.id, coalesce(new.caption, ''), coalesce(new.category, ''), coalesce(new.subcategory, ''));
-                END
-            """)
-            await db.execute("""
-                CREATE TRIGGER IF NOT EXISTS products_ad_search AFTER DELETE ON products BEGIN
-                    INSERT INTO product_search(product_search, rowid, caption, category, subcategory)
-                    VALUES ('delete', old.id, coalesce(old.caption, ''), coalesce(old.category, ''), coalesce(old.subcategory, ''));
-                END
-            """)
-            await db.execute("""
-                CREATE TRIGGER IF NOT EXISTS products_au_search AFTER UPDATE ON products BEGIN
-                    INSERT INTO product_search(product_search, rowid, caption, category, subcategory)
-                    VALUES ('delete', old.id, coalesce(old.caption, ''), coalesce(old.category, ''), coalesce(old.subcategory, ''));
-                    INSERT INTO product_search(rowid, caption, category, subcategory)
-                    VALUES (new.id, coalesce(new.caption, ''), coalesce(new.category, ''), coalesce(new.subcategory, ''));
-                END
-            """)
-            await db.execute("""
-                INSERT INTO product_search(rowid, caption, category, subcategory)
-                SELECT id, coalesce(caption, ''), coalesce(category, ''), coalesce(subcategory, '')
-                FROM products
-                WHERE id NOT IN (SELECT rowid FROM product_search)
-            """)
-            logger.info("Product FTS search index initialized")
-        except aiosqlite.OperationalError as e:
-            logger.warning("SQLite FTS5 unavailable; falling back to LIKE search: %s", e)
-            try:
-                await db.execute("DROP TRIGGER IF EXISTS products_ai_search")
-                await db.execute("DROP TRIGGER IF EXISTS products_ad_search")
-                await db.execute("DROP TRIGGER IF EXISTS products_au_search")
-                await db.execute("DROP TABLE IF EXISTS product_search")
-            except aiosqlite.OperationalError:
-                pass
-
-    @staticmethod
-    def _build_fts_query(query: str) -> Optional[str]:
-        """Build a conservative FTS5 prefix query from user input."""
-        terms = re.findall(r"[A-Za-z0-9_]+", (query or "").lower())
-        if not terms:
-            return None
-        return " ".join(f"{term}*" for term in terms[:8])
-
-    async def _has_product_search_index(self, db) -> bool:
-        """Return True when the optional FTS5 table exists."""
-        async with db.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'product_search'"
-        ) as cursor:
-            return await cursor.fetchone() is not None
     
     async def _dedupe_notification_queue(self, db):
         """
@@ -769,35 +701,15 @@ class Database:
         """
         pattern = f"%{query.lower()}%"
         placeholders = ",".join("?" * len(excluded_categories))
+        sql = f"""
+            SELECT * FROM products
+            WHERE (LOWER(caption) LIKE ? OR LOWER(category) LIKE ? OR LOWER(subcategory) LIKE ?)
+              AND (category IS NULL OR category = '' OR category NOT IN ({placeholders}))
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+        """
         async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
-            fts_query = self._build_fts_query(query)
-            if fts_query and await self._has_product_search_index(db):
-                try:
-                    sql = f"""
-                        SELECT p.*
-                        FROM product_search
-                        JOIN products p ON p.id = product_search.rowid
-                        WHERE product_search MATCH ?
-                          AND (p.category IS NULL OR p.category = '' OR p.category NOT IN ({placeholders}))
-                        ORDER BY p.created_at DESC
-                        LIMIT ? OFFSET ?
-                    """
-                    async with db.execute(
-                        sql, (fts_query, *excluded_categories, limit, offset)
-                    ) as cursor:
-                        rows = await cursor.fetchall()
-                        return [dict(row) for row in rows]
-                except aiosqlite.OperationalError as e:
-                    logger.warning("FTS product search failed; falling back to LIKE search: %s", e)
-
-            sql = f"""
-                SELECT * FROM products
-                WHERE (LOWER(caption) LIKE ? OR LOWER(category) LIKE ? OR LOWER(subcategory) LIKE ?)
-                  AND (category IS NULL OR category = '' OR category NOT IN ({placeholders}))
-                ORDER BY created_at DESC
-                LIMIT ? OFFSET ?
-            """
             async with db.execute(
                 sql, (pattern, pattern, pattern, *excluded_categories, limit, offset)
             ) as cursor:
@@ -812,28 +724,12 @@ class Database:
         """Count products matching search_products_filtered criteria."""
         pattern = f"%{query.lower()}%"
         placeholders = ",".join("?" * len(excluded_categories))
+        sql = f"""
+            SELECT COUNT(*) FROM products
+            WHERE (LOWER(caption) LIKE ? OR LOWER(category) LIKE ? OR LOWER(subcategory) LIKE ?)
+              AND (category IS NULL OR category = '' OR category NOT IN ({placeholders}))
+        """
         async with self.get_connection() as db:
-            fts_query = self._build_fts_query(query)
-            if fts_query and await self._has_product_search_index(db):
-                try:
-                    sql = f"""
-                        SELECT COUNT(*)
-                        FROM product_search
-                        JOIN products p ON p.id = product_search.rowid
-                        WHERE product_search MATCH ?
-                          AND (p.category IS NULL OR p.category = '' OR p.category NOT IN ({placeholders}))
-                    """
-                    async with db.execute(sql, (fts_query, *excluded_categories)) as cursor:
-                        row = await cursor.fetchone()
-                        return row[0] if row else 0
-                except aiosqlite.OperationalError as e:
-                    logger.warning("FTS product count failed; falling back to LIKE search: %s", e)
-
-            sql = f"""
-                SELECT COUNT(*) FROM products
-                WHERE (LOWER(caption) LIKE ? OR LOWER(category) LIKE ? OR LOWER(subcategory) LIKE ?)
-                  AND (category IS NULL OR category = '' OR category NOT IN ({placeholders}))
-            """
             async with db.execute(sql, (pattern, pattern, pattern, *excluded_categories)) as cursor:
                 row = await cursor.fetchone()
                 return row[0] if row else 0

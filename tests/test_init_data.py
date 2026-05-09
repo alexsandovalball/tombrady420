@@ -248,31 +248,3 @@ class TestGetValidatedInitData:
             _get_validated_init_data(req, allow_preview=False)
 
         assert exc_info.value.status_code == 401
-
-    def test_authenticated_user_helper_returns_initdata_user(self):
-        """User-specific API helpers must bind identity to signed initData."""
-        from webhook_server import _get_authenticated_webapp_user
-
-        init_data = _build_init_data(_VALID_INIT_DATA_PARAMS, _FAKE_TOKEN)
-        req = self._make_request(init_data)
-
-        with patch("webhook_server.Config") as mock_cfg:
-            mock_cfg.BOT_TOKENS = [_FAKE_TOKEN]
-            user, bot_idx, returned_init_data = _get_authenticated_webapp_user(req)
-
-        assert user.id == _SAMPLE_USER["id"]
-        assert bot_idx == 0
-        assert returned_init_data == init_data
-
-    def test_same_user_guard_rejects_other_user_id(self):
-        """Authenticated WebApp users must not mutate another user's state."""
-        from fastapi import HTTPException
-        from utils.webapp_security import TelegramUser
-        from webhook_server import _require_same_webapp_user
-
-        user = TelegramUser.model_validate(_SAMPLE_USER)
-
-        with pytest.raises(HTTPException) as exc_info:
-            _require_same_webapp_user(user.id + 1, user)
-
-        assert exc_info.value.status_code == 403
