@@ -112,6 +112,7 @@ class NotificationService:
         self._cache_ttl = 60  # Cache TTL in seconds
         self._notification_queue = asyncio.Queue()  # FIFO queue for notification requests
         self._queue_worker_task = None  # Background worker task
+        self._retry_wakeup_task = None  # Delayed wake-up for leased retryable rows
         self._is_processing = False  # Track if worker is currently processing
         # Per-bot token-bucket rate limiters keyed by normalised bot username
         self._bot_rate_limiters: Dict[str, RateLimiter] = {}
@@ -204,7 +205,11 @@ class NotificationService:
             try:
                 # Wait for next notification request (product_id, context)
                 product_id, context = await self._notification_queue.get()
-                logger.info(f"Queue worker processing notification for product {product_id}")
+                is_retry_wakeup = product_id is None
+                if is_retry_wakeup:
+                    logger.info("Queue worker processing delayed notification retry wake-up")
+                else:
+                    logger.info(f"Queue worker processing notification for product {product_id}")
 
                 try:
                     self._is_processing = True
@@ -214,27 +219,28 @@ class NotificationService:
                     # Broadcast to enabled group/channel destinations for every active bot
                     broadcast_total_sent = 0
                     broadcast_total_failed = 0
-                    bot_apps = self._get_bot_applications()
-                    for bot_app in bot_apps:
-                        try:
-                            bc_stats = await self.broadcast_product_to_chats(product_id, bot_app)
-                            broadcast_total_sent += bc_stats["sent"]
-                            broadcast_total_failed += bc_stats["failed"]
-                        except Exception as bc_exc:
-                            logger.error(
-                                f"[Broadcast] Error broadcasting product {product_id} "
-                                f"via @{get_bot_username(bot_app)}: {bc_exc}",
-                                exc_info=True,
+                    if not is_retry_wakeup:
+                        bot_apps = self._get_bot_applications()
+                        for bot_app in bot_apps:
+                            try:
+                                bc_stats = await self.broadcast_product_to_chats(product_id, bot_app)
+                                broadcast_total_sent += bc_stats["sent"]
+                                broadcast_total_failed += bc_stats["failed"]
+                            except Exception as bc_exc:
+                                logger.error(
+                                    f"[Broadcast] Error broadcasting product {product_id} "
+                                    f"via @{get_bot_username(bot_app)}: {bc_exc}",
+                                    exc_info=True,
+                                )
+                        if broadcast_total_sent or broadcast_total_failed:
+                            logger.info(
+                                f"[Broadcast] product {product_id}: "
+                                f"total sent={broadcast_total_sent} failed={broadcast_total_failed}"
                             )
-                    if broadcast_total_sent or broadcast_total_failed:
-                        logger.info(
-                            f"[Broadcast] product {product_id}: "
-                            f"total sent={broadcast_total_sent} failed={broadcast_total_failed}"
-                        )
 
                     # Send admin summary after completing this batch
                     admin_ids = get_admin_ids()
-                    if admin_ids and stats["sent"] > 0:
+                    if admin_ids and stats["sent"] > 0 and not is_retry_wakeup:
                         admin_id = admin_ids[0]
                         await self._send_admin_summary_safe(
                             context.bot,
@@ -248,11 +254,28 @@ class NotificationService:
                     self._is_processing = False
                     # Mark task as done in the queue
                     self._notification_queue.task_done()
-                    logger.info(f"Completed processing notification for product {product_id}")
+                    if is_retry_wakeup:
+                        logger.info("Completed delayed notification retry wake-up")
+                    else:
+                        logger.info(f"Completed processing notification for product {product_id}")
 
             except Exception as e:
                 logger.error(f"Error in notification queue worker: {e}", exc_info=True)
                 await asyncio.sleep(1)  # Brief pause before continuing
+
+    def _schedule_retry_wakeup(self, context: ContextTypes.DEFAULT_TYPE, delay_seconds: int = 305):
+        """Schedule a queue wake-up after notification leases have expired."""
+        if self._retry_wakeup_task is not None and not self._retry_wakeup_task.done():
+            return
+
+        async def _wake():
+            await asyncio.sleep(delay_seconds)
+            await self._notification_queue.put((None, context))
+            await self._start_queue_worker()
+            logger.info("Scheduled notification retry wake-up enqueued")
+
+        self._retry_wakeup_task = asyncio.create_task(_wake())
+        logger.info("Scheduled notification retry wake-up in %s seconds", delay_seconds)
 
     
     async def _remove_duplicate_notification(self, notification_id: int):
@@ -479,6 +502,13 @@ class NotificationService:
                 )
 
                 if not pending:
+                    failed_or_deferred = (
+                        total_notifications_attempted
+                        - total_sent_count
+                        - total_duplicates_removed
+                    )
+                    if failed_or_deferred > 0:
+                        self._schedule_retry_wakeup(context)
                     if batch_number == 1:
                         logger.debug("No pending notifications to process")
                     else:

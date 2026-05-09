@@ -1416,6 +1416,36 @@ def _get_validated_init_data(request: Request, allow_preview: bool = False) -> t
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid init data")
 
 
+def _get_authenticated_webapp_user(request: Request) -> tuple[TelegramUser, int, str]:
+    """Return the Telegram user from validated WebApp initData.
+
+    This is for endpoints that mutate or expose user-specific state. The
+    caller should not trust user_id values from query strings or JSON bodies.
+    """
+    init_data, bot_index = _get_validated_init_data(request, allow_preview=False)
+    parsed = parse_init_data(init_data)
+    user_data = parsed.get("user")
+    if not isinstance(user_data, TelegramUser):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user data")
+    return user_data, bot_index, init_data
+
+
+def _require_same_webapp_user(requested_user_id, authenticated_user: TelegramUser) -> int:
+    """Validate a requested user_id belongs to the authenticated WebApp user."""
+    try:
+        requested_id = int(requested_user_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid user_id")
+    if requested_id != authenticated_user.id:
+        logger_security.warning(
+            "[WEBAPP_FORBIDDEN] authenticated_user=%s attempted access to user_id=%s",
+            authenticated_user.id,
+            requested_id,
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+    return requested_id
+
+
 async def _check_user_not_blocked(init_data: str, client_ip: str = "") -> None:
     """
     Raise HTTP 403 if the user identified by init_data is blocked.
@@ -2094,7 +2124,9 @@ async def search_products(
 @app.get("/api/user/subscription")
 async def get_user_subscription(request: Request, user_id: int):
     """Get user subscription status."""
-    _get_validated_init_data(request, allow_preview=False)  # Require auth for user data
+    authenticated_user, _, init_data = _get_authenticated_webapp_user(request)
+    user_id = _require_same_webapp_user(user_id, authenticated_user)
+    await _check_user_not_blocked(init_data, get_client_ip(request))
     
     try:
         result = await _catalog_db.get_user_subscription(user_id)
@@ -2108,17 +2140,18 @@ async def get_user_subscription(request: Request, user_id: int):
 @app.post("/api/user/subscription")
 async def update_user_subscription(request: Request):
     """Update user subscription status."""
-    _get_validated_init_data(request, allow_preview=False)  # Require auth for user data
+    authenticated_user, _, init_data = _get_authenticated_webapp_user(request)
+    await _check_user_not_blocked(init_data, get_client_ip(request))
     
     try:
         data = await request.json()
-        user_id = data.get("user_id")
+        user_id = data.get("user_id", authenticated_user.id)
+        user_id = _require_same_webapp_user(user_id, authenticated_user)
         is_subscribed = data.get("is_subscribed", True)
+        if isinstance(is_subscribed, str):
+            is_subscribed = is_subscribed.strip().lower() in {"1", "true", "yes", "on"}
         
-        if not user_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="user_id required")
-        
-        await _catalog_db.update_user_subscription(int(user_id), bool(is_subscribed))
+        await _catalog_db.update_user_subscription(user_id, bool(is_subscribed))
         logger.info(f"User {user_id} subscription updated to: {is_subscribed}")
         return {"success": True, "is_subscribed": is_subscribed}
         
@@ -2250,29 +2283,20 @@ async def track_webapp_user(request: Request):
     user database for analytics and tracking purposes.
     """
     try:
-        init_data, bot_index = _get_validated_init_data(request, allow_preview=True)
-        
+        init_data, bot_index = _get_validated_init_data(request, allow_preview=False)
+        parsed_data = parse_init_data(init_data)
+        user_data = parsed_data.get("user")
+        if not isinstance(user_data, TelegramUser):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user data")
+
         data = await request.json()
-        user_id = data.get("user_id")
-        username = data.get("username")
-        first_name = data.get("first_name")
-        last_name = data.get("last_name")
-        
-        # Try to extract user info from initData if not in request body
-        if not user_id and init_data:
-            parsed_data = parse_init_data(init_data)
-            user_data = parsed_data.get("user")
-            if isinstance(user_data, TelegramUser):
-                user_id = user_data.id
-                username = username or user_data.username
-                first_name = first_name or user_data.first_name
-                last_name = last_name or user_data.last_name
-        
-        if not user_id:
-            return {"success": False, "message": "No user_id available"}
+        user_id = _require_same_webapp_user(data.get("user_id", user_data.id), user_data)
+        username = user_data.username
+        first_name = user_data.first_name
+        last_name = user_data.last_name
         
         # Reject blocked users — do not re-register them in the database
-        if await _catalog_db.is_user_blocked(int(user_id)):
+        if await _catalog_db.is_user_blocked(user_id):
             logger_security.warning(
                 "[WEBAPP_BLOCKED] user_id=%s attempted /api/user/track while blocked",
                 user_id,
@@ -2287,13 +2311,13 @@ async def track_webapp_user(request: Request):
                 # Use the specific bot that validated this request
                 bot_app = bot_apps[bot_index]
             else:
-                # bot_index == -1: preview/unauthenticated mode, fall back to primary bot
+                # Defensive fallback if bot state changed after validation.
                 bot_app = bot_apps[0]
             if hasattr(bot_app, 'bot') and hasattr(bot_app.bot, 'username'):
                 bot_username = bot_app.bot.username
         
         await _catalog_db.track_user(
-            user_id=int(user_id),
+            user_id=user_id,
             username=username,
             first_name=first_name,
             last_name=last_name,
@@ -2304,7 +2328,7 @@ async def track_webapp_user(request: Request):
         client_ip = get_client_ip(request)
         if client_ip and client_ip != "unknown":
             try:
-                await _catalog_db.record_user_ip(int(user_id), client_ip)
+                await _catalog_db.record_user_ip(user_id, client_ip)
             except Exception as _ip_err:
                 logger.debug("Failed to record user IP in /api/user/track: %s", _ip_err)
         
@@ -2315,7 +2339,8 @@ async def track_webapp_user(request: Request):
             "user_id": user_id,
             "tracked": True
         }
-        
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(f"Error tracking webapp user: {e}")
         return {"success": False, "message": "Failed to track user"}
