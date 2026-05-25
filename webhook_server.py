@@ -49,6 +49,8 @@ from utils.resource_manager import (
     DISK_CACHE_MAX_BYTES,
     DISK_CACHE_TTL_SECONDS,
     TMP_WARNING_BYTES,
+    TMP_FILE_MAX_AGE_SECONDS,
+    TMP_MAX_SIZE_BYTES,
     cleanup_owned_dir,
     emergency_cleanup,
     ensure_resource_dirs,
@@ -822,13 +824,13 @@ async def setup_application(bot_token: str, bot_index: int = 0):
         # secret only changes when the bot token itself changes.
         webhook_secret_token = hashlib.sha256(bot_token.encode('utf-8')).hexdigest()[:64]
         try:
-            await bot_app.bot.set_webhook(
-                url=f"{webhook_url}{webhook_path}",
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
-                secret_token=webhook_secret_token,
+            await _validate_or_repair_webhook(
+                bot_app.bot,
+                bot_index,
+                webhook_url,
+                webhook_path,
+                webhook_secret_token,
             )
-            logger.info("Webhook set for bot index=%d path=%s", bot_index, webhook_path)
         except telegram.error.TelegramError as e:
             logger.warning("Partial startup for bot index=%d: webhook setup skipped: %s", bot_index, e)
             webhook_secret_token = None
@@ -842,6 +844,45 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     return bot_app, webhook_secret_token
 
 
+async def _validate_or_repair_webhook(bot, bot_index: int, webhook_url: str, webhook_path: str, secret_token: str) -> None:
+    """Validate webhook URL/state and repair safely without dropping pending updates."""
+    expected_url = f"{webhook_url}{webhook_path}"
+    try:
+        info = await bot.get_webhook_info()
+        current_url = getattr(info, "url", "") or ""
+        pending = getattr(info, "pending_update_count", 0)
+        last_error = getattr(info, "last_error_message", None)
+        has_cert = bool(getattr(info, "has_custom_certificate", False))
+        mismatch = current_url != expected_url
+        needs_secret_refresh = os.getenv("WEBHOOK_REFRESH_SECRET_ON_STARTUP", "true").lower() not in {"0", "false", "no"}
+        if mismatch:
+            logger.warning(
+                "[webhook] mismatch_detected bot=%d current_url=%s expected_url=%s pending=%s cert=%s",
+                bot_index, current_url, expected_url, pending, has_cert,
+            )
+        elif last_error:
+            logger.warning("[webhook] existing_error bot=%d pending=%s error=%s", bot_index, pending, last_error)
+        else:
+            logger.info("[webhook] validated bot=%d pending=%s cert=%s", bot_index, pending, has_cert)
+
+        if mismatch or needs_secret_refresh:
+            await bot.set_webhook(
+                url=expected_url,
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=False,
+                secret_token=secret_token,
+            )
+            logger.info(
+                "[webhook] repaired bot=%d reason=%s secret_fp=%s",
+                bot_index,
+                "url_mismatch" if mismatch else "secret_refresh",
+                _secret_fingerprint(secret_token),
+            )
+    except telegram.error.TelegramError as exc:
+        logger.warning("[webhook] validation_failed bot=%d error=%s", bot_index, exc)
+        raise
+
+
 async def _media_cache_prune_loop():
     """Background task: sweep app-owned cache/temp directories."""
     while True:
@@ -853,8 +894,8 @@ async def _media_cache_prune_loop():
                 logger.info("[media_cache] cleanup_completed removed=%d freed=%d", removed, freed)
             cleanup_owned_dir(
                 APP_TMP_DIR,
-                MEDIA_CACHE_TTL_SECONDS,
-                max_bytes=TMP_WARNING_BYTES,
+                TMP_FILE_MAX_AGE_SECONDS,
+                max_bytes=TMP_MAX_SIZE_BYTES,
                 skip_file=_is_media_temp_in_use,
             )
             cleanup_owned_dir(APP_CACHE_DIR, DISK_CACHE_TTL_SECONDS, max_bytes=DISK_CACHE_MAX_BYTES)
@@ -1717,7 +1758,11 @@ async def _check_user_not_blocked(init_data: str, client_ip: str = "") -> None:
     if not isinstance(user_data, TelegramUser):
         return
     user_id = user_data.id
-    if await _catalog_db.is_user_blocked(user_id):
+    if await _catalog_db.is_entity_blocked(
+        telegram_user_id=user_id,
+        username=user_data.username,
+        ip_address=client_ip if client_ip and client_ip != "unknown" else None,
+    ) or await _catalog_db.is_user_blocked(user_id):
         logger_security.warning(
             "[WEBAPP_BLOCKED] user_id=%d attempted WebApp API access while blocked",
             user_id,
@@ -2168,6 +2213,19 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
             try:
                 tg_file = await bot.get_file(file_id)
                 file_size = tg_file.file_size or 0
+                file_unique_id = getattr(tg_file, "file_unique_id", None)
+                if file_unique_id:
+                    bot_identifier = (getattr(bot, "username", None) or f"bot_{0}").lower()
+                    await _catalog_db.upsert_canonical_media(
+                        product_id=str(product_id),
+                        media_type=media_type_info.get("type", "document"),
+                        file_unique_id=file_unique_id,
+                        origin_chat_id=source_chat_id,
+                        origin_message_id=source_message_id,
+                        original_file_id=file_id,
+                        file_size=file_size,
+                    )
+                    await _catalog_db.upsert_bot_media_file_id(bot_identifier, file_unique_id, file_id)
 
                 # Log file size retrieved
                 logger.debug(
@@ -2655,7 +2713,11 @@ async def track_webapp_user(request: Request):
             return {"success": False, "message": "No user_id available"}
         
         # Reject blocked users — do not re-register them in the database
-        if await _catalog_db.is_user_blocked(int(user_id)):
+        if await _catalog_db.is_entity_blocked(
+            telegram_user_id=int(user_id),
+            username=username,
+            ip_address=get_client_ip(request),
+        ) or await _catalog_db.is_user_blocked(int(user_id)):
             logger_security.warning(
                 "[WEBAPP_BLOCKED] user_id=%s attempted /api/user/track while blocked",
                 user_id,

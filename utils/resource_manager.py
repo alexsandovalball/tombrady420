@@ -22,6 +22,10 @@ TMP_EMERGENCY_BYTES = 1500 * MB
 PERSISTENT_WARNING_BYTES = 700 * MB
 PERSISTENT_EMERGENCY_BYTES = 850 * MB
 EMERGENCY_CLEANUP_COOLDOWN_SECONDS = int(os.getenv("EMERGENCY_CLEANUP_COOLDOWN_SECONDS", "120"))
+TMP_MAX_SIZE_GB = float(os.getenv("TMP_MAX_SIZE_GB", "1.2"))
+TMP_FILE_MAX_AGE_HOURS = float(os.getenv("TMP_FILE_MAX_AGE_HOURS", "1"))
+TMP_MAX_SIZE_BYTES = int(TMP_MAX_SIZE_GB * 1024 * MB)
+TMP_FILE_MAX_AGE_SECONDS = int(TMP_FILE_MAX_AGE_HOURS * 3600)
 
 APP_TMP_DIR = Path(os.getenv("APP_TMP_DIR", Path(tempfile.gettempdir()) / "brady_app_tmp"))
 APP_CACHE_DIR = Path(os.getenv("APP_CACHE_DIR", Path(tempfile.gettempdir()) / "brady_app_cache"))
@@ -226,18 +230,20 @@ def emergency_cleanup(
 def startup_cleanup() -> None:
     """Clean app-owned stale files and log coarse disk usage."""
     ensure_resource_dirs()
-    tmp_removed, tmp_freed = cleanup_owned_dir(APP_TMP_DIR, DEFAULT_TTL_SECONDS, max_bytes=TMP_WARNING_BYTES)
+    started = time.monotonic()
+    tmp_removed, tmp_freed = cleanup_owned_dir(APP_TMP_DIR, TMP_FILE_MAX_AGE_SECONDS, max_bytes=TMP_MAX_SIZE_BYTES)
     cache_removed, cache_freed = cleanup_owned_dir(APP_CACHE_DIR, DISK_CACHE_TTL_SECONDS, max_bytes=DISK_CACHE_MAX_BYTES)
     tmp = get_tmp_usage()
     cache = get_cache_usage()
     logger.info(
-        "[resource] startup_cleanup tmp_used=%d app_tmp=%d cache_used=%d app_cache=%d removed=%d freed=%d",
+        "[resource] startup_cleanup tmp_used=%d app_tmp=%d cache_used=%d app_cache=%d removed=%d freed=%d duration_ms=%.1f",
         tmp["used_bytes"],
         tmp["app_tmp_bytes"],
         cache["used_bytes"],
         cache["app_cache_bytes"],
         tmp_removed + cache_removed,
         tmp_freed + cache_freed,
+        (time.monotonic() - started) * 1000,
     )
     if tmp["used_bytes"] >= TMP_EMERGENCY_BYTES or cache["used_bytes"] >= PERSISTENT_EMERGENCY_BYTES:
         emergency_cleanup()

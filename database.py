@@ -320,6 +320,53 @@ class Database:
                 )
             """)
 
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS canonical_media (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    product_id TEXT NOT NULL,
+                    media_type TEXT NOT NULL,
+                    file_unique_id TEXT NOT NULL UNIQUE,
+                    origin_chat_id INTEGER,
+                    origin_message_id INTEGER,
+                    original_file_id TEXT,
+                    mime_type TEXT,
+                    file_size INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS bot_media_file_ids (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bot_identifier TEXT NOT NULL,
+                    file_unique_id TEXT NOT NULL,
+                    resolved_file_id TEXT NOT NULL,
+                    last_verified_at TIMESTAMP,
+                    is_valid INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(bot_identifier, file_unique_id)
+                )
+            """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS blocked_entities (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_user_id INTEGER,
+                    username TEXT,
+                    first_name TEXT,
+                    last_name TEXT,
+                    phone TEXT,
+                    ip_address TEXT,
+                    device_fingerprint TEXT,
+                    reason TEXT,
+                    blocked_by_admin INTEGER,
+                    blocked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    is_permanent INTEGER DEFAULT 1
+                )
+            """)
+
             # Set default order contact if not exists
             await db.execute("""
                 INSERT OR IGNORE INTO bot_settings (key, value)
@@ -431,6 +478,14 @@ class Database:
 
             # Bot file ID cache indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_file_id_cache_bot_username ON bot_file_id_cache(bot_username)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_canonical_media_product ON canonical_media(product_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_canonical_media_origin ON canonical_media(origin_chat_id, origin_message_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_media_file_ids_bot ON bot_media_file_ids(bot_identifier)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_media_file_ids_valid ON bot_media_file_ids(bot_identifier, is_valid)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_blocked_entities_user ON blocked_entities(telegram_user_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_blocked_entities_ip ON blocked_entities(ip_address)")
+            await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_blocked_entities_user_perm ON blocked_entities(telegram_user_id) WHERE telegram_user_id IS NOT NULL AND is_permanent = 1")
+            await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_blocked_entities_ip_perm ON blocked_entities(ip_address) WHERE ip_address IS NOT NULL AND is_permanent = 1")
 
             # Bot users language index
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_language_code ON bot_users(language)")
@@ -1274,6 +1329,9 @@ class Database:
         - On subsequent interactions: bot_username is preserved (not overwritten)
         - This ensures analytics show which bot the user first interacted with
         """
+        if await self.is_entity_blocked(telegram_user_id=user_id, username=username):
+            logger.info("[block] denied_registration user_id=%s username=%s", user_id, username or "")
+            return
         async with aiosqlite.connect(self.db_path) as db:
             # Check if user exists
             async with db.execute("SELECT user_id FROM bot_users WHERE user_id = ?", (user_id,)) as cursor:
@@ -1759,9 +1817,25 @@ class Database:
         caller can update any in-memory IP-block registry.
         """
         async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT username, first_name, last_name FROM bot_users WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                user_row = await cursor.fetchone()
             await db.execute("""
                 UPDATE bot_users SET is_blocked = 1 WHERE user_id = ?
             """, (user_id,))
+            await db.execute("""
+                INSERT OR IGNORE INTO blocked_entities
+                (telegram_user_id, username, first_name, last_name, reason, is_permanent)
+                VALUES (?, ?, ?, ?, ?, 1)
+            """, (
+                user_id,
+                user_row[0] if user_row else None,
+                user_row[1] if user_row else None,
+                user_row[2] if user_row else None,
+                f"blocked_user:{user_id}",
+            ))
             # Collect known IPs for this user
             async with db.execute(
                 "SELECT ip_address FROM user_ips WHERE user_id = ?", (user_id,)
@@ -1774,7 +1848,16 @@ class Database:
                     "INSERT OR IGNORE INTO blocked_ips (ip_address, reason) VALUES (?, ?)",
                     [(ip, f"blocked_user:{user_id}") for ip in ip_list],
                 )
+                await db.executemany(
+                    """
+                    INSERT OR IGNORE INTO blocked_entities
+                    (telegram_user_id, ip_address, reason, is_permanent)
+                    VALUES (?, ?, ?, 1)
+                    """,
+                    [(user_id, ip, f"blocked_user:{user_id}") for ip in ip_list],
+                )
             await db.commit()
+            logger.info("[block] persisted user_id=%s ip_count=%d", user_id, len(ip_list))
         return ip_list
 
     async def unblock_user(self, user_id: int) -> list:
@@ -1787,6 +1870,7 @@ class Database:
             await db.execute("""
                 UPDATE bot_users SET is_blocked = 0 WHERE user_id = ?
             """, (user_id,))
+            await db.execute("DELETE FROM blocked_entities WHERE telegram_user_id = ?", (user_id,))
             async with db.execute(
                 "SELECT ip_address FROM user_ips WHERE user_id = ?", (user_id,)
             ) as cursor:
@@ -1797,11 +1881,18 @@ class Database:
                     "DELETE FROM blocked_ips WHERE ip_address = ?",
                     [(ip,) for ip in ip_list],
                 )
+                await db.executemany(
+                    "DELETE FROM blocked_entities WHERE ip_address = ?",
+                    [(ip,) for ip in ip_list],
+                )
             await db.commit()
+            logger.info("[block] manually_unblocked user_id=%s ip_count=%d", user_id, len(ip_list))
         return ip_list
     
     async def is_user_blocked(self, user_id: int) -> bool:
         """Check if a user is blocked."""
+        if await self.is_entity_blocked(telegram_user_id=user_id):
+            return True
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("""
                 SELECT is_blocked FROM bot_users WHERE user_id = ?
@@ -1809,12 +1900,46 @@ class Database:
                 row = await cursor.fetchone()
                 return row[0] == 1 if row else False
 
+    async def is_entity_blocked(
+        self,
+        telegram_user_id: Optional[int] = None,
+        username: Optional[str] = None,
+        ip_address: Optional[str] = None,
+        device_fingerprint: Optional[str] = None,
+    ) -> bool:
+        """Permanent block lookup independent of bot_users lifecycle."""
+        clauses = []
+        params = []
+        if telegram_user_id is not None:
+            clauses.append("telegram_user_id = ?")
+            params.append(telegram_user_id)
+        if username:
+            clauses.append("LOWER(username) = LOWER(?)")
+            params.append(username)
+        if ip_address:
+            clauses.append("ip_address = ?")
+            params.append(ip_address)
+        if device_fingerprint:
+            clauses.append("device_fingerprint = ?")
+            params.append(device_fingerprint)
+        if not clauses:
+            return False
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                f"SELECT 1 FROM blocked_entities WHERE is_permanent = 1 AND ({' OR '.join(clauses)}) LIMIT 1",
+                params,
+            ) as cursor:
+                return await cursor.fetchone() is not None
+
     async def record_user_ip(self, user_id: int, ip_address: str) -> None:
         """Record (or refresh) an IP address for a user.
 
         Uses INSERT ... ON CONFLICT so that last_seen is always updated while
         first_seen is preserved from the original insert.
         """
+        if await self.is_entity_blocked(telegram_user_id=user_id, ip_address=ip_address):
+            logger.info("[block] denied_ip_refresh user_id=%s ip=%s", user_id, ip_address)
+            return
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 INSERT INTO user_ips (user_id, ip_address)
@@ -2375,6 +2500,110 @@ class Database:
             await db.commit()
             logger.info(f"Cleared {deleted} bot file ID cache entries")
             return deleted
+
+    async def upsert_canonical_media(
+        self,
+        product_id: str,
+        media_type: str,
+        file_unique_id: str,
+        origin_chat_id: Optional[int] = None,
+        origin_message_id: Optional[int] = None,
+        original_file_id: Optional[str] = None,
+        mime_type: Optional[str] = None,
+        file_size: Optional[int] = None,
+    ) -> None:
+        """Create or refresh canonical media metadata without touching products."""
+        if not file_unique_id:
+            return
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO canonical_media
+                (product_id, media_type, file_unique_id, origin_chat_id, origin_message_id,
+                 original_file_id, mime_type, file_size, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(file_unique_id) DO UPDATE SET
+                    product_id = COALESCE(excluded.product_id, canonical_media.product_id),
+                    media_type = COALESCE(excluded.media_type, canonical_media.media_type),
+                    origin_chat_id = COALESCE(excluded.origin_chat_id, canonical_media.origin_chat_id),
+                    origin_message_id = COALESCE(excluded.origin_message_id, canonical_media.origin_message_id),
+                    original_file_id = COALESCE(excluded.original_file_id, canonical_media.original_file_id),
+                    mime_type = COALESCE(excluded.mime_type, canonical_media.mime_type),
+                    file_size = COALESCE(excluded.file_size, canonical_media.file_size),
+                    updated_at = CURRENT_TIMESTAMP
+            """, (str(product_id), media_type, file_unique_id, origin_chat_id, origin_message_id,
+                  original_file_id, mime_type, file_size))
+            await db.commit()
+            logger.info("[media_registry] canonical_media_upsert product_id=%s type=%s", product_id, media_type)
+
+    async def get_canonical_media_by_origin(
+        self,
+        origin_chat_id: int,
+        origin_message_id: int,
+        media_type: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            if media_type:
+                sql = """
+                    SELECT * FROM canonical_media
+                    WHERE origin_chat_id = ? AND origin_message_id = ? AND media_type = ?
+                    ORDER BY updated_at DESC LIMIT 1
+                """
+                params = (origin_chat_id, origin_message_id, media_type)
+            else:
+                sql = """
+                    SELECT * FROM canonical_media
+                    WHERE origin_chat_id = ? AND origin_message_id = ?
+                    ORDER BY updated_at DESC LIMIT 1
+                """
+                params = (origin_chat_id, origin_message_id)
+            async with db.execute(sql, params) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def get_bot_media_file_id(self, bot_identifier: str, file_unique_id: str) -> Optional[str]:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT resolved_file_id FROM bot_media_file_ids
+                WHERE bot_identifier = ? AND file_unique_id = ? AND is_valid = 1
+            """, (bot_identifier, file_unique_id)) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+            await db.execute("""
+                UPDATE bot_media_file_ids
+                SET last_verified_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE bot_identifier = ? AND file_unique_id = ?
+            """, (bot_identifier, file_unique_id))
+            await db.commit()
+            return row[0]
+
+    async def upsert_bot_media_file_id(self, bot_identifier: str, file_unique_id: str, resolved_file_id: str) -> None:
+        if not bot_identifier or not file_unique_id or not resolved_file_id:
+            return
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO bot_media_file_ids
+                (bot_identifier, file_unique_id, resolved_file_id, last_verified_at, is_valid, created_at, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(bot_identifier, file_unique_id) DO UPDATE SET
+                    resolved_file_id = excluded.resolved_file_id,
+                    last_verified_at = CURRENT_TIMESTAMP,
+                    is_valid = 1,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (bot_identifier, file_unique_id, resolved_file_id))
+            await db.commit()
+            logger.info("[media_registry] bot_media_mapping_upsert bot=%s", bot_identifier)
+
+    async def invalidate_bot_media_file_id(self, bot_identifier: str, file_unique_id: str) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE bot_media_file_ids
+                SET is_valid = 0, updated_at = CURRENT_TIMESTAMP
+                WHERE bot_identifier = ? AND file_unique_id = ?
+            """, (bot_identifier, file_unique_id))
+            await db.commit()
+            logger.info("[media_registry] bot_media_mapping_invalidated bot=%s", bot_identifier)
 
     async def delete_bot_file_id_cache_entry(
         self,

@@ -17,6 +17,41 @@ logger = logging.getLogger(__name__)
 # Module-level database singleton — avoids creating a new connection object per call.
 _db = Database()
 
+
+def resolve_stable_bot_identifier(bot_or_username, fallback: str = "unknown") -> str:
+    """Resolve a token-rotation-safe bot identity for persistent media mappings."""
+    username = bot_or_username if isinstance(bot_or_username, str) else getattr(bot_or_username, "username", None)
+    if username:
+        return username.lower()
+    return fallback
+
+
+def _extract_media_identity(message, file_type: str):
+    """Return (file_id, file_unique_id, mime_type, file_size) from a Telegram message."""
+    media = None
+    if file_type == "photo" and getattr(message, "photo", None):
+        media = message.photo[-1]
+    elif file_type == "video":
+        media = getattr(message, "video", None)
+    elif file_type == "document":
+        media = getattr(message, "document", None)
+    elif file_type == "animation":
+        media = getattr(message, "animation", None)
+    elif file_type == "video_note":
+        media = getattr(message, "video_note", None)
+    elif file_type == "audio":
+        media = getattr(message, "audio", None)
+    elif file_type == "voice":
+        media = getattr(message, "voice", None)
+    if not media:
+        return None, None, None, None
+    return (
+        getattr(media, "file_id", None),
+        getattr(media, "file_unique_id", None),
+        getattr(media, "mime_type", None),
+        getattr(media, "file_size", None),
+    )
+
 # Admin commands fallback text constant (hardcoded for consistency across deploys)
 ADMIN_COMMANDS_FALLBACK = (
     "\n\n👨‍💼 Admin Commands:\n"
@@ -382,6 +417,19 @@ async def get_bot_specific_file_id(
         return None
     
     # Check persistent database cache first
+    bot_identifier = resolve_stable_bot_identifier(bot, bot_username.lower())
+    canonical = await _db.get_canonical_media_by_origin(source_chat_id, source_message_id, file_type)
+    if canonical:
+        mapped_file_id = await _db.get_bot_media_file_id(bot_identifier, canonical["file_unique_id"])
+        if mapped_file_id:
+            try:
+                await bot.get_file(mapped_file_id)
+                logger.debug("[media_registry] using_bot_media_mapping bot=%s msg=%s", bot_identifier, source_message_id)
+                return mapped_file_id
+            except TelegramError as e:
+                await _db.invalidate_bot_media_file_id(bot_identifier, canonical["file_unique_id"])
+                logger.warning("[media_registry] stale_mapping_invalidated bot=%s msg=%s error=%s", bot_identifier, source_message_id, e)
+
     cached_file_id = await _db.get_bot_file_id(
         source_chat_id,
         source_message_id,
@@ -391,7 +439,19 @@ async def get_bot_specific_file_id(
     
     if cached_file_id:
         try:
-            await bot.get_file(cached_file_id)
+            tg_file = await bot.get_file(cached_file_id)
+            file_unique_id = getattr(tg_file, "file_unique_id", None)
+            if file_unique_id:
+                await _db.upsert_canonical_media(
+                    product_id=str(source_message_id),
+                    media_type=file_type,
+                    file_unique_id=file_unique_id,
+                    origin_chat_id=source_chat_id,
+                    origin_message_id=source_message_id,
+                    original_file_id=cached_file_id,
+                    file_size=getattr(tg_file, "file_size", None),
+                )
+                await _db.upsert_bot_media_file_id(bot_identifier, file_unique_id, cached_file_id)
             logger.debug(f"Using cached file ID for bot {bot_username}, message {source_message_id}, index {file_index}")
             return cached_file_id
         except TelegramError as e:
@@ -399,6 +459,8 @@ async def get_bot_specific_file_id(
                 f"Cached file ID invalid for bot {bot_username}, msg {source_message_id}: {e}. "
                 f"Clearing cache and refetching..."
             )
+            if canonical:
+                await _db.invalidate_bot_media_file_id(bot_identifier, canonical["file_unique_id"])
             await _db.delete_bot_file_id_cache_entry(
                 source_chat_id,
                 source_message_id,
@@ -438,25 +500,22 @@ async def get_bot_specific_file_id(
             f"from chat {source_chat_id} to admin {target_chat_id}"
         )
         
-        # Extract the file ID from the forwarded message
-        file_id = None
-        
-        if file_type == "photo" and forwarded.photo:
-            file_id = forwarded.photo[-1].file_id
-        elif file_type == "video" and forwarded.video:
-            file_id = forwarded.video.file_id
-        elif file_type == "document" and forwarded.document:
-            file_id = forwarded.document.file_id
-        elif file_type == "animation" and forwarded.animation:
-            file_id = forwarded.animation.file_id
-        elif file_type == "video_note" and forwarded.video_note:
-            file_id = forwarded.video_note.file_id
-        elif file_type == "audio" and forwarded.audio:
-            file_id = forwarded.audio.file_id
-        elif file_type == "voice" and forwarded.voice:
-            file_id = forwarded.voice.file_id
+        # Extract stable and bot-specific media IDs from the forwarded message.
+        file_id, file_unique_id, mime_type, file_size = _extract_media_identity(forwarded, file_type)
         
         if file_id:
+            if file_unique_id:
+                await _db.upsert_canonical_media(
+                    product_id=str(source_message_id),
+                    media_type=file_type,
+                    file_unique_id=file_unique_id,
+                    origin_chat_id=source_chat_id,
+                    origin_message_id=source_message_id,
+                    original_file_id=file_id,
+                    mime_type=mime_type,
+                    file_size=file_size,
+                )
+                await _db.upsert_bot_media_file_id(bot_identifier, file_unique_id, file_id)
             # Cache the result in database for persistence
             await _db.cache_bot_file_id(
                 source_chat_id,

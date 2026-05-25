@@ -1086,7 +1086,8 @@ async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(
                 f"✅ **File ID cache cleared successfully!**\n\n"
                 f"Removed {deleted_count} database cache entries.{memory_msg}\n"
-                f"Media will be re-fetched on next access.",
+                f"Media will be re-fetched on next access.\n"
+                f"Persistent media metadata and block records were preserved.",
                 parse_mode="Markdown"
             )
         except BadRequest as e:
@@ -1094,7 +1095,8 @@ async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text(
                 f"✅ File ID cache cleared successfully!\n\n"
                 f"Removed {deleted_count} database cache entries.{memory_msg}\n"
-                f"Media will be re-fetched on next access."
+                f"Media will be re-fetched on next access.\n"
+                f"Persistent media metadata and block records were preserved."
             )
         logger.info(f"Admin {user_id} cleared the file ID cache ({deleted_count} entries)")
         
