@@ -52,41 +52,40 @@ class ConfigClass:
                 self.BOT_TOKENS = [t.strip() for t in bot_tokens_raw.split(',') if t.strip()]
                 if not self.BOT_TOKENS:
                     logger.warning("BOT_TOKENS is set but contains no valid tokens (check for extra commas or whitespace).")
-                if self.BOT_TOKENS:
-                    self.BOT_TOKEN = self.BOT_TOKENS[0]
+                self._loaded = True
+                return
         except UndefinedValueError:
             pass
 
-        if not self.BOT_TOKENS:
-            # Build BOT_TOKENS from individual env vars:
-            #   index 0 = BOT_TOKEN (primary bot)
-            #   index 1 = BOT_TOKEN_1, index 2 = BOT_TOKEN_2, … (additional bots)
-            # Gaps in numbering are skipped but do NOT stop scanning; later indices
-            # are still collected so the resulting list stays as compact as possible.
-            # The startup log (see validate()) prints each index → token-id so operators
-            # can confirm the mapping matches what was registered with Telegram.
-            bot_tokens = []
-            if self.BOT_TOKEN:
-                bot_tokens.append(self.BOT_TOKEN)
+        # Build BOT_TOKENS from individual env vars:
+        #   index 0 = BOT_TOKEN (primary bot)
+        #   index 1 = BOT_TOKEN_1, index 2 = BOT_TOKEN_2, … (additional bots)
+        # Gaps in numbering are skipped but do NOT stop scanning; later indices
+        # are still collected so the resulting list stays as compact as possible.
+        # The startup log (see validate()) prints each index → token-id so operators
+        # can confirm the mapping matches what was registered with Telegram.
+        bot_tokens = []
+        if self.BOT_TOKEN:
+            bot_tokens.append(self.BOT_TOKEN)
 
-            # Support BOT_TOKEN_ (trailing underscore, no number) as an additional token
+        # Support BOT_TOKEN_ (trailing underscore, no number) as an additional token
+        try:
+            token = config('BOT_TOKEN_')
+            if token and token not in bot_tokens:
+                bot_tokens.append(token)
+        except UndefinedValueError:
+            pass
+
+        # Scan BOT_TOKEN_1 … BOT_TOKEN_10; continue past gaps (don't break early)
+        for i in range(1, 11):
             try:
-                token = config('BOT_TOKEN_')
+                token = config(f'BOT_TOKEN_{i}')
                 if token and token not in bot_tokens:
                     bot_tokens.append(token)
             except UndefinedValueError:
-                pass
+                continue
 
-            # Scan BOT_TOKEN_1 … BOT_TOKEN_10; continue past gaps (don't break early)
-            for i in range(1, 11):
-                try:
-                    token = config(f'BOT_TOKEN_{i}')
-                    if token and token not in bot_tokens:
-                        bot_tokens.append(token)
-                except UndefinedValueError:
-                    continue
-
-            self.BOT_TOKENS = bot_tokens
+        self.BOT_TOKENS = bot_tokens
         
         # Load ADMIN_IDS
         try:
