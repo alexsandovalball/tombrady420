@@ -348,7 +348,7 @@ def clear_in_memory_caches() -> int:
 
 def get_bot_applications() -> List[Application]:
     """Get all bot application instances."""
-    return _bot_applications
+    return [bot_app for bot_app in _bot_applications if bot_app is not None]
 
 # ---------------------------------------------------------------------------
 # Webhook-secret history (in-memory tolerance window for token rotations)
@@ -456,6 +456,8 @@ def get_bot_usernames() -> List[str]:
     """Get list of bot usernames for all registered bots (normalized to lowercase)."""
     usernames = []
     for bot in _bot_applications:
+        if bot is None:
+            continue
         if hasattr(bot, 'bot') and hasattr(bot.bot, 'username') and bot.bot.username is not None:
             usernames.append(bot.bot.username.lower())
         else:
@@ -481,6 +483,8 @@ async def _stop_existing_bots() -> None:
     if not _bot_applications:
         return
     for bot_app in list(_bot_applications):
+        if bot_app is None:
+            continue
         try:
             if hasattr(bot_app, "stop"):
                 await bot_app.stop()
@@ -580,7 +584,8 @@ async def setup_application(bot_token: str, bot_index: int = 0):
         deterministic value derived from bot_token registered with Telegram for
         this bot, or None if webhook mode is not active.
     """
-    logger.info(f"Setting up bot application {bot_index}...")
+    token_suffix = bot_token[-6:] if bot_token else "empty"
+    logger.info("Bot startup begin index=%d token_suffix=%s", bot_index, token_suffix)
     
     # Create application with optimized timeout settings
     request = HTTPXRequest(
@@ -598,13 +603,42 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     
     # Initialize the application
     # IMPORTANT: Must be called before any bot API methods (like set_my_commands)
-    await bot_app.initialize()
-    await bot_app.start()
+    try:
+        await bot_app.initialize()
+        await bot_app.start()
+    except telegram.error.TelegramError as exc:
+        logger.warning(
+            "Bot startup failure index=%d token_suffix=%s during initialize/start: %s",
+            bot_index,
+            token_suffix,
+            exc,
+        )
+        try:
+            await bot_app.shutdown()
+        except Exception:
+            pass
+        raise
+    except Exception as exc:
+        logger.warning(
+            "Bot startup failure index=%d token_suffix=%s during initialize/start: %s",
+            bot_index,
+            token_suffix,
+            exc,
+        )
+        try:
+            await bot_app.shutdown()
+        except Exception:
+            pass
+        raise
 
     # Detect token changes and clear stale file ID cache if needed
     try:
         bot_username = bot_app.bot.username
         bot_id = bot_app.bot.id
+        if not bot_username or not bot_id:
+            me = await bot_app.bot.get_me()
+            bot_username = getattr(me, "username", bot_username)
+            bot_id = getattr(me, "id", bot_id)
         token_hash = hashlib.sha256(bot_token.encode()).hexdigest()[:16]
 
         from database import Database
@@ -617,18 +651,31 @@ async def setup_application(bot_token: str, bot_index: int = 0):
             logger.info(f"Cleared {cleared} stale cache entries for @{bot_username}")
 
         await _db.register_bot_instance(bot_username, bot_id, token_hash)
+    except telegram.error.TelegramError as e:
+        logger.warning("Skipping startup metadata/cache registration for bot index=%d: %s", bot_index, e)
     except Exception as e:
-        logger.warning(f"Could not perform bot token change detection: {e}")
+        logger.warning("Skipping startup metadata/cache registration for bot index=%d: %s", bot_index, e)
     
     # Initialize database and set bot commands BEFORE the webhook is registered.
     # Once set_webhook() is called, PTB marks the bot as frozen and subsequent
     # API calls (like set_my_commands) will raise Frozen_method_invalid.
     if bot_index == 0:
-        # post_init() handles DB init and calls setup_bot_commands() internally
-        await post_init(bot_app)
+        # post_init() handles DB init and cleanup tasks; command setup is guarded below.
+        await post_init(bot_app, skip_commands=True)
+        try:
+            await setup_bot_commands(bot_app.bot)
+        except telegram.error.TelegramError as e:
+            logger.warning("Partial startup for bot index=%d: command setup skipped: %s", bot_index, e)
+        except Exception as e:
+            logger.warning("Partial startup for bot index=%d: command setup skipped: %s", bot_index, e)
     else:
         # Secondary bots only need command setup (DB already initialised by bot 0)
-        await setup_bot_commands(bot_app.bot)
+        try:
+            await setup_bot_commands(bot_app.bot)
+        except telegram.error.TelegramError as e:
+            logger.warning("Partial startup for bot index=%d: command setup skipped: %s", bot_index, e)
+        except Exception as e:
+            logger.warning("Partial startup for bot index=%d: command setup skipped: %s", bot_index, e)
 
     # Set webhook with a freshly generated secret token so every deployment
     # automatically authenticates Telegram's requests without any env-var setup.
@@ -641,17 +688,24 @@ async def setup_application(bot_token: str, bot_index: int = 0):
         # token is used across redeploys and survives bot replacements — the
         # secret only changes when the bot token itself changes.
         webhook_secret_token = hashlib.sha256(bot_token.encode('utf-8')).hexdigest()[:64]
-        await bot_app.bot.set_webhook(
-            url=f"{webhook_url}{webhook_path}",
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,
-            secret_token=webhook_secret_token,
-        )
-        logger.info(f"Webhook set for bot {bot_index}: {webhook_url}{webhook_path}")
+        try:
+            await bot_app.bot.set_webhook(
+                url=f"{webhook_url}{webhook_path}",
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+                secret_token=webhook_secret_token,
+            )
+            logger.info("Webhook set for bot index=%d path=%s", bot_index, webhook_path)
+        except telegram.error.TelegramError as e:
+            logger.warning("Partial startup for bot index=%d: webhook setup skipped: %s", bot_index, e)
+            webhook_secret_token = None
+        except Exception as e:
+            logger.warning("Partial startup for bot index=%d: webhook setup skipped: %s", bot_index, e)
+            webhook_secret_token = None
     else:
         logger.warning("WEBHOOK_URL not set. Webhook may not work properly.")
 
-    logger.info(f"Bot application {bot_index} initialized successfully")
+    logger.info("Bot startup success index=%d username=%s", bot_index, getattr(bot_app.bot, "username", None) or "unknown")
     return bot_app, webhook_secret_token
 
 
@@ -697,39 +751,48 @@ async def lifespan(app: FastAPI):
         logger.error(str(e))
         raise
     
-    # Initialize all bot applications in parallel for faster startup.
-    # When BOT_TOKENS contains only one entry, asyncio.gather runs a single task —
-    # fully backward-compatible with single-bot deployments.
-    bot_apps = []
+    bot_apps: List[Optional[Application]] = [None] * len(bot_tokens)
     bot_tokens = Config.BOT_TOKENS
     
     if not bot_tokens:
         logger.error("No bot tokens configured!")
         raise ConfigError("At least one bot token is required")
     
-    logger.info(f"Initializing {len(bot_tokens)} bot instance(s) in parallel...")
-    
-    # Create setup tasks for all bots
-    setup_tasks = [setup_application(token, idx) for idx, token in enumerate(bot_tokens)]
-    
-    bot_apps = []  # Initialize before gather for exception handler
-    try:
-        # Initialize all bots concurrently; each returns (Application, secret_token)
-        results = await asyncio.gather(*setup_tasks)
-        bot_apps = [app_instance for app_instance, _ in results]
-        webhook_secret_tokens = [tok for _, tok in results]
-        logger.info(f"All {len(bot_apps)} bot(s) initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize bots: {e}", exc_info=True)
-        # Clean up any successfully initialized bots
-        for item in bot_apps:
-            if item:
-                try:
-                    await item.stop()
-                    await item.shutdown()
-                except Exception:
-                    pass
-        raise
+    logger.info("Initializing %d bot instance(s) sequentially...", len(bot_tokens))
+
+    webhook_secret_tokens: List[Optional[str]] = []
+    startup_summary = {"successful": [], "failed": [], "skipped": []}
+    for idx, token in enumerate(bot_tokens):
+        if not token:
+            logger.warning("Bot startup skipped index=%d reason=empty_token", idx)
+            startup_summary["skipped"].append(idx)
+            webhook_secret_tokens.append(None)
+            continue
+        try:
+            bot_app, webhook_secret_token = await setup_application(token, idx)
+            bot_apps[idx] = bot_app
+            webhook_secret_tokens.append(webhook_secret_token)
+            startup_summary["successful"].append(idx)
+        except telegram.error.TelegramError as exc:
+            logger.warning("Bot startup failure index=%d token_suffix=%s: %s", idx, token[-6:], exc)
+            startup_summary["failed"].append(idx)
+            webhook_secret_tokens.append(None)
+        except Exception as exc:
+            logger.warning("Bot startup failure index=%d token_suffix=%s: %s", idx, token[-6:], exc, exc_info=True)
+            startup_summary["failed"].append(idx)
+            webhook_secret_tokens.append(None)
+
+    successful_bot_apps = [bot_app for bot_app in bot_apps if bot_app is not None]
+    if not successful_bot_apps:
+        logger.error("No bot applications initialized successfully; startup_summary=%s", startup_summary)
+        raise ConfigError("At least one bot must initialize successfully")
+
+    logger.info(
+        "Bot startup complete successful=%s failed=%s skipped=%s",
+        startup_summary["successful"],
+        startup_summary["failed"],
+        startup_summary["skipped"],
+    )
     
     # Store in global registry for notification service access
     _bot_applications = bot_apps
@@ -802,6 +865,8 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down bot applications...")
     for idx, bot_app in enumerate(_bot_applications):
+        if bot_app is None:
+            continue
         try:
             await bot_app.stop()
             await bot_app.shutdown()
@@ -1394,7 +1459,9 @@ def _get_primary_bot(request: Request, required: bool = True):
 
     # Prioritize the global module-level list (updated by reinitialize_bots)
     if _bot_applications:
-        return _bot_applications[0].bot
+        for bot_app in _bot_applications:
+            if bot_app is not None:
+                return bot_app.bot
 
     # Fallback to request state if global list is empty
     bot_apps = getattr(request.app.state, "bot_apps", [])
@@ -1402,7 +1469,12 @@ def _get_primary_bot(request: Request, required: bool = True):
         if required:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Bot not initialized")
         return None
-    return bot_apps[0].bot
+    for bot_app in bot_apps:
+        if bot_app is not None:
+            return bot_app.bot
+    if required:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Bot not initialized")
+    return None
 
 
 def _get_validated_init_data(request: Request, allow_preview: bool = False) -> tuple:
@@ -2506,7 +2578,7 @@ async def process_webhook_request(request: Request, bot_index: int):
             bot_index,
         )
 
-    if not _bot_applications:
+    if not any(_bot_applications):
         logger.error("[%s] Bot applications not initialized", request_id)
         return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
 
@@ -2518,6 +2590,9 @@ async def process_webhook_request(request: Request, bot_index: int):
             len(_bot_applications) - 1,
         )
         return Response(status_code=status.HTTP_404_NOT_FOUND)
+    if _bot_applications[bot_index] is None:
+        logger.warning("[%s] Bot index %d is disabled due to startup failure", request_id, bot_index)
+        return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
 
     _t0 = _time.monotonic()
     try:

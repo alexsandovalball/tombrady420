@@ -4,6 +4,7 @@ Main entry point for the Telegram media catalog bot.
 import logging
 import asyncio
 import json
+import re
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat, MenuButtonWebApp, WebAppInfo
 from telegram.ext import (
@@ -530,6 +531,28 @@ async def post_init(application: Application, skip_commands: bool = False):
     asyncio.create_task(cleanup_task(application))
 
 
+def _validate_bot_commands(commands):
+    """Return Telegram-safe bot commands without changing valid command contracts."""
+    valid = []
+    for cmd in commands:
+        name = getattr(cmd, "command", "")
+        if not isinstance(name, str):
+            logger.warning("Skipping invalid bot command with non-string name: %r", name)
+            continue
+        safe_name = name.strip().lower()
+        if safe_name != name:
+            logger.warning("Skipping invalid bot command %r; command names must be lowercase", name)
+            continue
+        if not re.fullmatch(r"[a-z0-9_]{1,32}", safe_name):
+            logger.warning("Skipping invalid bot command %r; name is not Telegram-safe", name)
+            continue
+        valid.append(cmd)
+        if len(valid) >= 100:
+            logger.warning("Bot command list capped at Telegram limit of 100 commands")
+            break
+    return valid
+
+
 async def setup_bot_commands(bot):
     """
     Set up bot commands that appear in the Telegram command menu.
@@ -546,6 +569,7 @@ async def setup_bot_commands(bot):
     Args:
         bot: The Telegram bot instance
     """
+    bot_label = getattr(bot, "username", None) or "unknown"
     # Configure Menu Button to open webapp (if WEB_APP_URL is configured)
     if Config.WEB_APP_URL:
         try:
@@ -555,9 +579,11 @@ async def setup_bot_commands(bot):
                     web_app=WebAppInfo(url=Config.WEB_APP_URL)
                 )
             )
-            logger.info(f"Menu button configured to open webapp: {Config.WEB_APP_URL}")
+            logger.info("Menu button configured for bot=%s", bot_label)
+        except TelegramError as e:
+            logger.warning("Skipping menu button setup for bot=%s: %s", bot_label, e)
         except Exception as e:
-            logger.error(f"Failed to set menu button: {e}")
+            logger.warning("Skipping menu button setup for bot=%s: %s", bot_label, e)
     
     # Define user commands (available to all users)
     # These appear in the command menu for all users
@@ -592,30 +618,44 @@ async def setup_bot_commands(bot):
     
     # Set default commands for all users
     # This updates the global command menu seen by regular users
-    await bot.set_my_commands(user_commands)
-    logger.info(f"Set user commands globally: {[cmd.command for cmd in user_commands]}")
+    user_commands = _validate_bot_commands(user_commands)
+    admin_commands = _validate_bot_commands(admin_commands)
+
+    if user_commands:
+        try:
+            await bot.set_my_commands(user_commands)
+            logger.info("Set %d user command(s) globally for bot=%s", len(user_commands), bot_label)
+        except TelegramError as e:
+            logger.warning("Skipping global command setup for bot=%s: %s", bot_label, e)
+        except Exception as e:
+            logger.warning("Skipping global command setup for bot=%s: %s", bot_label, e)
+    else:
+        logger.warning("Skipping global command setup for bot=%s: no valid commands", bot_label)
     
-    # Set admin-specific commands for each admin user (batched for performance)
+    # Set admin-specific commands sequentially so one Telegram API failure cannot
+    # abort all startup command registration.
     # This overrides the global commands for admin chat scopes
     admin_ids = get_admin_ids()
     if not admin_ids:
         logger.warning("No admin IDs configured - admin commands will not be set")
     else:
-        # Batch admin command setup using asyncio.gather for parallel execution
         async def set_admin_commands_for_user(admin_id):
             try:
                 await bot.set_my_commands(
                     admin_commands,
                     scope=BotCommandScopeChat(chat_id=admin_id)
                 )
-                logger.info(f"Set admin commands for user {admin_id}: {[cmd.command for cmd in admin_commands]}")
+                logger.info("Set %d admin command(s) for admin=%s bot=%s", len(admin_commands), admin_id, bot_label)
                 return True
+            except TelegramError as e:
+                logger.warning("Skipping admin command setup for admin=%s bot=%s: %s", admin_id, bot_label, e)
+                return False
             except Exception as e:
-                logger.warning(f"Could not set admin commands for {admin_id}: {e}")
+                logger.warning("Skipping admin command setup for admin=%s bot=%s: %s", admin_id, bot_label, e)
                 return False
         
-        # Execute all admin command setups concurrently
-        await asyncio.gather(*[set_admin_commands_for_user(admin_id) for admin_id in admin_ids])
+        for admin_id in admin_ids:
+            await set_admin_commands_for_user(admin_id)
     
     logger.info("Bot commands configured successfully - menu will be consistent across all bot instances")
 
