@@ -38,6 +38,7 @@ from utils.webapp_security import verify_init_data, parse_init_data, TelegramUse
 from database import Database
 from utils.helpers import get_channel_id, get_channel_username, get_file_id_cache_size, get_bot_specific_file_id, register_bot_handlers
 from utils.categories import get_all_categories, get_category_display_name, get_subcategory_display_name, get_subcategories, EXCLUDED_FROM_ALL_PRODUCTS
+from utils.fuzzy_search import fuzzy_search_products, normalize_text
 from translations.translator import get_translated_string_async, translation_service
 from utils.metrics import metrics
 from utils.monitoring import monitor as _webhook_monitor, record_webhook_result
@@ -2408,18 +2409,41 @@ async def search_products(
     init_data, _ = _get_validated_init_data(request, allow_preview=True)
     await _check_user_not_blocked(init_data, get_client_ip(request))
     
-    if not q or len(q) < 2:
+    query = q.strip()
+    if not query or len(query) < 2:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Query must be at least 2 characters")
     
     # Bound limit for performance
-    limit = max(1, min(limit, 50))
+    limit = max(1, min(limit, 100))
     offset = max(0, offset)
 
     try:
-        total = await _catalog_db.count_products_filtered(q, EXCLUDED_FROM_ALL_PRODUCTS)
-        products = await _catalog_db.search_products_filtered(
-            q, EXCLUDED_FROM_ALL_PRODUCTS, limit=limit, offset=offset
-        )
+        all_products = await _catalog_db.get_all_products_for_search()
+        matched_products = fuzzy_search_products(all_products, query, score_cutoff=75)
+        total = len(matched_products)
+        products = matched_products[offset:offset + limit]
+
+        if total == 0:
+            normalized_query = normalize_text(query)
+            field_matches = {
+                "caption": 0,
+                "category": 0,
+                "subcategory": 0,
+            }
+            for product in all_products:
+                if normalized_query and normalized_query in normalize_text(product.get("caption", "") or ""):
+                    field_matches["caption"] += 1
+                if normalized_query and normalized_query in normalize_text(product.get("category", "") or ""):
+                    field_matches["category"] += 1
+                if normalized_query and normalized_query in normalize_text(product.get("subcategory", "") or ""):
+                    field_matches["subcategory"] += 1
+            logger.info(
+                "[webapp_search_empty] query=%r normalized=%r total_indexed=%d matched_fields=%s",
+                query,
+                normalized_query,
+                len(all_products),
+                field_matches,
+            )
 
         order_contact = await _catalog_db.get_order_contact()
         order_contact_username = _normalize_contact(order_contact)

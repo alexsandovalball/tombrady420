@@ -129,19 +129,12 @@ def get_strings():
         "inline_help_title": "💡 How to use inline mode",
         "inline_help_text": "Type @{bot_username} followed by a product name in any chat to search the catalog inline.",
         "inline_open_shop": "🛍️ Open Shop",
-        "inline_browse_categories": "📂 Browse Categories",
         "inline_no_results": "❌ No products found for \"{query}\".",
         "inline_product_label": "📦 {title}",
-        "inline_tips_title": "💡 Inline Search Tips",
-        "inline_tips_description": "Learn how to search effectively",
-        "inline_tips_message": "💡 **Inline Search Tips**\n\n• Type product names: `@{bot_username} cartridge`\n• Search by category: `cat:edibles` or `category:flower`\n• Find by ID: `id:123`\n• Keywords: `new` for new arrivals, `popular` for trending\n\nStart typing to search!",
         "inline_new_arrivals_title": "✨ New Arrivals",
         "inline_new_arrivals_description": "Recently added products",
         "inline_popular_title": "🔥 Popular Products",
         "inline_popular_description": "Trending items",
-        "inline_top_categories_title": "📂 Top Categories",
-        "inline_top_categories_description": "Browse by category",
-        "inline_top_categories_message": "📂 **Top Categories**\n\n{categories}\n\nTry searching: `cat:cartridges` or just type a category name!",
 
 
         # Deep link start payloads

@@ -2,6 +2,7 @@
 Fuzzy search utilities for product search.
 """
 import re
+import unicodedata
 from typing import List, Dict, Any
 try:
     from rapidfuzz import process, fuzz
@@ -60,8 +61,8 @@ def normalize_text(text: str) -> str:
     if not text:
         return ""
 
-    # Lowercase
-    text = text.lower()
+    # Normalize Unicode and lowercase so bot/WebApp searches compare the same text.
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii").lower()
 
     # Remove punctuation (keep alphanumeric and spaces)
     text = re.sub(r'[^a-z0-9\s]', ' ', text)

@@ -26,7 +26,6 @@ from database import Database
 from configs.config import Config
 from utils.fuzzy_search import fuzzy_search_products
 from utils.helpers import get_bot_username, escape_markdown_v1, get_bot_specific_file_id
-from utils.categories import get_all_categories
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -263,64 +262,6 @@ def _build_webapp_article(bot_username: str, web_app_url: str) -> InlineQueryRes
     )
 
 
-def _build_browse_categories_article(bot_username: str) -> InlineQueryResultArticle:
-    """Return a 'Browse categories' entry using switch-to-PM deep link."""
-    deep_link = f"https://t.me/{bot_username}?start=categories"
-    return InlineQueryResultArticle(
-        id="browse_categories",
-        title="📂 Browse Categories",
-        description="Tap to open the bot and browse product categories",
-        input_message_content=InputTextMessageContent(
-            message_text=f"📂 [Browse categories in bot]({deep_link})",
-            parse_mode="Markdown",
-        ),
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("📂 Browse Categories", url=deep_link),
-        ]]),
-    )
-
-
-def _build_inline_tips_article(bot_username: str) -> InlineQueryResultArticle:
-    """Return inline search tips / how-to article."""
-    bot_mention = f"@{bot_username}" if bot_username else "@bot"
-    return InlineQueryResultArticle(
-        id="inline_tips",
-        title="💡 Inline Search Tips",
-        description="Learn how to search effectively",
-        input_message_content=InputTextMessageContent(
-            message_text=(
-                f"💡 *Inline Search Tips*\n\n"
-                f"• Type product names: `{bot_mention} cartridge`\n"
-                f"• Search by category: `cat:edibles` or `category:flower`\n"
-                f"• Find by ID: `id:123`\n"
-                f"• Keywords: `new` for new arrivals, `popular` for trending\n\n"
-                f"Start typing to search!"
-            ),
-            parse_mode="Markdown",
-        ),
-    )
-
-
-def _build_top_categories_article(bot_username: str) -> InlineQueryResultArticle:
-    """Return top categories article."""
-    categories = get_all_categories()[:5]  # Show top 5 categories
-    category_list = "\n".join([f"• {cat}" for cat in categories])
-
-    return InlineQueryResultArticle(
-        id="top_categories",
-        title="📂 Top Categories",
-        description="Browse by category",
-        input_message_content=InputTextMessageContent(
-            message_text=(
-                f"📂 *Top Categories*\n\n"
-                f"{category_list}\n\n"
-                f"Try searching: `cat:cartridges` or just type a category name!"
-            ),
-            parse_mode="Markdown",
-        ),
-    )
-
-
 async def _build_new_arrivals_articles(
     products: List[Dict[str, Any]],
     bot_username: str,
@@ -475,24 +416,11 @@ async def _handle_empty_query(bot_username: str, context: ContextTypes.DEFAULT_T
     """Return default results for an empty inline query with enhanced discoverability."""
     results: List[InlineQueryResult] = []
 
-    # 1. Inline search tips (how to use)
-    if bot_username:
-        results.append(_build_inline_tips_article(bot_username))
-
-    # 2. Open WebApp / Shop entry
+    # Keep inline mode useful without showing the removed browse/tips/category articles.
     web_app_url = Config.WEB_APP_URL
     if web_app_url and bot_username:
         results.append(_build_webapp_article(bot_username, web_app_url))
 
-    # 3. Browse categories entry
-    if bot_username:
-        results.append(_build_browse_categories_article(bot_username))
-
-    # 4. Top categories overview
-    if bot_username:
-        results.append(_build_top_categories_article(bot_username))
-
-    # 5. New arrivals / trending items
     try:
         products = await _get_cached_products()
         # Add new arrivals (first 3 products)
