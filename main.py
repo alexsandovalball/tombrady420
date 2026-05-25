@@ -43,7 +43,13 @@ from utils.helpers import (
     register_bot_handlers
 )
 from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES
-from utils.cache_invalidation import invalidate_webapp_caches
+try:
+    from utils.cache_invalidation import invalidate_webapp_caches
+except Exception as exc:
+    logging.getLogger(__name__).warning("Cache invalidation unavailable; using no-op fallback: %s", exc)
+
+    def invalidate_webapp_caches(reason: str = "") -> int:
+        return 0
 from utils.notification_manager import notification_service
 from utils.safe_send import safe_send_message, safe_edit_message_text
 from utils.primary_instance import is_primary_instance

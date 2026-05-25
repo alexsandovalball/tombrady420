@@ -9,7 +9,14 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
 from database import Database
-from utils.cache_invalidation import invalidate_webapp_caches
+try:
+    from utils.cache_invalidation import invalidate_webapp_caches
+except Exception as exc:
+    logger = logging.getLogger(__name__)
+    logger.warning("Cache invalidation unavailable; using no-op fallback: %s", exc)
+
+    def invalidate_webapp_caches(reason: str = "") -> int:
+        return 0
 from utils.helpers import is_admin, get_channel_id, get_channel_username, escape_markdown_v1
 from utils.safe_send import safe_send_message, safe_edit_message_text
 from utils.decorators import command_admin_required

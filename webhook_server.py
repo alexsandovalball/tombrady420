@@ -14,13 +14,12 @@ import secrets
 import shutil
 import time as _time
 import urllib.parse
-import tempfile
 from collections import OrderedDict
 from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request, Response, status
-from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from telegram import Update
@@ -42,6 +41,20 @@ from utils.categories import get_all_categories, get_category_display_name, get_
 from translations.translator import get_translated_string_async, translation_service
 from utils.metrics import metrics
 from utils.monitoring import monitor as _webhook_monitor, record_webhook_result
+from utils.resource_manager import (
+    APP_CACHE_DIR,
+    APP_TMP_DIR,
+    DEFAULT_TTL_SECONDS,
+    DISK_CACHE_MAX_BYTES,
+    DISK_CACHE_TTL_SECONDS,
+    TMP_WARNING_BYTES,
+    cleanup_owned_dir,
+    emergency_cleanup,
+    ensure_resource_dirs,
+    get_cache_usage,
+    get_tmp_usage,
+    startup_cleanup,
+)
 from middleware.request_deduplicator import RequestDeduplicator
 from configs.telegram_ip_whitelist import is_telegram_ip
 
@@ -61,12 +74,13 @@ _catalog_db = Database()
 # via the /_internal/metrics endpoint (recorded under "webhook_401" endpoint name).
 _webhook_401_counter: int = 0
 
-# Media cache configuration
-MEDIA_CACHE_DIR = Path(os.getenv("MEDIA_CACHE_DIR", "/tmp/media_cache"))
-MEDIA_CACHE_MAX_SIZE_MB = int(os.getenv("MEDIA_CACHE_MAX_SIZE_MB", "100"))  # 100MB default
-MEDIA_CACHE_TTL_HOURS = int(os.getenv("MEDIA_CACHE_TTL_HOURS", "6"))  # 6 hours default
+# Media cache configuration. Disk cache is app-owned, bounded, and image-only.
+MEDIA_CACHE_DIR = Path(os.getenv("MEDIA_CACHE_DIR", APP_CACHE_DIR / "media"))
+MEDIA_CACHE_MAX_SIZE_MB = min(int(os.getenv("MEDIA_CACHE_MAX_SIZE_MB", "250")), 250)
+MEDIA_CACHE_TTL_HOURS = min(int(os.getenv("MEDIA_CACHE_TTL_HOURS", "1")), 1)
+MEDIA_CACHE_MAX_FILE_BYTES = int(os.getenv("MEDIA_CACHE_MAX_FILE_MB", "10")) * 1024 * 1024
 
-# Create cache directory if it doesn't exist
+ensure_resource_dirs()
 MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -126,7 +140,7 @@ class WebhookIPRateLimiter:
             return False
 
 class MediaCache:
-    """Simple LRU file cache for media files with size and TTL management."""
+    """Simple bounded LRU file cache for tiny reusable non-video media."""
 
     def __init__(self, cache_dir: Path, max_size_mb: int, ttl_hours: int):
         self.cache_dir = cache_dir
@@ -163,10 +177,23 @@ class MediaCache:
         logger.debug(f"Cache HIT for file_id {file_id[:20]}...")
         return cache_path
 
-    async def set(self, file_id: str, source_path: Path) -> Path:
+    async def set(self, file_id: str, source_path: Path, *, allow: bool = True) -> Optional[Path]:
         """Store a file in the cache."""
+        if not allow:
+            return None
         async with self.lock:
             cache_path = self._get_cache_path(file_id)
+            try:
+                source_size = source_path.stat().st_size
+            except (OSError, FileNotFoundError):
+                return None
+            if source_size > MEDIA_CACHE_MAX_FILE_BYTES:
+                logger.info(
+                    "[resource] cache_skip reason=file_too_large file_id=%s bytes=%d",
+                    file_id[:20],
+                    source_size,
+                )
+                return None
 
             # Copy file to cache
             shutil.copy2(source_path, cache_path)
@@ -174,7 +201,7 @@ class MediaCache:
             # Evict old files if cache is too large
             await self._evict_if_needed()
 
-            logger.debug(f"Cache SET for file_id {file_id[:20]}...")
+            logger.info("[resource] cache_set file_id=%s bytes=%d", file_id[:20], source_size)
             return cache_path
 
     async def _evict_if_needed(self):
@@ -208,7 +235,7 @@ class MediaCache:
                 try:
                     file_path.unlink()
                     total_size -= size
-                    logger.debug(f"Evicted cache file: {file_path.name}")
+                    logger.info("[resource] cache_evicted path=%s bytes=%d", file_path.name, size)
                 except (OSError, FileNotFoundError):
                     pass
         except Exception as e:
@@ -240,7 +267,7 @@ class MediaCache:
                         except (OSError, FileNotFoundError):
                             pass
                 if pruned:
-                    logger.info(f"Media cache pruned {pruned} expired file(s)")
+                    logger.info("[resource] cache_pruned count=%d", pruned)
             except Exception as e:
                 logger.warning(f"Error during media cache pruning: {e}")
 
@@ -265,6 +292,23 @@ _MEDIA_INFO_CACHE_MAX = 500
 _api_result_cache: OrderedDict = OrderedDict()
 _API_RESULT_CACHE_MAX = 100
 _API_RESULT_CACHE_TTL = 30  # seconds
+
+
+def _media_temp_path(file_id: str, suffix: str) -> Path:
+    safe_suffix = suffix if suffix.startswith(".") else f".{suffix}" if suffix else ".bin"
+    return APP_TMP_DIR / f"media_{hashlib.sha256(file_id.encode()).hexdigest()}{safe_suffix}"
+
+
+def _cleanup_path(path: Optional[Path]) -> None:
+    if not path:
+        return
+    try:
+        path.unlink()
+        logger.info("[resource] temp_deleted path=%s", path.name)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.debug("[resource] temp_delete_failed path=%s error=%s", path, exc)
 
 
 def _cache_resolved_file_id(key: tuple, file_id: str) -> None:
@@ -612,11 +656,19 @@ async def setup_application(bot_token: str, bot_index: int = 0):
 
 
 async def _media_cache_prune_loop():
-    """Background task: sweep MEDIA_CACHE_DIR every hour for TTL-expired files."""
+    """Background task: sweep app-owned cache/temp directories."""
     while True:
-        await asyncio.sleep(3600)  # 1 hour
+        await asyncio.sleep(600)  # 10 minutes
         try:
             await _media_cache.prune_expired()
+            cleanup_owned_dir(APP_TMP_DIR, DEFAULT_TTL_SECONDS, max_bytes=TMP_WARNING_BYTES)
+            cleanup_owned_dir(APP_CACHE_DIR, DISK_CACHE_TTL_SECONDS, max_bytes=DISK_CACHE_MAX_BYTES)
+            tmp_usage = get_tmp_usage()
+            cache_usage = get_cache_usage()
+            if tmp_usage["used_bytes"] >= TMP_WARNING_BYTES:
+                logger.warning("[resource] tmp_usage_warning used=%d", tmp_usage["used_bytes"])
+            if cache_usage["app_cache_bytes"] > DISK_CACHE_MAX_BYTES:
+                logger.warning("[resource] cache_usage_warning app_cache=%d", cache_usage["app_cache_bytes"])
         except Exception as e:
             logger.warning(f"Media cache prune loop error: {e}")
 
@@ -638,6 +690,7 @@ async def lifespan(app: FastAPI):
 
     # Startup
     logger.info("Starting webhook server...")
+    startup_cleanup()
     try:
         Config.validate()
     except ConfigError as e:
@@ -1853,11 +1906,11 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
         f"is_video={is_video}, file_id={file_id[:20]}..."
     )
 
-    # Check cache first for significant performance improvement
-    cached_file_path = await _media_cache.get(file_id)
+    # Check cache first for tiny reusable non-video media only.
+    cached_file_path = None if is_video else await _media_cache.get(file_id)
     file_path = None
     file_size = 0
-    temp_file_to_cleanup = None
+    temp_file_to_cleanup: Optional[Path] = None
 
     if cached_file_path:
         logger.debug(f"Serving from cache: product {product_id}, media {media_index}")
@@ -1914,29 +1967,55 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
                 )
 
-            # Download the file via Bot API to temp location
-            temp_input_path = None
+            # Download the file via Bot API to an app-owned bounded temp location.
+            suffix = ".mp4" if is_video else Path(urllib.parse.urlparse(getattr(tg_file, "file_path", "") or "").path).suffix
+            temp_input_path = _media_temp_path(file_id, suffix)
             try:
-                # Create temporary file for download
-                with tempfile.NamedTemporaryFile(mode='wb', suffix='.mp4' if is_video else '', delete=False) as temp_file:
-                    temp_input_path = temp_file.name
+                ensure_resource_dirs()
+                if temp_input_path.exists():
+                    age = _time.time() - temp_input_path.stat().st_mtime
+                    if age <= DEFAULT_TTL_SECONDS:
+                        file_path = temp_input_path
+                        file_size = temp_input_path.stat().st_size
+                        temp_input_path.touch()
+                        logger.debug(
+                            "Reusing app temp media for product %s, media %s, size=%s",
+                            product_id,
+                            media_index,
+                            file_size,
+                        )
 
-                # Download directly to disk (streaming from Telegram)
-                await tg_file.download_to_drive(custom_path=temp_input_path)
-                logger.debug(f"Downloaded file to disk for product {product_id}, size={file_size / (1024*1024):.2f}MB")
+                if file_path is None:
+                    tmp_usage = get_tmp_usage()
+                    if tmp_usage["used_bytes"] >= TMP_WARNING_BYTES:
+                        emergency_cleanup()
+                    await tg_file.download_to_drive(custom_path=temp_input_path)
+                    logger.info(
+                        "[resource] temp_created path=%s product_id=%s media_index=%s bytes=%d",
+                        temp_input_path.name,
+                        product_id,
+                        media_index,
+                        temp_input_path.stat().st_size,
+                    )
 
-                # Store in cache for future requests
-                file_path = await _media_cache.set(file_id, Path(temp_input_path))
-                temp_file_to_cleanup = temp_input_path  # Mark for cleanup after response
-                logger.debug(f"File cached: product {product_id}, media {media_index}")
+                    if is_video:
+                        file_path = temp_input_path
+                        temp_file_to_cleanup = temp_input_path
+                    else:
+                        cached_path = await _media_cache.set(
+                            file_id,
+                            temp_input_path,
+                            allow=temp_input_path.stat().st_size <= MEDIA_CACHE_MAX_FILE_BYTES,
+                        )
+                        file_path = cached_path or temp_input_path
+                        temp_file_to_cleanup = temp_input_path
+                        if cached_path:
+                            logger.debug(f"File cached: product {product_id}, media {media_index}")
 
             except telegram.error.BadRequest as e:
                 # Cleanup temp file if download failed
                 if temp_input_path:
-                    try:
-                        Path(temp_input_path).unlink()
-                    except (OSError, FileNotFoundError):
-                        pass
+                    _cleanup_path(temp_input_path)
                 raise
 
         except telegram.error.BadRequest as e:
@@ -1989,11 +2068,9 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                         remaining -= len(chunk)
 
                 # Cleanup temp file after streaming if needed
-                if temp_file_to_cleanup:
-                    try:
-                        Path(temp_file_to_cleanup).unlink()
-                    except (OSError, FileNotFoundError):
-                        pass
+                # Video temps are retained briefly to absorb follow-up Range 206s.
+                if temp_file_to_cleanup and not is_video:
+                    _cleanup_path(temp_file_to_cleanup)
 
             return StreamingResponse(
                 stream_range(),
@@ -2017,11 +2094,9 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                 yield chunk
 
         # Cleanup temp file after streaming if needed
-        if temp_file_to_cleanup:
-            try:
-                Path(temp_file_to_cleanup).unlink()
-            except (OSError, FileNotFoundError):
-                pass
+        # Video temps are retained briefly to absorb follow-up Range 206s.
+        if temp_file_to_cleanup and not is_video:
+            _cleanup_path(temp_file_to_cleanup)
 
     return StreamingResponse(
         stream_file(),

@@ -34,7 +34,14 @@ from utils.categories import (
     get_subcategories,
     get_subcategory_display_name,
 )
-from utils.cache_invalidation import invalidate_webapp_caches
+try:
+    from utils.cache_invalidation import invalidate_webapp_caches
+except Exception as exc:
+    logger = logging.getLogger(__name__)
+    logger.warning("Cache invalidation unavailable; using no-op fallback: %s", exc)
+
+    def invalidate_webapp_caches(reason: str = "") -> int:
+        return 0
 from utils.decorators import admin_required
 from utils.helpers import is_admin, get_user_display_name, escape_markdown_v1
 from utils.notification_manager import get_notification_service
