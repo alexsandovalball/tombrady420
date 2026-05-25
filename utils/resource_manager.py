@@ -21,9 +21,11 @@ TMP_WARNING_BYTES = 1200 * MB
 TMP_EMERGENCY_BYTES = 1500 * MB
 PERSISTENT_WARNING_BYTES = 700 * MB
 PERSISTENT_EMERGENCY_BYTES = 850 * MB
+EMERGENCY_CLEANUP_COOLDOWN_SECONDS = int(os.getenv("EMERGENCY_CLEANUP_COOLDOWN_SECONDS", "120"))
 
 APP_TMP_DIR = Path(os.getenv("APP_TMP_DIR", Path(tempfile.gettempdir()) / "brady_app_tmp"))
 APP_CACHE_DIR = Path(os.getenv("APP_CACHE_DIR", Path(tempfile.gettempdir()) / "brady_app_cache"))
+_last_emergency_cleanup = 0.0
 
 
 class MemoryLRUCache:
@@ -113,7 +115,13 @@ def get_cache_usage() -> dict:
     }
 
 
-def cleanup_owned_dir(path: Path, ttl_seconds: int, max_bytes: Optional[int] = None) -> tuple[int, int]:
+def cleanup_owned_dir(
+    path: Path,
+    ttl_seconds: int,
+    max_bytes: Optional[int] = None,
+    *,
+    skip_file: Optional[Callable[[Path], bool]] = None,
+) -> tuple[int, int]:
     """Delete expired files and trim oldest files in an app-owned directory."""
     ensure_resource_dirs()
     now = time.time()
@@ -127,6 +135,9 @@ def cleanup_owned_dir(path: Path, ttl_seconds: int, max_bytes: Optional[int] = N
     for item in path.rglob("*"):
         try:
             if not item.is_file():
+                continue
+            if skip_file and skip_file(item):
+                logger.debug("[resource] cleanup_skipped_in_use path=%s", item.name)
                 continue
             stat = item.stat()
             if now - stat.st_mtime > ttl_seconds:
@@ -157,13 +168,44 @@ def cleanup_owned_dir(path: Path, ttl_seconds: int, max_bytes: Optional[int] = N
     return removed, freed
 
 
-def emergency_cleanup(extra_cleanup: Optional[Callable[[], None]] = None) -> dict:
+def emergency_cleanup(
+    extra_cleanup: Optional[Callable[[], None]] = None,
+    *,
+    high_watermark_bytes: int = TMP_EMERGENCY_BYTES,
+    low_watermark_bytes: int = TMP_WARNING_BYTES,
+    cooldown_seconds: int = EMERGENCY_CLEANUP_COOLDOWN_SECONDS,
+    skip_file: Optional[Callable[[Path], bool]] = None,
+) -> dict:
     """Best-effort app-owned cleanup when disk usage approaches platform limits."""
+    global _last_emergency_cleanup
     ensure_resource_dirs()
     tmp_before = get_tmp_usage()
     cache_before = get_cache_usage()
-    tmp_removed, tmp_freed = cleanup_owned_dir(APP_TMP_DIR, ttl_seconds=0, max_bytes=0)
-    cache_removed, cache_freed = cleanup_owned_dir(APP_CACHE_DIR, ttl_seconds=0, max_bytes=0)
+
+    now = time.monotonic()
+    if tmp_before["used_bytes"] < high_watermark_bytes and cache_before["used_bytes"] < PERSISTENT_EMERGENCY_BYTES:
+        logger.debug(
+            "[resource] emergency_cleanup_skipped reason=below_high_watermark tmp_used=%d cache_used=%d",
+            tmp_before["used_bytes"],
+            cache_before["used_bytes"],
+        )
+        return {"skipped": True, "reason": "below_high_watermark"}
+    if now - _last_emergency_cleanup < cooldown_seconds:
+        logger.info(
+            "[resource] emergency_cleanup_skipped reason=cooldown tmp_used=%d cache_used=%d",
+            tmp_before["used_bytes"],
+            cache_before["used_bytes"],
+        )
+        return {"skipped": True, "reason": "cooldown"}
+
+    _last_emergency_cleanup = now
+    tmp_removed, tmp_freed = cleanup_owned_dir(
+        APP_TMP_DIR,
+        ttl_seconds=DEFAULT_TTL_SECONDS,
+        max_bytes=low_watermark_bytes,
+        skip_file=skip_file,
+    )
+    cache_removed, cache_freed = cleanup_owned_dir(APP_CACHE_DIR, ttl_seconds=DISK_CACHE_TTL_SECONDS, max_bytes=DISK_CACHE_MAX_BYTES)
     if extra_cleanup:
         try:
             extra_cleanup()

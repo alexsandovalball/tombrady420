@@ -76,9 +76,13 @@ _webhook_401_counter: int = 0
 
 # Media cache configuration. Disk cache is app-owned, bounded, and image-only.
 MEDIA_CACHE_DIR = Path(os.getenv("MEDIA_CACHE_DIR", APP_CACHE_DIR / "media"))
+MEDIA_CACHE_ENABLED = os.getenv("MEDIA_CACHE_ENABLED", "true").lower() not in {"0", "false", "no"}
+MEDIA_CACHE_TTL_SECONDS = int(os.getenv("MEDIA_CACHE_TTL_SECONDS", "300"))
+MEDIA_CACHE_CLEANUP_INTERVAL_SECONDS = int(os.getenv("MEDIA_CACHE_CLEANUP_INTERVAL_SECONDS", "60"))
 MEDIA_CACHE_MAX_SIZE_MB = min(int(os.getenv("MEDIA_CACHE_MAX_SIZE_MB", "250")), 250)
 MEDIA_CACHE_TTL_HOURS = min(int(os.getenv("MEDIA_CACHE_TTL_HOURS", "1")), 1)
 MEDIA_CACHE_MAX_FILE_BYTES = int(os.getenv("MEDIA_CACHE_MAX_FILE_MB", "10")) * 1024 * 1024
+MEDIA_TEMP_MAX_BYTES = MEDIA_CACHE_MAX_SIZE_MB * 1024 * 1024
 
 ensure_resource_dirs()
 MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -145,7 +149,7 @@ class MediaCache:
     def __init__(self, cache_dir: Path, max_size_mb: int, ttl_hours: int):
         self.cache_dir = cache_dir
         self.max_size_bytes = max_size_mb * 1024 * 1024
-        self.ttl_seconds = ttl_hours * 3600
+        self.ttl_seconds = MEDIA_CACHE_TTL_SECONDS
         self.lock = asyncio.Lock()
 
     def _get_cache_path(self, file_id: str) -> Path:
@@ -231,6 +235,10 @@ class MediaCache:
             for file_path, _, size in cache_files:
                 if total_size <= self.max_size_bytes:
                     break
+                is_in_use = globals().get("_is_media_temp_in_use")
+                if callable(is_in_use) and is_in_use(file_path):
+                    logger.info("[media_cache] cleanup_skipped_in_use path=%s", file_path.name)
+                    continue
 
                 try:
                     file_path.unlink()
@@ -261,6 +269,10 @@ class MediaCache:
                 for file_path in self.cache_dir.iterdir():
                     if file_path.is_file():
                         try:
+                            is_in_use = globals().get("_is_media_temp_in_use")
+                            if callable(is_in_use) and is_in_use(file_path):
+                                logger.info("[media_cache] cleanup_skipped_in_use path=%s", file_path.name)
+                                continue
                             if now - file_path.stat().st_mtime > self.ttl_seconds:
                                 file_path.unlink()
                                 pruned += 1
@@ -297,6 +309,120 @@ _API_RESULT_CACHE_TTL = 30  # seconds
 def _media_temp_path(file_id: str, suffix: str) -> Path:
     safe_suffix = suffix if suffix.startswith(".") else f".{suffix}" if suffix else ".bin"
     return APP_TMP_DIR / f"media_{hashlib.sha256(file_id.encode()).hexdigest()}{safe_suffix}"
+
+
+_media_temp_lock = asyncio.Lock()
+_media_generation_locks: Dict[str, asyncio.Lock] = {}
+_media_active_streams: Dict[Path, int] = {}
+_media_last_access: Dict[Path, float] = {}
+
+
+async def _get_media_generation_lock(cache_key: str) -> asyncio.Lock:
+    async with _media_temp_lock:
+        lock = _media_generation_locks.get(cache_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _media_generation_locks[cache_key] = lock
+        return lock
+
+
+async def _mark_media_access(path: Path) -> tuple[float, float, int]:
+    """Refresh last access so navigation bursts can reuse the same temp media."""
+    now = _time.time()
+    try:
+        stat = path.stat()
+        age = now - stat.st_mtime
+    except (OSError, FileNotFoundError):
+        return 0.0, 0.0, 0
+    async with _media_temp_lock:
+        previous_access = _media_last_access.get(path, stat.st_mtime)
+        _media_last_access[path] = now
+        active = _media_active_streams.get(path, 0)
+    try:
+        path.touch()
+    except OSError:
+        pass
+    return age, now - previous_access, active
+
+
+async def _stream_started(path: Path) -> int:
+    async with _media_temp_lock:
+        active = _media_active_streams.get(path, 0) + 1
+        _media_active_streams[path] = active
+        return active
+
+
+async def _stream_finished(path: Path) -> int:
+    async with _media_temp_lock:
+        active = max(0, _media_active_streams.get(path, 0) - 1)
+        if active:
+            _media_active_streams[path] = active
+        else:
+            _media_active_streams.pop(path, None)
+        _media_last_access[path] = _time.time()
+        return active
+
+
+def _is_media_temp_in_use(path: Path) -> bool:
+    return _media_active_streams.get(path, 0) > 0
+
+
+async def _cleanup_media_temp_files(force: bool = False) -> tuple[int, int]:
+    """Evict expired reusable media temps without touching active streams."""
+    ensure_resource_dirs()
+    now = _time.time()
+    removed = 0
+    freed = 0
+    candidates = []
+    async with _media_temp_lock:
+        active_paths = {path for path, count in _media_active_streams.items() if count > 0}
+
+    for path in APP_TMP_DIR.glob("media_*"):
+        try:
+            if not path.is_file():
+                continue
+            stat = path.stat()
+            last_access = _media_last_access.get(path, stat.st_mtime)
+            age = now - stat.st_mtime
+            idle = now - last_access
+            size = stat.st_size
+            if path in active_paths:
+                logger.info(
+                    "[media_cache] cleanup_skipped_in_use path=%s active_streams=%d age=%.1f idle=%.1f",
+                    path.name,
+                    _media_active_streams.get(path, 0),
+                    age,
+                    idle,
+                )
+                continue
+            candidates.append((path, last_access, size, age, idle))
+        except (OSError, FileNotFoundError):
+            continue
+
+    total = sum(size for _, _, size, _, _ in candidates)
+    for path, last_access, size, age, idle in sorted(candidates, key=lambda item: item[1]):
+        expired = idle > MEDIA_CACHE_TTL_SECONDS
+        oversized = total > MEDIA_TEMP_MAX_BYTES
+        if not force and not expired and not oversized:
+            continue
+        try:
+            path.unlink()
+            removed += 1
+            freed += size
+            total -= size
+            async with _media_temp_lock:
+                _media_last_access.pop(path, None)
+            logger.info(
+                "[media_cache] cache_expired path=%s bytes=%d age=%.1f idle=%.1f reason=%s",
+                path.name,
+                size,
+                age,
+                idle,
+                "oversize" if oversized and not expired else "ttl",
+            )
+        except (OSError, FileNotFoundError) as exc:
+            logger.debug("[media_cache] cleanup_failed path=%s error=%s", path.name, exc)
+    return removed, freed
 
 
 def _cleanup_path(path: Optional[Path]) -> None:
@@ -450,6 +576,12 @@ def _get_expected_secret_token(
         return runtime_tokens[bot_index]
     return None
 
+
+def _secret_fingerprint(value: Optional[str]) -> str:
+    """Return a short irreversible fingerprint for webhook-secret diagnostics."""
+    if not isinstance(value, str) or not value:
+        return "none"
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 
 def get_bot_usernames() -> List[str]:
@@ -712,10 +844,18 @@ async def setup_application(bot_token: str, bot_index: int = 0):
 async def _media_cache_prune_loop():
     """Background task: sweep app-owned cache/temp directories."""
     while True:
-        await asyncio.sleep(600)  # 10 minutes
+        await asyncio.sleep(MEDIA_CACHE_CLEANUP_INTERVAL_SECONDS)
         try:
             await _media_cache.prune_expired()
-            cleanup_owned_dir(APP_TMP_DIR, DEFAULT_TTL_SECONDS, max_bytes=TMP_WARNING_BYTES)
+            removed, freed = await _cleanup_media_temp_files()
+            if removed:
+                logger.info("[media_cache] cleanup_completed removed=%d freed=%d", removed, freed)
+            cleanup_owned_dir(
+                APP_TMP_DIR,
+                MEDIA_CACHE_TTL_SECONDS,
+                max_bytes=TMP_WARNING_BYTES,
+                skip_file=_is_media_temp_in_use,
+            )
             cleanup_owned_dir(APP_CACHE_DIR, DISK_CACHE_TTL_SECONDS, max_bytes=DISK_CACHE_MAX_BYTES)
             tmp_usage = get_tmp_usage()
             cache_usage = get_cache_usage()
@@ -820,6 +960,15 @@ async def lifespan(app: FastAPI):
             len(_bots_config_tokens),
             _BOTS_CONFIG_PATH,
         )
+        for idx, override in _bots_config_tokens.items():
+            runtime_token = webhook_secret_tokens[idx] if idx < len(webhook_secret_tokens) else None
+            if runtime_token and override != runtime_token:
+                logger_security.warning(
+                    "[webhook_secret] configured override differs from runtime token bot=%d override_fp=%s runtime_fp=%s",
+                    idx,
+                    _secret_fingerprint(override),
+                    _secret_fingerprint(runtime_token),
+                )
     else:
         logger.debug("[bots_config] No bots.json overrides found; using runtime tokens")
     
@@ -1985,17 +2134,33 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
         f"is_video={is_video}, file_id={file_id[:20]}..."
     )
 
+    media_cache_key = hashlib.sha256(file_id.encode()).hexdigest()
     # Check cache first for tiny reusable non-video media only.
-    cached_file_path = None if is_video else await _media_cache.get(file_id)
+    cached_file_path = None if (is_video or not MEDIA_CACHE_ENABLED) else await _media_cache.get(file_id)
     file_path = None
     file_size = 0
     temp_file_to_cleanup: Optional[Path] = None
 
     if cached_file_path:
-        logger.debug(f"Serving from cache: product {product_id}, media {media_index}")
+        age, idle, active = await _mark_media_access(cached_file_path)
+        logger.info(
+            "[media_cache] cache_hit layer=disk product_id=%s media_index=%s age=%.1f idle=%.1f active_streams=%d",
+            product_id,
+            media_index,
+            age,
+            idle,
+            active,
+        )
         file_path = cached_file_path
         file_size = file_path.stat().st_size
     else:
+        logger.info(
+            "[media_cache] cache_miss layer=disk product_id=%s media_index=%s is_video=%s enabled=%s",
+            product_id,
+            media_index,
+            is_video,
+            MEDIA_CACHE_ENABLED,
+        )
         # Not in cache, need to download from Telegram
         try:
             # Try to get file info - this can fail for files >20MB
@@ -2049,28 +2214,54 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
             # Download the file via Bot API to an app-owned bounded temp location.
             suffix = ".mp4" if is_video else Path(urllib.parse.urlparse(getattr(tg_file, "file_path", "") or "").path).suffix
             temp_input_path = _media_temp_path(file_id, suffix)
-            try:
+            generation_lock = await _get_media_generation_lock(media_cache_key)
+            async with generation_lock:
+                # A concurrent request may have completed the Telegram download while
+                # this request was waiting. Re-check before generating a new temp file.
                 ensure_resource_dirs()
                 if temp_input_path.exists():
-                    age = _time.time() - temp_input_path.stat().st_mtime
-                    if age <= DEFAULT_TTL_SECONDS:
+                    stat = temp_input_path.stat()
+                    last_access = _media_last_access.get(temp_input_path, stat.st_mtime)
+                    age = _time.time() - stat.st_mtime
+                    idle = _time.time() - last_access
+                    if idle <= MEDIA_CACHE_TTL_SECONDS:
                         file_path = temp_input_path
-                        file_size = temp_input_path.stat().st_size
-                        temp_input_path.touch()
-                        logger.debug(
-                            "Reusing app temp media for product %s, media %s, size=%s",
+                        file_size = stat.st_size
+                        age, idle, active = await _mark_media_access(temp_input_path)
+                        logger.info(
+                            "[media_cache] cache_reused layer=temp product_id=%s media_index=%s bytes=%d age=%.1f idle=%.1f active_streams=%d",
                             product_id,
                             media_index,
                             file_size,
+                            age,
+                            idle,
+                            active,
+                        )
+                    else:
+                        logger.info(
+                            "[media_cache] cache_expired layer=temp product_id=%s media_index=%s age=%.1f idle=%.1f ttl=%d",
+                            product_id,
+                            media_index,
+                            age,
+                            idle,
+                            MEDIA_CACHE_TTL_SECONDS,
                         )
 
                 if file_path is None:
                     tmp_usage = get_tmp_usage()
                     if tmp_usage["used_bytes"] >= TMP_WARNING_BYTES:
-                        emergency_cleanup()
-                    await tg_file.download_to_drive(custom_path=temp_input_path)
+                        await _cleanup_media_temp_files()
+                        emergency_cleanup(skip_file=_is_media_temp_in_use)
                     logger.info(
-                        "[resource] temp_created path=%s product_id=%s media_index=%s bytes=%d",
+                        "[media_cache] generation_started product_id=%s media_index=%s is_video=%s",
+                        product_id,
+                        media_index,
+                        is_video,
+                    )
+                    await tg_file.download_to_drive(custom_path=temp_input_path)
+                    await _mark_media_access(temp_input_path)
+                    logger.info(
+                        "[media_cache] generation_completed path=%s product_id=%s media_index=%s bytes=%d",
                         temp_input_path.name,
                         product_id,
                         media_index,
@@ -2084,20 +2275,18 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                         cached_path = await _media_cache.set(
                             file_id,
                             temp_input_path,
-                            allow=temp_input_path.stat().st_size <= MEDIA_CACHE_MAX_FILE_BYTES,
+                            allow=MEDIA_CACHE_ENABLED and temp_input_path.stat().st_size <= MEDIA_CACHE_MAX_FILE_BYTES,
                         )
                         file_path = cached_path or temp_input_path
                         temp_file_to_cleanup = temp_input_path
                         if cached_path:
-                            logger.debug(f"File cached: product {product_id}, media {media_index}")
-
-            except telegram.error.BadRequest as e:
-                # Cleanup temp file if download failed
-                if temp_input_path:
-                    _cleanup_path(temp_input_path)
-                raise
+                            await _mark_media_access(cached_path)
+                            logger.info("[media_cache] cache_reused layer=disk product_id=%s media_index=%s", product_id, media_index)
 
         except telegram.error.BadRequest as e:
+            # Cleanup partial temp file only when generation failed.
+            if 'temp_input_path' in locals() and temp_input_path:
+                _cleanup_path(temp_input_path)
             if "File is too big" not in str(e):
                 logger.exception("Unable to fetch file for product %s: %s", product_id, e)
                 raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Media unavailable")
@@ -2135,21 +2324,32 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
 
             # Stream the requested range efficiently
             async def stream_range():
-                with open(file_path, 'rb') as f:
-                    f.seek(start)
-                    remaining = end - start + 1
-                    chunk_size = 8192
-                    while remaining > 0:
-                        chunk = f.read(min(chunk_size, remaining))
-                        if not chunk:
-                            break
-                        yield chunk
-                        remaining -= len(chunk)
-
-                # Cleanup temp file after streaming if needed
-                # Video temps are retained briefly to absorb follow-up Range 206s.
-                if temp_file_to_cleanup and not is_video:
-                    _cleanup_path(temp_file_to_cleanup)
+                active = await _stream_started(file_path)
+                logger.info(
+                    "[media_cache] active_streams path=%s count=%d range=%s-%s",
+                    file_path.name,
+                    active,
+                    start,
+                    end,
+                )
+                try:
+                    with open(file_path, 'rb') as f:
+                        f.seek(start)
+                        remaining = end - start + 1
+                        chunk_size = 8192
+                        while remaining > 0:
+                            chunk = f.read(min(chunk_size, remaining))
+                            if not chunk:
+                                break
+                            yield chunk
+                            remaining -= len(chunk)
+                finally:
+                    remaining_streams = await _stream_finished(file_path)
+                    logger.info(
+                        "[media_cache] active_streams path=%s count=%d event=finished",
+                        file_path.name,
+                        remaining_streams,
+                    )
 
             return StreamingResponse(
                 stream_range(),
@@ -2168,14 +2368,19 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
 
     # Stream the full file efficiently (no loading into memory)
     async def stream_file():
-        with open(file_path, 'rb') as f:
-            while chunk := f.read(8192):
-                yield chunk
-
-        # Cleanup temp file after streaming if needed
-        # Video temps are retained briefly to absorb follow-up Range 206s.
-        if temp_file_to_cleanup and not is_video:
-            _cleanup_path(temp_file_to_cleanup)
+        active = await _stream_started(file_path)
+        logger.info("[media_cache] active_streams path=%s count=%d range=full", file_path.name, active)
+        try:
+            with open(file_path, 'rb') as f:
+                while chunk := f.read(8192):
+                    yield chunk
+        finally:
+            remaining_streams = await _stream_finished(file_path)
+            logger.info(
+                "[media_cache] active_streams path=%s count=%d event=finished",
+                file_path.name,
+                remaining_streams,
+            )
 
     return StreamingResponse(
         stream_file(),
@@ -2533,6 +2738,7 @@ async def process_webhook_request(request: Request, bot_index: int):
 
     if expected_token:
         incoming_token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+        malformed_header = incoming_token is not None and not isinstance(incoming_token, str)
         # compare_digest requires both operands to be the same type; guard against
         # missing / non-string values before encoding to avoid TypeErrors.
         token_valid = isinstance(incoming_token, str) and secrets.compare_digest(
@@ -2559,20 +2765,25 @@ async def process_webhook_request(request: Request, bot_index: int):
             # Tag: [WEBHOOK_401] — grep-friendly for alerting pipelines.
             header_present = isinstance(incoming_token, str)
             header_length = len(incoming_token) if header_present else 0
-            expected_prefix = expected_token[:8] if expected_token else "none"
-            incoming_prefix = incoming_token[:8] if header_present else "none"
+            if incoming_token is None:
+                reason = "missing_secret"
+            elif malformed_header:
+                reason = "malformed_header"
+            else:
+                reason = "incorrect_secret"
             logger_security.warning(
                 "[WEBHOOK_401] req=%s bot=%d ip=%s telegram_ip=%s "
                 "header_present=%s header_length=%d "
-                "expected_prefix=%s incoming_prefix=%s",
+                "reason=%s expected_fp=%s incoming_fp=%s",
                 request_id,
                 bot_index,
                 client_ip,
                 from_telegram,
                 header_present,
                 header_length,
-                expected_prefix,
-                incoming_prefix,
+                reason,
+                _secret_fingerprint(expected_token),
+                _secret_fingerprint(incoming_token if header_present else None),
             )
             # Increment per-process 401 counter for observability / alerting.
             global _webhook_401_counter
