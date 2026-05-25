@@ -751,12 +751,13 @@ async def lifespan(app: FastAPI):
         logger.error(str(e))
         raise
     
-    bot_apps: List[Optional[Application]] = [None] * len(bot_tokens)
     bot_tokens = Config.BOT_TOKENS
     
     if not bot_tokens:
         logger.error("No bot tokens configured!")
         raise ConfigError("At least one bot token is required")
+
+    bot_apps: List[Optional[Application]] = [None] * len(bot_tokens)
     
     logger.info("Initializing %d bot instance(s) sequentially...", len(bot_tokens))
 
@@ -824,20 +825,26 @@ async def lifespan(app: FastAPI):
     
     # Log bot usernames for debugging
     for idx, bot_app in enumerate(bot_apps):
+        if bot_app is None:
+            logger.info("  Bot %d: disabled during startup", idx)
+            continue
         if hasattr(bot_app, 'bot') and hasattr(bot_app.bot, 'username'):
             logger.info(f"  Bot {idx}: @{bot_app.bot.username}")
     
     # Log cache status for multi-bot setups
     if len(bot_apps) > 1:
-        cache_size = await get_file_id_cache_size()
-        if cache_size == 0:
-            logger.warning(
-                f"File ID cache is empty. For secondary bots (bot 1-{len(bot_apps)-1}) to display media correctly, "
-                f"admins must start a conversation with each bot by sending /start. "
-                f"This allows the bots to cache bot-specific file IDs."
-            )
-        else:
-            logger.info(f"File ID cache contains {cache_size} entries")
+        try:
+            cache_size = await get_file_id_cache_size()
+            if cache_size == 0:
+                logger.warning(
+                    f"File ID cache is empty. For secondary bots (bot 1-{len(bot_apps)-1}) to display media correctly, "
+                    f"admins must start a conversation with each bot by sending /start. "
+                    f"This allows the bots to cache bot-specific file IDs."
+                )
+            else:
+                logger.info(f"File ID cache contains {cache_size} entries")
+        except Exception as exc:
+            logger.warning("Could not read file ID cache size during startup: %s", exc)
 
     # Start background maintenance tasks
     _bg_tasks = [
@@ -2435,7 +2442,7 @@ async def track_webapp_user(request: Request):
                 bot_app = bot_apps[bot_index]
             else:
                 # bot_index == -1: preview/unauthenticated mode, fall back to primary bot
-                bot_app = bot_apps[0]
+                bot_app = next((candidate for candidate in bot_apps if candidate is not None), None)
             if hasattr(bot_app, 'bot') and hasattr(bot_app.bot, 'username'):
                 bot_username = bot_app.bot.username
         
