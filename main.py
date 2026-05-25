@@ -43,7 +43,8 @@ from utils.helpers import (
     register_bot_handlers
 )
 from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES
-from utils.notifications import NotificationService
+from utils.cache_invalidation import invalidate_webapp_caches
+from utils.notification_manager import notification_service
 from utils.safe_send import safe_send_message, safe_edit_message_text
 from utils.primary_instance import is_primary_instance
 
@@ -54,9 +55,6 @@ logger = logging.getLogger(__name__)
 
 # Initialize database
 db = Database()
-
-# Shared notification service singleton (ensures duplicate-task guard works across callbacks)
-notification_service = NotificationService(db)
 
 # Rate limiting (simple in-memory store)
 user_last_message = {}
@@ -239,6 +237,7 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
             f"New media group product saved: ID={product_id}, files={len(file_ids)}, "
             f"media_group_id={media_group_id}, {category_info}"
         )
+        invalidate_webapp_caches(f"media group product {product_id} added")
         
         # Notify admins for categorization
         await notify_admins_for_categorization(context, product_id)
@@ -322,6 +321,7 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 f"{category_info}, "
                 f"bot={context.bot.username}"
             )
+            invalidate_webapp_caches(f"product {product_id} added")
             
             # Notify admins for categorization
             logger.info(f"Sending categorization request for product {product_id} (bot: {context.bot.username})")
