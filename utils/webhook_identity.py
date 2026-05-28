@@ -45,6 +45,15 @@ def build_webhook_secret(slot_id: int, telegram_token: str, identity_version: in
     ).hexdigest()
 
 
+def build_registry_webhook_secret(telegram_bot_id: int) -> str:
+    """Derive the canonical stored webhook secret from immutable Telegram bot ID."""
+    return hmac.new(
+        WEBHOOK_SECRET_KEY.encode("utf-8"),
+        f"telegram_bot_id:{telegram_bot_id}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 @dataclass(frozen=True)
 class BotSlot:
     slot_id: int
@@ -78,5 +87,9 @@ def build_bot_slot(
         token_hash=token_hash,
         identity_version=identity_version,
         identity_hash=identity_hash,
-        webhook_secret=build_webhook_secret(slot_id, telegram_token, identity_version),
+        webhook_secret=(
+            build_registry_webhook_secret(telegram_bot_id)
+            if telegram_bot_id
+            else build_webhook_secret(slot_id, telegram_token, identity_version)
+        ),
     )

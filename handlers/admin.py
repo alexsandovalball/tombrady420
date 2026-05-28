@@ -1504,8 +1504,9 @@ async def reinitbots_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Show current and previous webhook secret prefixes per bot index.
         # Deferred import to avoid circular import at module load time.
         try:
-            from webhook_server import _webhook_secret_history, get_bot_usernames
+            from webhook_server import _webhook_secret_history, _runtime_index_to_registry_id
             from configs.config import Config
+            from database import Database
         except ImportError as e:
             await update.message.reply_text(f"❌ Could not import webhook_server: {e}")
             return
@@ -1516,18 +1517,19 @@ async def reinitbots_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
 
         lines = ["🔍 *Webhook Secret Dry-Run* (no changes made)\n"]
+        registry_db = Database()
         for idx, token in enumerate(tokens):
-            # Derive the expected secret from the token (same logic as setup_application)
-            from utils.webhook_identity import build_webhook_secret
-            current_secret = build_webhook_secret(idx, token)
+            registry_id = _runtime_index_to_registry_id.get(idx)
+            registry_row = await registry_db.get_bot_registry_by_id(registry_id) if registry_id else None
+            current_secret = (registry_row or {}).get("webhook_secret") or ""
             current_prefix = current_secret[:8]
 
-            history = _webhook_secret_history.get(idx, [None, None])
+            history = _webhook_secret_history.get(registry_id, [None, None])
             prev_secret = history[0]  # [previous, current]; always a list due to default
             prev_prefix = prev_secret[:8] if prev_secret else "none"
 
             lines.append(
-                f"Bot {idx}: current prefix=`{current_prefix}` | prev prefix=`{prev_prefix}`"
+                f"Bot {idx}: registry=`{registry_id or 'unavailable'}` | current prefix=`{current_prefix or 'unavailable'}` | prev prefix=`{prev_prefix}`"
             )
         try:
             await update.message.reply_text("\n".join(lines), parse_mode="Markdown")

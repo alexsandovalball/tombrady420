@@ -321,6 +321,19 @@ class Database:
             """)
 
             await db.execute("""
+                CREATE TABLE IF NOT EXISTS bot_registry (
+                    bot_id TEXT PRIMARY KEY,
+                    telegram_bot_id INTEGER NOT NULL UNIQUE,
+                    bot_username TEXT,
+                    token_hash TEXT NOT NULL,
+                    webhook_secret TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS bot_slot_locks (
                     slot_id INTEGER PRIMARY KEY,
                     owner TEXT NOT NULL,
@@ -342,6 +355,20 @@ class Database:
                     file_size INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS media_objects (
+                    media_id TEXT PRIMARY KEY,
+                    media_owner_id TEXT NOT NULL,
+                    storage_path TEXT NOT NULL,
+                    file_unique_id TEXT,
+                    product_id TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    ttl_expiry TIMESTAMP,
+                    deleted_at TIMESTAMP,
+                    FOREIGN KEY (media_owner_id) REFERENCES bot_registry(bot_id)
                 )
             """)
 
@@ -503,6 +530,8 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_media_file_ids_bot ON bot_media_file_ids(bot_identifier)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_media_file_ids_slot ON bot_media_file_ids(slot_id, identity_hash)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_media_file_ids_valid ON bot_media_file_ids(bot_identifier, is_valid)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_media_objects_owner ON media_objects(media_owner_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_media_objects_ttl ON media_objects(ttl_expiry, deleted_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_blocked_entities_user ON blocked_entities(telegram_user_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_blocked_entities_ip ON blocked_entities(ip_address)")
             await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_blocked_entities_user_perm ON blocked_entities(telegram_user_id) WHERE telegram_user_id IS NOT NULL AND is_permanent = 1")
@@ -2748,6 +2777,131 @@ class Database:
             """, (self.normalize_bot_username(bot_username), bot_id, token_hash, now, now))
             await db.commit()
             logger.debug(f"Registered bot instance: @{bot_username} (id={bot_id})")
+
+    async def resolve_bot_id_from_registry(
+        self,
+        telegram_bot_id: int,
+        bot_username: str,
+        token_hash: str,
+        webhook_secret_factory,
+        force_webhook_secret: bool = True,
+    ) -> Dict[str, Any]:
+        """Resolve the immutable bot_registry row for a Telegram bot ID."""
+        now = datetime.now()
+        normalized_username = self.normalize_bot_username(bot_username)
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT * FROM bot_registry WHERE telegram_bot_id = ?",
+                (telegram_bot_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+
+            if row:
+                webhook_secret = webhook_secret_factory()
+                if not force_webhook_secret:
+                    webhook_secret = row["webhook_secret"]
+                await db.execute("""
+                    UPDATE bot_registry
+                    SET bot_username = ?, token_hash = ?, webhook_secret = ?, status = 'active', updated_at = ?
+                    WHERE bot_id = ?
+                """, (normalized_username, token_hash, webhook_secret, now, row["bot_id"]))
+                await db.commit()
+                return await self.get_bot_registry_by_id(row["bot_id"]) or dict(row)
+
+            registry_bot_id = str(uuid.uuid4())
+            webhook_secret = webhook_secret_factory()
+            await db.execute("""
+                INSERT INTO bot_registry (
+                    bot_id, telegram_bot_id, bot_username, token_hash,
+                    webhook_secret, status, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
+            """, (
+                registry_bot_id,
+                telegram_bot_id,
+                normalized_username,
+                token_hash,
+                webhook_secret,
+                now,
+                now,
+            ))
+            await db.commit()
+            return await self.get_bot_registry_by_id(registry_bot_id) or {
+                "bot_id": registry_bot_id,
+                "telegram_bot_id": telegram_bot_id,
+                "bot_username": normalized_username,
+                "token_hash": token_hash,
+                "webhook_secret": webhook_secret,
+                "status": "active",
+            }
+
+    async def get_bot_registry_by_id(self, bot_id: str) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM bot_registry WHERE bot_id = ? AND status = 'active'",
+                (bot_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def get_bot_registry_by_telegram_id(self, telegram_bot_id: int) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM bot_registry WHERE telegram_bot_id = ? AND status = 'active'",
+                (telegram_bot_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def record_media_object(
+        self,
+        media_id: str,
+        media_owner_id: str,
+        storage_path: str,
+        *,
+        file_unique_id: Optional[str] = None,
+        product_id: Optional[str] = None,
+        ttl_expiry: Optional[datetime] = None,
+    ) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO media_objects (
+                    media_id, media_owner_id, storage_path, file_unique_id,
+                    product_id, created_at, ttl_expiry, deleted_at
+                )
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, NULL)
+                ON CONFLICT(media_id) DO UPDATE SET
+                    media_owner_id = excluded.media_owner_id,
+                    storage_path = excluded.storage_path,
+                    file_unique_id = excluded.file_unique_id,
+                    product_id = excluded.product_id,
+                    ttl_expiry = excluded.ttl_expiry,
+                    deleted_at = NULL
+            """, (media_id, media_owner_id, storage_path, file_unique_id, product_id, ttl_expiry))
+            await db.commit()
+
+    async def list_expired_media_objects(self, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        now = now or datetime.now()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM media_objects
+                WHERE deleted_at IS NULL AND ttl_expiry IS NOT NULL AND ttl_expiry <= ?
+            """, (now,)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    async def mark_media_object_deleted(self, media_id: str) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE media_objects SET deleted_at = CURRENT_TIMESTAMP WHERE media_id = ?",
+                (media_id,),
+            )
+            await db.commit()
 
     async def get_bot_slot_identity(self, slot_id: int) -> Optional[Dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:

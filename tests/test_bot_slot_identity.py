@@ -26,7 +26,7 @@ def test_bot_identity_prefers_telegram_bot_id_over_runtime_slot():
     second = build_bot_slot(9, "new-token", telegram_bot_id=12345)
 
     assert first.identity_hash == second.identity_hash
-    assert first.webhook_secret != second.webhook_secret
+    assert first.webhook_secret == second.webhook_secret
 
 
 def test_token_identity_is_stable_when_environment_order_changes():
@@ -88,6 +88,94 @@ async def test_slot_lock_allows_only_one_reconciler(tmp_path):
     assert await db.acquire_bot_slot_lock(9, "worker-b", ttl_seconds=60) is False
     await db.release_bot_slot_lock(9, "worker-a")
     assert await db.acquire_bot_slot_lock(9, "worker-b", ttl_seconds=60) is True
+
+
+@pytest.mark.asyncio
+async def test_bot_registry_identity_survives_token_reorder_and_rotation(tmp_path):
+    from database import Database
+
+    db = Database(str(tmp_path / "registry.db"))
+    await db.init_db()
+
+    first = await db.resolve_bot_id_from_registry(111, "alpha_bot", "hash-a", lambda: "stored-secret-a")
+    other = await db.resolve_bot_id_from_registry(222, "beta_bot", "hash-b", lambda: "stored-secret-b")
+    rotated = await db.resolve_bot_id_from_registry(111, "alpha_bot", "hash-a2", lambda: "new-secret")
+
+    assert rotated["bot_id"] == first["bot_id"]
+    assert rotated["webhook_secret"] == "new-secret"
+    assert other["bot_id"] != first["bot_id"]
+
+
+@pytest.mark.asyncio
+async def test_webhook_expected_secret_is_loaded_from_registry(tmp_path, monkeypatch):
+    import webhook_server
+    from database import Database
+
+    db = Database(str(tmp_path / "webhook_registry.db"))
+    await db.init_db()
+    row = await db.resolve_bot_id_from_registry(111, "alpha_bot", "hash-a", lambda: "stored-secret")
+
+    monkeypatch.setattr(webhook_server, "_catalog_db", db)
+
+    assert await webhook_server._get_expected_secret_token_for_registry_bot(row["bot_id"]) == "stored-secret"
+
+
+@pytest.mark.asyncio
+async def test_rebuild_all_webhook_secrets_replaces_stale_registry_secret(tmp_path, monkeypatch):
+    import webhook_server
+    from database import Database
+    from utils.webhook_identity import build_registry_webhook_secret
+
+    db = Database(str(tmp_path / "webhook_rebuild.db"))
+    await db.init_db()
+    row = await db.resolve_bot_id_from_registry(999, "bot9", "hash-old", lambda: "stale-secret")
+
+    monkeypatch.setattr(webhook_server, "_catalog_db", db)
+    monkeypatch.setattr(webhook_server, "_bot_applications_by_registry_id", {row["bot_id"]: object()})
+
+    rebuilt = await webhook_server.rebuild_all_webhook_secrets(force=True)
+    refreshed = await db.get_bot_registry_by_id(row["bot_id"])
+
+    assert rebuilt[row["bot_id"]] == build_registry_webhook_secret(999)
+    assert refreshed["webhook_secret"] == build_registry_webhook_secret(999)
+
+
+@pytest.mark.asyncio
+async def test_media_gc_worker_deletes_only_db_expired_media(tmp_path, monkeypatch):
+    import webhook_server
+    from database import Database
+    from datetime import datetime, timedelta
+
+    db = Database(str(tmp_path / "media_gc.db"))
+    await db.init_db()
+    bot = await db.resolve_bot_id_from_registry(111, "alpha_bot", "hash-a", lambda: "stored-secret")
+    expired = tmp_path / "expired.bin"
+    fresh = tmp_path / "fresh.bin"
+    orphan = tmp_path / "orphan.bin"
+    expired.write_bytes(b"old")
+    fresh.write_bytes(b"new")
+    orphan.write_bytes(b"orphan")
+
+    await db.record_media_object(
+        "expired",
+        bot["bot_id"],
+        str(expired),
+        ttl_expiry=datetime.now() - timedelta(seconds=1),
+    )
+    await db.record_media_object(
+        "fresh",
+        bot["bot_id"],
+        str(fresh),
+        ttl_expiry=datetime.now() + timedelta(hours=1),
+    )
+    monkeypatch.setattr(webhook_server, "_catalog_db", db)
+
+    removed, _ = await webhook_server.media_gc_worker()
+
+    assert removed == 1
+    assert not expired.exists()
+    assert fresh.exists()
+    assert orphan.exists()
 
 
 def test_scoped_temp_cleanup_only_removes_requested_slot(tmp_path, monkeypatch):

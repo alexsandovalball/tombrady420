@@ -17,6 +17,7 @@ import urllib.parse
 from collections import OrderedDict
 from pathlib import Path
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse, HTMLResponse
@@ -59,7 +60,7 @@ from utils.resource_manager import (
     get_tmp_usage,
     startup_cleanup,
 )
-from utils.webhook_identity import BotSlot, build_bot_slot, build_webhook_secret
+from utils.webhook_identity import BotSlot, build_bot_slot, build_registry_webhook_secret
 from middleware.request_deduplicator import RequestDeduplicator
 from configs.telegram_ip_whitelist import is_telegram_ip
 
@@ -74,7 +75,9 @@ _bot_applications = []
 _webhook_secret_tokens: List[Optional[str]] = []
 _bot_slots: Dict[int, BotSlot] = {}
 _catalog_db = Database()
-_webhook_processing_locks: Dict[int, asyncio.Lock] = {}
+_webhook_processing_locks: Dict[str, asyncio.Lock] = {}
+_bot_applications_by_registry_id: Dict[str, Application] = {}
+_runtime_index_to_registry_id: Dict[int, str] = {}
 
 # Per-process counter for webhook 401 rejections (in-memory, not persisted).
 # Useful for setting alerts: check logs for [WEBHOOK_401] or watch this counter
@@ -439,6 +442,26 @@ async def _cleanup_media_temp_files(force: bool = False) -> tuple[int, int]:
     return removed, freed
 
 
+async def media_gc_worker() -> tuple[int, int]:
+    """Delete expired media files selected from media_objects DB state."""
+    removed = 0
+    freed = 0
+    for row in await _catalog_db.list_expired_media_objects():
+        path = Path(row["storage_path"])
+        try:
+            size = path.stat().st_size if path.exists() else 0
+            if path.exists() and not _is_media_temp_in_use(path):
+                path.unlink()
+                removed += 1
+                freed += size
+            await _catalog_db.mark_media_object_deleted(row["media_id"])
+        except Exception as exc:
+            logger.warning("[media_gc] delete_failed media_id=%s path=%s error=%s", row.get("media_id"), path, exc)
+    if removed:
+        logger.info("[media_gc] removed=%d freed=%d", removed, freed)
+    return removed, freed
+
+
 def _cleanup_path(path: Optional[Path]) -> None:
     if not path:
         return
@@ -486,6 +509,39 @@ def clear_in_memory_caches() -> int:
     logger.info(f"Cleared {total} in-memory cache entries")
     return total
 
+
+def clear_bot_runtime_state() -> None:
+    """Clear all in-memory bot identity/secret routing state before a rebuild."""
+    _webhook_secret_tokens.clear()
+    _webhook_secret_history.clear()
+    _bot_slots.clear()
+    _webhook_processing_locks.clear()
+    _bot_applications_by_registry_id.clear()
+    _runtime_index_to_registry_id.clear()
+    clear_in_memory_caches()
+    logger.info("[bot_identity] cleared_runtime_state")
+
+
+async def rebuild_all_webhook_secrets(force: bool = True) -> Dict[str, str]:
+    """Reconcile stored registry webhook secrets from canonical Telegram bot IDs."""
+    rebuilt: Dict[str, str] = {}
+    for bot_id in list(_bot_applications_by_registry_id.keys()):
+        row = await _catalog_db.get_bot_registry_by_id(bot_id)
+        if not row:
+            continue
+        expected = build_registry_webhook_secret(int(row["telegram_bot_id"]))
+        if force or row.get("webhook_secret") != expected:
+            await _catalog_db.resolve_bot_id_from_registry(
+                int(row["telegram_bot_id"]),
+                row.get("bot_username") or "",
+                row.get("token_hash") or "",
+                lambda expected=expected: expected,
+                force_webhook_secret=True,
+            )
+        rebuilt[bot_id] = expected
+    logger.info("[webhook_secret] rebuilt_registry_secrets count=%d force=%s", len(rebuilt), force)
+    return rebuilt
+
 def get_bot_applications() -> List[Application]:
     """Get all bot application instances."""
     return [bot_app for bot_app in _bot_applications if bot_app is not None]
@@ -502,7 +558,7 @@ def get_bot_applications() -> List[Application]:
 # Structure: { bot_index: [previous_secret_or_None, current_secret_or_None] }
 # history[bot_index][0] = previous token (for tolerance window)
 # history[bot_index][1] = current token at time of last reinit (informational)
-_webhook_secret_history: Dict[int, List[Optional[str]]] = {}
+_webhook_secret_history: Dict[object, List[Optional[str]]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -571,26 +627,10 @@ async def _bots_config_reload_loop() -> None:
             logger.debug("[bots_config] Reloaded %d bot token override(s)", len(new_mapping))
 
 
-def _get_expected_secret_token(
-    bot_index: int,
-    runtime_tokens: List[Optional[str]],
-) -> Optional[str]:
-    """Return the expected secret token for *bot_index*.
-
-    Priority:
-      1. Runtime deterministic per-slot token generated at startup
-      2. Legacy configs/bots.json override fallback for compatibility
-    """
-    if bot_index < len(runtime_tokens):
-        token = runtime_tokens[bot_index]
-        if token:
-            return token
-    return _bots_config_tokens.get(bot_index)
-
-
-def rebuild_webhook_secrets_from_tokens(tokens: List[str]) -> List[Optional[str]]:
-    """Rebuild current expected webhook secrets from configured tokens."""
-    return [build_webhook_secret(idx, token) if token else None for idx, token in enumerate(tokens)]
+async def _get_expected_secret_token_for_registry_bot(bot_id: str) -> Optional[str]:
+    """Load the expected webhook secret from bot_registry only."""
+    row = await _catalog_db.get_bot_registry_by_id(bot_id)
+    return row.get("webhook_secret") if row else None
 
 
 def _secret_fingerprint(value: Optional[str]) -> str:
@@ -605,11 +645,11 @@ def _slot_id_for_bot_index(bot_index: int) -> int:
     return bot_index
 
 
-def _get_webhook_processing_lock(bot_index: int) -> asyncio.Lock:
-    lock = _webhook_processing_locks.get(bot_index)
+def _get_webhook_processing_lock(bot_id: str) -> asyncio.Lock:
+    lock = _webhook_processing_locks.get(bot_id)
     if lock is None:
         lock = asyncio.Lock()
-        _webhook_processing_locks[bot_index] = lock
+        _webhook_processing_locks[bot_id] = lock
     return lock
 
 
@@ -729,6 +769,7 @@ async def reinitialize_bots(fastapi_app=None) -> dict:
     """
     import traceback
     global _bot_applications, _webhook_secret_tokens, _webhook_secret_history, _bot_slots
+    global _bot_applications_by_registry_id, _runtime_index_to_registry_id
 
     summary: dict = {"created": [], "failed": [], "errors": {}}
     logger.info("Starting bot reinitialisation (stop → setup)")
@@ -742,6 +783,8 @@ async def reinitialize_bots(fastapi_app=None) -> dict:
     except Exception:
         logger.exception("Unexpected error while stopping existing bot applications")
 
+    clear_bot_runtime_state()
+
     tokens = getattr(Config, "BOT_TOKENS", []) or []
     if not tokens:
         logger.warning("No BOT_TOKENS found in Config during reinitialisation")
@@ -749,6 +792,8 @@ async def reinitialize_bots(fastapi_app=None) -> dict:
 
     new_secret_tokens: List[Optional[str]] = []
     _bot_slots = {}
+    _bot_applications_by_registry_id = {}
+    _runtime_index_to_registry_id = {}
     for idx, token in enumerate(tokens):
         # Preserve the previous webhook secret in history so in-flight requests
         # using the old token are not immediately rejected.
@@ -760,6 +805,9 @@ async def reinitialize_bots(fastapi_app=None) -> dict:
             bot_app, webhook_secret_token = await setup_application(token, bot_index=idx)
             # Now rotate: previous = what was current, current = new token
             _webhook_secret_history[idx] = [prev_token, webhook_secret_token]
+            registry_id = _runtime_index_to_registry_id.get(idx)
+            if registry_id:
+                _webhook_secret_history[registry_id] = [prev_token, webhook_secret_token]
             _bot_applications.append(bot_app)
             new_secret_tokens.append(webhook_secret_token)
             logger.info(
@@ -858,6 +906,8 @@ async def setup_application(bot_token: str, bot_index: int = 0):
 
     slot: Optional[BotSlot] = None
     identity_rotated = False
+    registry_bot_id: Optional[str] = None
+    registry_webhook_secret: Optional[str] = None
     try:
         me = await bot_app.bot.get_me()
         bot_username = getattr(me, "username", None) or bot_app.bot.username
@@ -866,6 +916,23 @@ async def setup_application(bot_token: str, bot_index: int = 0):
         from database import Database
         _db = Database()
         await _db.init_db()
+        registry_row = await _db.resolve_bot_id_from_registry(
+            int(bot_id or 0),
+            bot_username or "",
+            build_bot_slot(slot_id, bot_token, telegram_bot_id=bot_id).token_hash,
+            lambda: build_registry_webhook_secret(int(bot_id or 0)),
+            force_webhook_secret=True,
+        )
+        registry_bot_id = registry_row["bot_id"]
+        registry_webhook_secret = registry_row["webhook_secret"]
+        logger.info(
+            "[bot_identity] registry_resolved bot_index=%s bot_id=%s telegram_bot_id=%s token_hash=%s identity_source=bot_registry webhook_expected_fp=%s",
+            bot_index,
+            registry_bot_id,
+            bot_id,
+            (registry_row.get("token_hash") or "")[:12],
+            _secret_fingerprint(registry_webhook_secret),
+        )
         previous_slot = await _db.get_bot_slot_identity(slot_id)
         previous_version = int((previous_slot or {}).get("identity_version") or 1)
         provisional_slot = build_bot_slot(
@@ -913,9 +980,12 @@ async def setup_application(bot_token: str, bot_index: int = 0):
 
         slot = provisional_slot
         _bot_slots[bot_index] = slot
+        _runtime_index_to_registry_id[bot_index] = registry_bot_id
+        _bot_applications_by_registry_id[registry_bot_id] = bot_app
         bot_app.bot_data["bot_slot"] = slot.slot_id
         bot_app.bot_data["bot_name"] = slot.slot_name
         bot_app.bot_data["identity_hash"] = slot.identity_hash
+        bot_app.bot_data["bot_registry_id"] = registry_bot_id
         await _db.register_bot_slot(
             slot.slot_id,
             slot.slot_name,
@@ -924,7 +994,7 @@ async def setup_application(bot_token: str, bot_index: int = 0):
             slot.token_hash,
             slot.identity_version,
             slot.identity_hash,
-            slot.webhook_secret,
+            registry_webhook_secret or slot.webhook_secret,
         )
         try:
             from utils.bot_health import validate_bot_readiness
@@ -964,15 +1034,17 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     webhook_secret_token: Optional[str] = None
     webhook_url = Config.WEBHOOK_URL
     if webhook_url:
-        # Primary bot uses /webhook, additional bots use /webhook/1, /webhook/2, etc.
-        webhook_path = "/webhook" if bot_index == 0 else f"/webhook/{bot_index}"
+        if not registry_bot_id:
+            logger.warning("Partial startup for bot index=%d: registry unavailable; webhook setup skipped", bot_index)
+            return bot_app, None
+        webhook_path = f"/webhook/{registry_bot_id}"
         if slot is None:
             slot = build_bot_slot(slot_id, bot_token)
             _bot_slots[bot_index] = slot
             bot_app.bot_data["bot_slot"] = slot.slot_id
             bot_app.bot_data["bot_name"] = slot.slot_name
             bot_app.bot_data["identity_hash"] = slot.identity_hash
-        webhook_secret_token = slot.webhook_secret
+        webhook_secret_token = registry_webhook_secret
         try:
             await _validate_or_repair_webhook(
                 bot_app.bot,
@@ -1075,6 +1147,7 @@ async def _media_cache_prune_loop():
         await asyncio.sleep(MEDIA_CACHE_CLEANUP_INTERVAL_SECONDS)
         try:
             await _media_cache.prune_expired()
+            await media_gc_worker()
             removed, freed = await _cleanup_media_temp_files()
             if removed:
                 logger.info("[media_cache] cleanup_completed removed=%d freed=%d", removed, freed)
@@ -1109,10 +1182,12 @@ async def _wal_checkpoint_loop():
 async def lifespan(app: FastAPI):
     """Manage application lifespan - startup and shutdown."""
     global _bot_applications, _webhook_secret_tokens
+    global _bot_applications_by_registry_id, _runtime_index_to_registry_id
 
     # Startup
     logger.info("Starting webhook server...")
     startup_cleanup()
+    clear_bot_runtime_state()
     try:
         Config.validate()
     except ConfigError as e:
@@ -1126,6 +1201,8 @@ async def lifespan(app: FastAPI):
         raise ConfigError("At least one bot token is required")
 
     bot_apps: List[Optional[Application]] = [None] * len(bot_tokens)
+    _bot_applications_by_registry_id = {}
+    _runtime_index_to_registry_id = {}
     
     logger.info("Initializing %d bot instance(s) sequentially...", len(bot_tokens))
 
@@ -1180,26 +1257,7 @@ async def lifespan(app: FastAPI):
     # of identical callback queries (e.g., from Telegram retries or rapid taps).
     app.state.request_deduplicator = RequestDeduplicator()
 
-    # Load bot-config overrides from configs/bots.json (if present) at startup
-    global _bots_config_tokens
-    _bots_config_tokens = _load_bots_config()
-    if _bots_config_tokens:
-        logger.info(
-            "[bots_config] Loaded %d bot token override(s) from %s",
-            len(_bots_config_tokens),
-            _BOTS_CONFIG_PATH,
-        )
-        for idx, override in _bots_config_tokens.items():
-            runtime_token = webhook_secret_tokens[idx] if idx < len(webhook_secret_tokens) else None
-            if runtime_token and override != runtime_token:
-                logger_security.warning(
-                    "[webhook_secret] configured override differs from runtime token bot=%d override_fp=%s runtime_fp=%s",
-                    idx,
-                    _secret_fingerprint(override),
-                    _secret_fingerprint(runtime_token),
-                )
-    else:
-        logger.debug("[bots_config] No bots.json overrides found; using runtime tokens")
+    logger.debug("[bots_config] Secret-token overrides disabled; bot_registry is the only webhook-secret source")
     
     # Log bot usernames for debugging
     for idx, bot_app in enumerate(bot_apps):
@@ -1228,7 +1286,6 @@ async def lifespan(app: FastAPI):
     _bg_tasks = [
         asyncio.create_task(_media_cache_prune_loop(), name="media_cache_prune"),
         asyncio.create_task(_wal_checkpoint_loop(), name="wal_checkpoint"),
-        asyncio.create_task(_bots_config_reload_loop(), name="bots_config_reload"),
     ]
 
     # Load permanently blocked IPs from the database into the in-memory registry
@@ -2522,6 +2579,16 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                     )
                     await tg_file.download_to_drive(custom_path=temp_input_path)
                     await _mark_media_access(temp_input_path)
+                    owner_id = _runtime_index_to_registry_id.get(0)
+                    if owner_id:
+                        await _catalog_db.record_media_object(
+                            media_id=hashlib.sha256(str(temp_input_path).encode("utf-8")).hexdigest(),
+                            media_owner_id=owner_id,
+                            storage_path=str(temp_input_path),
+                            file_unique_id=file_unique_id if "file_unique_id" in locals() else None,
+                            product_id=str(product_id),
+                            ttl_expiry=datetime.now() + timedelta(seconds=MEDIA_CACHE_TTL_SECONDS),
+                        )
                     logger.info(
                         "[media_cache] generation_completed path=%s product_id=%s media_index=%s bytes=%d",
                         temp_input_path.name,
@@ -2969,15 +3036,15 @@ async def track_webapp_user(request: Request):
         return {"success": False, "message": "Failed to track user"}
 
 
-async def process_webhook_request(request: Request, bot_index: int):
-    """Process an incoming Telegram webhook update for the given bot index.
+async def process_webhook_request(request: Request, bot_registry_id: str):
+    """Process an incoming Telegram webhook update for the given registry bot ID.
 
     Shared implementation used by both the /webhook and /webhook/{bot_index} endpoints
     to eliminate duplicated parsing, logging, and error-handling logic.
 
     Args:
         request: The incoming FastAPI Request object.
-        bot_index: Index into _bot_applications for the target bot.
+        bot_registry_id: bot_registry.bot_id for the target bot.
 
     Returns:
         A fastapi.Response with an appropriate HTTP status code.
@@ -3012,21 +3079,24 @@ async def process_webhook_request(request: Request, bot_index: int):
         if rate_limiter is not None:
             if not await rate_limiter.is_allowed(client_ip):
                 logger.warning(
-                    "[%s] Rate limit exceeded for non-Telegram IP %s on /webhook bot %d",
+                    "[%s] Rate limit exceeded for non-Telegram IP %s on /webhook bot %s",
                     request_id,
                     client_ip,
-                    bot_index,
+                    bot_registry_id,
                 )
                 return Response(status_code=status.HTTP_429_TOO_MANY_REQUESTS)
 
     # --- Secret token verification ---
-    # Use _get_expected_secret_token() so that configs/bots.json overrides are
-    # applied (hot-reloadable every 30 s) before falling back to runtime tokens.
-    runtime_tokens: List[Optional[str]] = list(_webhook_secret_tokens)
-    expected_token: Optional[str] = _get_expected_secret_token(bot_index, runtime_tokens)
+    expected_token: Optional[str] = await _get_expected_secret_token_for_registry_bot(bot_registry_id)
 
     if expected_token:
         incoming_token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+        logger.debug(
+            "[webhook_secret] validation_start bot_id=%s source_of_truth=bot_registry expected_fp=%s incoming_fp=%s",
+            bot_registry_id,
+            _secret_fingerprint(expected_token),
+            _secret_fingerprint(incoming_token if isinstance(incoming_token, str) else None),
+        )
         malformed_header = incoming_token is not None and not isinstance(incoming_token, str)
         # compare_digest requires both operands to be the same type; guard against
         # missing / non-string values before encoding to avoid TypeErrors.
@@ -3038,7 +3108,7 @@ async def process_webhook_request(request: Request, bot_index: int):
         # are not immediately rejected.  History is in-memory only and expires on
         # restart, so this does not weaken long-term security.
         if not token_valid:
-            prev_entry: Optional[List[Optional[str]]] = _webhook_secret_history.get(bot_index)
+            prev_entry: Optional[List[Optional[str]]] = _webhook_secret_history.get(bot_registry_id)
             prev_token: Optional[str] = prev_entry[0] if (prev_entry and len(prev_entry) > 0) else None
             if prev_token and isinstance(incoming_token, str):
                 token_valid = secrets.compare_digest(
@@ -3046,8 +3116,8 @@ async def process_webhook_request(request: Request, bot_index: int):
                 )
                 if token_valid:
                     logger.debug(
-                        "bot=%d accepted request using previous webhook secret (tolerance window)",
-                        bot_index,
+                        "bot=%s accepted request using previous webhook secret (tolerance window)",
+                        bot_registry_id,
                     )
         if not token_valid:
             # Log a header-level summary for easy searching without exposing the token.
@@ -3061,11 +3131,11 @@ async def process_webhook_request(request: Request, bot_index: int):
             else:
                 reason = "incorrect_secret"
             logger_security.warning(
-                "[WEBHOOK_401] req=%s bot=%d ip=%s telegram_ip=%s "
+                "[WEBHOOK_401] req=%s bot=%s ip=%s telegram_ip=%s "
                 "header_present=%s header_length=%d "
-                "reason=%s expected_fp=%s incoming_fp=%s",
+                "reason=%s expected_fp=%s incoming_fp=%s source_of_truth=bot_registry",
                 request_id,
-                bot_index,
+                bot_registry_id,
                 client_ip,
                 from_telegram,
                 header_present,
@@ -3081,43 +3151,35 @@ async def process_webhook_request(request: Request, bot_index: int):
             return Response(status_code=status.HTTP_401_UNAUTHORIZED)
     else:
         logger.debug(
-            "No secret token configured for bot %d; skipping header verification.",
-            bot_index,
+            "No secret token configured for registry bot %s; skipping header verification.",
+            bot_registry_id,
         )
 
-    if not any(_bot_applications):
+    if not _bot_applications_by_registry_id:
         logger.error("[%s] Bot applications not initialized", request_id)
         return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-    if bot_index >= len(_bot_applications):
-        logger.error(
-            "[%s] Invalid bot index: %d. Available bots: 0-%d",
-            request_id,
-            bot_index,
-            len(_bot_applications) - 1,
-        )
-        return Response(status_code=status.HTTP_404_NOT_FOUND)
-    if _bot_applications[bot_index] is None:
-        logger.warning("[%s] Bot index %d is disabled due to startup failure", request_id, bot_index)
+    bot_app = _bot_applications_by_registry_id.get(bot_registry_id)
+    if bot_app is None:
+        logger.warning("[%s] Registry bot %s is unavailable or disabled", request_id, bot_registry_id)
         return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
 
     _t0 = _time.monotonic()
     try:
         json_data = await request.json()
-        bot_app = _bot_applications[bot_index]
         update = Update.de_json(json_data, bot_app.bot)
 
         if update.message:
             logger.info(
-                "[%s] Bot %d: Processing message update from user %s",
-                request_id, bot_index, update.message.from_user.id,
+                "[%s] Bot %s: Processing message update from user %s",
+                request_id, bot_registry_id, update.message.from_user.id,
             )
         elif update.callback_query:
             user_id = update.callback_query.from_user.id
             callback_data = update.callback_query.data or ""
             logger.info(
-                "[%s] Bot %d: Processing callback query from user %s: %s",
-                request_id, bot_index, user_id, callback_data,
+                "[%s] Bot %s: Processing callback query from user %s: %s",
+                request_id, bot_registry_id, user_id, callback_data,
             )
             # --- Request deduplication for callback queries ---
             # Prevents accidental double-processing of the same callback when
@@ -3126,59 +3188,67 @@ async def process_webhook_request(request: Request, bot_index: int):
                 request.app.state, "request_deduplicator", None
             )
             if deduplicator is not None and await deduplicator.is_duplicate(
-                bot_index, user_id, callback_data
+                bot_registry_id, user_id, callback_data
             ):
                 logger.info(
-                    "[%s] Bot %d: Duplicate callback query suppressed (user=%s data=%r)",
-                    request_id, bot_index, user_id, callback_data,
+                    "[%s] Bot %s: Duplicate callback query suppressed (user=%s data=%r)",
+                    request_id, bot_registry_id, user_id, callback_data,
                 )
                 return Response(status_code=status.HTTP_200_OK)
         elif update.channel_post:
             logger.info(
-                "[%s] Bot %d: Processing channel post from chat %s",
-                request_id, bot_index, update.channel_post.chat.id,
+                "[%s] Bot %s: Processing channel post from chat %s",
+                request_id, bot_registry_id, update.channel_post.chat.id,
             )
         else:
             logger.info(
-                "[%s] Bot %d: Processing update type: %s",
-                request_id, bot_index, update.update_id,
+                "[%s] Bot %s: Processing update type: %s",
+                request_id, bot_registry_id, update.update_id,
             )
 
-        async with _get_webhook_processing_lock(bot_index):
+        async with _get_webhook_processing_lock(bot_registry_id):
             await bot_app.process_update(update)
 
         duration_ms = (_time.monotonic() - _t0) * 1000
-        record_webhook_result(bot_index=bot_index, success=True, duration_ms=duration_ms)
-        logger.info("[%s] Bot %d: Webhook request processed successfully", request_id, bot_index)
+        record_webhook_result(bot_index=0, success=True, duration_ms=duration_ms)
+        logger.info("[%s] Bot %s: Webhook request processed successfully", request_id, bot_registry_id)
         return Response(status_code=status.HTTP_200_OK)
     except Exception as e:
         duration_ms = (_time.monotonic() - _t0) * 1000
-        record_webhook_result(bot_index=bot_index, success=False, duration_ms=duration_ms)
+        record_webhook_result(bot_index=0, success=False, duration_ms=duration_ms)
         logger.error(
-            "[%s] Error processing webhook update for bot %d: %s",
-            request_id, bot_index, e, exc_info=True,
+            "[%s] Error processing webhook update for bot %s: %s",
+            request_id, bot_registry_id, e, exc_info=True,
         )
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @app.post("/webhook")
 async def webhook(request: Request):
-    """Handle incoming webhook updates from Telegram for the primary bot (bot 0)."""
-    logger.info("Received webhook request for primary bot")
-    return await process_webhook_request(request, 0)
+    """Legacy primary webhook path. Re-registers should use /webhook/{bot_registry_id}."""
+    registry_id = _runtime_index_to_registry_id.get(0)
+    if not registry_id:
+        return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+    logger.warning("Received legacy /webhook request; migrate Telegram webhook to /webhook/%s", registry_id)
+    return await process_webhook_request(request, registry_id)
 
 
-@app.post("/webhook/{bot_index}")
-async def webhook_indexed(request: Request, bot_index: int):
-    """Handle incoming webhook updates from Telegram for additional bot instances.
-    
-    Note: The primary bot (bot 0) is accessed via /webhook, not /webhook/0.
-    This endpoint handles bots 1, 2, 3, etc.
-    """
-    logger.info(f"Received webhook request for bot {bot_index}")
-    if bot_index == 0:
-        logger.warning("Bot 0 should use /webhook endpoint, not /webhook/0. Redirecting...")
-    return await process_webhook_request(request, bot_index)
+@app.post("/webhook/{bot_id}")
+async def webhook_indexed(request: Request, bot_id: str):
+    """Handle incoming webhook updates addressed by bot_registry.bot_id."""
+    registry_id = bot_id
+    if bot_id.isdigit() and bot_id not in _bot_applications_by_registry_id:
+        legacy_index = int(bot_id)
+        registry_id = _runtime_index_to_registry_id.get(legacy_index, "")
+        logger.warning(
+            "Received legacy positional webhook path bot_index=%s; migrate Telegram webhook to registry path bot_id=%s",
+            bot_id,
+            registry_id or "unknown",
+        )
+    if not registry_id:
+        return Response(status_code=status.HTTP_404_NOT_FOUND)
+    logger.info("Received webhook request for registry bot %s", registry_id)
+    return await process_webhook_request(request, registry_id)
 
 
 @app.get("/health")
