@@ -291,6 +291,7 @@ async def _handle_product(update, context, query, user_id, parts):
     await handle_product_callback(update, context)
 
 
+@admin_required
 async def _handle_delete(update, context, query, user_id, parts):
     product_id = int(parts[1])
     await delete_product(update, context, product_id)
@@ -1322,22 +1323,36 @@ async def route_callback(
         await query.answer("Unknown action", show_alert=True)
         return
 
+    answered = False
+    try:
+        await query.answer()
+        answered = True
+    except BadRequest as e:
+        if "query is too old" not in str(e).lower():
+            logger.debug("Callback already answered or unavailable: %s", e)
+    except Exception:
+        logger.debug("Callback pre-answer failed", exc_info=True)
+
     try:
         await handler(update, context, query, user_id, parts)
     except ValueError as e:
         logger.error(f"Invalid callback data format: {callback_data}, error: {e}")
-        await query.answer("Invalid action", show_alert=True)
+        if not answered:
+            await query.answer("Invalid action", show_alert=True)
     except BadRequest as e:
         if "message is not modified" in str(e).lower():
             logger.debug(f"Message not modified for callback {callback_data}: {e}")
-            await query.answer()
+            if not answered:
+                await query.answer()
         else:
             logger.error(
                 f"BadRequest error handling callback '{callback_data}': {e}", exc_info=True
             )
-            await query.answer(
-                "Unable to process this action. Please try again.", show_alert=True
-            )
+            if not answered:
+                await query.answer(
+                    "Unable to process this action. Please try again.", show_alert=True
+                )
     except Exception as e:
         logger.error(f"Error handling callback '{callback_data}': {e}", exc_info=True)
-        await query.answer("An error occurred", show_alert=True)
+        if not answered:
+            await query.answer("An error occurred", show_alert=True)

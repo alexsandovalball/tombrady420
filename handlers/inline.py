@@ -25,7 +25,8 @@ from telegram.ext import ContextTypes
 from database import Database
 from configs.config import Config
 from utils.fuzzy_search import fuzzy_search_products
-from utils.helpers import get_bot_username, escape_markdown_v1, get_bot_specific_file_id
+from utils.helpers import get_bot_username, escape_markdown_v1
+from utils.media_resolver import MediaResolver
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -184,64 +185,18 @@ async def _resolve_file_id_for_inline(
     and returns the resolved file_id.  Returns ``None`` only if forwarding
     explicitly fails or the product has no media.
     """
-    raw_file_id = product.get("file_id")
-    if not raw_file_id:
+    if not product.get("file_id"):
         logger.debug(
             "No raw_file_id for product %s – will fall back to article result",
             product.get("id"),
         )
         return None
 
-    product_bot = (product.get("bot_username") or "").lower()
     current_bot = (context.bot.username or "").lower()
+    result = await MediaResolver(context.bot, db).resolve_media_for_bot(product, current_bot, 0)
+    if result.success:
+        return result.file_id
 
-    # Same bot that indexed the product → file_id is already valid.
-    if product_bot and current_bot and product_bot == current_bot:
-        return raw_file_id
-
-    # Different (or unknown) bot – check the persistent DB cache first; on a
-    # miss, trigger forwarding to populate the cache for future queries.
-    chat_id = product.get("chat_id")
-    message_id = product.get("message_id")
-    if chat_id and message_id and current_bot:
-        try:
-            cached = await db.get_bot_file_id(chat_id, message_id, 0, current_bot)
-            if cached:
-                return cached
-
-            # Cache miss: trigger forwarding to populate cache.
-            logger.debug(
-                "DB cache miss for inline file_id: product=%s bot=%s – triggering forward",
-                product.get("id"),
-                current_bot,
-            )
-
-            file_type = product.get("file_type")
-            if file_type in ("photo", "video"):
-                resolved = await get_bot_specific_file_id(
-                    context,
-                    chat_id,
-                    message_id,
-                    file_type,
-                    file_index=0,
-                )
-                if resolved:
-                    logger.debug(
-                        "Successfully resolved file_id for inline: product=%s bot=%s",
-                        product.get("id"),
-                        current_bot,
-                    )
-                    return resolved
-                else:
-                    logger.warning(
-                        "Failed to resolve file_id for inline: product=%s bot=%s",
-                        product.get("id"),
-                        current_bot,
-                    )
-        except Exception as exc:
-            logger.warning("Error resolving file_id for inline: %s", exc, exc_info=True)
-
-    # No bot-specific file_id available – caller will fall back to article.
     return None
 
 

@@ -393,23 +393,48 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
 async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE, product_id: int):
     """Delete a product (admin only)."""
     user_id = update.effective_user.id
+    query = update.callback_query
+    chat_id = update.effective_chat.id if update.effective_chat else None
+
+    async def _send_delete_feedback(text: str, keyboard=None) -> None:
+        edit_result = None
+        if query and query.message:
+            edit_result = await safe_edit_message_text(
+                context.bot,
+                chat_id=query.message.chat_id,
+                message_id=query.message.message_id,
+                text=text,
+                reply_markup=keyboard,
+                parse_mode=None,
+            )
+        if edit_result is None and chat_id:
+            send_result = await safe_send_message(
+                context.bot,
+                chat_id=chat_id,
+                text=text,
+                reply_markup=keyboard,
+                parse_mode=None,
+            )
+            if send_result is None:
+                logger.error(
+                    "Failed to deliver delete_product feedback",
+                    extra={"product_id": product_id, "admin_id": user_id},
+                )
     
     if not is_admin(user_id):
-        await update.callback_query.answer(
-            "❌ Only administrators can delete products.",
-            show_alert=True
-        )
+        if query:
+            await query.answer("❌ Only administrators can delete products.", show_alert=True)
         return
     
     try:
+        if query:
+            await query.answer("Deleting product...")
+
         # Get product info before deletion
         product = await db.get_product(product_id)
         
         if not product:
-            await update.callback_query.answer(
-                "❌ Product not found.",
-                show_alert=True
-            )
+            await _send_delete_feedback("❌ Product not found.")
             return
         
         # Delete from database (channel message will remain)
@@ -421,47 +446,29 @@ async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE, pro
             catalog_page = await db.get_pagination_state(user_id, "catalog", None)
             back_page = catalog_page or 1
             
-            # Check if the message is a media message (can't edit media messages)
-            message = update.callback_query.message
-            if message.photo or message.video or message.document or message.animation or message.audio:
-                # Delete the media message and send a new text message
-                try:
-                    await message.delete()
-                except Exception:
-                    pass  # If deletion fails, continue anyway
-                await safe_send_message(
-                    context.bot,
-                    chat_id=update.effective_chat.id,
-                    text="✅ Product deleted successfully!",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔙 Back to catalog", callback_data=f"menu|{back_page}")]
-                    ])
-                )
-            else:
-                # Regular text message, can be edited
-                query = update.callback_query
-                await safe_edit_message_text(
-                    context.bot,
-                    chat_id=query.message.chat_id,
-                    message_id=query.message.message_id,
-                    text="✅ Product deleted successfully!",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔙 Back to catalog", callback_data=f"menu|{back_page}")]
-                    ])
-                )
-            logger.info(f"Admin {user_id} deleted product {product_id}")
-        else:
-            await update.callback_query.answer(
-                "❌ Failed to delete product.",
-                show_alert=True
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Back to catalog", callback_data=f"menu|{back_page}")]
+            ])
+            await _send_delete_feedback("✅ Product deleted successfully!", keyboard)
+            logger.info(
+                "Product deleted",
+                extra={"product_id": product_id, "admin_id": user_id},
             )
+        else:
+            await _send_delete_feedback("❌ Failed to delete product.")
             
     except Exception as e:
-        logger.error(f"Error deleting product: {e}")
-        await update.callback_query.answer(
-            "❌ An error occurred while deleting the product.",
-            show_alert=True
+        logger.error(
+            "Error deleting product",
+            extra={"product_id": product_id, "admin_id": user_id, "error": str(e)},
+            exc_info=True,
         )
+        if query:
+            try:
+                await query.answer("❌ An error occurred while deleting the product.", show_alert=True)
+            except Exception:
+                logger.warning("Unable to answer delete callback after exception", exc_info=True)
+        await _send_delete_feedback("❌ An error occurred while deleting the product.")
 
 
 @command_admin_required
@@ -1549,6 +1556,11 @@ async def reinitbots_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     # Operators can restart the service to fully synchronize state,
                     # or call reinitialize_bots with the FastAPI app from a custom
                     # startup/admin HTTP endpoint.
+                    deleted = await db.clear_bot_file_id_cache()
+                    logger.info(
+                        "Cleared bot file-id cache before bot reinitialisation",
+                        extra={"deleted": deleted, "admin_id": update.effective_user.id},
+                    )
                     result = await reinitialize_bots(None)
                     logger.info("Background reinitialisation complete: %s", result)
                 except Exception:

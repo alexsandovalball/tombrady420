@@ -6,14 +6,37 @@ import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, InputMediaAnimation, InputMediaDocument
 from telegram.ext import ContextTypes
 from database import Database
-from utils.helpers import send_media_message, is_admin, get_bot_specific_file_id, get_user_lang_async
+from configs.config import Config
+from utils.helpers import send_media_message, is_admin, get_user_lang_async
 from utils.safe_send import safe_send_message
+from utils.media_resolver import MediaResolver
 from utils.pagination import paginate_items
 from utils.categories import format_category_info
 from translations.translator import translate_text_async, get_translated_string_async
 
 logger = logging.getLogger(__name__)
 db = Database()
+
+
+def _build_media_unavailable_text(product: dict, caption: str) -> str:
+    title = (caption or product.get("caption") or f"Product #{product.get('id')}").strip()
+    snippet = title[:240] + ("..." if len(title) > 240 else "")
+    return (
+        "⚠️ Media temporarily unavailable for this bot.\n\n"
+        f"Product: {snippet}\n"
+        "You can still open this item from the shop or try again."
+    )
+
+
+def _build_media_fallback_keyboard(product_id: int, bot_username: str, back_callback: str):
+    buttons = []
+    if Config.WEB_APP_URL:
+        buttons.append([InlineKeyboardButton("Open in WebApp", url=Config.WEB_APP_URL)])
+    if bot_username:
+        buttons.append([InlineKeyboardButton("Open inline search", switch_inline_query_current_chat=str(product_id))])
+    buttons.append([InlineKeyboardButton("Retry media", callback_data=f"product|{product_id}")])
+    buttons.append([InlineKeyboardButton("🔙 Back to results", callback_data=back_callback)])
+    return InlineKeyboardMarkup(buttons)
 
 
 async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE, product_id: int):
@@ -132,40 +155,42 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
             f"media_group_id={media_group_id}"
         )
         
-        # Try to get bot-specific file IDs if needed
-        product_bot = product.get("bot_username")
-        current_bot = context.bot.username
-        
-        using_copy_path = False
-        if (product_bot is None or current_bot is None or product_bot.lower() != current_bot.lower()):
-            # Try to get bot-specific file IDs for all media
-            additional_message_ids_json = product.get("additional_message_ids")
-            if additional_message_ids_json:
-                try:
-                    additional_msg_ids = json.loads(additional_message_ids_json)
-                    message_ids = [product["message_id"]] + additional_msg_ids
-                    
-                    # Update file IDs with bot-specific ones
-                    updated_media_list = []
-                    for idx, (file_id, file_type) in enumerate(media_list):
-                        if idx < len(message_ids):
-                            bot_specific_id = await get_bot_specific_file_id(
-                                context,
-                                product["chat_id"],
-                                message_ids[idx],
-                                file_type,
-                                file_index=idx
-                            )
-                            if bot_specific_id:
-                                updated_media_list.append((bot_specific_id, file_type))
-                            else:
-                                updated_media_list.append((file_id, file_type))
-                        else:
-                            updated_media_list.append((file_id, file_type))
-                    media_list = updated_media_list
-                    using_copy_path = True
-                except Exception as e:
-                    logger.warning(f"Could not get bot-specific file IDs: {e}")
+        product_bot = (product.get("bot_username") or "").lower()
+        current_bot = (context.bot.username or "").lower()
+        resolver = MediaResolver(context.bot, db)
+        resolved_media_list = []
+        resolution_failures = []
+        for idx, (_file_id, file_type) in enumerate(media_list):
+            result = await resolver.resolve_media_for_bot(product, current_bot, idx)
+            if result.success and result.file_id:
+                resolved_media_list.append((result.file_id, file_type))
+            else:
+                resolution_failures.append(result)
+
+        using_copy_path = bool(product_bot and current_bot and product_bot != current_bot)
+        if resolution_failures:
+            logger.warning(
+                "Product media fallback used",
+                extra={
+                    "product_id": product_id,
+                    "current_bot": current_bot,
+                    "original_bot": product_bot,
+                    "failures": [f.error for f in resolution_failures],
+                    "fallback_used": True,
+                },
+            )
+            await safe_send_message(
+                context.bot,
+                update.effective_chat.id,
+                text=_build_media_unavailable_text(product, caption),
+                parse_mode=None,
+                reply_markup=_build_media_fallback_keyboard(product_id, current_bot, back_callback),
+            )
+            if update.callback_query:
+                await update.callback_query.answer()
+            return
+
+        media_list = resolved_media_list
         
         logger.debug(
             f"show_product_media: product_id={product_id}, "
@@ -250,10 +275,12 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         f"show_product_media: product_id={product_id}, "
                         f"sending media_group with {len(media_group)} items"
                     )
-                    await context.bot.send_media_group(
+                    sent = await context.bot.send_media_group(
                         chat_id=update.effective_chat.id,
                         media=media_group
                     )
+                    if not sent:
+                        raise RuntimeError("send_media_group returned no messages")
                 
                 # Send unsupported media types individually
                 for file_id, file_type, item_caption in unsupported_media:
@@ -286,7 +313,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                             reply_markup=None
                         )
                     except Exception as send_error:
-                        logger.error(f"Failed to send media {idx + 1}/{total_media}: {send_error}")
+                        logger.error(f"Failed to send media {idx + 1}/{total_media}: {send_error}", exc_info=True)
         
         # Get order contact
         order_contact = await db.get_order_contact()

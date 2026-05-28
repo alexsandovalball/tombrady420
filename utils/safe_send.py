@@ -10,6 +10,7 @@ This module provides robust wrappers that:
 import logging
 import asyncio
 import random
+from dataclasses import dataclass
 from typing import Optional, Any, Callable, Dict, Tuple
 from html import escape as escape_html
 from telegram import Bot, Message, Update
@@ -18,6 +19,14 @@ from telegram.helpers import escape_markdown as escape_markdown_v2
 from database import Database
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SafeSendResult:
+    success: bool
+    message: Optional[Message] = None
+    error: Optional[str] = None
+    retries: int = 0
 
 # Module-level database singleton — avoids creating a new connection object per user-cleanup call.
 _db = Database()
@@ -107,7 +116,7 @@ async def handle_send_exception(exception: Exception, user_id: int, operation: s
             logger.info(f"[User Cleanup] Removed user {user_id} from database (reason: {operation} failed)")
             return True
         except Exception as db_error:
-            logger.error(f"[User Cleanup] Failed to delete user {user_id} from database: {db_error}")
+            logger.error(f"[User Cleanup] Failed to delete user {user_id} from database: {db_error}", exc_info=True)
             return False
     
     return False
@@ -183,7 +192,7 @@ async def _execute_with_fallback(
         return None
         
     except Exception as e:
-        logger.error(f"[Safe Send] Unexpected error in {operation} to chat {chat_id}: {e}")
+        logger.error(f"[Safe Send] Unexpected error in {operation} to chat {chat_id}: {e}", exc_info=True)
         return None
 
 
@@ -239,7 +248,7 @@ async def safe_send_message(
         try:
             return await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, **kwargs)
         except Exception as retry_error:
-            logger.error(f"[Safe Send] Retry failed for send_message to chat {chat_id}: {retry_error}")
+            logger.error(f"[Safe Send] Retry failed for send_message to chat {chat_id}: {retry_error}", exc_info=True)
             await handle_send_exception(retry_error, chat_id, "send_message")
             return None
             
@@ -274,7 +283,7 @@ async def safe_send_message(
                     **kwargs
                 )
             except Exception as final_error:
-                logger.error(f"[Safe Send] All send_message attempts failed for chat {chat_id}: {final_error}")
+                logger.error(f"[Safe Send] All send_message attempts failed for chat {chat_id}: {final_error}", exc_info=True)
                 await handle_send_exception(final_error, chat_id, "send_message")
                 return None
         else:
@@ -288,7 +297,7 @@ async def safe_send_message(
         return None
         
     except Exception as e:
-        logger.error(f"[Safe Send] Unexpected error in send_message to chat {chat_id}: {e}")
+        logger.error(f"[Safe Send] Unexpected error in send_message to chat {chat_id}: {e}", exc_info=True)
         return None
 
 
@@ -353,7 +362,7 @@ async def safe_edit_message_text(
                 inline_message_id=inline_message_id, parse_mode=parse_mode, **kwargs
             )
         except Exception as retry_error:
-            logger.error(f"[Safe Send] Retry failed for edit_message_text: {retry_error}")
+            logger.error(f"[Safe Send] Retry failed for edit_message_text: {retry_error}", exc_info=True)
             if chat_id:
                 await handle_send_exception(retry_error, chat_id, "edit_message_text")
             return None
@@ -410,7 +419,7 @@ async def safe_edit_message_text(
         return None
         
     except Exception as e:
-        logger.error(f"[Safe Send] Unexpected error in edit_message_text: {e}")
+        logger.error(f"[Safe Send] Unexpected error in edit_message_text: {e}", exc_info=True)
         return None
 
 
@@ -471,7 +480,7 @@ async def safe_send_photo(
                 chat_id=chat_id, photo=photo, caption=caption, parse_mode=parse_mode, **kwargs
             )
         except Exception as retry_error:
-            logger.error(f"[Safe Send] Retry failed for send_photo to chat {chat_id}: {retry_error}")
+            logger.error(f"[Safe Send] Retry failed for send_photo to chat {chat_id}: {retry_error}", exc_info=True)
             await handle_send_exception(retry_error, chat_id, "send_photo")
             return None
             
@@ -508,7 +517,7 @@ async def safe_send_photo(
                     **kwargs
                 )
             except Exception as final_error:
-                logger.error(f"[Safe Send] All send_photo attempts failed for chat {chat_id}: {final_error}")
+                logger.error(f"[Safe Send] All send_photo attempts failed for chat {chat_id}: {final_error}", exc_info=True)
                 await handle_send_exception(final_error, chat_id, "send_photo")
                 return None
         else:
@@ -522,7 +531,7 @@ async def safe_send_photo(
         return None
         
     except Exception as e:
-        logger.error(f"[Safe Send] Unexpected error in send_photo to chat {chat_id}: {e}")
+        logger.error(f"[Safe Send] Unexpected error in send_photo to chat {chat_id}: {e}", exc_info=True)
         return None
 
 
@@ -583,7 +592,7 @@ async def safe_send_video(
                 chat_id=chat_id, video=video, caption=caption, parse_mode=parse_mode, **kwargs
             )
         except Exception as retry_error:
-            logger.error(f"[Safe Send] Retry failed for send_video to chat {chat_id}: {retry_error}")
+            logger.error(f"[Safe Send] Retry failed for send_video to chat {chat_id}: {retry_error}", exc_info=True)
             await handle_send_exception(retry_error, chat_id, "send_video")
             return None
             
@@ -620,7 +629,7 @@ async def safe_send_video(
                     **kwargs
                 )
             except Exception as final_error:
-                logger.error(f"[Safe Send] All send_video attempts failed for chat {chat_id}: {final_error}")
+                logger.error(f"[Safe Send] All send_video attempts failed for chat {chat_id}: {final_error}", exc_info=True)
                 await handle_send_exception(final_error, chat_id, "send_video")
                 return None
         else:
@@ -634,7 +643,7 @@ async def safe_send_video(
         return None
         
     except Exception as e:
-        logger.error(f"[Safe Send] Unexpected error in send_video to chat {chat_id}: {e}")
+        logger.error(f"[Safe Send] Unexpected error in send_video to chat {chat_id}: {e}", exc_info=True)
         return None
 
 
@@ -695,7 +704,7 @@ async def safe_send_animation(
                 chat_id=chat_id, animation=animation, caption=caption, parse_mode=parse_mode, **kwargs
             )
         except Exception as retry_error:
-            logger.error(f"[Safe Send] Retry failed for send_animation to chat {chat_id}: {retry_error}")
+            logger.error(f"[Safe Send] Retry failed for send_animation to chat {chat_id}: {retry_error}", exc_info=True)
             await handle_send_exception(retry_error, chat_id, "send_animation")
             return None
             
@@ -732,7 +741,7 @@ async def safe_send_animation(
                     **kwargs
                 )
             except Exception as final_error:
-                logger.error(f"[Safe Send] All send_animation attempts failed for chat {chat_id}: {final_error}")
+                logger.error(f"[Safe Send] All send_animation attempts failed for chat {chat_id}: {final_error}", exc_info=True)
                 await handle_send_exception(final_error, chat_id, "send_animation")
                 return None
         else:
@@ -746,7 +755,7 @@ async def safe_send_animation(
         return None
         
     except Exception as e:
-        logger.error(f"[Safe Send] Unexpected error in send_animation to chat {chat_id}: {e}")
+        logger.error(f"[Safe Send] Unexpected error in send_animation to chat {chat_id}: {e}", exc_info=True)
         return None
 
 
@@ -807,7 +816,7 @@ async def safe_send_document(
                 chat_id=chat_id, document=document, caption=caption, parse_mode=parse_mode, **kwargs
             )
         except Exception as retry_error:
-            logger.error(f"[Safe Send] Retry failed for send_document to chat {chat_id}: {retry_error}")
+            logger.error(f"[Safe Send] Retry failed for send_document to chat {chat_id}: {retry_error}", exc_info=True)
             await handle_send_exception(retry_error, chat_id, "send_document")
             return None
             
@@ -844,7 +853,7 @@ async def safe_send_document(
                     **kwargs
                 )
             except Exception as final_error:
-                logger.error(f"[Safe Send] All send_document attempts failed for chat {chat_id}: {final_error}")
+                logger.error(f"[Safe Send] All send_document attempts failed for chat {chat_id}: {final_error}", exc_info=True)
                 await handle_send_exception(final_error, chat_id, "send_document")
                 return None
         else:
@@ -858,7 +867,7 @@ async def safe_send_document(
         return None
         
     except Exception as e:
-        logger.error(f"[Safe Send] Unexpected error in send_document to chat {chat_id}: {e}")
+        logger.error(f"[Safe Send] Unexpected error in send_document to chat {chat_id}: {e}", exc_info=True)
         return None
 
 

@@ -3,6 +3,7 @@ Helper utilities for the bot.
 """
 import logging
 import json
+import inspect
 from typing import List, Optional, Dict, Tuple
 from telegram import Bot, Update, User
 from telegram.ext import ContextTypes
@@ -51,6 +52,13 @@ def _extract_media_identity(message, file_type: str):
         getattr(media, "mime_type", None),
         getattr(media, "file_size", None),
     )
+
+
+async def _call_db_optional(method_name: str, *args, **kwargs):
+    method = getattr(_db, method_name, None)
+    if method is None or not inspect.iscoroutinefunction(method):
+        return None
+    return await method(*args, **kwargs)
 
 # Admin commands fallback text constant (hardcoded for consistency across deploys)
 ADMIN_COMMANDS_FALLBACK = (
@@ -418,7 +426,10 @@ async def get_bot_specific_file_id(
     
     # Check persistent database cache first
     bot_identifier = resolve_stable_bot_identifier(bot, bot_username.lower())
-    canonical = await _db.get_canonical_media_by_origin(source_chat_id, source_message_id, file_type)
+    canonical = None
+    get_canonical = getattr(_db, "get_canonical_media_by_origin", None)
+    if get_canonical and inspect.iscoroutinefunction(get_canonical):
+        canonical = await get_canonical(source_chat_id, source_message_id, file_type)
     if canonical:
         mapped_file_id = await _db.get_bot_media_file_id(bot_identifier, canonical["file_unique_id"])
         if mapped_file_id:
@@ -442,7 +453,8 @@ async def get_bot_specific_file_id(
             tg_file = await bot.get_file(cached_file_id)
             file_unique_id = getattr(tg_file, "file_unique_id", None)
             if file_unique_id:
-                await _db.upsert_canonical_media(
+                await _call_db_optional(
+                    "upsert_canonical_media",
                     product_id=str(source_message_id),
                     media_type=file_type,
                     file_unique_id=file_unique_id,
@@ -451,7 +463,7 @@ async def get_bot_specific_file_id(
                     original_file_id=cached_file_id,
                     file_size=getattr(tg_file, "file_size", None),
                 )
-                await _db.upsert_bot_media_file_id(bot_identifier, file_unique_id, cached_file_id)
+                await _call_db_optional("upsert_bot_media_file_id", bot_identifier, file_unique_id, cached_file_id)
             logger.debug(f"Using cached file ID for bot {bot_username}, message {source_message_id}, index {file_index}")
             return cached_file_id
         except TelegramError as e:
@@ -505,7 +517,8 @@ async def get_bot_specific_file_id(
         
         if file_id:
             if file_unique_id:
-                await _db.upsert_canonical_media(
+                await _call_db_optional(
+                    "upsert_canonical_media",
                     product_id=str(source_message_id),
                     media_type=file_type,
                     file_unique_id=file_unique_id,
@@ -515,7 +528,7 @@ async def get_bot_specific_file_id(
                     mime_type=mime_type,
                     file_size=file_size,
                 )
-                await _db.upsert_bot_media_file_id(bot_identifier, file_unique_id, file_id)
+                await _call_db_optional("upsert_bot_media_file_id", bot_identifier, file_unique_id, file_id)
             # Cache the result in database for persistence
             await _db.cache_bot_file_id(
                 source_chat_id,

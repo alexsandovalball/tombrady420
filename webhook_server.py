@@ -786,6 +786,13 @@ async def setup_application(bot_token: str, bot_index: int = 0):
             logger.info(f"Cleared {cleared} stale cache entries for @{bot_username}")
 
         await _db.register_bot_instance(bot_username, bot_id, token_hash)
+        try:
+            from utils.bot_health import validate_bot_readiness
+
+            if getattr(Config, "ADMIN_IDS", None):
+                await validate_bot_readiness(bot_app.bot, Config.ADMIN_IDS[:1])
+        except Exception:
+            logger.warning("Bot readiness validation failed", exc_info=True)
     except telegram.error.TelegramError as e:
         logger.warning("Skipping startup metadata/cache registration for bot index=%d: %s", bot_index, e)
     except Exception as e:
@@ -1737,6 +1744,22 @@ def _get_validated_init_data(request: Request, allow_preview: bool = False) -> t
         len(bot_tokens)
     )
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid init data")
+
+
+def _get_authenticated_webapp_user(request: Request) -> tuple[TelegramUser, int, str]:
+    """Validate WebApp initData and return the signed Telegram user."""
+    init_data, bot_index = _get_validated_init_data(request, allow_preview=False)
+    parsed = parse_init_data(init_data)
+    user_data = parsed.get("user")
+    if not user_data:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Telegram user")
+    return TelegramUser.model_validate(user_data), bot_index, init_data
+
+
+def _require_same_webapp_user(target_user_id: int, user: TelegramUser) -> None:
+    """Reject WebApp requests attempting to mutate another user's state."""
+    if int(target_user_id) != int(user.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User mismatch")
 
 
 async def _check_user_not_blocked(init_data: str, client_ip: str = "") -> None:

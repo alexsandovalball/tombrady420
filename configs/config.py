@@ -50,10 +50,10 @@ class ConfigClass:
             bot_tokens_raw = config('BOT_TOKENS')
             if bot_tokens_raw:
                 self.BOT_TOKENS = [t.strip() for t in bot_tokens_raw.split(',') if t.strip()]
+                if self.BOT_TOKENS and not self.BOT_TOKEN:
+                    self.BOT_TOKEN = self.BOT_TOKENS[0]
                 if not self.BOT_TOKENS:
                     logger.warning("BOT_TOKENS is set but contains no valid tokens (check for extra commas or whitespace).")
-                self._loaded = True
-                return
         except UndefinedValueError:
             pass
 
@@ -64,9 +64,9 @@ class ConfigClass:
         # are still collected so the resulting list stays as compact as possible.
         # The startup log (see validate()) prints each index → token-id so operators
         # can confirm the mapping matches what was registered with Telegram.
-        bot_tokens = []
-        if self.BOT_TOKEN:
-            bot_tokens.append(self.BOT_TOKEN)
+        bot_tokens = list(self.BOT_TOKENS)
+        if self.BOT_TOKEN and self.BOT_TOKEN not in bot_tokens:
+            bot_tokens.insert(0, self.BOT_TOKEN)
 
         # Support BOT_TOKEN_ (trailing underscore, no number) as an additional token
         try:

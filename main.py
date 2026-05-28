@@ -80,6 +80,32 @@ LONG_RUNNING_CALLBACKS = ["broadcast_confirm_all"]  # Callbacks that should not 
 _is_primary_instance = is_primary_instance
 
 
+def _json_message_ids(message_ids: list[int], product_id: int | None = None) -> str:
+    """Return validated JSON for additional message ids."""
+    clean_ids = []
+    for message_id in message_ids:
+        try:
+            clean_ids.append(int(message_id))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Rejected malformed message-id payload",
+                extra={"product_id": product_id, "message_id": message_id},
+            )
+    return json.dumps(clean_ids)
+
+
+def _json_additional_media(file_ids: list[str], file_types: list[str], product_id: int | None = None) -> str:
+    media = []
+    for file_id, file_type in zip(file_ids, file_types):
+        if not file_id or not file_type:
+            logger.warning(
+                "Rejected malformed additional media payload",
+                extra={"product_id": product_id, "file_id": file_id, "file_type": file_type},
+            )
+            continue
+        media.append((file_id, file_type))
+    return json.dumps(media)
+
 
 async def notify_admins_for_categorization(context: ContextTypes.DEFAULT_TYPE, product_id: int):
     """Send categorization request to all admins for a new product.
@@ -209,15 +235,15 @@ async def process_media_group(media_group_id: str, chat_id: int, context: Contex
     
     if existing_product_id:
         # Update existing product with new file IDs and message IDs
-        additional_files = json.dumps(list(zip(file_ids[1:], file_types[1:])))
-        additional_msg_ids = json.dumps(message_ids[1:]) if len(message_ids) > 1 else None
+        additional_files = _json_additional_media(file_ids[1:], file_types[1:], existing_product_id)
+        additional_msg_ids = _json_message_ids(message_ids[1:], existing_product_id)
         await db.update_product_media(existing_product_id, additional_files, additional_msg_ids)
         logger.info(f"Updated media group product {existing_product_id} with {len(file_ids)} files")
         return
     
     # Create new product with first file as primary (with automatic categorization)
-    additional_files = json.dumps(list(zip(file_ids[1:], file_types[1:]))) if len(file_ids) > 1 else None
-    additional_msg_ids = json.dumps(message_ids[1:]) if len(message_ids) > 1 else None
+    additional_files = _json_additional_media(file_ids[1:], file_types[1:])
+    additional_msg_ids = _json_message_ids(message_ids[1:])
     
     # Extract category from caption hashtags
     category, subcategory = None, None
@@ -314,6 +340,8 @@ async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             caption=caption,
             message_id=message.message_id,
             chat_id=message.chat.id,
+            additional_file_ids=json.dumps([]),
+            additional_message_ids=json.dumps([]),
             category=category,
             subcategory=subcategory,
             bot_username=context.bot.username
