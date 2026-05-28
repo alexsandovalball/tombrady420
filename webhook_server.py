@@ -52,12 +52,14 @@ from utils.resource_manager import (
     TMP_FILE_MAX_AGE_SECONDS,
     TMP_MAX_SIZE_BYTES,
     cleanup_owned_dir,
+    clear_bot_temp_dir,
     emergency_cleanup,
     ensure_resource_dirs,
     get_cache_usage,
     get_tmp_usage,
     startup_cleanup,
 )
+from utils.webhook_identity import BotSlot, build_bot_slot
 from middleware.request_deduplicator import RequestDeduplicator
 from configs.telegram_ip_whitelist import is_telegram_ip
 
@@ -70,6 +72,7 @@ logger = logging.getLogger(__name__)
 # This allows the notification service to access all bot instances
 _bot_applications = []
 _webhook_secret_tokens: List[Optional[str]] = []
+_bot_slots: Dict[int, BotSlot] = {}
 _catalog_db = Database()
 
 # Per-process counter for webhook 401 rejections (in-memory, not persisted).
@@ -567,17 +570,14 @@ def _get_expected_secret_token(
     """Return the expected secret token for *bot_index*.
 
     Priority:
-      1. Override from configs/bots.json (hot-reloadable, no restart required)
-      2. Runtime token generated at startup by setup_application()
+      1. Runtime deterministic per-slot token generated at startup
+      2. Legacy configs/bots.json override fallback for compatibility
     """
-    # Check hot-reloadable override first
-    override = _bots_config_tokens.get(bot_index)
-    if override:
-        return override
-    # Fall back to runtime-generated token
     if bot_index < len(runtime_tokens):
-        return runtime_tokens[bot_index]
-    return None
+        token = runtime_tokens[bot_index]
+        if token:
+            return token
+    return _bots_config_tokens.get(bot_index)
 
 
 def _secret_fingerprint(value: Optional[str]) -> str:
@@ -630,6 +630,31 @@ async def _stop_existing_bots() -> None:
     _bot_applications = []
 
 
+async def reset_bot_identity(slot_id: int) -> dict:
+    """Reset runtime/cache state for one permanent bot slot only."""
+    db = Database()
+    file_cache_deleted = await db.clear_bot_file_id_cache_for_slot(slot_id)
+    resolver_invalidated = await db.clear_bot_media_file_ids_for_slot(slot_id)
+    temp_removed, temp_freed = clear_bot_temp_dir(slot_id)
+    logger.warning(
+        "[bot_identity] slot_reset",
+        extra={
+            "bot_slot": slot_id,
+            "bot_name": f"bot_token_{slot_id}",
+            "file_cache_deleted": file_cache_deleted,
+            "resolver_invalidated": resolver_invalidated,
+            "temp_removed": temp_removed,
+            "temp_freed": temp_freed,
+        },
+    )
+    return {
+        "file_cache_deleted": file_cache_deleted,
+        "resolver_invalidated": resolver_invalidated,
+        "temp_removed": temp_removed,
+        "temp_freed": temp_freed,
+    }
+
+
 async def reinitialize_bots(fastapi_app=None) -> dict:
     """Stop existing bot Applications and recreate them from Config.BOT_TOKENS.
 
@@ -647,7 +672,7 @@ async def reinitialize_bots(fastapi_app=None) -> dict:
         indices) and ``errors`` (dict mapping str(index) → error message).
     """
     import traceback
-    global _bot_applications, _webhook_secret_tokens, _webhook_secret_history
+    global _bot_applications, _webhook_secret_tokens, _webhook_secret_history, _bot_slots
 
     summary: dict = {"created": [], "failed": [], "errors": {}}
     logger.info("Starting bot reinitialisation (stop → setup)")
@@ -667,6 +692,7 @@ async def reinitialize_bots(fastapi_app=None) -> dict:
         return {"created": [], "failed": [], "errors": {"no_tokens": "No BOT_TOKENS configured"}}
 
     new_secret_tokens: List[Optional[str]] = []
+    _bot_slots = {}
     for idx, token in enumerate(tokens):
         # Preserve the previous webhook secret in history so in-flight requests
         # using the old token are not immediately rejected.
@@ -719,8 +745,16 @@ async def setup_application(bot_token: str, bot_index: int = 0):
         deterministic value derived from bot_token registered with Telegram for
         this bot, or None if webhook mode is not active.
     """
+    slot_id = bot_index + 1
+    slot_name = f"bot_token_{slot_id}"
     token_suffix = bot_token[-6:] if bot_token else "empty"
-    logger.info("Bot startup begin index=%d token_suffix=%s", bot_index, token_suffix)
+    logger.info(
+        "Bot startup begin index=%d slot=%s token_suffix=%s",
+        bot_index,
+        slot_name,
+        token_suffix,
+        extra={"bot_slot": slot_id, "bot_name": slot_name},
+    )
     
     # Create application with optimized timeout settings
     request = HTTPXRequest(
@@ -766,26 +800,65 @@ async def setup_application(bot_token: str, bot_index: int = 0):
             pass
         raise
 
-    # Detect token changes and clear stale file ID cache if needed
+    slot: Optional[BotSlot] = None
+    identity_rotated = False
     try:
-        bot_username = bot_app.bot.username
-        bot_id = bot_app.bot.id
-        if not bot_username or not bot_id:
-            me = await bot_app.bot.get_me()
-            bot_username = getattr(me, "username", bot_username)
-            bot_id = getattr(me, "id", bot_id)
-        token_hash = hashlib.sha256(bot_token.encode()).hexdigest()[:16]
+        me = await bot_app.bot.get_me()
+        bot_username = getattr(me, "username", None) or bot_app.bot.username
+        bot_id = getattr(me, "id", None) or bot_app.bot.id
 
         from database import Database
         _db = Database()
-        if await _db.has_bot_token_changed(bot_username, token_hash):
-            logger.warning(
-                f"Bot token changed for @{bot_username}! Clearing stale file ID cache..."
+        await _db.init_db()
+        previous_slot = await _db.get_bot_slot_identity(slot_id)
+        previous_version = int((previous_slot or {}).get("identity_version") or 1)
+        provisional_slot = build_bot_slot(
+            slot_id,
+            bot_token,
+            telegram_username=bot_username,
+            telegram_bot_id=bot_id,
+            identity_version=previous_version,
+        )
+        if previous_slot and previous_slot.get("token_hash") != provisional_slot.token_hash:
+            identity_rotated = True
+            previous_version += 1
+            provisional_slot = build_bot_slot(
+                slot_id,
+                bot_token,
+                telegram_username=bot_username,
+                telegram_bot_id=bot_id,
+                identity_version=previous_version,
             )
-            cleared = await _db.clear_bot_file_id_cache_for_bot(bot_username)
-            logger.info(f"Cleared {cleared} stale cache entries for @{bot_username}")
+            logger.warning(
+                "[bot_identity] token_rotation_detected",
+                extra={
+                    "bot_slot": slot_id,
+                    "bot_name": slot_name,
+                    "bot_username": f"@{bot_username}" if bot_username else None,
+                    "identity_version": previous_version,
+                },
+            )
+            try:
+                await bot_app.bot.delete_webhook(drop_pending_updates=False)
+            except telegram.error.TelegramError as exc:
+                logger.warning("[bot_identity] delete_webhook_failed slot=%s error=%s", slot_id, exc)
+            await reset_bot_identity(slot_id)
 
-        await _db.register_bot_instance(bot_username, bot_id, token_hash)
+        slot = provisional_slot
+        _bot_slots[bot_index] = slot
+        bot_app.bot_data["bot_slot"] = slot.slot_id
+        bot_app.bot_data["bot_name"] = slot.slot_name
+        bot_app.bot_data["identity_hash"] = slot.identity_hash
+        await _db.register_bot_slot(
+            slot.slot_id,
+            slot.slot_name,
+            bot_username or "",
+            int(bot_id or 0),
+            slot.token_hash,
+            slot.identity_version,
+            slot.identity_hash,
+            slot.webhook_secret,
+        )
         try:
             from utils.bot_health import validate_bot_readiness
 
@@ -826,10 +899,13 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     if webhook_url:
         # Primary bot uses /webhook, additional bots use /webhook/1, /webhook/2, etc.
         webhook_path = "/webhook" if bot_index == 0 else f"/webhook/{bot_index}"
-        # Generate a deterministic secret token from the bot token so the same
-        # token is used across redeploys and survives bot replacements — the
-        # secret only changes when the bot token itself changes.
-        webhook_secret_token = hashlib.sha256(bot_token.encode('utf-8')).hexdigest()[:64]
+        if slot is None:
+            slot = build_bot_slot(slot_id, bot_token)
+            _bot_slots[bot_index] = slot
+            bot_app.bot_data["bot_slot"] = slot.slot_id
+            bot_app.bot_data["bot_name"] = slot.slot_name
+            bot_app.bot_data["identity_hash"] = slot.identity_hash
+        webhook_secret_token = slot.webhook_secret
         try:
             await _validate_or_repair_webhook(
                 bot_app.bot,
@@ -837,6 +913,7 @@ async def setup_application(bot_token: str, bot_index: int = 0):
                 webhook_url,
                 webhook_path,
                 webhook_secret_token,
+                slot=slot,
             )
         except telegram.error.TelegramError as e:
             logger.warning("Partial startup for bot index=%d: webhook setup skipped: %s", bot_index, e)
@@ -847,12 +924,33 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     else:
         logger.warning("WEBHOOK_URL not set. Webhook may not work properly.")
 
-    logger.info("Bot startup success index=%d username=%s", bot_index, getattr(bot_app.bot, "username", None) or "unknown")
+    logger.info(
+        "Bot startup success index=%d username=%s rotated=%s",
+        bot_index,
+        getattr(bot_app.bot, "username", None) or "unknown",
+        identity_rotated,
+        extra={
+            "bot_slot": slot_id,
+            "bot_name": slot_name,
+            "bot_username": f"@{getattr(bot_app.bot, 'username', None)}" if getattr(bot_app.bot, "username", None) else None,
+        },
+    )
     return bot_app, webhook_secret_token
 
 
-async def _validate_or_repair_webhook(bot, bot_index: int, webhook_url: str, webhook_path: str, secret_token: str) -> None:
+async def _validate_or_repair_webhook(
+    bot,
+    bot_index: int,
+    webhook_url: str,
+    webhook_path: str,
+    secret_token: str,
+    *,
+    slot: Optional[BotSlot] = None,
+) -> None:
     """Validate webhook URL/state and repair safely without dropping pending updates."""
+    slot_id = slot.slot_id if slot else bot_index + 1
+    slot_name = slot.slot_name if slot else f"bot_token_{slot_id}"
+    lock_owner = f"{os.getenv('RENDER_INSTANCE_ID') or os.getenv('HOSTNAME') or os.getpid()}:{slot_name}"
     expected_url = f"{webhook_url}{webhook_path}"
     try:
         info = await bot.get_webhook_info()
@@ -866,6 +964,7 @@ async def _validate_or_repair_webhook(bot, bot_index: int, webhook_url: str, web
             logger.warning(
                 "[webhook] mismatch_detected bot=%d current_url=%s expected_url=%s pending=%s cert=%s",
                 bot_index, current_url, expected_url, pending, has_cert,
+                extra={"bot_slot": slot_id, "bot_name": slot_name, "bot_username": f"@{getattr(bot, 'username', '')}" if getattr(bot, "username", None) else None},
             )
         elif last_error:
             logger.warning("[webhook] existing_error bot=%d pending=%s error=%s", bot_index, pending, last_error)
@@ -873,17 +972,30 @@ async def _validate_or_repair_webhook(bot, bot_index: int, webhook_url: str, web
             logger.info("[webhook] validated bot=%d pending=%s cert=%s", bot_index, pending, has_cert)
 
         if mismatch or needs_secret_refresh:
-            await bot.set_webhook(
-                url=expected_url,
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=False,
-                secret_token=secret_token,
-            )
+            db = Database()
+            acquired = await db.acquire_bot_slot_lock(slot_id, lock_owner, ttl_seconds=60)
+            if not acquired:
+                logger.info(
+                    "[webhook] repair_skipped_lock_held bot=%d",
+                    bot_index,
+                    extra={"bot_slot": slot_id, "bot_name": slot_name},
+                )
+                return
+            try:
+                await bot.set_webhook(
+                    url=expected_url,
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=False,
+                    secret_token=secret_token,
+                )
+            finally:
+                await db.release_bot_slot_lock(slot_id, lock_owner)
             logger.info(
                 "[webhook] repaired bot=%d reason=%s secret_fp=%s",
                 bot_index,
                 "url_mismatch" if mismatch else "secret_refresh",
                 _secret_fingerprint(secret_token),
+                extra={"bot_slot": slot_id, "bot_name": slot_name},
             )
     except telegram.error.TelegramError as exc:
         logger.warning("[webhook] validation_failed bot=%d error=%s", bot_index, exc)

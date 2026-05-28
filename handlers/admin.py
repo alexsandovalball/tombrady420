@@ -1556,11 +1556,6 @@ async def reinitbots_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     # Operators can restart the service to fully synchronize state,
                     # or call reinitialize_bots with the FastAPI app from a custom
                     # startup/admin HTTP endpoint.
-                    deleted = await db.clear_bot_file_id_cache()
-                    logger.info(
-                        "Cleared bot file-id cache before bot reinitialisation",
-                        extra={"deleted": deleted, "admin_id": update.effective_user.id},
-                    )
                     result = await reinitialize_bots(None)
                     logger.info("Background reinitialisation complete: %s", result)
                 except Exception:

@@ -321,6 +321,15 @@ class Database:
             """)
 
             await db.execute("""
+                CREATE TABLE IF NOT EXISTS bot_slot_locks (
+                    slot_id INTEGER PRIMARY KEY,
+                    owner TEXT NOT NULL,
+                    lock_until TIMESTAMP NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS canonical_media (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     product_id TEXT NOT NULL,
@@ -395,6 +404,16 @@ class Database:
                 ("inline_queries", "results_count", "INTEGER", True),
                 ("inline_queries", "is_empty_query", "INTEGER DEFAULT 0", True),
                 ("inline_queries", "query_length", "INTEGER", True),
+                ("bot_file_id_cache", "slot_id", "INTEGER", True),
+                ("bot_file_id_cache", "identity_hash", "TEXT", True),
+                ("bot_media_file_ids", "slot_id", "INTEGER", True),
+                ("bot_media_file_ids", "identity_hash", "TEXT", True),
+                ("bot_instances", "slot_id", "INTEGER", True),
+                ("bot_instances", "slot_name", "TEXT", True),
+                ("bot_instances", "identity_version", "INTEGER DEFAULT 1", True),
+                ("bot_instances", "identity_hash", "TEXT", True),
+                ("bot_instances", "webhook_secret", "TEXT", True),
+                ("bot_instances", "telegram_username", "TEXT", True),
             ]
 
             for table, column, definition, log_on_add in migrations:
@@ -478,9 +497,11 @@ class Database:
 
             # Bot file ID cache indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_file_id_cache_bot_username ON bot_file_id_cache(bot_username)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_file_id_cache_slot ON bot_file_id_cache(slot_id, identity_hash)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_canonical_media_product ON canonical_media(product_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_canonical_media_origin ON canonical_media(origin_chat_id, origin_message_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_media_file_ids_bot ON bot_media_file_ids(bot_identifier)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_media_file_ids_slot ON bot_media_file_ids(slot_id, identity_hash)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_media_file_ids_valid ON bot_media_file_ids(bot_identifier, is_valid)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_blocked_entities_user ON blocked_entities(telegram_user_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_blocked_entities_ip ON blocked_entities(ip_address)")
@@ -2450,15 +2471,28 @@ class Database:
         source_chat_id: int,
         source_message_id: int,
         file_index: int,
-        bot_username: str
+        bot_username: str,
+        slot_id: Optional[int] = None,
+        identity_hash: Optional[str] = None,
     ) -> Optional[str]:
         """Get cached bot-specific file ID from database."""
         async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("""
-                SELECT file_id FROM bot_file_id_cache
-                WHERE source_chat_id = ? AND source_message_id = ? 
-                  AND file_index = ? AND bot_username = ?
-            """, (source_chat_id, source_message_id, file_index, bot_username.lower())) as cursor:
+            if slot_id is not None:
+                sql = """
+                    SELECT file_id FROM bot_file_id_cache
+                    WHERE source_chat_id = ? AND source_message_id = ?
+                      AND file_index = ? AND slot_id = ?
+                      AND (? IS NULL OR identity_hash = ?)
+                """
+                params = (source_chat_id, source_message_id, file_index, slot_id, identity_hash, identity_hash)
+            else:
+                sql = """
+                    SELECT file_id FROM bot_file_id_cache
+                    WHERE source_chat_id = ? AND source_message_id = ?
+                      AND file_index = ? AND bot_username = ?
+                """
+                params = (source_chat_id, source_message_id, file_index, bot_username.lower())
+            async with db.execute(sql, params) as cursor:
                 row = await cursor.fetchone()
                 if row:
                     # Update usage stats
@@ -2479,16 +2513,18 @@ class Database:
         file_index: int,
         file_type: str,
         bot_username: str,
-        file_id: str
+        file_id: str,
+        slot_id: Optional[int] = None,
+        identity_hash: Optional[str] = None,
     ):
         """Cache a bot-specific file ID in database."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 INSERT OR REPLACE INTO bot_file_id_cache 
-                (source_chat_id, source_message_id, file_index, file_type, bot_username, file_id, created_at, last_used, use_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                (source_chat_id, source_message_id, file_index, file_type, bot_username, file_id, created_at, last_used, use_count, slot_id, identity_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
             """, (source_chat_id, source_message_id, file_index, file_type, 
-                  self.normalize_bot_username(bot_username), file_id, datetime.now(), datetime.now()))
+                  self.normalize_bot_username(bot_username), file_id, datetime.now(), datetime.now(), slot_id, identity_hash))
             await db.commit()
             logger.debug(f"Cached file ID for bot {bot_username}: msg={source_message_id}, idx={file_index}")
     
@@ -2578,20 +2614,29 @@ class Database:
             await db.commit()
             return row[0]
 
-    async def upsert_bot_media_file_id(self, bot_identifier: str, file_unique_id: str, resolved_file_id: str) -> None:
+    async def upsert_bot_media_file_id(
+        self,
+        bot_identifier: str,
+        file_unique_id: str,
+        resolved_file_id: str,
+        slot_id: Optional[int] = None,
+        identity_hash: Optional[str] = None,
+    ) -> None:
         if not bot_identifier or not file_unique_id or not resolved_file_id:
             return
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 INSERT INTO bot_media_file_ids
-                (bot_identifier, file_unique_id, resolved_file_id, last_verified_at, is_valid, created_at, updated_at)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                (bot_identifier, file_unique_id, resolved_file_id, last_verified_at, is_valid, created_at, updated_at, slot_id, identity_hash)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?)
                 ON CONFLICT(bot_identifier, file_unique_id) DO UPDATE SET
                     resolved_file_id = excluded.resolved_file_id,
                     last_verified_at = CURRENT_TIMESTAMP,
                     is_valid = 1,
+                    slot_id = COALESCE(excluded.slot_id, bot_media_file_ids.slot_id),
+                    identity_hash = COALESCE(excluded.identity_hash, bot_media_file_ids.identity_hash),
                     updated_at = CURRENT_TIMESTAMP
-            """, (bot_identifier, file_unique_id, resolved_file_id))
+            """, (bot_identifier, file_unique_id, resolved_file_id, slot_id, identity_hash))
             await db.commit()
             logger.info("[media_registry] bot_media_mapping_upsert bot=%s", bot_identifier)
 
@@ -2610,15 +2655,25 @@ class Database:
         source_chat_id: int,
         source_message_id: int,
         file_index: int,
-        bot_username: str
+        bot_username: str,
+        slot_id: Optional[int] = None,
+        identity_hash: Optional[str] = None,
     ):
         """Delete a specific bot file ID cache entry (used when cached ID is invalid)."""
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                DELETE FROM bot_file_id_cache
-                WHERE source_chat_id = ? AND source_message_id = ? 
-                  AND file_index = ? AND bot_username = ?
-            """, (source_chat_id, source_message_id, file_index, self.normalize_bot_username(bot_username)))
+            if slot_id is not None:
+                await db.execute("""
+                    DELETE FROM bot_file_id_cache
+                    WHERE source_chat_id = ? AND source_message_id = ?
+                      AND file_index = ? AND slot_id = ?
+                      AND (? IS NULL OR identity_hash = ?)
+                """, (source_chat_id, source_message_id, file_index, slot_id, identity_hash, identity_hash))
+            else:
+                await db.execute("""
+                    DELETE FROM bot_file_id_cache
+                    WHERE source_chat_id = ? AND source_message_id = ? 
+                      AND file_index = ? AND bot_username = ?
+                """, (source_chat_id, source_message_id, file_index, self.normalize_bot_username(bot_username)))
             await db.commit()
             logger.debug(f"Deleted invalid cache entry: bot={bot_username}, msg={source_message_id}, idx={file_index}")
 
@@ -2634,6 +2689,51 @@ class Database:
             logger.info(f"Cleared {deleted} bot file ID cache entries for @{bot_username}")
             return deleted
 
+    async def clear_bot_file_id_cache_for_slot(self, slot_id: int) -> int:
+        """Clear cached file IDs for one permanent bot slot only."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                DELETE FROM bot_file_id_cache
+                WHERE slot_id = ?
+                   OR (
+                        slot_id IS NULL
+                        AND bot_username IN (
+                            SELECT bot_username FROM bot_instances WHERE slot_id = ?
+                        )
+                   )
+                """,
+                (slot_id, slot_id)
+            )
+            deleted = cursor.rowcount
+            await db.commit()
+            logger.info("Cleared bot file ID cache for slot %s entries=%s", slot_id, deleted)
+            return deleted
+
+    async def clear_bot_media_file_ids_for_slot(self, slot_id: int) -> int:
+        """Invalidate resolver/media mappings for one permanent bot slot only."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                UPDATE bot_media_file_ids
+                SET is_valid = 0, updated_at = CURRENT_TIMESTAMP
+                WHERE slot_id = ?
+                   OR (
+                        slot_id IS NULL
+                        AND bot_identifier IN (
+                            SELECT identity_hash FROM bot_instances WHERE slot_id = ?
+                            UNION
+                            SELECT bot_username FROM bot_instances WHERE slot_id = ?
+                        )
+                   )
+                """,
+                (slot_id, slot_id, slot_id)
+            )
+            changed = cursor.rowcount
+            await db.commit()
+            logger.info("Invalidated bot media resolver cache for slot %s entries=%s", slot_id, changed)
+            return changed
+
     async def register_bot_instance(self, bot_username: str, bot_id: int, token_hash: str):
         """Register or update a bot instance record."""
         now = datetime.now()
@@ -2648,6 +2748,84 @@ class Database:
             """, (self.normalize_bot_username(bot_username), bot_id, token_hash, now, now))
             await db.commit()
             logger.debug(f"Registered bot instance: @{bot_username} (id={bot_id})")
+
+    async def get_bot_slot_identity(self, slot_id: int) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM bot_instances WHERE slot_id = ?",
+                (slot_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def register_bot_slot(
+        self,
+        slot_id: int,
+        slot_name: str,
+        telegram_username: str,
+        telegram_bot_id: int,
+        token_hash: str,
+        identity_version: int,
+        identity_hash: str,
+        webhook_secret: str,
+    ) -> None:
+        """Register/update permanent slot identity while preserving username APIs."""
+        now = datetime.now()
+        normalized_username = self.normalize_bot_username(telegram_username)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO bot_instances (
+                    bot_username, bot_id, token_hash, first_seen, last_seen,
+                    slot_id, slot_name, identity_version, identity_hash,
+                    webhook_secret, telegram_username
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(bot_username) DO UPDATE SET
+                    bot_id = excluded.bot_id,
+                    token_hash = excluded.token_hash,
+                    last_seen = excluded.last_seen,
+                    slot_id = excluded.slot_id,
+                    slot_name = excluded.slot_name,
+                    identity_version = excluded.identity_version,
+                    identity_hash = excluded.identity_hash,
+                    webhook_secret = excluded.webhook_secret,
+                    telegram_username = excluded.telegram_username
+            """, (
+                normalized_username, telegram_bot_id, token_hash, now, now,
+                slot_id, slot_name, identity_version, identity_hash,
+                webhook_secret, normalized_username,
+            ))
+            await db.commit()
+
+    async def acquire_bot_slot_lock(self, slot_id: int, owner: str, ttl_seconds: int = 60) -> bool:
+        """Acquire a lightweight SQLite lock for one bot slot."""
+        expires = datetime.now() + timedelta(seconds=ttl_seconds)
+        now = datetime.now()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT lock_until FROM bot_slot_locks WHERE slot_id = ?",
+                (slot_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row and datetime.fromisoformat(str(row[0])) > now:
+                await db.rollback()
+                return False
+            await db.execute("""
+                INSERT OR REPLACE INTO bot_slot_locks (slot_id, owner, lock_until, updated_at)
+                VALUES (?, ?, ?, ?)
+            """, (slot_id, owner, expires.isoformat(), now.isoformat()))
+            await db.commit()
+            return True
+
+    async def release_bot_slot_lock(self, slot_id: int, owner: str) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "DELETE FROM bot_slot_locks WHERE slot_id = ? AND owner = ?",
+                (slot_id, owner)
+            )
+            await db.commit()
 
     async def has_bot_token_changed(self, bot_username: str, token_hash: str) -> bool:
         """Check if the bot token has changed since last run. Returns True if changed."""

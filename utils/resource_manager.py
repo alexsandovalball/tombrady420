@@ -29,6 +29,7 @@ TMP_FILE_MAX_AGE_SECONDS = int(TMP_FILE_MAX_AGE_HOURS * 3600)
 
 APP_TMP_DIR = Path(os.getenv("APP_TMP_DIR", Path(tempfile.gettempdir()) / "brady_app_tmp"))
 APP_CACHE_DIR = Path(os.getenv("APP_CACHE_DIR", Path(tempfile.gettempdir()) / "brady_app_cache"))
+BOT_TMP_ROOT = Path(os.getenv("BOT_TMP_ROOT", Path(tempfile.gettempdir()) / "bradycadia"))
 _last_emergency_cleanup = 0.0
 
 
@@ -81,6 +82,35 @@ class MemoryLRUCache:
 def ensure_resource_dirs() -> None:
     APP_TMP_DIR.mkdir(parents=True, exist_ok=True)
     APP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    BOT_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def get_bot_temp_dir(slot_id: int) -> Path:
+    return BOT_TMP_ROOT / f"bot_{slot_id}"
+
+
+def clear_bot_temp_dir(slot_id: int) -> tuple[int, int]:
+    path = get_bot_temp_dir(slot_id)
+    removed = 0
+    freed = 0
+    if not path.exists():
+        return removed, freed
+    for item in path.rglob("*"):
+        try:
+            if item.is_file():
+                size = item.stat().st_size
+                item.unlink()
+                removed += 1
+                freed += size
+        except (OSError, FileNotFoundError):
+            continue
+    for item in sorted(path.rglob("*"), reverse=True):
+        try:
+            if item.is_dir():
+                item.rmdir()
+        except OSError:
+            continue
+    return removed, freed
 
 
 def _dir_size(path: Path) -> int:
@@ -101,10 +131,12 @@ def get_tmp_usage() -> dict:
     usage = shutil.disk_usage(tmp_root)
     return {
         "path": str(tmp_root),
-        "used_bytes": usage.used,
+        "used_bytes": _dir_size(APP_TMP_DIR) + _dir_size(BOT_TMP_ROOT),
+        "filesystem_used_bytes": usage.used,
         "free_bytes": usage.free,
         "total_bytes": usage.total,
         "app_tmp_bytes": _dir_size(APP_TMP_DIR),
+        "bot_tmp_bytes": _dir_size(BOT_TMP_ROOT),
     }
 
 
