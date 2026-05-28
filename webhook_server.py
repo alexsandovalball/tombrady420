@@ -74,6 +74,7 @@ _bot_applications = []
 _webhook_secret_tokens: List[Optional[str]] = []
 _bot_slots: Dict[int, BotSlot] = {}
 _catalog_db = Database()
+_webhook_processing_locks: Dict[int, asyncio.Lock] = {}
 
 # Per-process counter for webhook 401 rejections (in-memory, not persisted).
 # Useful for setting alerts: check logs for [WEBHOOK_401] or watch this counter
@@ -587,6 +588,49 @@ def _secret_fingerprint(value: Optional[str]) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 
+def _slot_id_for_bot_index(bot_index: int) -> int:
+    """Canonical mapping: bot_token_N, route bot_index N, and DB slot_id N."""
+    return bot_index
+
+
+def _get_webhook_processing_lock(bot_index: int) -> asyncio.Lock:
+    lock = _webhook_processing_locks.get(bot_index)
+    if lock is None:
+        lock = asyncio.Lock()
+        _webhook_processing_locks[bot_index] = lock
+    return lock
+
+
+def _validate_bot_slot_registry(bot_count: int) -> None:
+    """Log slot registry inconsistencies without blocking partial startup."""
+    seen_slot_ids: Dict[int, int] = {}
+    for bot_index, slot in _bot_slots.items():
+        if slot.slot_id in seen_slot_ids:
+            logger.error(
+                "[bot_identity] duplicate_slot_id slot=%s first_bot=%s duplicate_bot=%s",
+                slot.slot_id,
+                seen_slot_ids[slot.slot_id],
+                bot_index,
+            )
+        seen_slot_ids[slot.slot_id] = bot_index
+        expected_slot_id = _slot_id_for_bot_index(bot_index)
+        expected_slot_name = f"bot_token_{expected_slot_id}"
+        if slot.slot_id != expected_slot_id or slot.slot_name != expected_slot_name:
+            logger.error(
+                "[bot_identity] slot_mapping_mismatch bot=%s slot_id=%s expected_slot_id=%s slot_name=%s expected_slot_name=%s",
+                bot_index,
+                slot.slot_id,
+                expected_slot_id,
+                slot.slot_name,
+                expected_slot_name,
+            )
+        if not slot.identity_hash or not slot.webhook_secret:
+            logger.error("[bot_identity] missing_identity_material bot=%s slot=%s", bot_index, slot.slot_id)
+
+    if bot_count > 0 and 0 not in seen_slot_ids:
+        logger.error("[bot_identity] missing_slot_0")
+
+
 def get_bot_usernames() -> List[str]:
     """Get list of bot usernames for all registered bots (normalized to lowercase)."""
     usernames = []
@@ -745,7 +789,7 @@ async def setup_application(bot_token: str, bot_index: int = 0):
         deterministic value derived from bot_token registered with Telegram for
         this bot, or None if webhook mode is not active.
     """
-    slot_id = bot_index + 1
+    slot_id = _slot_id_for_bot_index(bot_index)
     slot_name = f"bot_token_{slot_id}"
     token_suffix = bot_token[-6:] if bot_token else "empty"
     logger.info(
@@ -948,7 +992,7 @@ async def _validate_or_repair_webhook(
     slot: Optional[BotSlot] = None,
 ) -> None:
     """Validate webhook URL/state and repair safely without dropping pending updates."""
-    slot_id = slot.slot_id if slot else bot_index + 1
+    slot_id = slot.slot_id if slot else _slot_id_for_bot_index(bot_index)
     slot_name = slot.slot_name if slot else f"bot_token_{slot_id}"
     lock_owner = f"{os.getenv('RENDER_INSTANCE_ID') or os.getenv('HOSTNAME') or os.getpid()}:{slot_name}"
     expected_url = f"{webhook_url}{webhook_path}"
@@ -1095,6 +1139,7 @@ async def lifespan(app: FastAPI):
         startup_summary["failed"],
         startup_summary["skipped"],
     )
+    _validate_bot_slot_registry(len(bot_tokens))
     
     # Store in global registry for notification service access
     _bot_applications = bot_apps
@@ -3076,7 +3121,8 @@ async def process_webhook_request(request: Request, bot_index: int):
                 request_id, bot_index, update.update_id,
             )
 
-        await bot_app.process_update(update)
+        async with _get_webhook_processing_lock(bot_index):
+            await bot_app.process_update(update)
 
         duration_ms = (_time.monotonic() - _t0) * 1000
         record_webhook_result(bot_index=bot_index, success=True, duration_ms=duration_ms)

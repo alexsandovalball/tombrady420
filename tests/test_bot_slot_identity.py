@@ -33,6 +33,13 @@ def test_bot_slot_uses_permanent_slot_name_not_username():
     assert slot.token_hash == build_token_hash("999:TOKEN")
 
 
+def test_webhook_bot_index_maps_to_same_slot_id():
+    import webhook_server
+
+    assert webhook_server._slot_id_for_bot_index(0) == 0
+    assert webhook_server._slot_id_for_bot_index(9) == 9
+
+
 @pytest.mark.asyncio
 async def test_per_slot_cache_invalidation_leaves_other_slots(tmp_path):
     from database import Database
