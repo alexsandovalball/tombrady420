@@ -59,7 +59,7 @@ from utils.resource_manager import (
     get_tmp_usage,
     startup_cleanup,
 )
-from utils.webhook_identity import BotSlot, build_bot_slot
+from utils.webhook_identity import BotSlot, build_bot_slot, build_webhook_secret
 from middleware.request_deduplicator import RequestDeduplicator
 from configs.telegram_ip_whitelist import is_telegram_ip
 
@@ -82,8 +82,15 @@ _webhook_processing_locks: Dict[int, asyncio.Lock] = {}
 _webhook_401_counter: int = 0
 
 # Media cache configuration. Disk cache is app-owned, bounded, and image-only.
+MEDIA_STORAGE_MODE = os.getenv("MEDIA_STORAGE_MODE", "temp").strip().lower()
+if MEDIA_STORAGE_MODE not in {"temp", "persistent"}:
+    logger.warning("Invalid MEDIA_STORAGE_MODE=%s; falling back to temp", MEDIA_STORAGE_MODE)
+    MEDIA_STORAGE_MODE = "temp"
 MEDIA_CACHE_DIR = Path(os.getenv("MEDIA_CACHE_DIR", APP_CACHE_DIR / "media"))
-MEDIA_CACHE_ENABLED = os.getenv("MEDIA_CACHE_ENABLED", "true").lower() not in {"0", "false", "no"}
+MEDIA_CACHE_ENABLED = (
+    MEDIA_STORAGE_MODE == "persistent"
+    and os.getenv("MEDIA_CACHE_ENABLED", "true").lower() not in {"0", "false", "no"}
+)
 MEDIA_CACHE_TTL_SECONDS = int(os.getenv("MEDIA_CACHE_TTL_SECONDS", "300"))
 MEDIA_CACHE_CLEANUP_INTERVAL_SECONDS = int(os.getenv("MEDIA_CACHE_CLEANUP_INTERVAL_SECONDS", "60"))
 MEDIA_CACHE_MAX_SIZE_MB = min(int(os.getenv("MEDIA_CACHE_MAX_SIZE_MB", "250")), 250)
@@ -581,6 +588,11 @@ def _get_expected_secret_token(
     return _bots_config_tokens.get(bot_index)
 
 
+def rebuild_webhook_secrets_from_tokens(tokens: List[str]) -> List[Optional[str]]:
+    """Rebuild current expected webhook secrets from configured tokens."""
+    return [build_webhook_secret(idx, token) if token else None for idx, token in enumerate(tokens)]
+
+
 def _secret_fingerprint(value: Optional[str]) -> str:
     """Return a short irreversible fingerprint for webhook-secret diagnostics."""
     if not isinstance(value, str) or not value:
@@ -882,11 +894,22 @@ async def setup_application(bot_token: str, bot_index: int = 0):
                     "identity_version": previous_version,
                 },
             )
-            try:
-                await bot_app.bot.delete_webhook(drop_pending_updates=False)
-            except telegram.error.TelegramError as exc:
-                logger.warning("[bot_identity] delete_webhook_failed slot=%s error=%s", slot_id, exc)
-            await reset_bot_identity(slot_id)
+            if previous_slot.get("identity_hash") != provisional_slot.identity_hash:
+                try:
+                    await bot_app.bot.delete_webhook(drop_pending_updates=False)
+                except telegram.error.TelegramError as exc:
+                    logger.warning("[bot_identity] delete_webhook_failed slot=%s error=%s", slot_id, exc)
+                await reset_bot_identity(slot_id)
+            else:
+                logger.info(
+                    "[bot_identity] token_refreshed_identity_preserved",
+                    extra={
+                        "bot_slot": slot_id,
+                        "bot_name": slot_name,
+                        "bot_username": f"@{bot_username}" if bot_username else None,
+                        "identity_version": previous_version,
+                    },
+                )
 
         slot = provisional_slot
         _bot_slots[bot_index] = slot

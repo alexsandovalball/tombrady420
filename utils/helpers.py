@@ -27,6 +27,18 @@ def resolve_stable_bot_identifier(bot_or_username, fallback: str = "unknown") ->
     return fallback
 
 
+def resolve_admin_scope(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Dict[str, object]:
+    """Return explicit global admin scope metadata for multi-bot admin actions."""
+    bot = getattr(context, "bot", None)
+    bot_data = getattr(context, "bot_data", {}) or {}
+    return {
+        "admin_scope": "global",
+        "runtime_bot_username": (getattr(bot, "username", None) or "").lower() or None,
+        "runtime_bot_slot": bot_data.get("bot_slot"),
+        "runtime_bot_identity": bot_data.get("identity_hash"),
+    }
+
+
 def _extract_media_identity(message, file_type: str):
     """Return (file_id, file_unique_id, mime_type, file_size) from a Telegram message."""
     media = None

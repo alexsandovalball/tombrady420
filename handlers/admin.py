@@ -17,7 +17,7 @@ except Exception as exc:
 
     def invalidate_webapp_caches(reason: str = "") -> int:
         return 0
-from utils.helpers import is_admin, get_channel_id, get_channel_username, escape_markdown_v1
+from utils.helpers import is_admin, get_channel_id, get_channel_username, escape_markdown_v1, resolve_admin_scope
 from utils.safe_send import safe_send_message, safe_edit_message_text
 from utils.decorators import command_admin_required
 from middleware.rate_limiter import add_permanent_ip_block, remove_permanent_ip_block
@@ -395,6 +395,7 @@ async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE, pro
     user_id = update.effective_user.id
     query = update.callback_query
     chat_id = update.effective_chat.id if update.effective_chat else None
+    admin_scope = resolve_admin_scope(update, context)
 
     async def _send_delete_feedback(text: str, keyboard=None) -> None:
         edit_result = None
@@ -452,7 +453,7 @@ async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE, pro
             await _send_delete_feedback("✅ Product deleted successfully!", keyboard)
             logger.info(
                 "Product deleted",
-                extra={"product_id": product_id, "admin_id": user_id},
+                extra={"product_id": product_id, "admin_id": user_id, **admin_scope},
             )
         else:
             await _send_delete_feedback("❌ Failed to delete product.")
@@ -460,7 +461,7 @@ async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE, pro
     except Exception as e:
         logger.error(
             "Error deleting product",
-            extra={"product_id": product_id, "admin_id": user_id, "error": str(e)},
+            extra={"product_id": product_id, "admin_id": user_id, "error": str(e), **admin_scope},
             exc_info=True,
         )
         if query:
@@ -1517,8 +1518,8 @@ async def reinitbots_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         lines = ["🔍 *Webhook Secret Dry-Run* (no changes made)\n"]
         for idx, token in enumerate(tokens):
             # Derive the expected secret from the token (same logic as setup_application)
-            import hashlib
-            current_secret = hashlib.sha256(token.encode()).hexdigest()[:64]
+            from utils.webhook_identity import build_webhook_secret
+            current_secret = build_webhook_secret(idx, token)
             current_prefix = current_secret[:8]
 
             history = _webhook_secret_history.get(idx, [None, None])

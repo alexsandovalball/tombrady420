@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
 from dataclasses import dataclass
 from typing import Optional
 
 
 GLOBAL_SALT = os.getenv("WEBHOOK_IDENTITY_SALT", "bradycadia")
+WEBHOOK_SECRET_KEY = os.getenv("WEBHOOK_SECRET_KEY", GLOBAL_SALT)
 
 
 def _sha256(value: str) -> str:
@@ -22,8 +24,25 @@ def build_identity_hash(slot_id: int, telegram_token: str, identity_version: int
     return _sha256(f"{slot_id}:{telegram_token}:{identity_version}:{global_salt}")
 
 
+def resolve_bot_identity(
+    telegram_token: str,
+    *,
+    telegram_bot_id: Optional[int] = None,
+    global_salt: str = GLOBAL_SALT,
+) -> str:
+    """Return the canonical bot identity used for token-order-independent namespaces."""
+    if telegram_bot_id:
+        return _sha256(f"telegram_bot_id:{telegram_bot_id}:{global_salt}")
+    return _sha256(f"token:{telegram_token}:{global_salt}")
+
+
 def build_webhook_secret(slot_id: int, telegram_token: str, identity_version: int = 1, global_salt: str = GLOBAL_SALT) -> str:
-    return build_identity_hash(slot_id, telegram_token, identity_version, global_salt)
+    """Derive Telegram webhook secret from the token only, never slot position."""
+    return hmac.new(
+        WEBHOOK_SECRET_KEY.encode("utf-8"),
+        telegram_token.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -49,7 +68,7 @@ def build_bot_slot(
 ) -> BotSlot:
     slot_name = f"bot_token_{slot_id}"
     token_hash = build_token_hash(telegram_token)
-    identity_hash = build_identity_hash(slot_id, telegram_token, identity_version)
+    identity_hash = resolve_bot_identity(telegram_token, telegram_bot_id=telegram_bot_id)
     return BotSlot(
         slot_id=slot_id,
         slot_name=slot_name,

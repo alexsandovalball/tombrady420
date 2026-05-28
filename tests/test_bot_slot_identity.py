@@ -7,6 +7,7 @@ from utils.resource_manager import clear_bot_temp_dir, get_bot_temp_dir
 from utils.webhook_identity import (
     build_bot_slot,
     build_identity_hash,
+    resolve_bot_identity,
     build_token_hash,
     build_webhook_secret,
 )
@@ -16,7 +17,27 @@ def test_webhook_secret_generation_is_deterministic():
     first = build_webhook_secret(9, "999:TOKEN", 2, "salt")
     second = build_webhook_secret(9, "999:TOKEN", 2, "salt")
     assert first == second
-    assert first != build_webhook_secret(8, "999:TOKEN", 2, "salt")
+    assert first == build_webhook_secret(8, "999:TOKEN", 2, "salt")
+    assert first != build_webhook_secret(9, "888:TOKEN", 2, "salt")
+
+
+def test_bot_identity_prefers_telegram_bot_id_over_runtime_slot():
+    first = build_bot_slot(1, "old-token", telegram_bot_id=12345)
+    second = build_bot_slot(9, "new-token", telegram_bot_id=12345)
+
+    assert first.identity_hash == second.identity_hash
+    assert first.webhook_secret != second.webhook_secret
+
+
+def test_token_identity_is_stable_when_environment_order_changes():
+    token_a = "111:AAA"
+    token_b = "222:BBB"
+    original_order = [build_webhook_secret(idx, token) for idx, token in enumerate([token_a, token_b])]
+    swapped_order = [build_webhook_secret(idx, token) for idx, token in enumerate([token_b, token_a])]
+
+    assert original_order[0] == swapped_order[1]
+    assert original_order[1] == swapped_order[0]
+    assert resolve_bot_identity(token_a) == resolve_bot_identity(token_a)
 
 
 def test_identity_hash_regenerates_when_token_changes():
