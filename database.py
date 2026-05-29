@@ -1036,13 +1036,23 @@ class Database:
         If periodic maintenance is required, call ``run_maintenance()`` from a
         scheduled job instead.
         """
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("DELETE FROM products WHERE id = ?", (product_id,))
-            await db.commit()
-            deleted = cursor.rowcount > 0
-            if deleted:
-                logger.info(f"Product deleted: ID={product_id}")
-            return deleted
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute("DELETE FROM products WHERE id = ?", (product_id,))
+                await db.commit()
+                deleted = cursor.rowcount > 0
+                if deleted:
+                    logger.info(f"Product deleted: ID={product_id}")
+                return deleted
+        except aiosqlite.DatabaseError as exc:
+            if "malformed" in str(exc).lower() or "corrupt" in str(exc).lower():
+                logger.critical(
+                    "SQLite corruption detected while deleting product_id=%s. "
+                    "Run scripts/sqlite_doctor.py against an offline copy of the database before retrying deletes.",
+                    product_id,
+                    exc_info=True,
+                )
+            raise
     
     async def get_product_by_message(self, message_id: int, chat_id: int) -> Optional[Dict[str, Any]]:
         """Get product by message_id and chat_id."""

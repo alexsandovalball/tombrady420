@@ -104,7 +104,7 @@ class RequestDeduplicator:
                 if age < self.ttl:
                     logger.info(
                         "[dedup] Duplicate callback suppressed: "
-                        "bot=%d user_id=%d data=%r age=%.2fs",
+                        "bot=%s user_id=%d data=%r age=%.2fs",
                         bot_index,
                         user_id,
                         callback_data,

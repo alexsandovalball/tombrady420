@@ -11,7 +11,7 @@ from telegram.ext import (
     Application,
     ContextTypes
 )
-from telegram.error import TelegramError
+from telegram.error import BadRequest, TelegramError
 
 from configs.config import Config, ConfigError
 from database import Database
@@ -393,7 +393,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     # Don't answer callback query upfront for long-running operations
     # These callbacks will answer the query themselves to avoid timeout errors
     if callback_data not in LONG_RUNNING_CALLBACKS:
-        await query.answer()  # Answer callback to prevent loading spinner
+        try:
+            await query.answer()  # Answer callback to prevent loading spinner
+        except BadRequest as exc:
+            if "query is too old" not in str(exc).lower():
+                raise
+            logger.info("Ignoring expired callback query answer for data=%r", callback_data)
 
     await route_callback(update, context, query, callback_data, user_id)
 
