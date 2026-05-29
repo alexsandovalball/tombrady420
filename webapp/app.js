@@ -2476,9 +2476,13 @@
                     
                     video.addEventListener('error', async (e) => {
                         clearTimeout(videoLoadTimeout);
-                        // Check if this is a large file error by fetching the URL
+                        // Check if this is a large-file response without downloading
+                        // the entire video again. A plain fetch(mediaUrl) turns one
+                        // playback failure into a full duplicate 10-50MB download.
                         try {
-                            const response = await fetch(mediaUrl);
+                            const response = await fetch(mediaUrl, {
+                                headers: { Range: 'bytes=0-0' }
+                            });
                             if (response.status === 413 && response.headers.get('content-type')?.includes('application/json')) {
                                 const errorData = await response.json();
                                 mediaViewer.innerHTML = `
