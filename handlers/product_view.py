@@ -7,6 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMe
 from telegram.ext import ContextTypes
 from database import Database
 from configs.config import Config
+from utils.deeplinks import build_webapp_product_url
 from utils.helpers import send_media_message, is_admin, get_user_lang_async
 from utils.safe_send import safe_send_message
 from utils.media_resolver import MediaResolver
@@ -30,8 +31,9 @@ def _build_media_unavailable_text(product: dict, caption: str) -> str:
 
 def _build_media_fallback_keyboard(product_id: int, bot_username: str, back_callback: str):
     buttons = []
-    if Config.WEB_APP_URL:
-        buttons.append([InlineKeyboardButton("Open in WebApp", url=Config.WEB_APP_URL)])
+    webapp_deep_link = build_webapp_product_url(Config.WEB_APP_URL, product_id)
+    if webapp_deep_link:
+        buttons.append([InlineKeyboardButton("Open in WebApp", url=webapp_deep_link)])
     if bot_username:
         buttons.append([InlineKeyboardButton("Open inline search", switch_inline_query_current_chat=str(product_id))])
     buttons.append([InlineKeyboardButton("Retry media", callback_data=f"product|{product_id}")])

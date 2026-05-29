@@ -2218,11 +2218,9 @@ async def get_categories(request: Request, lang: str = "en"):
             headers={"Cache-Control": "public, max-age=60"}
         )
     
-    # Get product counts for all categories
-    category_counts = await _catalog_db.get_all_category_counts()
-    
-    # Get all subcategories with counts in a single query (optimization)
-    all_subcategories = await _catalog_db.get_all_subcategories_with_counts()
+    category_counts, all_subcategories, all_products_count = await _catalog_db.get_category_summary(
+        EXCLUDED_FROM_ALL_PRODUCTS
+    )
     
     # Build category structure
     categories = []
@@ -2270,9 +2268,6 @@ async def get_categories(request: Request, lang: str = "en"):
                 })
         
         categories.append(category_data)
-    
-    # Add "All Products" count
-    all_products_count = await _catalog_db.count_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
     
     payload = json.dumps({
         "categories": categories,

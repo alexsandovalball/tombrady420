@@ -128,3 +128,33 @@ async def test_get_products_page_matches_existing_filters(db):
     )
     assert total == 1
     assert products[0]["id"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_category_summary_matches_existing_counts(db):
+    await db.init_db()
+
+    rows = [
+        (1, "a", "photo", "first", 1, -100, "FLOWER", "EXOTICS"),
+        (2, "b", "photo", "second", 2, -100, "FLOWER", "EXOTICS"),
+        (3, "c", "photo", "third", 3, -100, "FLOWER", "INDOOR"),
+        (4, "d", "photo", "hidden", 4, -100, "DATEDPROOFS", None),
+    ]
+    async with aiosqlite.connect(db.db_path) as conn:
+        for row in rows:
+            await conn.execute(
+                """
+                INSERT INTO products (id, file_id, file_type, caption, message_id, chat_id, category, subcategory)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                row,
+            )
+        await conn.commit()
+
+    category_counts, subcategory_counts, all_products_count = await db.get_category_summary(["DATEDPROOFS"])
+
+    assert category_counts["FLOWER"] == 3
+    assert category_counts["DATEDPROOFS"] == 1
+    assert all_products_count == 3
+    flower_counts = {item["subcategory"]: item["count"] for item in subcategory_counts["FLOWER"]}
+    assert flower_counts == {"EXOTICS": 2, "INDOOR": 1}

@@ -1352,6 +1352,50 @@ class Database:
                         result[category] = []
                     result[category].append({"subcategory": row[1], "count": row[2]})
                 return result
+
+    async def get_category_summary(self, excluded_categories: List[str]) -> tuple[Dict[str, int], Dict[str, List[Dict[str, Any]]], int]:
+        """Return category counts, subcategory counts, and storefront total in one connection."""
+        async with self.get_connection() as db:
+            async with db.execute("""
+                SELECT category, COUNT(*) as count
+                FROM products
+                WHERE category IS NOT NULL
+                GROUP BY category
+            """) as cursor:
+                rows = await cursor.fetchall()
+                category_counts = {row[0]: row[1] for row in rows}
+
+            async with db.execute("""
+                SELECT category, subcategory, COUNT(*) as count
+                FROM products
+                WHERE subcategory IS NOT NULL
+                GROUP BY category, subcategory
+                ORDER BY category, subcategory
+            """) as cursor:
+                rows = await cursor.fetchall()
+                subcategory_counts: Dict[str, List[Dict[str, Any]]] = {}
+                for row in rows:
+                    subcategory_counts.setdefault(row[0], []).append({
+                        "subcategory": row[1],
+                        "count": row[2],
+                    })
+
+            if excluded_categories:
+                placeholders = ",".join("?" * len(excluded_categories))
+                total_sql = f"""
+                    SELECT COUNT(*) FROM products
+                    WHERE category IS NULL OR category = '' OR category NOT IN ({placeholders})
+                """
+                total_params = excluded_categories
+            else:
+                total_sql = "SELECT COUNT(*) FROM products"
+                total_params = []
+
+            async with db.execute(total_sql, total_params) as cursor:
+                row = await cursor.fetchone()
+                all_products_count = row[0] if row else 0
+
+            return category_counts, subcategory_counts, all_products_count
     
     async def update_product_category(self, product_id: int, category: str, subcategory: Optional[str] = None):
         """Update a product's category, subcategory, and timestamp.

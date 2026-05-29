@@ -24,6 +24,7 @@ from telegram.ext import ContextTypes
 
 from database import Database
 from configs.config import Config
+from utils.deeplinks import build_bot_product_url, build_webapp_product_url
 from utils.fuzzy_search import fuzzy_search_products
 from utils.helpers import get_bot_username, escape_markdown_v1
 from utils.media_resolver import MediaResolver
@@ -75,7 +76,12 @@ def _build_product_url(product_id: int, bot_username: str) -> Optional[str]:
 
     ``bot_deep_link`` always points to the Telegram bot via ``t.me``.
     """
-    return f"https://t.me/{bot_username}?start=product_{product_id}" if bot_username else None
+    return build_bot_product_url(product_id, bot_username)
+
+
+def _build_product_webapp_url(product_id: int) -> Optional[str]:
+    """Return the WebApp deep link for a product."""
+    return build_webapp_product_url(Config.WEB_APP_URL, product_id)
 
 
 async def _build_product_article(
@@ -114,12 +120,13 @@ async def _build_product_article(
 
     # Build the inline buttons using the correct domain for deep links
     bot_deep_link = _build_product_url(product_id, bot_username)
+    webapp_deep_link = _build_product_webapp_url(product_id)
 
     buttons = []
     if bot_deep_link:
         buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
-    if Config.WEB_APP_URL:
-        buttons.append(InlineKeyboardButton("🛍️ Shop", url=Config.WEB_APP_URL))
+    if webapp_deep_link:
+        buttons.append(InlineKeyboardButton("🛍️ View in WebApp", url=webapp_deep_link))
     reply_markup = InlineKeyboardMarkup([buttons]) if buttons else None
 
     # Caption / message text shown when the result is shared (no ID shown to users)
@@ -525,11 +532,12 @@ async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFA
 
         # Build action buttons using correct domain
         bot_deep_link = _build_product_url(product_id, bot_username)
+        webapp_deep_link = _build_product_webapp_url(product_id)
         buttons = []
         if bot_deep_link:
             buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
-        if Config.WEB_APP_URL:
-            buttons.append(InlineKeyboardButton("🛍️ Shop", url=Config.WEB_APP_URL))
+        if webapp_deep_link:
+            buttons.append(InlineKeyboardButton("🛍️ View in WebApp", url=webapp_deep_link))
         reply_markup = InlineKeyboardMarkup([buttons]) if buttons else None
 
         file_id = product.get("file_id")

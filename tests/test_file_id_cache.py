@@ -179,6 +179,34 @@ class TestGetBotSpecificFileIdCacheMiss:
             message_id=forwarded_msg.message_id,
         )
 
+    @pytest.mark.asyncio
+    async def test_deletes_forwarded_message_when_cache_write_fails(self):
+        """Forwarded admin-chat media must be cleaned up even if DB caching fails."""
+        bot = _make_bot()
+        forwarded_msg = _make_forwarded_photo("SOME_FILE_ID")
+        bot.forward_message.return_value = forwarded_msg
+
+        with patch("utils.helpers._db") as mock_db, \
+             patch("utils.helpers.get_admin_ids", return_value=[444]):
+            mock_db.get_canonical_media_by_origin = AsyncMock(return_value=None)
+            mock_db.get_bot_file_id = AsyncMock(return_value=None)
+            mock_db.cache_bot_file_id = AsyncMock(side_effect=RuntimeError("db unavailable"))
+
+            from utils.helpers import get_bot_specific_file_id
+            result = await get_bot_specific_file_id(
+                bot_or_context=bot,
+                source_chat_id=-1001,
+                source_message_id=7,
+                file_type="photo",
+                file_index=0,
+            )
+
+        assert result is None
+        bot.delete_message.assert_awaited_once_with(
+            chat_id=444,
+            message_id=forwarded_msg.message_id,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Invalid cached file_id (cache invalidation)

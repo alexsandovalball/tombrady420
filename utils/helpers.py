@@ -503,6 +503,17 @@ async def get_bot_specific_file_id(
         return None
     
     target_chat_id = admin_ids[0]
+
+    async def _delete_forwarded_message(forwarded_message) -> None:
+        message_id = getattr(forwarded_message, "message_id", None)
+        if not message_id:
+            logger.warning("[get_bot_specific_file_id] Forwarded message had no message_id; cannot delete admin-chat copy")
+            return
+        try:
+            await bot.delete_message(chat_id=target_chat_id, message_id=message_id)
+            logger.debug("[get_bot_specific_file_id] Deleted forwarded message from admin chat")
+        except Exception as e:
+            logger.warning("[get_bot_specific_file_id] Could not delete forwarded message: %s", e)
     
     # Log context for debugging
     logger.debug(
@@ -511,6 +522,7 @@ async def get_bot_specific_file_id(
         f"file_type={file_type}, file_index={file_index}, target_admin={target_chat_id}"
     )
     
+    forwarded = None
     try:
         # Forward the message to get the bot-specific file ID
         forwarded = await bot.forward_message(
@@ -554,17 +566,6 @@ async def get_bot_specific_file_id(
                 f"[get_bot_specific_file_id] Successfully cached bot-specific file ID: "
                 f"bot={bot_username}, msg={source_message_id}, idx={file_index}, type={file_type}"
             )
-            
-            # Delete the forwarded message to avoid cluttering admin chat
-            try:
-                await bot.delete_message(
-                    chat_id=target_chat_id,
-                    message_id=forwarded.message_id
-                )
-                logger.debug(f"[get_bot_specific_file_id] Deleted forwarded message from admin chat")
-            except Exception as e:
-                logger.warning(f"[get_bot_specific_file_id] Could not delete forwarded message: {e}")
-            
             return file_id
         else:
             logger.warning(
@@ -572,16 +573,6 @@ async def get_bot_specific_file_id(
                 f"Source: chat={source_chat_id}, msg={source_message_id}. "
                 f"The message may not contain media of the expected type."
             )
-            
-            # Still try to delete the forwarded message
-            try:
-                await bot.delete_message(
-                    chat_id=target_chat_id,
-                    message_id=forwarded.message_id
-                )
-            except Exception as e:
-                logger.warning(f"[get_bot_specific_file_id] Could not delete forwarded message: {e}")
-            
             return None
     
     except BadRequest as e:
@@ -641,6 +632,9 @@ async def get_bot_specific_file_id(
             exc_info=True
         )
         return None
+    finally:
+        if forwarded is not None:
+            await _delete_forwarded_message(forwarded)
 
 
 def register_bot_handlers(application: "Application", bot_index: int = 0):

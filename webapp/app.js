@@ -927,6 +927,77 @@
         return requestPromise;
     }
 
+    function getDeepLinkedProductId() {
+        const params = new URLSearchParams(window.location.search || '');
+        const directId = params.get('product_id') || params.get('product');
+        if (directId && /^\d+$/.test(directId)) {
+            return Number(directId);
+        }
+
+        const startParam = (
+            params.get('start') ||
+            params.get('start_param') ||
+            params.get('tgWebAppStartParam') ||
+            tg.initDataUnsafe?.start_param ||
+            ''
+        );
+        const match = String(startParam).match(/^product_(\d+)$/);
+        return match ? Number(match[1]) : null;
+    }
+
+    async function openDeepLinkedProduct() {
+        const productId = getDeepLinkedProductId();
+        if (!productId) {
+            return false;
+        }
+
+        const headers = {};
+        if (tg.initData) {
+            headers['X-Telegram-Init-Data'] = tg.initData;
+        }
+
+        const lang = state.userLanguage || 'en';
+        const url = `/api/products/${productId}?lang=${encodeURIComponent(lang)}`;
+        const startTime = Date.now();
+
+        try {
+            logger.apiCall('load_deep_link_product', 'started', {
+                product_id: productId,
+                endpoint: url
+            });
+
+            const response = await fetchJsonWithDedup(url, { headers });
+            const responseTime = Date.now() - startTime;
+
+            if (!response.ok) {
+                logger.apiCall('load_deep_link_product', 'error', {
+                    product_id: productId,
+                    status: response.status,
+                    response_time_ms: responseTime
+                });
+                return false;
+            }
+
+            const product = await response.json();
+            if (product.order_contact) state.orderContact = product.order_contact;
+            if (product.order_link) state.orderLink = product.order_link;
+            if (product.bot) state.botUsername = product.bot;
+
+            logger.apiCall('load_deep_link_product', 'success', {
+                product_id: productId,
+                response_time_ms: responseTime
+            });
+            showProductDetail(product);
+            return true;
+        } catch (err) {
+            logger.error('load_deep_link_product', err.message, {
+                product_id: productId,
+                stack: err.stack
+            });
+            return false;
+        }
+    }
+
     // Apply translations to the page
     function applyTranslations() {
         // Translate elements with data-i18n attribute
@@ -1024,8 +1095,12 @@
         // This ensures we show updated status if user ID was fetched from backend
         renderUserInfo();
         
-        // Show welcome screen with loaded data (even if data loading failed)
-        showWelcome();
+        // Open product-specific WebApp links directly when inline mode provides one.
+        const openedDeepLink = await openDeepLinkedProduct();
+        if (!openedDeepLink) {
+            // Show welcome screen with loaded data (even if data loading failed)
+            showWelcome();
+        }
     }
 
     async function loadInitialData() {
