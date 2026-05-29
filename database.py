@@ -1037,12 +1037,31 @@ class Database:
         scheduled job instead.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self.get_connection() as db:
+                await db.execute("BEGIN")
+                pending_cursor = await db.execute(
+                    "DELETE FROM pending_categorization WHERE product_id = ?",
+                    (product_id,),
+                )
+                queue_cursor = await db.execute(
+                    "DELETE FROM notification_queue WHERE product_id = ?",
+                    (product_id,),
+                )
+                media_cursor = await db.execute(
+                    "DELETE FROM media_groups WHERE product_id = ?",
+                    (product_id,),
+                )
                 cursor = await db.execute("DELETE FROM products WHERE id = ?", (product_id,))
                 await db.commit()
                 deleted = cursor.rowcount > 0
                 if deleted:
-                    logger.info(f"Product deleted: ID={product_id}")
+                    logger.info(
+                        "Product deleted: ID=%s pending_categorizations=%s notifications=%s media_groups=%s",
+                        product_id,
+                        pending_cursor.rowcount,
+                        queue_cursor.rowcount,
+                        media_cursor.rowcount,
+                    )
                 return deleted
         except aiosqlite.DatabaseError as exc:
             if "malformed" in str(exc).lower() or "corrupt" in str(exc).lower():
@@ -2515,10 +2534,10 @@ class Database:
         identity_hash: Optional[str] = None,
     ) -> Optional[str]:
         """Get cached bot-specific file ID from database."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             if slot_id is not None:
                 sql = """
-                    SELECT file_id FROM bot_file_id_cache
+                    SELECT file_id, last_used FROM bot_file_id_cache
                     WHERE source_chat_id = ? AND source_message_id = ?
                       AND file_index = ? AND slot_id = ?
                       AND (? IS NULL OR identity_hash = ?)
@@ -2526,7 +2545,7 @@ class Database:
                 params = (source_chat_id, source_message_id, file_index, slot_id, identity_hash, identity_hash)
             else:
                 sql = """
-                    SELECT file_id FROM bot_file_id_cache
+                    SELECT file_id, last_used FROM bot_file_id_cache
                     WHERE source_chat_id = ? AND source_message_id = ?
                       AND file_index = ? AND bot_username = ?
                 """
@@ -2534,16 +2553,59 @@ class Database:
             async with db.execute(sql, params) as cursor:
                 row = await cursor.fetchone()
                 if row:
-                    # Update usage stats
-                    await db.execute("""
-                        UPDATE bot_file_id_cache
-                        SET last_used = ?, use_count = use_count + 1
-                        WHERE source_chat_id = ? AND source_message_id = ? 
-                          AND file_index = ? AND bot_username = ?
-                    """, (datetime.now(), source_chat_id, source_message_id, file_index, bot_username.lower()))
-                    await db.commit()
+                    if self._should_touch_cache_entry(row[1]):
+                        await self._touch_bot_file_id_cache_entry(
+                            db,
+                            source_chat_id,
+                            source_message_id,
+                            file_index,
+                            bot_username,
+                            slot_id,
+                            identity_hash,
+                        )
                     return row[0]
                 return None
+
+    @staticmethod
+    def _should_touch_cache_entry(last_used: Any, min_age_seconds: int = 3600) -> bool:
+        """Return True when a cache-hit metadata write is worth doing."""
+        if last_used is None:
+            return True
+        if isinstance(last_used, datetime):
+            last_dt = last_used
+        else:
+            try:
+                last_dt = datetime.fromisoformat(str(last_used))
+            except (TypeError, ValueError):
+                return True
+        return (datetime.now() - last_dt).total_seconds() >= min_age_seconds
+
+    async def _touch_bot_file_id_cache_entry(
+        self,
+        db,
+        source_chat_id: int,
+        source_message_id: int,
+        file_index: int,
+        bot_username: str,
+        slot_id: Optional[int],
+        identity_hash: Optional[str],
+    ) -> None:
+        if slot_id is not None:
+            await db.execute("""
+                UPDATE bot_file_id_cache
+                SET last_used = ?, use_count = use_count + 1
+                WHERE source_chat_id = ? AND source_message_id = ?
+                  AND file_index = ? AND slot_id = ?
+                  AND (? IS NULL OR identity_hash = ?)
+            """, (datetime.now(), source_chat_id, source_message_id, file_index, slot_id, identity_hash, identity_hash))
+        else:
+            await db.execute("""
+                UPDATE bot_file_id_cache
+                SET last_used = ?, use_count = use_count + 1
+                WHERE source_chat_id = ? AND source_message_id = ?
+                  AND file_index = ? AND bot_username = ?
+            """, (datetime.now(), source_chat_id, source_message_id, file_index, self.normalize_bot_username(bot_username)))
+        await db.commit()
     
     async def cache_bot_file_id(
         self,
@@ -2914,6 +2976,57 @@ class Database:
             """, (now,)) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
+
+    async def get_products_page(
+        self,
+        *,
+        category: Optional[str] = None,
+        subcategory: Optional[str] = None,
+        excluded_categories: Optional[List[str]] = None,
+        limit: int = 24,
+        offset: int = 0,
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Fetch a storefront product page and total count using one DB connection."""
+        limit = max(1, min(limit, 50))
+        offset = max(0, offset)
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            if category and subcategory:
+                where_sql = "category = ? AND subcategory = ?"
+                params: list[Any] = [category, subcategory]
+            elif category:
+                where_sql = "category = ?"
+                params = [category]
+            else:
+                excluded_categories = excluded_categories or []
+                if excluded_categories:
+                    placeholders = ",".join("?" * len(excluded_categories))
+                    where_sql = f"(category IS NULL OR category = '' OR category NOT IN ({placeholders}))"
+                    params = list(excluded_categories)
+                else:
+                    where_sql = "1 = 1"
+                    params = []
+
+            async with db.execute(
+                f"SELECT COUNT(*) FROM products WHERE {where_sql}",
+                params,
+            ) as cursor:
+                row = await cursor.fetchone()
+                total = row[0] if row else 0
+
+            async with db.execute(
+                f"""
+                SELECT * FROM products
+                WHERE {where_sql}
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (*params, limit, offset),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                products = [dict(row) for row in rows]
+
+            return products, total
 
     async def mark_media_object_deleted(self, media_id: str) -> None:
         async with aiosqlite.connect(self.db_path) as db:

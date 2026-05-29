@@ -501,6 +501,19 @@ def _api_result_cache_set(key: str, payload: str) -> None:
         _api_result_cache.popitem(last=False)
 
 
+def _api_result_cache_get(key: str) -> Optional[str]:
+    """Return a fresh API cache payload, or None when missing/expired."""
+    cached_entry = _api_result_cache.get(key)
+    if cached_entry is None:
+        return None
+    payload, ts = cached_entry
+    if _time.monotonic() - ts >= _API_RESULT_CACHE_TTL:
+        _api_result_cache.pop(key, None)
+        return None
+    _api_result_cache.move_to_end(key)
+    return payload
+
+
 def clear_in_memory_caches() -> int:
     """Clear all in-memory caches. Returns total entries cleared."""
     global _resolved_file_id_cache, _media_info_cache, _api_result_cache
@@ -2164,17 +2177,14 @@ async def get_categories(request: Request, lang: str = "en"):
 
     # Check in-memory result cache
     cache_key = f"categories:{lang}"
-    cached_entry = _api_result_cache.get(cache_key)
-    if cached_entry is not None:
-        payload, ts = cached_entry
-        if _time.monotonic() - ts < _API_RESULT_CACHE_TTL:
-            _api_result_cache.move_to_end(cache_key)
-            metrics.record("api_categories", (_time.monotonic() - _t0) * 1000)
-            return Response(
-                content=payload,
-                media_type="application/json",
-                headers={"Cache-Control": "public, max-age=60"}
-            )
+    cached_payload = _api_result_cache_get(cache_key)
+    if cached_payload is not None:
+        metrics.record("api_categories", (_time.monotonic() - _t0) * 1000)
+        return Response(
+            content=cached_payload,
+            media_type="application/json",
+            headers={"Cache-Control": "public, max-age=60"}
+        )
     
     # Get product counts for all categories
     category_counts = await _catalog_db.get_all_category_counts()
@@ -2274,33 +2284,22 @@ async def get_products(
 
     # Check in-memory result cache (keyed by all request params including lang)
     cache_key = f"products:{category}:{subcategory}:{limit}:{offset}:{lang}"
-    cached_entry = _api_result_cache.get(cache_key)
-    if cached_entry is not None:
-        payload, ts = cached_entry
-        if _time.monotonic() - ts < _API_RESULT_CACHE_TTL:
-            _api_result_cache.move_to_end(cache_key)
-            metrics.record("api_products", (_time.monotonic() - _t0) * 1000)
-            return Response(
-                content=payload,
-                media_type="application/json",
-                headers={"Cache-Control": "public, max-age=30"}
-            )
+    cached_payload = _api_result_cache_get(cache_key)
+    if cached_payload is not None:
+        metrics.record("api_products", (_time.monotonic() - _t0) * 1000)
+        return Response(
+            content=cached_payload,
+            media_type="application/json",
+            headers={"Cache-Control": "public, max-age=30"}
+        )
     
-    # Fetch products based on filters
-    if category and subcategory:
-        products = await _catalog_db.get_products_by_category_and_subcategory(
-            category, subcategory, limit=limit, offset=offset
-        )
-        total = await _catalog_db.count_products_by_category_and_subcategory(category, subcategory)
-    elif category:
-        products = await _catalog_db.get_products_by_category(category, limit=limit, offset=offset)
-        total = await _catalog_db.count_products_by_category(category)
-    else:
-        # All products (excluding certain categories)
-        products = await _catalog_db.get_all_products_excluding_categories(
-            EXCLUDED_FROM_ALL_PRODUCTS, limit=limit, offset=offset
-        )
-        total = await _catalog_db.count_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
+    products, total = await _catalog_db.get_products_page(
+        category=category,
+        subcategory=subcategory,
+        excluded_categories=EXCLUDED_FROM_ALL_PRODUCTS,
+        limit=limit,
+        offset=offset,
+    )
 
     order_contact = await _catalog_db.get_order_contact()
     order_contact_username = _normalize_contact(order_contact)
