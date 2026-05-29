@@ -83,6 +83,11 @@ _runtime_index_to_registry_id: Dict[int, str] = {}
 # Useful for setting alerts: check logs for [WEBHOOK_401] or watch this counter
 # via the /_internal/metrics endpoint (recorded under "webhook_401" endpoint name).
 _webhook_401_counter: int = 0
+_orphan_legacy_secret_cache: OrderedDict[tuple[str, str], float] = OrderedDict()
+_orphan_legacy_log_last_seen: Dict[tuple[str, str], float] = {}
+_ORPHAN_LEGACY_CACHE_MAX = 2048
+_ORPHAN_LEGACY_CACHE_TTL_SECONDS = 10 * 60
+_ORPHAN_LEGACY_LOG_INTERVAL_SECONDS = 60
 
 # Media cache configuration. Disk cache is app-owned, bounded, and image-only.
 MEDIA_STORAGE_MODE = os.getenv("MEDIA_STORAGE_MODE", "temp").strip().lower()
@@ -658,6 +663,43 @@ def get_client_ip(request: Request) -> str:
         request.headers.get("X-Real-IP")
         or (request.client.host if request.client else "unknown")
     )
+
+
+def _is_cached_orphan_legacy_secret(legacy_index: str, incoming_fp: str, now: Optional[float] = None) -> bool:
+    """Return True for a recently seen unknown Telegram legacy webhook secret."""
+    now = now if now is not None else _time.monotonic()
+    key = (legacy_index, incoming_fp)
+    seen_at = _orphan_legacy_secret_cache.get(key)
+    if seen_at is None:
+        return False
+    if now - seen_at > _ORPHAN_LEGACY_CACHE_TTL_SECONDS:
+        _orphan_legacy_secret_cache.pop(key, None)
+        _orphan_legacy_log_last_seen.pop(key, None)
+        return False
+    _orphan_legacy_secret_cache.move_to_end(key)
+    return True
+
+
+def _remember_orphan_legacy_secret(legacy_index: str, incoming_fp: str, now: Optional[float] = None) -> None:
+    """Cache an unknown Telegram legacy webhook secret to avoid repeated DB lookups."""
+    now = now if now is not None else _time.monotonic()
+    key = (legacy_index, incoming_fp)
+    _orphan_legacy_secret_cache[key] = now
+    _orphan_legacy_secret_cache.move_to_end(key)
+    while len(_orphan_legacy_secret_cache) > _ORPHAN_LEGACY_CACHE_MAX:
+        old_key, _ = _orphan_legacy_secret_cache.popitem(last=False)
+        _orphan_legacy_log_last_seen.pop(old_key, None)
+
+
+def _should_log_orphan_legacy_secret(legacy_index: str, incoming_fp: str, now: Optional[float] = None) -> bool:
+    """Throttle orphan webhook logs while still leaving periodic proof of drain."""
+    now = now if now is not None else _time.monotonic()
+    key = (legacy_index, incoming_fp)
+    last_seen = _orphan_legacy_log_last_seen.get(key)
+    if last_seen is not None and now - last_seen < _ORPHAN_LEGACY_LOG_INTERVAL_SECONDS:
+        return False
+    _orphan_legacy_log_last_seen[key] = now
+    return True
 
 
 def _slot_id_for_bot_index(bot_index: int) -> int:
@@ -3254,6 +3296,18 @@ async def webhook_indexed(request: Request, bot_id: str):
     """Handle incoming webhook updates addressed by bot_registry.bot_id."""
     registry_id = bot_id
     if bot_id.isdigit() and bot_id not in _bot_applications_by_registry_id:
+        client_ip = get_client_ip(request)
+        incoming_fp = _secret_fingerprint(request.headers.get("X-Telegram-Bot-Api-Secret-Token"))
+        from_telegram = is_telegram_ip(client_ip)
+        if from_telegram and _is_cached_orphan_legacy_secret(bot_id, incoming_fp):
+            if _should_log_orphan_legacy_secret(bot_id, incoming_fp):
+                logger_security.warning(
+                    "[WEBHOOK_ORPHAN_DRAINED] legacy_bot_index=%s incoming_fp=%s action=ack_drop cache=hit",
+                    bot_id,
+                    incoming_fp,
+                )
+            return Response(status_code=status.HTTP_200_OK)
+
         secret_owner_id = await _resolve_registry_bot_from_incoming_secret(request)
         if secret_owner_id:
             logger.warning(
@@ -3263,14 +3317,14 @@ async def webhook_indexed(request: Request, bot_id: str):
             )
             registry_id = secret_owner_id
         else:
-            client_ip = get_client_ip(request)
-            incoming_fp = _secret_fingerprint(request.headers.get("X-Telegram-Bot-Api-Secret-Token"))
-            if is_telegram_ip(client_ip):
-                logger_security.warning(
-                    "[WEBHOOK_ORPHAN_DRAINED] legacy_bot_index=%s incoming_fp=%s action=ack_drop",
-                    bot_id,
-                    incoming_fp,
-                )
+            if from_telegram:
+                _remember_orphan_legacy_secret(bot_id, incoming_fp)
+                if _should_log_orphan_legacy_secret(bot_id, incoming_fp):
+                    logger_security.warning(
+                        "[WEBHOOK_ORPHAN_DRAINED] legacy_bot_index=%s incoming_fp=%s action=ack_drop cache=stored",
+                        bot_id,
+                        incoming_fp,
+                    )
                 return Response(status_code=status.HTTP_200_OK)
             logger_security.warning(
                 "[WEBHOOK_ORPHAN] legacy_bot_index=%s reason=unknown_secret_or_missing_header incoming_fp=%s",

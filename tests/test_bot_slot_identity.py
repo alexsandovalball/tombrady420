@@ -187,6 +187,37 @@ async def test_legacy_numeric_webhook_drains_unknown_telegram_orphan(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_legacy_numeric_webhook_cached_orphan_skips_registry_lookup(tmp_path, monkeypatch):
+    import webhook_server
+    from database import Database
+
+    db = Database(str(tmp_path / "legacy_route_cached_orphan.db"))
+    await db.init_db()
+    request = SimpleNamespace(
+        headers={"X-Telegram-Bot-Api-Secret-Token": "old-secret"},
+        client=SimpleNamespace(host="149.154.167.220"),
+    )
+    processed = AsyncMock()
+    resolve_owner = AsyncMock(return_value=None)
+
+    monkeypatch.setattr(webhook_server, "_catalog_db", db)
+    monkeypatch.setattr(webhook_server, "_bot_applications_by_registry_id", {})
+    monkeypatch.setattr(webhook_server, "is_telegram_ip", lambda ip: True)
+    monkeypatch.setattr(webhook_server, "process_webhook_request", processed)
+    monkeypatch.setattr(webhook_server, "_resolve_registry_bot_from_incoming_secret", resolve_owner)
+    webhook_server._orphan_legacy_secret_cache.clear()
+    webhook_server._orphan_legacy_log_last_seen.clear()
+
+    first = await webhook_server.webhook_indexed(request, "9")
+    second = await webhook_server.webhook_indexed(request, "9")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    resolve_owner.assert_awaited_once_with(request)
+    processed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_legacy_numeric_webhook_rejects_unknown_non_telegram_orphan(tmp_path, monkeypatch):
     import webhook_server
     from database import Database
