@@ -633,6 +633,15 @@ async def _get_expected_secret_token_for_registry_bot(bot_id: str) -> Optional[s
     return row.get("webhook_secret") if row else None
 
 
+async def _resolve_registry_bot_from_incoming_secret(request: Request) -> Optional[str]:
+    """Resolve webhook owner from Telegram's secret header for legacy paths."""
+    incoming_token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+    if not isinstance(incoming_token, str) or not incoming_token:
+        return None
+    row = await _catalog_db.get_bot_registry_by_webhook_secret(incoming_token)
+    return row.get("bot_id") if row else None
+
+
 def _secret_fingerprint(value: Optional[str]) -> str:
     """Return a short irreversible fingerprint for webhook-secret diagnostics."""
     if not isinstance(value, str) or not value:
@@ -3226,7 +3235,11 @@ async def process_webhook_request(request: Request, bot_registry_id: str):
 @app.post("/webhook")
 async def webhook(request: Request):
     """Legacy primary webhook path. Re-registers should use /webhook/{bot_registry_id}."""
-    registry_id = _runtime_index_to_registry_id.get(0)
+    registry_id = await _resolve_registry_bot_from_incoming_secret(request)
+    if registry_id:
+        logger.warning("Resolved legacy /webhook request by secret owner bot_id=%s", registry_id)
+    else:
+        registry_id = _runtime_index_to_registry_id.get(0)
     if not registry_id:
         return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
     logger.warning("Received legacy /webhook request; migrate Telegram webhook to /webhook/%s", registry_id)
@@ -3238,8 +3251,34 @@ async def webhook_indexed(request: Request, bot_id: str):
     """Handle incoming webhook updates addressed by bot_registry.bot_id."""
     registry_id = bot_id
     if bot_id.isdigit() and bot_id not in _bot_applications_by_registry_id:
+        secret_owner_id = await _resolve_registry_bot_from_incoming_secret(request)
+        if secret_owner_id:
+            logger.warning(
+                "Resolved legacy positional webhook path bot_index=%s by secret owner bot_id=%s",
+                bot_id,
+                secret_owner_id,
+            )
+            registry_id = secret_owner_id
+        else:
+            logger_security.warning(
+                "[WEBHOOK_ORPHAN] legacy_bot_index=%s reason=unknown_secret_or_missing_header incoming_fp=%s",
+                bot_id,
+                _secret_fingerprint(request.headers.get("X-Telegram-Bot-Api-Secret-Token")),
+            )
+            return Response(status_code=status.HTTP_410_GONE)
+    elif bot_id.isdigit():
+        secret_owner_id = await _resolve_registry_bot_from_incoming_secret(request)
+        if secret_owner_id and secret_owner_id != _runtime_index_to_registry_id.get(int(bot_id)):
+            logger.warning(
+                "Legacy positional webhook path bot_index=%s does not match secret owner; routing to bot_id=%s",
+                bot_id,
+                secret_owner_id,
+            )
+            registry_id = secret_owner_id
+        else:
+            registry_id = _runtime_index_to_registry_id.get(int(bot_id), "")
+    if bot_id.isdigit() and registry_id:
         legacy_index = int(bot_id)
-        registry_id = _runtime_index_to_registry_id.get(legacy_index, "")
         logger.warning(
             "Received legacy positional webhook path bot_index=%s; migrate Telegram webhook to registry path bot_id=%s",
             bot_id,

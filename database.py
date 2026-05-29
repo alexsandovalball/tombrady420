@@ -2857,6 +2857,16 @@ class Database:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
 
+    async def get_bot_registry_by_webhook_secret(self, webhook_secret: str) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM bot_registry WHERE webhook_secret = ? AND status = 'active'",
+                (webhook_secret,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
     async def record_media_object(
         self,
         media_id: str,

@@ -121,6 +121,23 @@ async def test_webhook_expected_secret_is_loaded_from_registry(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_legacy_webhook_path_resolves_owner_from_incoming_secret(tmp_path, monkeypatch):
+    import webhook_server
+    from database import Database
+
+    class Request:
+        headers = {"X-Telegram-Bot-Api-Secret-Token": "owner-secret"}
+
+    db = Database(str(tmp_path / "legacy_secret_owner.db"))
+    await db.init_db()
+    row = await db.resolve_bot_id_from_registry(999, "bot9", "hash", lambda: "owner-secret")
+
+    monkeypatch.setattr(webhook_server, "_catalog_db", db)
+
+    assert await webhook_server._resolve_registry_bot_from_incoming_secret(Request()) == row["bot_id"]
+
+
+@pytest.mark.asyncio
 async def test_rebuild_all_webhook_secrets_replaces_stale_registry_secret(tmp_path, monkeypatch):
     import webhook_server
     from database import Database
