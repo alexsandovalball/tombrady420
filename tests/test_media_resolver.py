@@ -92,3 +92,19 @@ async def test_same_bot_original_file_id_is_allowed_after_validation():
     assert result.file_id == "ORIGINAL"
     assert result.source == "original"
     bot.get_file.assert_awaited_once_with("ORIGINAL")
+
+
+@pytest.mark.asyncio
+async def test_validated_file_id_is_cached_for_repeated_views():
+    bot = _bot("repeatbot")
+    db = MagicMock()
+
+    resolver = MediaResolver(bot, db)
+    product = _product(bot_username="repeatbot", file_id="REPEATED")
+
+    first = await resolver.resolve_media_for_bot(product, "repeatbot", 0)
+    second = await resolver.resolve_media_for_bot(product, "repeatbot", 0)
+
+    assert first.success is True
+    assert second.success is True
+    assert bot.get_file.await_count == 1

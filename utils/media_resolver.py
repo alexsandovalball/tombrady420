@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time as _time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -15,6 +17,9 @@ from utils.helpers import get_bot_specific_file_id
 logger = logging.getLogger(__name__)
 
 _resolve_semaphore = asyncio.Semaphore(4)
+_VALIDATED_FILE_ID_TTL_SECONDS = 60 * 60
+_VALIDATED_FILE_ID_MAX = 5000
+_validated_file_ids: OrderedDict[tuple[str, str], float] = OrderedDict()
 
 
 @dataclass
@@ -137,10 +142,23 @@ class MediaResolver:
         return MediaResolutionResult(True, resolved, "forward")
 
     async def _validate_file_id(self, file_id: str) -> MediaResolutionResult:
+        bot_username = (getattr(self.bot, "username", None) or "").lower()
+        cache_key = (bot_username, file_id)
+        now = _time.monotonic()
+        cached_at = _validated_file_ids.get(cache_key)
+        if cached_at is not None and now - cached_at < _VALIDATED_FILE_ID_TTL_SECONDS:
+            _validated_file_ids.move_to_end(cache_key)
+            return MediaResolutionResult(True, file_id, "validated_cache")
+
         try:
             await self.bot.get_file(file_id)
+            _validated_file_ids[cache_key] = now
+            _validated_file_ids.move_to_end(cache_key)
+            while len(_validated_file_ids) > _VALIDATED_FILE_ID_MAX:
+                _validated_file_ids.popitem(last=False)
             return MediaResolutionResult(True, file_id, "validated")
         except TelegramError as exc:
+            _validated_file_ids.pop(cache_key, None)
             return MediaResolutionResult(False, None, "validation", str(exc))
 
     async def _rehydrate_with_retry(

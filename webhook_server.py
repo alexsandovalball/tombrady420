@@ -69,13 +69,25 @@ from configs.logging_config import configure_logging
 configure_logging()
 logger = logging.getLogger(__name__)
 
+
+def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.getenv(name)
+    try:
+        value = int(raw) if raw is not None else default
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r; using %d", name, raw, default)
+        value = default
+    return max(minimum, min(value, maximum))
+
+
 # Global registry for bot applications
 # This allows the notification service to access all bot instances
 _bot_applications = []
 _webhook_secret_tokens: List[Optional[str]] = []
 _bot_slots: Dict[int, BotSlot] = {}
 _catalog_db = Database()
-_webhook_processing_locks: Dict[str, asyncio.Lock] = {}
+_WEBHOOK_UPDATE_CONCURRENCY = _bounded_int_env("WEBHOOK_UPDATE_CONCURRENCY", 4, 1, 16)
+_webhook_processing_semaphores: Dict[str, asyncio.Semaphore] = {}
 _bot_applications_by_registry_id: Dict[str, Application] = {}
 _runtime_index_to_registry_id: Dict[int, str] = {}
 
@@ -565,7 +577,7 @@ def clear_bot_runtime_state() -> None:
     _webhook_secret_tokens.clear()
     _webhook_secret_history.clear()
     _bot_slots.clear()
-    _webhook_processing_locks.clear()
+    _webhook_processing_semaphores.clear()
     _bot_applications_by_registry_id.clear()
     _runtime_index_to_registry_id.clear()
     clear_in_memory_caches()
@@ -752,12 +764,12 @@ def _slot_id_for_bot_index(bot_index: int) -> int:
     return bot_index
 
 
-def _get_webhook_processing_lock(bot_id: str) -> asyncio.Lock:
-    lock = _webhook_processing_locks.get(bot_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _webhook_processing_locks[bot_id] = lock
-    return lock
+def _get_webhook_processing_semaphore(bot_id: str) -> asyncio.Semaphore:
+    semaphore = _webhook_processing_semaphores.get(bot_id)
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(_WEBHOOK_UPDATE_CONCURRENCY)
+        _webhook_processing_semaphores[bot_id] = semaphore
+    return semaphore
 
 
 def _validate_bot_slot_registry(bot_count: int) -> None:
@@ -865,7 +877,8 @@ def _cache_state_snapshot() -> Dict[str, int]:
         "api_results": len(_api_result_cache),
         "media_registry_write_keys": len(_media_registry_write_cache),
         "orphan_legacy_secrets": len(_orphan_legacy_secret_cache),
-        "webhook_processing_locks": len(_webhook_processing_locks),
+        "webhook_processing_locks": len(_webhook_processing_semaphores),
+        "webhook_update_concurrency": _WEBHOOK_UPDATE_CONCURRENCY,
     }
 
 
@@ -3375,6 +3388,8 @@ async def process_webhook_request(request: Request, bot_registry_id: str):
     try:
         json_data = await request.json()
         update = Update.de_json(json_data, bot_app.bot)
+        update_kind = "other"
+        callback_data_for_log = None
         effective_user = update.effective_user
         if effective_user and not is_admin(effective_user.id):
             is_blocked = (
@@ -3394,13 +3409,16 @@ async def process_webhook_request(request: Request, bot_registry_id: str):
                 return Response(status_code=status.HTTP_200_OK)
 
         if update.message:
+            update_kind = "message"
             logger.info(
                 "[%s] Bot %s: Processing message update from user %s",
                 request_id, bot_registry_id, update.message.from_user.id,
             )
         elif update.callback_query:
+            update_kind = "callback"
             user_id = update.callback_query.from_user.id
             callback_data = update.callback_query.data or ""
+            callback_data_for_log = callback_data
             logger.info(
                 "[%s] Bot %s: Processing callback query from user %s: %s",
                 request_id, bot_registry_id, user_id, callback_data,
@@ -3420,6 +3438,7 @@ async def process_webhook_request(request: Request, bot_registry_id: str):
                 )
                 return Response(status_code=status.HTTP_200_OK)
         elif update.channel_post:
+            update_kind = "channel_post"
             logger.info(
                 "[%s] Bot %s: Processing channel post from chat %s",
                 request_id, bot_registry_id, update.channel_post.chat.id,
@@ -3430,11 +3449,32 @@ async def process_webhook_request(request: Request, bot_registry_id: str):
                 request_id, bot_registry_id, update.update_id,
             )
 
-        async with _get_webhook_processing_lock(bot_registry_id):
+        queue_started = _time.monotonic()
+        async with _get_webhook_processing_semaphore(bot_registry_id):
+            queue_wait_ms = (_time.monotonic() - queue_started) * 1000
+            if queue_wait_ms > 250:
+                logger.warning(
+                    "[WEBHOOK_QUEUE_WAIT] req=%s bot=%s kind=%s wait_ms=%.1f concurrency=%d callback_data=%r",
+                    request_id,
+                    bot_registry_id,
+                    update_kind,
+                    queue_wait_ms,
+                    _WEBHOOK_UPDATE_CONCURRENCY,
+                    callback_data_for_log,
+                )
             await bot_app.process_update(update)
 
         duration_ms = (_time.monotonic() - _t0) * 1000
         record_webhook_result(bot_index=0, success=True, duration_ms=duration_ms)
+        if duration_ms > 1500:
+            logger.warning(
+                "[WEBHOOK_SLOW] req=%s bot=%s kind=%s duration_ms=%.1f callback_data=%r",
+                request_id,
+                bot_registry_id,
+                update_kind,
+                duration_ms,
+                callback_data_for_log,
+            )
         logger.info("[%s] Bot %s: Webhook request processed successfully", request_id, bot_registry_id)
         return Response(status_code=status.HTTP_200_OK)
     except Exception as e:

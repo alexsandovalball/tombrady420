@@ -55,6 +55,25 @@ db = Database()
 _MAX_CALLBACK_DATA_LEN = 64
 
 
+def _is_expired_callback_error(exc: Exception) -> bool:
+    return "query is too old" in str(exc).lower() or "query id is invalid" in str(exc).lower()
+
+
+async def _safe_query_answer(query, *args, **kwargs) -> bool:
+    try:
+        await query.answer(*args, **kwargs)
+        return True
+    except BadRequest as exc:
+        if _is_expired_callback_error(exc):
+            logger.info("Ignoring expired callback answer: %s", exc)
+        else:
+            logger.debug("Callback answer failed: %s", exc)
+        return False
+    except Exception:
+        logger.debug("Callback answer failed", exc_info=True)
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Language callbacks
 # ---------------------------------------------------------------------------
@@ -1309,7 +1328,7 @@ async def route_callback(
             f"Invalid callback_data from user {user_id}: "
             f"length={len(callback_data or '')}"
         )
-        await query.answer("Invalid action", show_alert=True)
+        await _safe_query_answer(query, "Invalid action", show_alert=True)
         return
 
     parts = callback_data.split("|")
@@ -1320,39 +1339,34 @@ async def route_callback(
 
     if handler is None:
         logger.warning(f"Unknown callback_data '{callback_data}' from user {user_id}")
-        await query.answer("Unknown action", show_alert=True)
+        await _safe_query_answer(query, "Unknown action", show_alert=True)
         return
 
-    answered = False
-    try:
-        await query.answer()
-        answered = True
-    except BadRequest as e:
-        if "query is too old" not in str(e).lower():
-            logger.debug("Callback already answered or unavailable: %s", e)
-    except Exception:
-        logger.debug("Callback pre-answer failed", exc_info=True)
+    answered = await _safe_query_answer(query)
 
     try:
         await handler(update, context, query, user_id, parts)
     except ValueError as e:
         logger.error(f"Invalid callback data format: {callback_data}, error: {e}")
         if not answered:
-            await query.answer("Invalid action", show_alert=True)
+            await _safe_query_answer(query, "Invalid action", show_alert=True)
     except BadRequest as e:
         if "message is not modified" in str(e).lower():
             logger.debug(f"Message not modified for callback {callback_data}: {e}")
             if not answered:
-                await query.answer()
+                await _safe_query_answer(query)
+        elif _is_expired_callback_error(e):
+            logger.info("Callback answer expired while handling %r: %s", callback_data, e)
         else:
             logger.error(
                 f"BadRequest error handling callback '{callback_data}': {e}", exc_info=True
             )
             if not answered:
-                await query.answer(
+                await _safe_query_answer(
+                    query,
                     "Unable to process this action. Please try again.", show_alert=True
                 )
     except Exception as e:
         logger.error(f"Error handling callback '{callback_data}': {e}", exc_info=True)
         if not answered:
-            await query.answer("An error occurred", show_alert=True)
+            await _safe_query_answer(query, "An error occurred", show_alert=True)

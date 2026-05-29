@@ -185,7 +185,8 @@
       ["API results", cache.api_results],
       ["Media write keys", cache.media_registry_write_keys],
       ["Orphan legacy secrets", cache.orphan_legacy_secrets],
-      ["Webhook locks", cache.webhook_processing_locks],
+      ["Webhook queues", cache.webhook_processing_locks],
+      ["Webhook concurrency", cache.webhook_update_concurrency],
       ["Temp used", formatBytes(tmp.used_bytes)],
       ["App cache", formatBytes(disk.app_cache_bytes)]
     ];
