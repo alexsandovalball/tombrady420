@@ -48,12 +48,12 @@ class ConfigClass:
         # This is useful when all tokens are known upfront or managed by an orchestrator.
         try:
             bot_tokens_raw = config('BOT_TOKENS')
-            if bot_tokens_raw:
-                self.BOT_TOKENS = [t.strip() for t in bot_tokens_raw.split(',') if t.strip()]
-                if self.BOT_TOKENS and not self.BOT_TOKEN:
-                    self.BOT_TOKEN = self.BOT_TOKENS[0]
-                if not self.BOT_TOKENS:
-                    logger.warning("BOT_TOKENS is set but contains no valid tokens (check for extra commas or whitespace).")
+            self.BOT_TOKENS = [t.strip() for t in bot_tokens_raw.split(',') if t.strip()]
+            self.BOT_TOKEN = self.BOT_TOKENS[0] if self.BOT_TOKENS else None
+            if not self.BOT_TOKENS:
+                logger.warning("BOT_TOKENS is set but contains no valid tokens (check for extra commas or whitespace).")
+            self._load_remaining_config()
+            return
         except UndefinedValueError:
             pass
 
@@ -86,7 +86,11 @@ class ConfigClass:
                 continue
 
         self.BOT_TOKENS = bot_tokens
-        
+
+        self._load_remaining_config()
+
+    def _load_remaining_config(self):
+        """Load non-token configuration after the runtime token source is resolved."""
         # Load ADMIN_IDS
         try:
             self.ADMIN_IDS = config('ADMIN_IDS', cast=Csv(int))

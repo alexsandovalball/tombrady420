@@ -649,6 +649,17 @@ def _secret_fingerprint(value: Optional[str]) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 
+def get_client_ip(request: Request) -> str:
+    """Return the original client IP when the app is behind a proxy."""
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    return (
+        request.headers.get("X-Real-IP")
+        or (request.client.host if request.client else "unknown")
+    )
+
+
 def _slot_id_for_bot_index(bot_index: int) -> int:
     """Canonical mapping: bot_token_N, route bot_index N, and DB slot_id N."""
     return bot_index
@@ -3065,15 +3076,7 @@ async def process_webhook_request(request: Request, bot_registry_id: str):
     # When the server sits behind a reverse proxy or CDN (common with custom domains),
     # request.client.host is the proxy's IP.  Use X-Forwarded-For / X-Real-IP to
     # recover the originating IP so each real caller gets its own rate-limit bucket.
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        # X-Forwarded-For may be a comma-separated list; the leftmost entry is the client
-        client_ip = forwarded_for.split(",")[0].strip()
-    else:
-        client_ip = (
-            request.headers.get("X-Real-IP")
-            or (request.client.host if request.client else "unknown")
-        )
+    client_ip = get_client_ip(request)
 
     # --- Rate limiting: skip for Telegram IPs, apply for everyone else ---
     # Telegram-originating IPs are whitelisted and never rate-limited on the
@@ -3260,10 +3263,19 @@ async def webhook_indexed(request: Request, bot_id: str):
             )
             registry_id = secret_owner_id
         else:
+            client_ip = get_client_ip(request)
+            incoming_fp = _secret_fingerprint(request.headers.get("X-Telegram-Bot-Api-Secret-Token"))
+            if is_telegram_ip(client_ip):
+                logger_security.warning(
+                    "[WEBHOOK_ORPHAN_DRAINED] legacy_bot_index=%s incoming_fp=%s action=ack_drop",
+                    bot_id,
+                    incoming_fp,
+                )
+                return Response(status_code=status.HTTP_200_OK)
             logger_security.warning(
                 "[WEBHOOK_ORPHAN] legacy_bot_index=%s reason=unknown_secret_or_missing_header incoming_fp=%s",
                 bot_id,
-                _secret_fingerprint(request.headers.get("X-Telegram-Bot-Api-Secret-Token")),
+                incoming_fp,
             )
             return Response(status_code=status.HTTP_410_GONE)
     elif bot_id.isdigit():

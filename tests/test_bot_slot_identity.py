@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -135,6 +136,78 @@ async def test_legacy_webhook_path_resolves_owner_from_incoming_secret(tmp_path,
     monkeypatch.setattr(webhook_server, "_catalog_db", db)
 
     assert await webhook_server._resolve_registry_bot_from_incoming_secret(Request()) == row["bot_id"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_numeric_webhook_routes_known_secret_to_owner(tmp_path, monkeypatch):
+    import webhook_server
+    from database import Database
+
+    db = Database(str(tmp_path / "legacy_route_known.db"))
+    await db.init_db()
+    row = await db.resolve_bot_id_from_registry(999, "bot9", "hash", lambda: "owner-secret")
+    request = SimpleNamespace(
+        headers={"X-Telegram-Bot-Api-Secret-Token": "owner-secret"},
+        client=SimpleNamespace(host="149.154.167.220"),
+    )
+    processed = AsyncMock(return_value=webhook_server.Response(status_code=202))
+
+    monkeypatch.setattr(webhook_server, "_catalog_db", db)
+    monkeypatch.setattr(webhook_server, "_bot_applications_by_registry_id", {})
+    monkeypatch.setattr(webhook_server, "process_webhook_request", processed)
+
+    response = await webhook_server.webhook_indexed(request, "9")
+
+    assert response.status_code == 202
+    processed.assert_awaited_once_with(request, row["bot_id"])
+
+
+@pytest.mark.asyncio
+async def test_legacy_numeric_webhook_drains_unknown_telegram_orphan(tmp_path, monkeypatch):
+    import webhook_server
+    from database import Database
+
+    db = Database(str(tmp_path / "legacy_route_orphan.db"))
+    await db.init_db()
+    request = SimpleNamespace(
+        headers={"X-Telegram-Bot-Api-Secret-Token": "old-secret"},
+        client=SimpleNamespace(host="149.154.167.220"),
+    )
+    processed = AsyncMock()
+
+    monkeypatch.setattr(webhook_server, "_catalog_db", db)
+    monkeypatch.setattr(webhook_server, "_bot_applications_by_registry_id", {})
+    monkeypatch.setattr(webhook_server, "is_telegram_ip", lambda ip: True)
+    monkeypatch.setattr(webhook_server, "process_webhook_request", processed)
+
+    response = await webhook_server.webhook_indexed(request, "9")
+
+    assert response.status_code == 200
+    processed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_numeric_webhook_rejects_unknown_non_telegram_orphan(tmp_path, monkeypatch):
+    import webhook_server
+    from database import Database
+
+    db = Database(str(tmp_path / "legacy_route_non_telegram.db"))
+    await db.init_db()
+    request = SimpleNamespace(
+        headers={"X-Telegram-Bot-Api-Secret-Token": "old-secret"},
+        client=SimpleNamespace(host="203.0.113.20"),
+    )
+    processed = AsyncMock()
+
+    monkeypatch.setattr(webhook_server, "_catalog_db", db)
+    monkeypatch.setattr(webhook_server, "_bot_applications_by_registry_id", {})
+    monkeypatch.setattr(webhook_server, "is_telegram_ip", lambda ip: False)
+    monkeypatch.setattr(webhook_server, "process_webhook_request", processed)
+
+    response = await webhook_server.webhook_indexed(request, "9")
+
+    assert response.status_code == 410
+    processed.assert_not_awaited()
 
 
 @pytest.mark.asyncio
