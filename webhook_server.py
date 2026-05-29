@@ -87,7 +87,7 @@ _orphan_legacy_secret_cache: OrderedDict[tuple[str, str], float] = OrderedDict()
 _orphan_legacy_log_last_seen: Dict[tuple[str, str], float] = {}
 _ORPHAN_LEGACY_CACHE_MAX = 2048
 _ORPHAN_LEGACY_CACHE_TTL_SECONDS = 10 * 60
-_ORPHAN_LEGACY_LOG_INTERVAL_SECONDS = 60
+_ORPHAN_LEGACY_LOG_INTERVAL_SECONDS = 15 * 60
 
 # Media cache configuration. Disk cache is app-owned, bounded, and image-only.
 MEDIA_STORAGE_MODE = os.getenv("MEDIA_STORAGE_MODE", "temp").strip().lower()

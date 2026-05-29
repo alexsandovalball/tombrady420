@@ -2,15 +2,16 @@
 Menu and catalog handlers.
 """
 import logging
+import math
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import TelegramError
 from database import Database
-from utils.pagination import create_pagination_keyboard, paginate_items
+from utils.pagination import create_pagination_keyboard
 from utils.helpers import is_admin, get_user_lang_async
 from utils.categories import get_all_categories, get_category_display_name, get_subcategories, get_subcategory_display_name, CATEGORIES, EXCLUDED_FROM_ALL_PRODUCTS
 from translations.translator import get_translated_string_async
-from utils.safe_send import safe_update_message, handle_handler_error
+from utils.safe_send import safe_edit_message_text, safe_update_message, handle_handler_error
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -29,8 +30,8 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Get user's language preference
         user_lang = await get_user_lang_async(user_id)
 
-        # Get all category counts in a single query (optimized)
-        category_counts = await db.get_all_category_counts()
+        # Get category counts and the storefront total in one connection.
+        category_counts, _, total_count = await db.get_category_summary(EXCLUDED_FROM_ALL_PRODUCTS)
         category_buttons = []
 
         for category in get_all_categories():
@@ -59,7 +60,6 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
             ])
 
         # Add "All Products" option
-        total_count = await db.count_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
         all_products_text = await get_translated_string_async("all_products", user_lang)
         category_buttons.insert(0, [
             InlineKeyboardButton(f"{all_products_text} ({total_count})", callback_data="menu|1")
@@ -92,8 +92,8 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
             await show_catalog_page(update, context, page=1, category=category)
             return
 
-        # Get subcategory counts from database
-        subcategory_counts = await db.get_subcategories_with_counts(category)
+        # Get subcategory counts and the all-in-category total in one connection.
+        subcategory_counts, all_count = await db.get_subcategory_summary(category)
         count_dict = {item["subcategory"]: item["count"] for item in subcategory_counts}
 
         # Build subcategory buttons
@@ -109,7 +109,6 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
             ])
 
         # Add "All in Category" option
-        all_count = await db.count_products_by_category(category)
         # Translate category name
         category_key = f"category_{category.lower()}"
         translated_category = await get_translated_string_async(category_key, user_lang)
@@ -155,9 +154,20 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         # Get user's language preference
         user_lang = await get_user_lang_async(user_id)
 
-        # Get products (filtered by category and/or subcategory if specified)
+        per_page = 5
+        page = max(1, page)
+        offset = (page - 1) * per_page
+
+        # Get only the requested page from SQLite. The old path fetched every
+        # matching product and then sliced five items in Python, which made
+        # category navigation feel sluggish as the catalog grew.
         if category and subcategory:
-            all_products = await db.get_products_by_category_and_subcategory(category, subcategory)
+            products_page, total_products = await db.get_products_page(
+                category=category,
+                subcategory=subcategory,
+                limit=per_page,
+                offset=offset,
+            )
             # Translate category name
             category_key = f"category_{category.lower()}"
             translated_category = await get_translated_string_async(category_key, user_lang)
@@ -167,7 +177,11 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             translated_subcategory = get_subcategory_display_name(subcategory, user_lang)
             title = f"📋 {translated_category} • {translated_subcategory}"
         elif category:
-            all_products = await db.get_products_by_category(category)
+            products_page, total_products = await db.get_products_page(
+                category=category,
+                limit=per_page,
+                offset=offset,
+            )
             # Translate category name
             category_key = f"category_{category.lower()}"
             translated_category = await get_translated_string_async(category_key, user_lang)
@@ -176,11 +190,15 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             title = f"📋 {translated_category}"
         else:
             # When showing all products, exclude specified categories
-            all_products = await db.get_all_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
+            products_page, total_products = await db.get_products_page(
+                excluded_categories=EXCLUDED_FROM_ALL_PRODUCTS,
+                limit=per_page,
+                offset=offset,
+            )
             all_products_text = await get_translated_string_async("all_products", user_lang)
             title = f"📋 {all_products_text}"
 
-        if not all_products:
+        if not products_page:
             context_str = 'subcategory' if subcategory else 'category' if category else 'catalog'
             text = await get_translated_string_async("no_products_in_category", user_lang, context=context_str)
             if text == "no_products_in_category":
@@ -223,8 +241,7 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 await update.message.reply_text(text, reply_markup=keyboard)
             return
 
-        # Paginate products
-        products_page, total_pages = paginate_items(all_products, page, per_page=5)
+        total_pages = max(1, math.ceil(total_products / per_page))
 
         # Save pagination state
         if subcategory and category:
@@ -295,9 +312,9 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
         keyboard = InlineKeyboardMarkup(keyboard_buttons)
 
-        showing_text = await get_translated_string_async("showing_products", user_lang, current=len(products_page), total=len(all_products))
+        showing_text = await get_translated_string_async("showing_products", user_lang, current=len(products_page), total=total_products)
         if showing_text == "showing_products":
-            showing_text = f"Showing {len(products_page)} of {len(all_products)} products"
+            showing_text = f"Showing {len(products_page)} of {total_products} products"
 
         text = f"{title}\n\n{showing_text}"
 

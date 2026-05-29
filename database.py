@@ -1293,6 +1293,31 @@ class Database:
             async with db.execute("SELECT COUNT(*) FROM products WHERE category = ?", (category,)) as cursor:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
+
+    async def get_subcategory_summary(self, category: str) -> tuple[List[Dict[str, Any]], int]:
+        """Return subcategory counts and total category count using one connection."""
+        async with self.get_connection() as db:
+            async with db.execute("""
+                SELECT subcategory, COUNT(*) as count
+                FROM products
+                WHERE category = ? AND subcategory IS NOT NULL
+                GROUP BY subcategory
+                ORDER BY subcategory
+            """, (category,)) as cursor:
+                rows = await cursor.fetchall()
+                subcategory_counts = [
+                    {"subcategory": row[0], "count": row[1]}
+                    for row in rows
+                ]
+
+            async with db.execute(
+                "SELECT COUNT(*) FROM products WHERE category = ?",
+                (category,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                total = row[0] if row else 0
+
+            return subcategory_counts, total
     
     async def get_all_category_counts(self) -> Dict[str, int]:
         """Get product counts for all categories in a single query (optimized)."""

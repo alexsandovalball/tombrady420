@@ -158,3 +158,33 @@ async def test_get_category_summary_matches_existing_counts(db):
     assert all_products_count == 3
     flower_counts = {item["subcategory"]: item["count"] for item in subcategory_counts["FLOWER"]}
     assert flower_counts == {"EXOTICS": 2, "INDOOR": 1}
+
+
+@pytest.mark.asyncio
+async def test_get_subcategory_summary_uses_one_category_scope(db):
+    await db.init_db()
+
+    rows = [
+        (1, "a", "photo", "first", 1, -100, "FLOWER", "EXOTICS"),
+        (2, "b", "photo", "second", 2, -100, "FLOWER", "EXOTICS"),
+        (3, "c", "photo", "third", 3, -100, "FLOWER", "INDOOR"),
+        (4, "d", "photo", "other", 4, -100, "CONCENTRATES", "DIAMONDS AND SAUCE"),
+    ]
+    async with aiosqlite.connect(db.db_path) as conn:
+        for row in rows:
+            await conn.execute(
+                """
+                INSERT INTO products (id, file_id, file_type, caption, message_id, chat_id, category, subcategory)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                row,
+            )
+        await conn.commit()
+
+    subcategory_counts, total = await db.get_subcategory_summary("FLOWER")
+
+    assert total == 3
+    assert {item["subcategory"]: item["count"] for item in subcategory_counts} == {
+        "EXOTICS": 2,
+        "INDOOR": 1,
+    }
