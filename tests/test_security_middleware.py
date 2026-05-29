@@ -283,6 +283,19 @@ class TestGlobalRateLimiter:
             resp = client.get("/api/x", headers={"X-Real-IP": "8.8.8.8"})
             assert resp.status_code == 200
 
+    def test_permanent_ip_block_still_applies_when_rate_limit_disabled(self):
+        from middleware.rate_limiter import add_permanent_ip_block, remove_permanent_ip_block
+
+        ip = "8.8.8.9"
+        add_permanent_ip_block(ip)
+        try:
+            app = _make_rate_limiter_app(max_requests=0, window_seconds=60)
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.get("/product/802/example", headers={"X-Real-IP": ip})
+            assert resp.status_code == 403
+        finally:
+            remove_permanent_ip_block(ip)
+
 
 # ---------------------------------------------------------------------------
 # TelegramIPWhitelist tests

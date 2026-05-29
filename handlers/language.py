@@ -18,6 +18,12 @@ db = Database()
 async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /language command - show language selection menu."""
     user_id = update.effective_user.id
+    if not is_admin(user_id) and await db.is_user_blocked(user_id):
+        await update.message.reply_text(
+            "🚫 You have been blocked from using this bot.\n\n"
+            "If you believe this is an error, please contact an administrator."
+        )
+        return
 
     # Get current language
     current_lang = await get_user_lang_async(user_id)

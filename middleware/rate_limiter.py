@@ -222,9 +222,6 @@ class GlobalRateLimiter(BaseHTTPMiddleware):
     # ------------------------------------------------------------------
 
     async def dispatch(self, request: Request, call_next):
-        if self._disabled:
-            return await call_next(request)
-
         path = request.url.path
 
         if self._is_exempt(path):
@@ -240,6 +237,9 @@ class GlobalRateLimiter(BaseHTTPMiddleware):
                 ip, path,
             )
             return Response(status_code=403, content=b"Access denied.")
+
+        if self._disabled:
+            return await call_next(request)
 
         async with self._lock:
             # 2. Check global auto-block (applies to all layers)

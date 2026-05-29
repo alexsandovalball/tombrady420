@@ -37,7 +37,7 @@ from main import (
 )
 from utils.webapp_security import verify_init_data, parse_init_data, TelegramUser
 from database import Database
-from utils.helpers import get_channel_id, get_channel_username, get_file_id_cache_size, get_bot_specific_file_id, register_bot_handlers
+from utils.helpers import get_channel_id, get_channel_username, get_file_id_cache_size, get_bot_specific_file_id, is_admin, register_bot_handlers
 from utils.categories import get_all_categories, get_category_display_name, get_subcategory_display_name, get_subcategories, EXCLUDED_FROM_ALL_PRODUCTS
 from utils.fuzzy_search import fuzzy_search_products, normalize_text
 from translations.translator import get_translated_string_async, translation_service
@@ -3002,7 +3002,9 @@ async def search_products(
 @app.get("/api/user/subscription")
 async def get_user_subscription(request: Request, user_id: int):
     """Get user subscription status."""
-    _get_validated_init_data(request, allow_preview=False)  # Require auth for user data
+    user, _, init_data = _get_authenticated_webapp_user(request)
+    await _check_user_not_blocked(init_data, get_client_ip(request))
+    _require_same_webapp_user(user_id, user)
     
     try:
         result = await _catalog_db.get_user_subscription(user_id)
@@ -3016,7 +3018,8 @@ async def get_user_subscription(request: Request, user_id: int):
 @app.post("/api/user/subscription")
 async def update_user_subscription(request: Request):
     """Update user subscription status."""
-    _get_validated_init_data(request, allow_preview=False)  # Require auth for user data
+    user, _, init_data = _get_authenticated_webapp_user(request)
+    await _check_user_not_blocked(init_data, get_client_ip(request))
     
     try:
         data = await request.json()
@@ -3025,6 +3028,8 @@ async def update_user_subscription(request: Request):
         
         if not user_id:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="user_id required")
+
+        _require_same_webapp_user(int(user_id), user)
         
         await _catalog_db.update_user_subscription(int(user_id), bool(is_subscribed))
         logger.info(f"User {user_id} subscription updated to: {is_subscribed}")
@@ -3045,7 +3050,8 @@ async def webapp_logs(request: Request):
     """
     try:
         # Allow preview mode for logging (doesn't require full auth)
-        _get_validated_init_data(request, allow_preview=True)
+        init_data, _ = _get_validated_init_data(request, allow_preview=True)
+        await _check_user_not_blocked(init_data, get_client_ip(request))
         
         data = await request.json()
         logs = data.get("logs", [])
@@ -3105,6 +3111,7 @@ async def get_user_info(request: Request):
     try:
         # Allow preview mode but prefer authenticated data
         init_data, _ = _get_validated_init_data(request, allow_preview=True)
+        await _check_user_not_blocked(init_data, get_client_ip(request))
         
         if not init_data:
             # No initData available
@@ -3144,6 +3151,8 @@ async def get_user_info(request: Request):
             "last_name": last_name,
             "language_code": language_code
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(f"Error getting user info: {e}")
         # Return unauthenticated response instead of error
@@ -3165,6 +3174,7 @@ async def track_webapp_user(request: Request):
     """
     try:
         init_data, bot_index = _get_validated_init_data(request, allow_preview=True)
+        await _check_user_not_blocked(init_data, get_client_ip(request))
         
         data = await request.json()
         user_id = data.get("user_id")
@@ -3234,6 +3244,8 @@ async def track_webapp_user(request: Request):
             "tracked": True
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(f"Error tracking webapp user: {e}")
         return {"success": False, "message": "Failed to track user"}
@@ -3363,6 +3375,23 @@ async def process_webhook_request(request: Request, bot_registry_id: str):
     try:
         json_data = await request.json()
         update = Update.de_json(json_data, bot_app.bot)
+        effective_user = update.effective_user
+        if effective_user and not is_admin(effective_user.id):
+            is_blocked = (
+                await _catalog_db.is_entity_blocked(
+                    telegram_user_id=effective_user.id,
+                    username=effective_user.username,
+                )
+                or await _catalog_db.is_user_blocked(effective_user.id)
+            )
+            if is_blocked:
+                logger_security.warning(
+                    "[WEBHOOK_BLOCKED] bot=%s user_id=%s username=%s action=ack_drop",
+                    bot_registry_id,
+                    effective_user.id,
+                    effective_user.username,
+                )
+                return Response(status_code=status.HTTP_200_OK)
 
         if update.message:
             logger.info(

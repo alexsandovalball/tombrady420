@@ -2374,9 +2374,11 @@
         
         // Track current media index
         let currentMediaIndex = 0;
+        let mediaRenderToken = 0;
         
         // Function to render media at index in main viewer
         const renderMedia = (index) => {
+            const renderToken = ++mediaRenderToken;
             mediaViewer.replaceChildren();
             const mediaUrl = buildMediaUrl(product, index);
             const mediaType = mediaInfo[index]?.type || 'photo';
@@ -2429,6 +2431,7 @@
                     // Track if video has been shown to avoid duplicate handling
                     let videoShown = false;
                     const showVideo = () => {
+                        if (renderToken !== mediaRenderToken) return;
                         if (videoShown) return;
                         videoShown = true;
                         loadingDiv.style.display = 'none';
@@ -2436,6 +2439,7 @@
                     
                     // Show video as soon as we have any data to play
                     video.addEventListener('canplay', () => {
+                        if (renderToken !== mediaRenderToken) return;
                         logger.videoEvent('video_load_success', 'success', '', {
                             product_id: product.id,
                             media_index: index,
@@ -2455,11 +2459,13 @@
                     
                     // Also show on loadeddata as fallback
                     video.addEventListener('loadeddata', () => {
+                        if (renderToken !== mediaRenderToken) return;
                         showVideo();
                     });
                     
                     // Timeout: if video hasn't loaded after configured time, show play button overlay
                     const videoLoadTimeout = setTimeout(() => {
+                        if (renderToken !== mediaRenderToken) return;
                         if (!videoShown && video.readyState < 3) {
                             loadingDiv.innerHTML = `
                                 <div class="media-loading-icon">▶️</div>
@@ -2475,6 +2481,7 @@
                     }, CONFIG.VIDEO_LOAD_TIMEOUT_MS);
                     
                     video.addEventListener('error', async (e) => {
+                        if (renderToken !== mediaRenderToken) return;
                         clearTimeout(videoLoadTimeout);
                         // Check if this is a large-file response without downloading
                         // the entire video again. A plain fetch(mediaUrl) turns one
@@ -2483,6 +2490,7 @@
                             const response = await fetch(mediaUrl, {
                                 headers: { Range: 'bytes=0-0' }
                             });
+                            if (renderToken !== mediaRenderToken) return;
                             if (response.status === 413 && response.headers.get('content-type')?.includes('application/json')) {
                                 const errorData = await response.json();
                                 mediaViewer.innerHTML = `
@@ -2503,6 +2511,7 @@
                         } catch (fetchErr) {
                             // Fall through to default error handling
                         }
+                        if (renderToken !== mediaRenderToken) return;
                         
                         const errorMsg = video.error ? `Error code: ${video.error.code}, ${video.error.message}` : 'Unknown error';
                         logger.videoEvent('video_load_error', 'error', errorMsg, {
@@ -2527,6 +2536,7 @@
                     });
                     
                     video.addEventListener('play', () => {
+                        if (renderToken !== mediaRenderToken) return;
                         logger.videoEvent('video_play', 'success', '', {
                             product_id: product.id,
                             media_index: index
@@ -2548,6 +2558,7 @@
                         img.classList.add('loaded');
                     };
                     img.onerror = () => {
+                        if (renderToken !== mediaRenderToken) return;
                         logger.error('image_load_error', 'Failed to load image', {
                             product_id: product.id,
                             media_index: index,
@@ -2610,41 +2621,10 @@
                 const thumbUrl = buildMediaUrl(product, i);
                 
                 if (mediaType === 'video') {
-                    // Video thumbnail with preview image and play icon overlay
-                    if (thumbUrl) {
-                        const thumbVideo = document.createElement('video');
-                        thumbVideo.src = thumbUrl;
-                        thumbVideo.preload = 'metadata';
-                        thumbVideo.style.width = '100%';
-                        thumbVideo.style.height = '100%';
-                        thumbVideo.style.objectFit = 'cover';
-                        thumbVideo.style.position = 'absolute';
-                        thumbVideo.style.top = '0';
-                        thumbVideo.style.left = '0';
-                        
-                        // Set currentTime after metadata is loaded for reliable thumbnail
-                        thumbVideo.addEventListener('loadedmetadata', () => {
-                            // For very short videos, use a minimal safe seek
-                            if (thumbVideo.duration < CONFIG.VIDEO_SHORT_DURATION_THRESHOLD) {
-                                thumbVideo.currentTime = Math.max(0, thumbVideo.duration * CONFIG.VIDEO_THUMBNAIL_SEEK_PERCENT);
-                                return;
-                            }
-                            // Use 10% of duration for short videos, cap at 1 second for long videos
-                            // This ensures good frames: short videos use proportional seek, long videos don't seek too far
-                            const seekTime = Math.min(CONFIG.VIDEO_THUMBNAIL_SEEK_TIME, thumbVideo.duration * CONFIG.VIDEO_THUMBNAIL_SEEK_PERCENT);
-                            // Ensure non-negative time and stay within video bounds
-                            thumbVideo.currentTime = Math.max(0, Math.min(seekTime, thumbVideo.duration - CONFIG.VIDEO_BOUNDS_BUFFER));
-                        });
-                        
-                        thumbVideo.onerror = () => {
-                            // Fallback to icon if video fails to load
-                            thumbContent.innerHTML = '<div style="color: white; font-size: 24px;">▶️</div>';
-                        };
-                        
-                        thumbContent.appendChild(thumbVideo);
-                    }
-                    
-                    // Add play icon overlay
+                    // Keep video thumbnails lightweight. Creating a <video> for
+                    // every thumbnail triggers metadata/range requests for all
+                    // videos before the user selects them, which can swamp mobile
+                    // WebViews and race with the active player.
                     const playIcon = document.createElement('div');
                     playIcon.style.position = 'absolute';
                     playIcon.style.top = '50%';

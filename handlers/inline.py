@@ -259,6 +259,10 @@ async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     user_id = inline_query.from_user.id
+    if await db.is_user_blocked(user_id):
+        logger.warning("Blocked user %s attempted inline query access", user_id)
+        await inline_query.answer(results=[], cache_time=60, is_personal=True)
+        return
 
     # Cancel any previous in-flight query task for this user
     async with _user_query_tasks_lock:
@@ -487,6 +491,10 @@ async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFA
         return
 
     user_id = chosen.from_user.id
+    if await db.is_user_blocked(user_id):
+        logger.warning("Blocked user %s attempted chosen inline result access", user_id)
+        return
+
     result_id = chosen.result_id
     query = chosen.query or ""
     bot_username = get_bot_username(context) or ""
