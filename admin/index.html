@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Bradycadia Admin</title>
+  <link rel="stylesheet" href="/admin-assets/dashboard.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Bradycadia Admin</h1>
+      <p id="status-line">Token required</p>
+    </div>
+    <div class="topbar-actions">
+      <button id="refresh-btn" type="button">Refresh</button>
+      <button id="logout-btn" type="button">Forget Token</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="login-panel" class="band">
+      <h2>Access</h2>
+      <form id="token-form">
+        <label for="token-input">Admin dashboard token</label>
+        <div class="token-row">
+          <input id="token-input" name="token" type="password" autocomplete="current-password" placeholder="ADMIN_DASHBOARD_TOKEN">
+          <button type="submit">Connect</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="dashboard" class="dashboard" hidden>
+      <section class="kpi-grid" id="summary-grid" aria-label="Summary"></section>
+
+      <section class="band">
+        <div class="section-head">
+          <h2>Bot Runtime</h2>
+          <span id="bot-count"></span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Index</th>
+                <th>Runtime</th>
+                <th>Username</th>
+                <th>Telegram ID</th>
+                <th>Registry ID</th>
+                <th>Secret FP</th>
+              </tr>
+            </thead>
+            <tbody id="runtime-bots"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="two-col">
+        <section class="band">
+          <div class="section-head">
+            <h2>API Metrics</h2>
+            <span id="metrics-uptime"></span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Endpoint</th>
+                  <th>Count</th>
+                  <th>Avg ms</th>
+                  <th>P95 ms</th>
+                </tr>
+              </thead>
+              <tbody id="metrics-table"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="band">
+          <div class="section-head">
+            <h2>Cache And Storage</h2>
+            <span id="storage-summary"></span>
+          </div>
+          <div id="cache-list" class="kv-list"></div>
+        </section>
+      </section>
+
+      <section class="two-col">
+        <section class="band">
+          <div class="section-head">
+            <h2>Users By Bot</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Bot</th>
+                  <th>Users</th>
+                  <th>Active 24h</th>
+                  <th>Blocked</th>
+                </tr>
+              </thead>
+              <tbody id="bot-user-counts"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="band">
+          <div class="section-head">
+            <h2>WebApp Events 24h</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Event</th>
+                  <th>Action</th>
+                  <th>Status</th>
+                  <th>Count</th>
+                </tr>
+              </thead>
+              <tbody id="event-counts"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="band">
+        <div class="section-head">
+          <h2>Recent WebApp Events</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>User</th>
+                <th>Event</th>
+                <th>Action</th>
+                <th>Status</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody id="recent-events"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="band">
+        <div class="section-head">
+          <h2>Recent Users</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>User ID</th>
+                <th>Username</th>
+                <th>Bot</th>
+                <th>Language</th>
+                <th>Interactions</th>
+                <th>Last Seen</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="recent-users"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script src="/admin-assets/dashboard.js"></script>
+</body>
+</html>

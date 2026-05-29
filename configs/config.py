@@ -31,6 +31,7 @@ class ConfigClass:
         self.WEB_APP_URL: Optional[str] = None
         self.STOREFRONT_DOMAIN: Optional[str] = None
         self.ORDER_CONTACT: Optional[str] = None  # Configurable order contact
+        self.ADMIN_DASHBOARD_TOKEN: Optional[str] = None
         self._load_config()
     
     def _load_config(self):
@@ -109,6 +110,7 @@ class ConfigClass:
         self.USE_WEBHOOK = config('USE_WEBHOOK', default=False, cast=bool)
         self.WEBHOOK_URL = config('WEBHOOK_URL', default=None)
         self.ORDER_CONTACT = config('ORDER_CONTACT', default=None)
+        self.ADMIN_DASHBOARD_TOKEN = config('ADMIN_DASHBOARD_TOKEN', default=None)
         
         # Load WEB_APP_URL - if not set, derive from WEBHOOK_URL (existing behaviour)
         self.WEB_APP_URL = config('WEB_APP_URL', default=None)

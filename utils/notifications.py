@@ -20,6 +20,7 @@ from utils.helpers import get_admin_ids, get_bot_specific_file_id
 from utils.safe_send import safe_send_message, safe_send_photo, safe_send_video, safe_send_animation, safe_send_document, handle_send_exception
 from utils.rate_limiter import RateLimiter
 from utils.primary_instance import is_primary_instance
+from utils.deeplinks import build_bot_product_url, build_webapp_product_url
 from translations.translator import translate_text_async
 from configs.config import Config
 from notifications.constants import (
@@ -151,6 +152,48 @@ class NotificationService:
                 burst=BOT_SEND_BURST,
             )
         return self._bot_rate_limiters[key]
+
+    @staticmethod
+    def _build_product_webapp_url(product_id: int) -> Optional[str]:
+        """Return a product-specific WebApp URL for notification buttons."""
+        return build_webapp_product_url(Config.WEB_APP_URL, product_id)
+
+    @classmethod
+    def _build_product_notification_keyboard(cls, product_id: int) -> InlineKeyboardMarkup:
+        """Build private product notification actions."""
+        keyboard = [
+            [InlineKeyboardButton(f"{emojis.VIEW} View Product", callback_data=f"product|{product_id}")],
+        ]
+        webapp_url = cls._build_product_webapp_url(product_id)
+        if webapp_url:
+            keyboard.append([InlineKeyboardButton("🛍️ View in WebApp", url=webapp_url)])
+        keyboard.extend([
+            [InlineKeyboardButton(f"{emojis.MENU} View Catalog", callback_data="categories")],
+            [InlineKeyboardButton(f"{emojis.MUTED_BELL} Unsubscribe", callback_data="unsubscribe_notifications")],
+        ])
+        return InlineKeyboardMarkup(keyboard)
+
+    @classmethod
+    def _build_product_broadcast_keyboard(
+        cls,
+        product_id: int,
+        bot_username: str,
+    ) -> tuple[Optional[InlineKeyboardMarkup], List[str]]:
+        """Build group/channel product broadcast actions and log details."""
+        buttons: list[InlineKeyboardButton] = []
+        details: List[str] = []
+
+        bot_deep_link = build_bot_product_url(product_id, bot_username)
+        if bot_deep_link:
+            buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
+            details.append(f"\n  - 🔗 View in Bot → {bot_deep_link}")
+
+        webapp_url = cls._build_product_webapp_url(product_id)
+        if webapp_url:
+            buttons.append(InlineKeyboardButton("🛍️ View in WebApp", url=webapp_url))
+            details.append(f"\n  - 🛍️ View in WebApp → {webapp_url}")
+
+        return (InlineKeyboardMarkup([buttons]) if buttons else None, details)
 
     async def _start_queue_worker(self):
         """Start the background queue worker if not already running."""
@@ -950,12 +993,8 @@ class NotificationService:
                 f"Use /menu to browse the catalog!"
             )
             
-            # Create inline keyboard with view product button
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"{emojis.VIEW} View Product", callback_data=f"product|{product_id}")],
-                [InlineKeyboardButton(f"{emojis.MENU} View Catalog", callback_data="categories")],
-                [InlineKeyboardButton(f"{emojis.MUTED_BELL} Unsubscribe", callback_data="unsubscribe_notifications")]
-            ])
+            # Create inline keyboard with bot and WebApp product actions.
+            keyboard = self._build_product_notification_keyboard(product_id)
             
             # Try to send with media preview (first available media file)
             media_sent = False
@@ -1210,24 +1249,11 @@ class NotificationService:
         file_type = product.get("file_type")
 
         # Build interactive buttons (matching inline mode style)
-        bot_deep_link = (
-            f"https://t.me/{bot_username}?start=product_{product_id}"
-            if bot_username else None
-        )
-        buttons: list = []
-        if bot_deep_link:
-            buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
-        if Config.WEB_APP_URL:
-            buttons.append(InlineKeyboardButton("🛍️ Shop", url=Config.WEB_APP_URL))
-        reply_markup = InlineKeyboardMarkup([buttons]) if buttons else None
-
-        button_details = "".join(
-            ([f"\n  - 🔗 View in Bot → {bot_deep_link}"] if bot_deep_link else [])
-            + ([f"\n  - 🛍️ Shop → {Config.WEB_APP_URL}"] if Config.WEB_APP_URL else [])
-        )
+        reply_markup, button_detail_lines = self._build_product_broadcast_keyboard(product_id, bot_username)
+        button_details = "".join(button_detail_lines)
         logger.info(
             f"[Broadcast] Preparing product {product_id} broadcast to {len(chats)} destination(s) "
-            f"via @{bot_username} with {len(buttons)} button(s){button_details}"
+            f"via @{bot_username} with {len(button_detail_lines)} button(s){button_details}"
         )
 
         sent = 0

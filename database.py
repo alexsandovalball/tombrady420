@@ -10,6 +10,7 @@ import logging
 import asyncio
 import uuid
 import re
+import json
 
 from configs.config import Config
 from utils.categories import EXCLUDED_FROM_ALL_PRODUCTS
@@ -288,6 +289,22 @@ class Database:
             """)
 
             await db.execute("""
+                CREATE TABLE IF NOT EXISTS webapp_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    user_id TEXT,
+                    username TEXT,
+                    event_type TEXT NOT NULL DEFAULT 'unknown',
+                    action TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    error TEXT NOT NULL DEFAULT '',
+                    details_json TEXT,
+                    client_timestamp TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS broadcast_chats (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     bot_username TEXT NOT NULL,
@@ -539,6 +556,9 @@ class Database:
 
             # Bot users language index
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_language_code ON bot_users(language)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_webapp_events_created ON webapp_events(created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_webapp_events_user ON webapp_events(user_id, created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_webapp_events_type_action ON webapp_events(event_type, action)")
 
             # Broadcast chats indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_chats_bot_username ON broadcast_chats(bot_username)")
@@ -3394,6 +3414,168 @@ class Database:
                 (user_id, result_id, query, bot_username),
             )
             await db.commit()
+
+    async def log_webapp_events(self, logs: List[Dict[str, Any]]) -> int:
+        """Persist WebApp diagnostic/user-interaction events for admin analytics."""
+        if not logs:
+            return 0
+
+        rows = []
+        for entry in logs:
+            details = entry.get("details", {})
+            try:
+                details_json = json.dumps(details, ensure_ascii=True, default=str)
+            except Exception:
+                details_json = "{}"
+            details_json = details_json[:4000]
+            rows.append((
+                str(entry.get("session_id") or ""),
+                str(entry.get("user_id") or "unknown"),
+                str(entry.get("username") or "unknown"),
+                str(entry.get("event_type") or "unknown")[:80],
+                str(entry.get("action") or "")[:120],
+                str(entry.get("status") or "")[:40],
+                str(entry.get("error") or "")[:500],
+                details_json,
+                str(entry.get("timestamp") or ""),
+            ))
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.executemany(
+                """
+                INSERT INTO webapp_events
+                    (session_id, user_id, username, event_type, action, status, error, details_json, client_timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            await db.commit()
+        return len(rows)
+
+    async def get_admin_dashboard_snapshot(self, recent_limit: int = 30) -> Dict[str, Any]:
+        """Return read-only dashboard data from persistent application state."""
+        recent_limit = max(5, min(recent_limit, 100))
+        since_24h = datetime.now() - timedelta(hours=24)
+
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+
+            async def scalar(sql: str, params: tuple = ()) -> int:
+                async with db.execute(sql, params) as cursor:
+                    row = await cursor.fetchone()
+                    return int(row[0] or 0) if row else 0
+
+            summary = {
+                "products": await scalar("SELECT COUNT(*) FROM products"),
+                "bot_users": await scalar("SELECT COUNT(*) FROM bot_users"),
+                "active_users_24h": await scalar(
+                    "SELECT COUNT(*) FROM bot_users WHERE last_seen >= ?",
+                    (since_24h,),
+                ),
+                "blocked_users": await scalar("SELECT COUNT(*) FROM bot_users WHERE is_blocked = 1"),
+                "subscribed_users": await scalar("SELECT COUNT(*) FROM bot_users WHERE is_subscribed = 1"),
+                "pending_notifications": await scalar("SELECT COUNT(*) FROM notification_queue WHERE sent_at IS NULL"),
+                "queued_custom_messages": await scalar("SELECT COUNT(*) FROM custom_message_queue WHERE sent_at IS NULL"),
+                "file_id_cache_entries": await scalar("SELECT COUNT(*) FROM bot_file_id_cache"),
+                "canonical_media": await scalar("SELECT COUNT(*) FROM canonical_media"),
+                "bot_media_mappings": await scalar("SELECT COUNT(*) FROM bot_media_file_ids WHERE is_valid = 1"),
+                "bot_registry_active": await scalar("SELECT COUNT(*) FROM bot_registry WHERE status = 'active'"),
+                "webapp_events_24h": await scalar(
+                    "SELECT COUNT(*) FROM webapp_events WHERE created_at >= ?",
+                    (since_24h,),
+                ),
+                "inline_queries_24h": await scalar(
+                    "SELECT COUNT(*) FROM inline_queries WHERE created_at >= ?",
+                    (since_24h,),
+                ),
+                "inline_chosen_24h": await scalar(
+                    "SELECT COUNT(*) FROM inline_chosen_results WHERE created_at >= ?",
+                    (since_24h,),
+                ),
+            }
+
+            async def rows(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
+                async with db.execute(sql, params) as cursor:
+                    fetched = await cursor.fetchall()
+                    return [dict(row) for row in fetched]
+
+            bots = await rows("""
+                SELECT
+                    bot_id, telegram_bot_id, bot_username, status,
+                    created_at, updated_at
+                FROM bot_registry
+                ORDER BY updated_at DESC
+            """)
+
+            bot_instances = await rows("""
+                SELECT
+                    bot_username, bot_id, slot_id, slot_name,
+                    telegram_username, first_seen, last_seen
+                FROM bot_instances
+                ORDER BY COALESCE(slot_id, 9999), bot_username
+            """)
+
+            bot_user_counts = await rows("""
+                SELECT
+                    COALESCE(NULLIF(LOWER(bot_username), ''), '_untracked_') AS bot_username,
+                    COUNT(*) AS users,
+                    SUM(CASE WHEN last_seen >= ? THEN 1 ELSE 0 END) AS active_24h,
+                    SUM(CASE WHEN is_blocked = 1 THEN 1 ELSE 0 END) AS blocked
+                FROM bot_users
+                GROUP BY COALESCE(NULLIF(LOWER(bot_username), ''), '_untracked_')
+                ORDER BY users DESC
+            """, (since_24h,))
+
+            recent_users = await rows("""
+                SELECT
+                    user_id, username, first_name, last_name, bot_username,
+                    language, is_subscribed, is_blocked, notifications_enabled,
+                    interaction_count, first_seen, last_seen
+                FROM bot_users
+                ORDER BY last_seen DESC
+                LIMIT ?
+            """, (recent_limit,))
+
+            recent_webapp_events = await rows("""
+                SELECT
+                    created_at, client_timestamp, session_id, user_id, username,
+                    event_type, action, status, error, details_json
+                FROM webapp_events
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, (recent_limit,))
+
+            webapp_event_counts = await rows("""
+                SELECT event_type, action, status, COUNT(*) AS count
+                FROM webapp_events
+                WHERE created_at >= ?
+                GROUP BY event_type, action, status
+                ORDER BY count DESC
+                LIMIT 25
+            """, (since_24h,))
+
+            inline_activity = await rows("""
+                SELECT
+                    COALESCE(NULLIF(LOWER(bot_username), ''), '_unknown_') AS bot_username,
+                    COUNT(*) AS queries,
+                    AVG(latency_ms) AS avg_latency_ms,
+                    AVG(results_count) AS avg_results
+                FROM inline_queries
+                WHERE created_at >= ?
+                GROUP BY COALESCE(NULLIF(LOWER(bot_username), ''), '_unknown_')
+                ORDER BY queries DESC
+            """, (since_24h,))
+
+        return {
+            "summary": summary,
+            "bots": bots,
+            "bot_instances": bot_instances,
+            "bot_user_counts": bot_user_counts,
+            "recent_users": recent_users,
+            "recent_webapp_events": recent_webapp_events,
+            "webapp_event_counts": webapp_event_counts,
+            "inline_activity": inline_activity,
+        }
 
     # ------------------------------------------------------------------
     # Broadcast chat CRUD methods

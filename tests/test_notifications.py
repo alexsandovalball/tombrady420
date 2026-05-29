@@ -285,3 +285,40 @@ class TestIsPrimaryInstance:
             result = service._is_primary_instance(ctx)
 
         assert result is False, "Secondary bot must not be treated as primary"
+
+
+class TestProductWebAppButtons:
+    def test_private_notification_keyboard_links_to_product_webapp(self, monkeypatch):
+        from utils.notifications import NotificationService
+
+        monkeypatch.setattr(
+            "utils.notifications.Config.WEB_APP_URL",
+            "https://example.test/webapp/index.html",
+        )
+
+        markup = NotificationService._build_product_notification_keyboard(976)
+        rows = markup.inline_keyboard
+
+        assert rows[0][0].callback_data == "product|976"
+        assert rows[1][0].text == "🛍️ View in WebApp"
+        assert rows[1][0].url == "https://example.test/webapp/index.html?product_id=976"
+        assert rows[2][0].callback_data == "categories"
+
+    def test_broadcast_keyboard_links_to_product_webapp(self, monkeypatch):
+        from utils.notifications import NotificationService
+
+        monkeypatch.setattr(
+            "utils.notifications.Config.WEB_APP_URL",
+            "https://example.test/webapp/index.html?lang=en",
+        )
+
+        markup, details = NotificationService._build_product_broadcast_keyboard(
+            976,
+            "TomBrady007bot",
+        )
+        buttons = markup.inline_keyboard[0]
+
+        assert buttons[0].url == "https://t.me/TomBrady007bot?start=product_976"
+        assert buttons[1].text == "🛍️ View in WebApp"
+        assert buttons[1].url == "https://example.test/webapp/index.html?lang=en&product_id=976"
+        assert any("product_id=976" in detail for detail in details)

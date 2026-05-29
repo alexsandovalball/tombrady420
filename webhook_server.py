@@ -807,6 +807,68 @@ def get_bot_usernames() -> List[str]:
     return usernames
 
 
+def _get_admin_dashboard_token() -> str:
+    """Read the dashboard token dynamically so Render env updates are respected."""
+    return (os.getenv("ADMIN_DASHBOARD_TOKEN") or getattr(Config, "ADMIN_DASHBOARD_TOKEN", "") or "").strip()
+
+
+def _extract_admin_dashboard_token(request: Request) -> str:
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return request.headers.get("X-Admin-Token", "").strip()
+
+
+def _require_admin_dashboard_auth(request: Request) -> None:
+    expected = _get_admin_dashboard_token()
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Admin dashboard disabled. Set ADMIN_DASHBOARD_TOKEN.",
+        )
+    supplied = _extract_admin_dashboard_token(request)
+    if not supplied or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin dashboard token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+def _runtime_bot_snapshots() -> List[Dict[str, object]]:
+    apps = _bot_applications or getattr(app.state, "bot_apps", [])
+    max_count = max(len(Config.BOT_TOKENS), len(apps))
+    snapshots: List[Dict[str, object]] = []
+    for idx in range(max_count):
+        bot_app = apps[idx] if idx < len(apps) else None
+        bot = getattr(bot_app, "bot", None) if bot_app is not None else None
+        slot = _bot_slots.get(idx)
+        bot_data = getattr(bot_app, "bot_data", {}) if bot_app is not None else {}
+        snapshots.append({
+            "index": idx,
+            "running": bool(getattr(bot_app, "running", False)) if bot_app is not None else False,
+            "username": getattr(bot, "username", None),
+            "telegram_bot_id": getattr(bot, "id", None),
+            "registry_bot_id": bot_data.get("bot_registry_id") if isinstance(bot_data, dict) else None,
+            "slot_id": slot.slot_id if slot else None,
+            "slot_name": slot.slot_name if slot else None,
+            "identity_hash": slot.identity_hash if slot else None,
+            "webhook_secret_fp": _secret_fingerprint(slot.webhook_secret if slot else None),
+        })
+    return snapshots
+
+
+def _cache_state_snapshot() -> Dict[str, int]:
+    return {
+        "resolved_file_ids": len(_resolved_file_id_cache),
+        "media_info": len(_media_info_cache),
+        "api_results": len(_api_result_cache),
+        "media_registry_write_keys": len(_media_registry_write_cache),
+        "orphan_legacy_secrets": len(_orphan_legacy_secret_cache),
+        "webhook_processing_locks": len(_webhook_processing_locks),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Bot reinitialisation helpers
 # ---------------------------------------------------------------------------
@@ -1536,6 +1598,8 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
         elif request.url.path in ('/webapp', '/webapp/', '/webapp/index.html'):
             # Allow conditional revalidation for the webapp entry point
             response.headers['Cache-Control'] = 'no-cache'
+        elif request.url.path == '/admin' or request.url.path.startswith('/admin/'):
+            response.headers['Cache-Control'] = 'no-store'
 
         # Security headers for HTML responses
         content_type = response.headers.get('content-type', '')
@@ -1581,6 +1645,7 @@ templates = Jinja2Templates(directory="webapp")
 # because it is resolved server-side relative to the server's own origin — no absolute URL
 # or CUSTOM_DOMAIN setting is required for static file serving to work correctly.
 app.mount("/assets", StaticFiles(directory="webapp"), name="assets")
+app.mount("/admin-assets", StaticFiles(directory="admin"), name="admin_assets")
 
 _STOREFRONT_BOT_USERNAME = os.getenv("BOT_USERNAME", "").lstrip("@")
 _STOREFRONT_DOMAIN = Config.STOREFRONT_DOMAIN or ""
@@ -1841,6 +1906,42 @@ async def serve_webapp(request: Request):
     clearnet storefront is served at /.
     """
     return _serve_storefront_index(request)
+
+
+@app.get("/admin", response_class=HTMLResponse)
+@app.get("/admin/", response_class=HTMLResponse)
+async def serve_admin_dashboard():
+    """Serve the read-only admin monitoring dashboard shell."""
+    dashboard_path = Path(__file__).parent / "admin" / "index.html"
+    if not dashboard_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admin dashboard not found")
+    return HTMLResponse(
+        dashboard_path.read_text(encoding="utf-8"),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/admin/api/overview")
+async def admin_dashboard_overview(request: Request):
+    """Return token-protected monitoring data for the admin dashboard."""
+    _require_admin_dashboard_auth(request)
+    db_snapshot = await _catalog_db.get_admin_dashboard_snapshot()
+    metrics_snapshot = metrics.snapshot()
+    webhook_snapshot = _webhook_monitor.snapshot()
+    return {
+        "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "configured_bot_count": len(Config.BOT_TOKENS),
+        "runtime_bots": _runtime_bot_snapshots(),
+        "cache_state": _cache_state_snapshot(),
+        "resource_usage": {
+            "tmp": get_tmp_usage(),
+            "cache": get_cache_usage(),
+        },
+        "webhook_401_total": _webhook_401_counter,
+        "metrics": metrics_snapshot,
+        "webhook_monitor": webhook_snapshot,
+        **db_snapshot,
+    }
 
 
 @app.get("/product/{product_id}", response_class=HTMLResponse)
@@ -2951,6 +3052,12 @@ async def webapp_logs(request: Request):
         
         if not logs:
             return {"success": True, "message": "No logs to process"}
+
+        persisted = 0
+        try:
+            persisted = await _catalog_db.log_webapp_events(logs)
+        except Exception as persist_error:
+            logger.warning("[WebApp] Failed to persist %d event log(s): %s", len(logs), persist_error)
         
         # Log each event with structured format
         for log_entry in logs:
@@ -2978,7 +3085,7 @@ async def webapp_logs(request: Request):
             else:
                 logger.info(log_msg)
         
-        return {"success": True, "processed": len(logs)}
+        return {"success": True, "processed": len(logs), "persisted": persisted}
         
     except HTTPException:
         raise
