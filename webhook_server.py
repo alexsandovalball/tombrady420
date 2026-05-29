@@ -327,6 +327,12 @@ _api_result_cache: OrderedDict = OrderedDict()
 _API_RESULT_CACHE_MAX = 100
 _API_RESULT_CACHE_TTL = 30  # seconds
 
+# Browser video playback can trigger several Range requests for the same file.
+# Keep an in-process LRU of media registry mappings we have already written so
+# repeated range requests do not generate identical SQLite writes.
+_media_registry_write_cache: OrderedDict = OrderedDict()
+_MEDIA_REGISTRY_WRITE_CACHE_MAX = 5000
+
 
 def _media_temp_path(file_id: str, suffix: str) -> Path:
     safe_suffix = suffix if suffix.startswith(".") else f".{suffix}" if suffix else ".bin"
@@ -514,15 +520,41 @@ def _api_result_cache_get(key: str) -> Optional[str]:
     return payload
 
 
+def _media_registry_cache_key(bot_identifier: str, file_unique_id: str, resolved_file_id: str) -> tuple:
+    return (bot_identifier, file_unique_id, hashlib.sha256(resolved_file_id.encode()).hexdigest())
+
+
+def _has_media_registry_write(bot_identifier: str, file_unique_id: str, resolved_file_id: str) -> bool:
+    key = _media_registry_cache_key(bot_identifier, file_unique_id, resolved_file_id)
+    if key not in _media_registry_write_cache:
+        return False
+    _media_registry_write_cache.move_to_end(key)
+    return True
+
+
+def _remember_media_registry_write(bot_identifier: str, file_unique_id: str, resolved_file_id: str) -> None:
+    key = _media_registry_cache_key(bot_identifier, file_unique_id, resolved_file_id)
+    _media_registry_write_cache[key] = _time.monotonic()
+    _media_registry_write_cache.move_to_end(key)
+    while len(_media_registry_write_cache) > _MEDIA_REGISTRY_WRITE_CACHE_MAX:
+        _media_registry_write_cache.popitem(last=False)
+
+
 def clear_in_memory_caches() -> int:
     """Clear all in-memory caches. Returns total entries cleared."""
-    global _resolved_file_id_cache, _media_info_cache, _api_result_cache
+    global _resolved_file_id_cache, _media_info_cache, _api_result_cache, _media_registry_write_cache
 
-    total = len(_resolved_file_id_cache) + len(_media_info_cache) + len(_api_result_cache)
+    total = (
+        len(_resolved_file_id_cache)
+        + len(_media_info_cache)
+        + len(_api_result_cache)
+        + len(_media_registry_write_cache)
+    )
 
     _resolved_file_id_cache.clear()
     _media_info_cache.clear()
     _api_result_cache.clear()
+    _media_registry_write_cache.clear()
 
     logger.info(f"Cleared {total} in-memory cache entries")
     return total
@@ -2537,16 +2569,24 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                 file_unique_id = getattr(tg_file, "file_unique_id", None)
                 if file_unique_id:
                     bot_identifier = (getattr(bot, "username", None) or f"bot_{0}").lower()
-                    await _catalog_db.upsert_canonical_media(
-                        product_id=str(product_id),
-                        media_type=media_type_info.get("type", "document"),
-                        file_unique_id=file_unique_id,
-                        origin_chat_id=source_chat_id,
-                        origin_message_id=source_message_id,
-                        original_file_id=file_id,
-                        file_size=file_size,
-                    )
-                    await _catalog_db.upsert_bot_media_file_id(bot_identifier, file_unique_id, file_id)
+                    if not _has_media_registry_write(bot_identifier, file_unique_id, file_id):
+                        await _catalog_db.upsert_canonical_media(
+                            product_id=str(product_id),
+                            media_type=media_type_info.get("type", "document"),
+                            file_unique_id=file_unique_id,
+                            origin_chat_id=source_chat_id,
+                            origin_message_id=source_message_id,
+                            original_file_id=file_id,
+                            file_size=file_size,
+                        )
+                        await _catalog_db.upsert_bot_media_file_id(bot_identifier, file_unique_id, file_id)
+                        _remember_media_registry_write(bot_identifier, file_unique_id, file_id)
+                    else:
+                        logger.debug(
+                            "[media_registry] duplicate_write_skipped product_id=%s bot=%s",
+                            product_id,
+                            bot_identifier,
+                        )
 
                 # Log file size retrieved
                 logger.debug(

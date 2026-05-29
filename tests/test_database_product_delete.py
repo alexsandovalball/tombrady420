@@ -77,6 +77,20 @@ def test_cache_touch_throttles_recent_hits():
     assert Database._should_touch_cache_entry(None) is True
 
 
+def test_media_registry_write_cache_deduplicates_repeated_range_requests():
+    import webhook_server
+
+    webhook_server._media_registry_write_cache.clear()
+    assert webhook_server._has_media_registry_write("tombrady007bot", "unique-file", "file-id") is False
+
+    webhook_server._remember_media_registry_write("tombrady007bot", "unique-file", "file-id")
+
+    assert webhook_server._has_media_registry_write("tombrady007bot", "unique-file", "file-id") is True
+    assert webhook_server._has_media_registry_write("tombrady007bot", "unique-file", "other-file-id") is False
+
+    webhook_server._media_registry_write_cache.clear()
+
+
 @pytest.mark.asyncio
 async def test_get_products_page_matches_existing_filters(db):
     await db.init_db()
