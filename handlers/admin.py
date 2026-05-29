@@ -29,6 +29,125 @@ db = Database()
 CAPTION_DISPLAY_LENGTH = 50  # Maximum length of caption to display in scan results
 
 
+def _fmt_count(value) -> str:
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return "0"
+
+
+def _fmt_ms(value) -> str:
+    try:
+        return f"{float(value):.0f}ms"
+    except (TypeError, ValueError):
+        return "0ms"
+
+
+def _format_admin_status_message(snapshot: dict) -> str:
+    summary = snapshot.get("summary", {})
+    metrics = snapshot.get("metrics", {}).get("endpoints", {})
+    runtime_bots = snapshot.get("runtime_bots", [])
+    cache_state = snapshot.get("cache_state", {})
+    event_counts = snapshot.get("webapp_event_counts", [])
+    bot_user_counts = snapshot.get("bot_user_counts", [])
+
+    active_bots = [bot for bot in runtime_bots if bot.get("username")]
+    missing_bots = [bot for bot in runtime_bots if not bot.get("username")]
+
+    lines = [
+        "📊 Admin Status",
+        "",
+        "🤖 Bots",
+        f"• Runtime: {_fmt_count(len(active_bots))}/{_fmt_count(len(runtime_bots))} configured",
+        f"• Registry active: {_fmt_count(summary.get('bot_registry_active'))}",
+    ]
+    if missing_bots:
+        lines.append(f"• Missing/unloaded: {_fmt_count(len(missing_bots))}")
+
+    lines.extend([
+        "",
+        "👥 Users",
+        f"• Total: {_fmt_count(summary.get('bot_users'))}",
+        f"• Active 24h: {_fmt_count(summary.get('active_users_24h'))}",
+        f"• Subscribed: {_fmt_count(summary.get('subscribed_users'))}",
+        f"• Blocked: {_fmt_count(summary.get('blocked_users'))}",
+        "",
+        "📦 Catalog / Queues",
+        f"• Products: {_fmt_count(summary.get('products'))}",
+        f"• Pending notifications: {_fmt_count(summary.get('pending_notifications'))}",
+        f"• Queued custom messages: {_fmt_count(summary.get('queued_custom_messages'))}",
+        "",
+        "🌐 WebApp / Inline",
+        f"• WebApp events 24h: {_fmt_count(summary.get('webapp_events_24h'))}",
+        f"• Inline queries 24h: {_fmt_count(summary.get('inline_queries_24h'))}",
+        f"• Inline chosen 24h: {_fmt_count(summary.get('inline_chosen_24h'))}",
+        "",
+        "⚙️ Caches",
+        f"• File ID DB: {_fmt_count(summary.get('file_id_cache_entries'))}",
+        f"• API memory: {_fmt_count(cache_state.get('api_results'))}",
+        f"• Media info memory: {_fmt_count(cache_state.get('media_info'))}",
+        f"• Resolved file IDs: {_fmt_count(cache_state.get('resolved_file_ids'))}",
+        f"• Orphan legacy secrets: {_fmt_count(cache_state.get('orphan_legacy_secrets'))}",
+    ])
+
+    if metrics:
+        lines.extend(["", "⏱ API Latency"])
+        for endpoint in ("api_products", "api_categories", "webhook_401"):
+            stat = metrics.get(endpoint)
+            if stat:
+                lines.append(
+                    f"• {endpoint}: count={_fmt_count(stat.get('count'))}, "
+                    f"avg={_fmt_ms(stat.get('avg_ms'))}, p95={_fmt_ms(stat.get('p95_ms'))}"
+                )
+
+    if bot_user_counts:
+        lines.extend(["", "👤 Top Bots By Users"])
+        for item in bot_user_counts[:5]:
+            lines.append(
+                f"• @{item.get('bot_username')}: {_fmt_count(item.get('users'))} users "
+                f"({_fmt_count(item.get('active_24h'))} active 24h)"
+            )
+
+    if event_counts:
+        lines.extend(["", "🧭 Top WebApp Events"])
+        for item in event_counts[:5]:
+            lines.append(
+                f"• {item.get('event_type')}/{item.get('action')}: {_fmt_count(item.get('count'))}"
+            )
+
+    lines.extend([
+        "",
+        "Tip: /clearcache only when media is stale. /prunebots is dry-run unless you add confirm.",
+    ])
+    return "\n".join(lines)
+
+
+@command_admin_required
+async def adminstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /adminstatus command - compact runtime, user, WebApp, and cache status."""
+    try:
+        snapshot = await db.get_admin_dashboard_snapshot(recent_limit=10)
+        try:
+            from webhook_server import (
+                _runtime_bot_snapshots,
+                _cache_state_snapshot,
+                _webhook_401_counter,
+                metrics,
+            )
+            snapshot["runtime_bots"] = _runtime_bot_snapshots()
+            snapshot["cache_state"] = _cache_state_snapshot()
+            snapshot["webhook_401_total"] = _webhook_401_counter
+            snapshot["metrics"] = metrics.snapshot()
+        except Exception as import_error:
+            logger.debug("adminstatus using DB-only snapshot: %s", import_error)
+
+        text = _format_admin_status_message(snapshot)
+        await update.message.reply_text(text[:3900])
+    except Exception as e:
+        logger.error("Error in adminstatus command: %s", e, exc_info=True)
+        await update.message.reply_text("❌ An error occurred while loading admin status.")
+
+
 async def build_users_bot_selection_menu():
     """
     Build bot selection menu for user management.

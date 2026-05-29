@@ -76,3 +76,52 @@ async def test_webapp_events_are_persisted_for_dashboard(tmp_path):
     assert snapshot["summary"]["webapp_events_24h"] == 1
     assert snapshot["recent_webapp_events"][0]["action"] == "view_product"
     assert snapshot["webapp_event_counts"][0]["count"] == 1
+
+
+def test_adminstatus_formatter_includes_key_sections():
+    from handlers.admin import _format_admin_status_message
+
+    message = _format_admin_status_message({
+        "summary": {
+            "products": 487,
+            "bot_users": 17,
+            "active_users_24h": 3,
+            "subscribed_users": 15,
+            "blocked_users": 1,
+            "pending_notifications": 2,
+            "queued_custom_messages": 0,
+            "file_id_cache_entries": 168,
+            "bot_registry_active": 10,
+            "webapp_events_24h": 42,
+            "inline_queries_24h": 5,
+            "inline_chosen_24h": 2,
+        },
+        "runtime_bots": [
+            {"index": 0, "username": "TomBrady007bot"},
+            {"index": 1, "username": "caliwezazabot"},
+        ],
+        "cache_state": {
+            "api_results": 4,
+            "media_info": 8,
+            "resolved_file_ids": 12,
+            "orphan_legacy_secrets": 1,
+        },
+        "metrics": {
+            "endpoints": {
+                "api_products": {"count": 10, "avg_ms": 120.4, "p95_ms": 400.2},
+            }
+        },
+        "bot_user_counts": [
+            {"bot_username": "tombrady007bot", "users": 12, "active_24h": 2},
+        ],
+        "webapp_event_counts": [
+            {"event_type": "user_interaction", "action": "view_product", "count": 9},
+        ],
+    })
+
+    assert "Admin Status" in message
+    assert "Runtime: 2/2 configured" in message
+    assert "Products: 487" in message
+    assert "WebApp events 24h: 42" in message
+    assert "api_products" in message
+    assert "Top Bots By Users" in message

@@ -635,6 +635,7 @@ async def setup_bot_commands(bot):
         BotCommand("start", "Start the bot and select language"),
         BotCommand("menu", "Browse the product catalog"),
         BotCommand("language", "Change bot language"),
+        BotCommand("adminstatus", "View bot and WebApp status"),
         BotCommand("users", "View and manage bot users"),
         BotCommand("botusers", "View users grouped by bot instance"),
         BotCommand("send", "Send a message to a specific user"),

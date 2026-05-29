@@ -78,6 +78,7 @@ ADMIN_COMMANDS_FALLBACK = (
     "• /start - Welcome message\n"
     "• /menu - View catalog\n"
     "• /language - Change bot language\n"
+    "• /adminstatus - View bot and WebApp status\n"
     "• /users - Manage users\n"
     "• /botusers - View users by bot instance\n"
     "• /send - Send message to user\n"
@@ -665,6 +666,7 @@ def register_bot_handlers(application: "Application", bot_index: int = 0):
         block_command, unblock_command, send_command, broadcast_command,
         setcontact_command, setlink_command, clearcache_command,
         botusers_command, prunebots_command, reinitbots_command,
+        adminstatus_command,
         enable_broadcasts_command, disable_broadcasts_command, list_broadcasts_command,
     )
     from handlers.broadcast import my_chat_member_handler
@@ -674,6 +676,7 @@ def register_bot_handlers(application: "Application", bot_index: int = 0):
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("language", language_command))
+    application.add_handler(CommandHandler("adminstatus", adminstatus_command))
     application.add_handler(CommandHandler("nuke", nuke_command))
     application.add_handler(CommandHandler("recategorize", recategorize_command))
     application.add_handler(CommandHandler("users", users_command))
