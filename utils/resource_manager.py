@@ -15,7 +15,7 @@ MB = 1024 * 1024
 
 MEMORY_CACHE_MAX_BYTES = 64 * MB
 DEFAULT_TTL_SECONDS = 10 * 60
-DISK_CACHE_MAX_BYTES = 250 * MB
+DISK_CACHE_MAX_BYTES = int(os.getenv("DISK_CACHE_MAX_MB", "700")) * MB
 DISK_CACHE_TTL_SECONDS = DEFAULT_TTL_SECONDS
 TMP_WARNING_BYTES = 1200 * MB
 TMP_EMERGENCY_BYTES = 1500 * MB
@@ -28,7 +28,8 @@ TMP_MAX_SIZE_BYTES = int(TMP_MAX_SIZE_GB * 1024 * MB)
 TMP_FILE_MAX_AGE_SECONDS = int(TMP_FILE_MAX_AGE_HOURS * 3600)
 
 APP_TMP_DIR = Path(os.getenv("APP_TMP_DIR", Path(tempfile.gettempdir()) / "brady_app_tmp"))
-APP_CACHE_DIR = Path(os.getenv("APP_CACHE_DIR", Path(tempfile.gettempdir()) / "brady_app_cache"))
+_DEFAULT_APP_CACHE_DIR = Path("/data/brady_app_cache") if Path("/data").exists() else Path(tempfile.gettempdir()) / "brady_app_cache"
+APP_CACHE_DIR = Path(os.getenv("APP_CACHE_DIR", _DEFAULT_APP_CACHE_DIR))
 BOT_TMP_ROOT = Path(os.getenv("BOT_TMP_ROOT", Path(tempfile.gettempdir()) / "bradycadia"))
 _last_emergency_cleanup = 0.0
 
@@ -141,7 +142,8 @@ def get_tmp_usage() -> dict:
 
 
 def get_cache_usage() -> dict:
-    usage = shutil.disk_usage(Path.cwd())
+    usage_root = APP_CACHE_DIR if APP_CACHE_DIR.exists() else Path.cwd()
+    usage = shutil.disk_usage(usage_root)
     return {
         "path": str(APP_CACHE_DIR),
         "used_bytes": usage.used,

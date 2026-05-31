@@ -47,8 +47,6 @@ from utils.resource_manager import (
     APP_CACHE_DIR,
     APP_TMP_DIR,
     DEFAULT_TTL_SECONDS,
-    DISK_CACHE_MAX_BYTES,
-    DISK_CACHE_TTL_SECONDS,
     TMP_WARNING_BYTES,
     TMP_FILE_MAX_AGE_SECONDS,
     TMP_MAX_SIZE_BYTES,
@@ -101,22 +99,26 @@ _ORPHAN_LEGACY_CACHE_MAX = 2048
 _ORPHAN_LEGACY_CACHE_TTL_SECONDS = 10 * 60
 _ORPHAN_LEGACY_LOG_INTERVAL_SECONDS = 15 * 60
 
-# Media cache configuration. Disk cache is app-owned, bounded, and image-only.
-MEDIA_STORAGE_MODE = os.getenv("MEDIA_STORAGE_MODE", "temp").strip().lower()
+# Media cache configuration. Disk cache is app-owned, bounded, and self-pruning.
+_DEFAULT_MEDIA_STORAGE_MODE = "persistent" if Path("/data").exists() else "temp"
+MEDIA_STORAGE_MODE = os.getenv("MEDIA_STORAGE_MODE", _DEFAULT_MEDIA_STORAGE_MODE).strip().lower()
 if MEDIA_STORAGE_MODE not in {"temp", "persistent"}:
     logger.warning("Invalid MEDIA_STORAGE_MODE=%s; falling back to temp", MEDIA_STORAGE_MODE)
     MEDIA_STORAGE_MODE = "temp"
-MEDIA_CACHE_DIR = Path(os.getenv("MEDIA_CACHE_DIR", APP_CACHE_DIR / "media"))
+_DEFAULT_MEDIA_CACHE_DIR = Path("/data/brady_app_cache/media") if MEDIA_STORAGE_MODE == "persistent" and Path("/data").exists() else APP_CACHE_DIR / "media"
+MEDIA_CACHE_DIR = Path(os.getenv("MEDIA_CACHE_DIR", _DEFAULT_MEDIA_CACHE_DIR))
 MEDIA_CACHE_ENABLED = (
     MEDIA_STORAGE_MODE == "persistent"
     and os.getenv("MEDIA_CACHE_ENABLED", "true").lower() not in {"0", "false", "no"}
 )
-MEDIA_CACHE_TTL_SECONDS = int(os.getenv("MEDIA_CACHE_TTL_SECONDS", "300"))
-MEDIA_CACHE_CLEANUP_INTERVAL_SECONDS = int(os.getenv("MEDIA_CACHE_CLEANUP_INTERVAL_SECONDS", "60"))
-MEDIA_CACHE_MAX_SIZE_MB = min(int(os.getenv("MEDIA_CACHE_MAX_SIZE_MB", "250")), 250)
-MEDIA_CACHE_TTL_HOURS = min(int(os.getenv("MEDIA_CACHE_TTL_HOURS", "1")), 1)
-MEDIA_CACHE_MAX_FILE_BYTES = int(os.getenv("MEDIA_CACHE_MAX_FILE_MB", "10")) * 1024 * 1024
-MEDIA_TEMP_MAX_BYTES = MEDIA_CACHE_MAX_SIZE_MB * 1024 * 1024
+MEDIA_CACHE_VIDEO_ENABLED = MEDIA_CACHE_ENABLED and os.getenv("MEDIA_CACHE_VIDEO_ENABLED", "true").lower() not in {"0", "false", "no"}
+MEDIA_CACHE_TTL_SECONDS = _bounded_int_env("MEDIA_CACHE_TTL_SECONDS", 300, 60, 3600)
+MEDIA_CACHE_CLEANUP_INTERVAL_SECONDS = _bounded_int_env("MEDIA_CACHE_CLEANUP_INTERVAL_SECONDS", 60, 15, 600)
+MEDIA_CACHE_MAX_SIZE_MB = _bounded_int_env("MEDIA_CACHE_MAX_SIZE_MB", 700, 25, 900)
+MEDIA_CACHE_MAX_SIZE_BYTES = MEDIA_CACHE_MAX_SIZE_MB * 1024 * 1024
+MEDIA_CACHE_TTL_HOURS = _bounded_int_env("MEDIA_CACHE_TTL_HOURS", 12, 1, 168)
+MEDIA_CACHE_MAX_FILE_BYTES = _bounded_int_env("MEDIA_CACHE_MAX_FILE_MB", 25, 1, 50) * 1024 * 1024
+MEDIA_TEMP_MAX_BYTES = _bounded_int_env("MEDIA_TEMP_MAX_MB", 250, 50, 1200) * 1024 * 1024
 
 ensure_resource_dirs()
 MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -178,12 +180,12 @@ class WebhookIPRateLimiter:
             return False
 
 class MediaCache:
-    """Simple bounded LRU file cache for tiny reusable non-video media."""
+    """Simple bounded LRU file cache for reusable catalog media."""
 
     def __init__(self, cache_dir: Path, max_size_mb: int, ttl_hours: int):
         self.cache_dir = cache_dir
         self.max_size_bytes = max_size_mb * 1024 * 1024
-        self.ttl_seconds = MEDIA_CACHE_TTL_SECONDS
+        self.ttl_seconds = ttl_hours * 3600
         self.lock = asyncio.Lock()
 
     def _get_cache_path(self, file_id: str) -> Path:
@@ -295,7 +297,7 @@ class MediaCache:
                 logger.warning(f"Error clearing cache: {e}")
 
     async def prune_expired(self):
-        """Delete files whose mtime exceeds the configured TTL."""
+        """Delete expired files and trim oldest entries if the cache is over budget."""
         async with self.lock:
             try:
                 now = _time.time()
@@ -314,6 +316,7 @@ class MediaCache:
                             pass
                 if pruned:
                     logger.info("[resource] cache_pruned count=%d", pruned)
+                await self._evict_if_needed()
             except Exception as e:
                 logger.warning(f"Error during media cache pruning: {e}")
 
@@ -1339,12 +1342,12 @@ async def _media_cache_prune_loop():
                 max_bytes=TMP_MAX_SIZE_BYTES,
                 skip_file=_is_media_temp_in_use,
             )
-            cleanup_owned_dir(APP_CACHE_DIR, DISK_CACHE_TTL_SECONDS, max_bytes=DISK_CACHE_MAX_BYTES)
+            cleanup_owned_dir(APP_CACHE_DIR, MEDIA_CACHE_TTL_HOURS * 3600, max_bytes=MEDIA_CACHE_MAX_SIZE_BYTES)
             tmp_usage = get_tmp_usage()
             cache_usage = get_cache_usage()
             if tmp_usage["used_bytes"] >= TMP_WARNING_BYTES:
                 logger.warning("[resource] tmp_usage_warning used=%d", tmp_usage["used_bytes"])
-            if cache_usage["app_cache_bytes"] > DISK_CACHE_MAX_BYTES:
+            if cache_usage["app_cache_bytes"] > MEDIA_CACHE_MAX_SIZE_BYTES:
                 logger.warning("[resource] cache_usage_warning app_cache=%d", cache_usage["app_cache_bytes"])
         except Exception as e:
             logger.warning(f"Media cache prune loop error: {e}")
@@ -2628,8 +2631,8 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
     )
 
     media_cache_key = hashlib.sha256(file_id.encode()).hexdigest()
-    # Check cache first for tiny reusable non-video media only.
-    cached_file_path = None if (is_video or not MEDIA_CACHE_ENABLED) else await _media_cache.get(file_id)
+    can_use_disk_cache = MEDIA_CACHE_ENABLED and (not is_video or MEDIA_CACHE_VIDEO_ENABLED)
+    cached_file_path = await _media_cache.get(file_id) if can_use_disk_cache else None
     file_path = None
     file_size = 0
     temp_file_to_cleanup: Optional[Path] = None
@@ -2652,7 +2655,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
             product_id,
             media_index,
             is_video,
-            MEDIA_CACHE_ENABLED,
+            can_use_disk_cache,
         )
         # Not in cache, need to download from Telegram
         try:
@@ -2792,20 +2795,21 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                         temp_input_path.stat().st_size,
                     )
 
-                    if is_video:
-                        file_path = temp_input_path
-                        temp_file_to_cleanup = temp_input_path
-                    else:
-                        cached_path = await _media_cache.set(
-                            file_id,
-                            temp_input_path,
-                            allow=MEDIA_CACHE_ENABLED and temp_input_path.stat().st_size <= MEDIA_CACHE_MAX_FILE_BYTES,
+                    cached_path = await _media_cache.set(
+                        file_id,
+                        temp_input_path,
+                        allow=can_use_disk_cache and temp_input_path.stat().st_size <= MEDIA_CACHE_MAX_FILE_BYTES,
+                    )
+                    file_path = cached_path or temp_input_path
+                    temp_file_to_cleanup = temp_input_path
+                    if cached_path:
+                        await _mark_media_access(cached_path)
+                        logger.info(
+                            "[media_cache] cache_reused layer=disk product_id=%s media_index=%s is_video=%s",
+                            product_id,
+                            media_index,
+                            is_video,
                         )
-                        file_path = cached_path or temp_input_path
-                        temp_file_to_cleanup = temp_input_path
-                        if cached_path:
-                            await _mark_media_access(cached_path)
-                            logger.info("[media_cache] cache_reused layer=disk product_id=%s media_index=%s", product_id, media_index)
 
         except telegram.error.BadRequest as e:
             # Cleanup partial temp file only when generation failed.

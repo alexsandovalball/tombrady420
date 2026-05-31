@@ -2180,6 +2180,59 @@
         container.appendChild(nextBtn);
     }
 
+    function getVideoPreviewSeekTime(video) {
+        if (!Number.isFinite(video.duration) || video.duration <= 0) {
+            return CONFIG.VIDEO_THUMBNAIL_SEEK_TIME;
+        }
+        if (video.duration < CONFIG.VIDEO_SHORT_DURATION_THRESHOLD) {
+            return Math.max(0, video.duration * CONFIG.VIDEO_THUMBNAIL_SEEK_PERCENT);
+        }
+        const seekTime = Math.min(
+            CONFIG.VIDEO_THUMBNAIL_SEEK_TIME,
+            video.duration * CONFIG.VIDEO_THUMBNAIL_SEEK_PERCENT
+        );
+        return Math.max(0, Math.min(seekTime, video.duration - CONFIG.VIDEO_BOUNDS_BUFFER));
+    }
+
+    function createVideoPreview(mediaUrl, fallbackContainer) {
+        const vid = document.createElement('video');
+        vid.src = mediaUrl;
+        vid.muted = true;
+        vid.playsInline = true;
+        vid.setAttribute('playsinline', '');
+        vid.preload = 'metadata';
+        vid.className = 'video-preview';
+
+        let previewLoaded = false;
+        const markLoaded = () => {
+            if (previewLoaded) return;
+            previewLoaded = true;
+            vid.classList.add('loaded');
+        };
+
+        vid.addEventListener('loadedmetadata', () => {
+            try {
+                vid.currentTime = getVideoPreviewSeekTime(vid);
+            } catch (err) {
+                markLoaded();
+            }
+        }, { once: true });
+        vid.addEventListener('seeked', markLoaded, { once: true });
+        vid.addEventListener('loadeddata', () => {
+            if (vid.currentTime > 0.05 || !Number.isFinite(vid.duration)) {
+                markLoaded();
+            }
+        });
+        vid.onerror = () => {
+            if (fallbackContainer) {
+                fallbackContainer.classList.add('placeholder');
+                fallbackContainer.textContent = '🎬';
+            }
+        };
+
+        return vid;
+    }
+
     function createProductCard(item) {
         // NOTE: All <img> elements created here must include an alt attribute for SEO and accessibility.
         const card = document.createElement('div');
@@ -2208,23 +2261,7 @@
         const mediaUrl = buildMediaUrl(item, mediaIndex);
         if (mediaUrl) {
             if (selectedMediaType === 'video') {
-                const vid = document.createElement('video');
-                vid.src = mediaUrl;
-                vid.muted = true;
-                vid.playsInline = true;
-                vid.preload = 'metadata';
-                vid.addEventListener('loadedmetadata', () => {
-                    if (vid.duration < CONFIG.VIDEO_SHORT_DURATION_THRESHOLD) {
-                        vid.currentTime = Math.max(0, vid.duration * CONFIG.VIDEO_THUMBNAIL_SEEK_PERCENT);
-                        return;
-                    }
-                    const seekTime = Math.min(CONFIG.VIDEO_THUMBNAIL_SEEK_TIME, vid.duration * CONFIG.VIDEO_THUMBNAIL_SEEK_PERCENT);
-                    vid.currentTime = Math.max(0, Math.min(seekTime, vid.duration - CONFIG.VIDEO_BOUNDS_BUFFER));
-                });
-                vid.onerror = () => {
-                    media.classList.add('placeholder');
-                    media.textContent = '🎬';
-                };
+                const vid = createVideoPreview(mediaUrl, media);
                 media.appendChild(vid);
 
                 // Play icon overlay for video cards
@@ -2621,10 +2658,11 @@
                 const thumbUrl = buildMediaUrl(product, i);
                 
                 if (mediaType === 'video') {
-                    // Keep video thumbnails lightweight. Creating a <video> for
-                    // every thumbnail triggers metadata/range requests for all
-                    // videos before the user selects them, which can swamp mobile
-                    // WebViews and race with the active player.
+                    if (thumbUrl) {
+                        const previewVideo = createVideoPreview(thumbUrl, thumbContent);
+                        thumbContent.appendChild(previewVideo);
+                    }
+
                     const playIcon = document.createElement('div');
                     playIcon.style.position = 'absolute';
                     playIcon.style.top = '50%';

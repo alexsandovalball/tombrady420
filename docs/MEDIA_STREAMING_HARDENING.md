@@ -13,6 +13,7 @@ Rapid catalog navigation and normal browser `206 Partial Content` requests could
 - Added TTL and size-based media temp eviction instead of immediate deletion.
 - Added adaptive emergency cleanup cooldown and high/low watermark behavior.
 - Added structured logs for cache hits, misses, reuse, expiration, generation, active streams, and cleanup skip decisions.
+- Persistent media cache can now include videos when enabled; it is bounded by total size, per-file size, TTL, and LRU eviction so older entries are removed automatically.
 - Improved webhook 401 diagnostics while preserving strict secret validation.
 
 ## Operational Recommendations
@@ -23,8 +24,13 @@ Rapid catalog navigation and normal browser `206 Partial Content` requests could
 
 ## Suggested Production Defaults
 
+- `MEDIA_STORAGE_MODE=persistent`
 - `MEDIA_CACHE_ENABLED=true`
+- `MEDIA_CACHE_VIDEO_ENABLED=true`
 - `MEDIA_CACHE_TTL_SECONDS=300`
+- `MEDIA_CACHE_TTL_HOURS=12`
 - `MEDIA_CACHE_CLEANUP_INTERVAL_SECONDS=60`
-- `MEDIA_CACHE_MAX_SIZE_MB=250`
+- `MEDIA_CACHE_MAX_SIZE_MB=700`
+- `MEDIA_CACHE_MAX_FILE_MB=25`
+- `MEDIA_TEMP_MAX_MB=250`
 - `EMERGENCY_CLEANUP_COOLDOWN_SECONDS=120`
