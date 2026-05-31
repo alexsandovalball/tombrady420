@@ -21,6 +21,7 @@
         WEBAPP_CLOSE_DELAY_MS: 1500,  // Delay before closing webapp after successful product send
         ERROR_DISPLAY_MS: 4000,  // Duration to show error messages on buttons
         INITIAL_DATA_TIMEOUT_MS: 10000,  // Timeout for initial data load to prevent infinite loading
+        MAX_VIDEO_PREVIEW_CACHE_SIZE: 80,  // Captured video preview frames kept in memory
         MAX_CACHE_SIZE: 20  // Maximum number of cached API responses to prevent memory leaks
     };
 
@@ -172,257 +173,6 @@
         logger.cleanup();
     });
 
-    // MediaRequestManager for intelligent request deduplication and throttling
-    class MediaRequestManager {
-        constructor() {
-            this.activeRequests = new Map(); // Key: "productId_mediaIndex", Value: Promise
-            this.requestQueue = []; // Queue of pending requests
-            this.cache = new Map(); // In-memory cache: Key: "productId_mediaIndex", Value: { data, timestamp }
-            this.maxConcurrent = 6; // Maximum concurrent requests (increased from 3 for faster loading)
-            this.currentConcurrent = 0;
-            this.cacheTTL = 300000; // 5 minutes TTL for cache
-            this.retryDelays = [1000, 2000, 4000]; // Exponential backoff delays in ms
-        }
-
-        /**
-         * Get cache key for a media request
-         */
-        getCacheKey(productId, mediaIndex) {
-            return `${productId}_${mediaIndex}`;
-        }
-
-        /**
-         * Check if cached data is still valid
-         */
-        isCacheValid(cacheEntry) {
-            if (!cacheEntry) return false;
-            return (Date.now() - cacheEntry.timestamp) < this.cacheTTL;
-        }
-
-        /**
-         * Get data from cache if valid
-         */
-        getFromCache(productId, mediaIndex) {
-            const key = this.getCacheKey(productId, mediaIndex);
-            const cached = this.cache.get(key);
-            if (this.isCacheValid(cached)) {
-                logger.log('media_cache', 'cache_hit', 'success', '', {
-                    product_id: productId,
-                    media_index: mediaIndex
-                });
-                return cached.data;
-            }
-            return null;
-        }
-
-        /**
-         * Store data in cache
-         */
-        storeInCache(productId, mediaIndex, data) {
-            const key = this.getCacheKey(productId, mediaIndex);
-            this.cache.set(key, {
-                data: data,
-                timestamp: Date.now()
-            });
-
-            // Cleanup old cache entries (LRU-like)
-            if (this.cache.size > CONFIG.MAX_CACHE_SIZE) {
-                const firstKey = this.cache.keys().next().value;
-                this.cache.delete(firstKey);
-            }
-
-            logger.log('media_cache', 'cache_store', 'success', '', {
-                product_id: productId,
-                media_index: mediaIndex,
-                cache_size: this.cache.size
-            });
-        }
-
-        /**
-         * Fetch media with retry logic and exponential backoff
-         * Only retries on transient errors (5xx and network failures)
-         * Does NOT retry on permanent errors like 413 and 404
-         */
-        async fetchWithRetry(url, productId, mediaIndex, retryCount = 0) {
-            try {
-                const response = await fetch(url);
-                
-                // Check for permanent errors that should not be retried
-                if (response.status === 413 || response.status === 404) {
-                    // These are permanent errors - don't retry
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                }
-                
-                if (!response.ok) {
-                    // Only retry on 5xx errors (server errors)
-                    if (response.status >= 500 && response.status < 600 && retryCount < this.retryDelays.length) {
-                        const delay = this.retryDelays[retryCount];
-                        logger.log('media_request', 'retry', 'warning', `HTTP ${response.status}`, {
-                            product_id: productId,
-                            media_index: mediaIndex,
-                            retry_count: retryCount,
-                            delay: delay,
-                            status: response.status
-                        });
-
-                        await new Promise(resolve => setTimeout(resolve, delay));
-                        return this.fetchWithRetry(url, productId, mediaIndex, retryCount + 1);
-                    }
-                    
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                }
-
-                // For videos, return the blob URL
-                if (url.includes('/media/')) {
-                    const blob = await response.blob();
-                    const blobUrl = URL.createObjectURL(blob);
-                    return blobUrl;
-                }
-
-                return response;
-
-            } catch (error) {
-                // Only retry on network failures (not HTTP errors)
-                // Check if it's a network error (no HTTP status in message)
-                const isNetworkError = !error.message.match(/HTTP \d{3}/);
-                
-                if (isNetworkError && retryCount < this.retryDelays.length) {
-                    const delay = this.retryDelays[retryCount];
-                    logger.log('media_request', 'retry', 'warning', error.message, {
-                        product_id: productId,
-                        media_index: mediaIndex,
-                        retry_count: retryCount,
-                        delay: delay
-                    });
-
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                    return this.fetchWithRetry(url, productId, mediaIndex, retryCount + 1);
-                }
-
-                throw error;
-            }
-        }
-
-        /**
-         * Process queued requests when slots become available
-         */
-        processQueue() {
-            while (this.requestQueue.length > 0 && this.currentConcurrent < this.maxConcurrent) {
-                const { url, productId, mediaIndex, resolve, reject } = this.requestQueue.shift();
-                this.executeRequest(url, productId, mediaIndex, resolve, reject);
-            }
-        }
-
-        /**
-         * Execute a single request
-         */
-        async executeRequest(url, productId, mediaIndex, resolve, reject) {
-            const key = this.getCacheKey(productId, mediaIndex);
-            this.currentConcurrent++;
-
-            logger.log('media_request', 'request_start', 'info', '', {
-                product_id: productId,
-                media_index: mediaIndex,
-                concurrent_count: this.currentConcurrent,
-                queue_length: this.requestQueue.length
-            });
-
-            try {
-                const result = await this.fetchWithRetry(url, productId, mediaIndex);
-                
-                // Store in cache
-                this.storeInCache(productId, mediaIndex, result);
-
-                logger.log('media_request', 'request_success', 'success', '', {
-                    product_id: productId,
-                    media_index: mediaIndex
-                });
-
-                resolve(result);
-            } catch (error) {
-                logger.log('media_request', 'request_error', 'error', error.message, {
-                    product_id: productId,
-                    media_index: mediaIndex
-                });
-
-                reject(error);
-            } finally {
-                this.currentConcurrent--;
-                this.activeRequests.delete(key);
-                
-                // Process next queued request
-                this.processQueue();
-            }
-        }
-
-        /**
-         * Request media with deduplication, throttling, and caching
-         */
-        async request(url, productId, mediaIndex) {
-            // Check cache first
-            const cached = this.getFromCache(productId, mediaIndex);
-            if (cached) {
-                return cached;
-            }
-
-            const key = this.getCacheKey(productId, mediaIndex);
-
-            // If request is already in progress, return the existing promise
-            if (this.activeRequests.has(key)) {
-                logger.log('media_request', 'deduplication', 'info', '', {
-                    product_id: productId,
-                    media_index: mediaIndex
-                });
-                return this.activeRequests.get(key);
-            }
-
-            // Create new request promise
-            const requestPromise = new Promise((resolve, reject) => {
-                if (this.currentConcurrent < this.maxConcurrent) {
-                    // Execute immediately
-                    this.executeRequest(url, productId, mediaIndex, resolve, reject);
-                } else {
-                    // Add to queue
-                    this.requestQueue.push({ url, productId, mediaIndex, resolve, reject });
-                    logger.log('media_request', 'queued', 'info', '', {
-                        product_id: productId,
-                        media_index: mediaIndex,
-                        queue_position: this.requestQueue.length
-                    });
-                }
-            });
-
-            this.activeRequests.set(key, requestPromise);
-            return requestPromise;
-        }
-
-        /**
-         * Cancel all pending requests for cleanup
-         */
-        cancelAll() {
-            // Clear queue
-            this.requestQueue = [];
-            
-            // Note: We can't actually cancel fetch requests, but we can clear our tracking
-            this.activeRequests.clear();
-            
-            logger.log('media_request', 'cancel_all', 'info', '', {
-                queue_cleared: true
-            });
-        }
-
-        /**
-         * Clear cache
-         */
-        clearCache() {
-            this.cache.clear();
-            logger.log('media_cache', 'cache_clear', 'success', '', {});
-        }
-    }
-
-    // Initialize media request manager
-    const mediaRequestManager = new MediaRequestManager();
-
     // Debounce utility: delays invoking func until after wait ms have elapsed
     // since the last call, preventing excessive calls during rapid input events.
     function debounce(func, wait) {
@@ -473,6 +223,8 @@
         pendingRequests: new Map(),  // Track pending requests for deduplication
         initialDataLoadFailed: false  // Track if initial data load failed/timed out
     };
+
+    const videoPreviewFrameCache = new Map();
     
     // Create debounced pagination handler once (reused across renders)
     const debouncedPageChange = debounce(async (newPage, category, subcategory) => {
@@ -1115,34 +867,43 @@
                 headers['X-Telegram-Init-Data'] = tg.initData;
             }
             
-            logger.apiCall('load_initial_data', 'started', { endpoint: '/api/products' });
-            const startTime = Date.now();
-            
-            try {
-                const response = await fetch('/api/products?limit=1', { headers });
-                const responseTime = Date.now() - startTime;
-                
-                if (response.ok) {
-                    const data = await response.json();
-                    state.orderContact = data.order_contact || null;
-                    state.orderLink = data.order_link || null;
-                    state.botUsername = data.bot || null;
-                    logger.apiCall('load_initial_data', 'success', { 
-                        endpoint: '/api/products',
-                        response_time_ms: responseTime,
-                        order_contact: state.orderContact,
-                        order_link: state.orderLink,
-                        bot_username: state.botUsername
-                    });
-                } else {
-                    logger.apiCall('load_initial_data', 'error', {
-                        endpoint: '/api/products',
-                        status: response.status,
-                        response_time_ms: responseTime
-                    });
+            const deepLinkedProductId = getDeepLinkedProductId();
+            if (deepLinkedProductId) {
+                logger.apiCall('load_initial_data', 'skipped', {
+                    endpoint: '/api/products',
+                    reason: 'deep_link_product',
+                    product_id: deepLinkedProductId
+                });
+            } else {
+                logger.apiCall('load_initial_data', 'started', { endpoint: '/api/products' });
+                const startTime = Date.now();
+
+                try {
+                    const response = await fetch('/api/products?limit=1', { headers });
+                    const responseTime = Date.now() - startTime;
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        state.orderContact = data.order_contact || null;
+                        state.orderLink = data.order_link || null;
+                        state.botUsername = data.bot || null;
+                        logger.apiCall('load_initial_data', 'success', {
+                            endpoint: '/api/products',
+                            response_time_ms: responseTime,
+                            order_contact: state.orderContact,
+                            order_link: state.orderLink,
+                            bot_username: state.botUsername
+                        });
+                    } else {
+                        logger.apiCall('load_initial_data', 'error', {
+                            endpoint: '/api/products',
+                            status: response.status,
+                            response_time_ms: responseTime
+                        });
+                    }
+                } catch (err) {
+                    logger.error('load_initial_data_products', err.message, { stack: err.stack });
                 }
-            } catch (err) {
-                logger.error('load_initial_data_products', err.message, { stack: err.stack });
             }
             
             // Try to get user ID from multiple sources
@@ -1188,39 +949,10 @@
                 }
             }
             
-            // 3. Track user in bot_users database for proper ID logging on every deploy
+            // 3. Track user and refresh subscription status in the background.
+            // These are useful, but they should not delay the first screen render.
             if (state.userId) {
-                try {
-                    const trackHeaders = { 'Content-Type': 'application/json' };
-                    if (tg.initData) {
-                        trackHeaders['X-Telegram-Init-Data'] = tg.initData;
-                    }
-                    const user = tg.initDataUnsafe?.user || {};
-                    await fetch('/api/user/track', {
-                        method: 'POST',
-                        headers: trackHeaders,
-                        body: JSON.stringify({
-                            user_id: state.userId,
-                            username: state.username || user.username || null,
-                            first_name: user.first_name || null,
-                            last_name: user.last_name || null
-                        })
-                    });
-                    logger.log('user_tracking', 'user_tracked_in_db', 'success', '', {
-                        user_id: state.userId
-                    });
-                } catch (err) {
-                    logger.error('user_tracking', 'Failed to track user: ' + err.message);
-                }
-            }
-            
-            // Load user notification status if authenticated
-            if (state.userId) {
-                try {
-                    await loadUserSubscriptionStatus();
-                } catch (err) {
-                    logger.error('load_subscription_status', 'Failed to load subscription: ' + err.message);
-                }
+                queueUserBackgroundRefresh();
             } else {
                 logger.log('user_identification', 'user_id_unavailable', 'warning', '', {
                     message: 'Could not determine user ID from any source',
@@ -1246,6 +978,41 @@
                 state.initialDataLoadFailed = true;
             }
         }
+    }
+
+    function queueUserBackgroundRefresh() {
+        setTimeout(() => {
+            trackWebappUser().catch(err => {
+                logger.error('user_tracking', 'Failed to track user: ' + err.message);
+            });
+
+            loadUserSubscriptionStatus().catch(err => {
+                logger.error('load_subscription_status', 'Failed to load subscription: ' + err.message);
+            });
+        }, 0);
+    }
+
+    async function trackWebappUser() {
+        if (!state.userId) return;
+
+        const trackHeaders = { 'Content-Type': 'application/json' };
+        if (tg.initData) {
+            trackHeaders['X-Telegram-Init-Data'] = tg.initData;
+        }
+        const user = tg.initDataUnsafe?.user || {};
+        await fetch('/api/user/track', {
+            method: 'POST',
+            headers: trackHeaders,
+            body: JSON.stringify({
+                user_id: state.userId,
+                username: state.username || user.username || null,
+                first_name: user.first_name || null,
+                last_name: user.last_name || null
+            })
+        });
+        logger.log('user_tracking', 'user_tracked_in_db', 'success', '', {
+            user_id: state.userId
+        });
     }
 
     async function loadUserSubscriptionStatus() {
@@ -1524,7 +1291,7 @@
                     showCategories(false);
                 }
             } else if (previous.view === 'products') {
-                loadProducts(previous.category, previous.subcategory, false, false);
+                restoreProductsView(previous);
             } else if (previous.view === 'search') {
                 state.searchQuery = previous.query || '';
                 state.page = previous.page || 0;
@@ -1537,6 +1304,23 @@
             }
         }
         updateBackButton();
+    }
+
+    function restoreProductsView(previous) {
+        state.currentCategory = previous.category || null;
+        state.currentSubcategory = previous.subcategory || null;
+        state.page = previous.page || 0;
+        state.view = 'products';
+
+        const grid = document.getElementById('products-grid');
+        if (!state.products.length || !grid || grid.children.length === 0) {
+            loadProducts(state.currentCategory, state.currentSubcategory, false, false);
+            return;
+        }
+
+        hideAllViews();
+        document.getElementById('products-view').style.display = 'block';
+        updateBreadcrumb();
     }
 
     function updateBackButton() {
@@ -2194,7 +1978,55 @@
         return Math.max(0, Math.min(seekTime, video.duration - CONFIG.VIDEO_BOUNDS_BUFFER));
     }
 
-    function createVideoPreview(mediaUrl, fallbackContainer) {
+    function getVideoPreviewFrame(cacheKey) {
+        if (!cacheKey || !videoPreviewFrameCache.has(cacheKey)) {
+            return null;
+        }
+        const cached = videoPreviewFrameCache.get(cacheKey);
+        videoPreviewFrameCache.delete(cacheKey);
+        videoPreviewFrameCache.set(cacheKey, cached);
+        return cached;
+    }
+
+    function rememberVideoPreviewFrame(cacheKey, src) {
+        if (!cacheKey || !src) return;
+        if (videoPreviewFrameCache.has(cacheKey)) {
+            videoPreviewFrameCache.delete(cacheKey);
+        }
+        videoPreviewFrameCache.set(cacheKey, src);
+        while (videoPreviewFrameCache.size > CONFIG.MAX_VIDEO_PREVIEW_CACHE_SIZE) {
+            const oldestKey = videoPreviewFrameCache.keys().next().value;
+            videoPreviewFrameCache.delete(oldestKey);
+        }
+    }
+
+    function createPreviewImage(src) {
+        const img = document.createElement('img');
+        img.src = src;
+        img.alt = 'Video preview';
+        img.className = 'video-preview loaded';
+        img.loading = 'eager';
+        return img;
+    }
+
+    function videoPreviewCacheKey(productId, mediaIndex) {
+        return `${productId}:${mediaIndex}`;
+    }
+
+    function safeLogUrl(url) {
+        try {
+            return new URL(url, window.location.origin).pathname;
+        } catch (err) {
+            return String(url || '').split('?')[0];
+        }
+    }
+
+    function createVideoPreview(mediaUrl, fallbackContainer, cacheKey = '') {
+        const cachedPreview = getVideoPreviewFrame(cacheKey);
+        if (cachedPreview) {
+            return createPreviewImage(cachedPreview);
+        }
+
         const vid = document.createElement('video');
         vid.src = mediaUrl;
         vid.muted = true;
@@ -2204,10 +2036,35 @@
         vid.className = 'video-preview';
 
         let previewLoaded = false;
+        let frameCaptured = false;
         const markLoaded = () => {
             if (previewLoaded) return;
             previewLoaded = true;
             vid.classList.add('loaded');
+        };
+        const capturePreviewFrame = () => {
+            if (frameCaptured || !fallbackContainer || !vid.videoWidth || !vid.videoHeight) {
+                markLoaded();
+                return;
+            }
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = vid.videoWidth;
+                canvas.height = vid.videoHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
+
+                const previewSrc = canvas.toDataURL('image/jpeg', 0.82);
+                rememberVideoPreviewFrame(cacheKey, previewSrc);
+                const img = createPreviewImage(previewSrc);
+
+                if (vid.parentNode) {
+                    vid.parentNode.replaceChild(img, vid);
+                }
+                frameCaptured = true;
+            } catch (err) {
+                markLoaded();
+            }
         };
 
         vid.addEventListener('loadedmetadata', () => {
@@ -2217,9 +2074,10 @@
                 markLoaded();
             }
         }, { once: true });
-        vid.addEventListener('seeked', markLoaded, { once: true });
+        vid.addEventListener('seeked', capturePreviewFrame, { once: true });
         vid.addEventListener('loadeddata', () => {
             if (vid.currentTime > 0.05 || !Number.isFinite(vid.duration)) {
+                capturePreviewFrame();
                 markLoaded();
             }
         });
@@ -2229,6 +2087,7 @@
                 fallbackContainer.textContent = '🎬';
             }
         };
+        setTimeout(markLoaded, 1200);
 
         return vid;
     }
@@ -2261,7 +2120,7 @@
         const mediaUrl = buildMediaUrl(item, mediaIndex);
         if (mediaUrl) {
             if (selectedMediaType === 'video') {
-                const vid = createVideoPreview(mediaUrl, media);
+                const vid = createVideoPreview(mediaUrl, media, videoPreviewCacheKey(item.id, mediaIndex));
                 media.appendChild(vid);
 
                 // Play icon overlay for video cards
@@ -2431,7 +2290,7 @@
                     logger.videoEvent('video_load_attempt', 'started', '', {
                         product_id: product.id,
                         media_index: index,
-                        url: mediaUrl
+                        url: safeLogUrl(mediaUrl)
                     });
                     
                     const video = document.createElement('video');
@@ -2599,7 +2458,7 @@
                         logger.error('image_load_error', 'Failed to load image', {
                             product_id: product.id,
                             media_index: index,
-                            url: mediaUrl
+                            url: safeLogUrl(mediaUrl)
                         });
                         mediaViewer.innerHTML = `
                             <div class="media-error">
@@ -2659,7 +2518,11 @@
                 
                 if (mediaType === 'video') {
                     if (thumbUrl) {
-                        const previewVideo = createVideoPreview(thumbUrl, thumbContent);
+                        const previewVideo = createVideoPreview(
+                            thumbUrl,
+                            thumbContent,
+                            videoPreviewCacheKey(product.id, i)
+                        );
                         thumbContent.appendChild(previewVideo);
                     }
 

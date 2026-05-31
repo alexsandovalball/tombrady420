@@ -104,7 +104,7 @@ Queued notification batches are processed sequentially by a background FIFO asyn
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | INTEGER PK | Gap-recycled sequential ID |
+| `id` | INTEGER PK | Stable SQLite-allocated product ID |
 | `file_id` | TEXT | Telegram file_id (primary media) |
 | `file_type` | TEXT | `photo`, `video`, `document`, `animation` |
 | `caption` | TEXT | Full product caption from channel post |
@@ -116,7 +116,7 @@ Queued notification batches are processed sequentially by a background FIFO asyn
 | `bot_username` | TEXT | Username of the posting bot instance |
 | `message_id` | INTEGER | Source channel message ID |
 
-**ID recycling:** `get_next_free_id()` finds the lowest gap (e.g. if IDs 1,2,4 exist → returns 3).
+**Product IDs:** Product IDs are stable internal identifiers and are not recycled after deletion. This keeps old Telegram buttons, WebApp links, notifications, storefront URLs, and admin actions from accidentally pointing at a different future product.
 
 > **SQLite maintenance note:** `VACUUM` is no longer run automatically after every deletion.
 > Running VACUUM on every delete was expensive, blocked all writers, and caused latency spikes under load.

@@ -1,6 +1,7 @@
 """
 Product view handler.
 """
+import asyncio
 import logging
 import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, InputMediaAnimation, InputMediaDocument
@@ -160,10 +161,14 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         product_bot = (product.get("bot_username") or "").lower()
         current_bot = (context.bot.username or "").lower()
         resolver = MediaResolver(context.bot, db)
+        resolution_results = await asyncio.gather(*[
+            resolver.resolve_media_for_bot(product, current_bot, idx)
+            for idx, _media in enumerate(media_list)
+        ])
+
         resolved_media_list = []
         resolution_failures = []
-        for idx, (_file_id, file_type) in enumerate(media_list):
-            result = await resolver.resolve_media_for_bot(product, current_bot, idx)
+        for result, (_file_id, file_type) in zip(resolution_results, media_list):
             if result.success and result.file_id:
                 resolved_media_list.append((result.file_id, file_type))
             else:
@@ -188,8 +193,6 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 parse_mode=None,
                 reply_markup=_build_media_fallback_keyboard(product_id, current_bot, back_callback),
             )
-            if update.callback_query:
-                await update.callback_query.answer()
             return
 
         media_list = resolved_media_list
@@ -331,10 +334,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
             parse_mode=None,
             reply_markup=keyboard
         )
-        
-        if update.callback_query:
-            await update.callback_query.answer()
-        
+
     except Exception as e:
         logger.exception(f"Error showing product media: {e}")
         if update.callback_query:

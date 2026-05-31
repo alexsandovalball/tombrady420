@@ -392,15 +392,24 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     # Don't answer callback query upfront for long-running operations
     # These callbacks will answer the query themselves to avoid timeout errors
+    callback_answered = False
     if callback_data not in LONG_RUNNING_CALLBACKS:
         try:
             await query.answer()  # Answer callback to prevent loading spinner
+            callback_answered = True
         except BadRequest as exc:
             if "query is too old" not in str(exc).lower():
                 raise
             logger.info("Ignoring expired callback query answer for data=%r", callback_data)
 
-    await route_callback(update, context, query, callback_data, user_id)
+    await route_callback(
+        update,
+        context,
+        query,
+        callback_data,
+        user_id,
+        already_answered=callback_answered,
+    )
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):

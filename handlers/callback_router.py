@@ -1308,6 +1308,7 @@ async def route_callback(
     query,
     callback_data: str,
     user_id: int,
+    already_answered: bool = False,
 ) -> None:
     """
     Route a callback query to the appropriate handler.
@@ -1342,7 +1343,9 @@ async def route_callback(
         await _safe_query_answer(query, "Unknown action", show_alert=True)
         return
 
-    answered = await _safe_query_answer(query)
+    answered = already_answered
+    if not answered:
+        answered = await _safe_query_answer(query)
 
     try:
         await handler(update, context, query, user_id, parts)

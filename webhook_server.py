@@ -2486,6 +2486,16 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
     init_data, _ = _get_validated_init_data(request, allow_preview=True)
     await _check_user_not_blocked(init_data, get_client_ip(request))
     bot = _get_primary_bot(request, required=False)
+    bot_username = _STOREFRONT_BOT_USERNAME or (bot.username if bot else None) or ""
+
+    cache_key = f"product_detail:{product_id}:{lang}:{bot_username}"
+    cached_payload = _api_result_cache_get(cache_key)
+    if cached_payload is not None:
+        return Response(
+            content=cached_payload,
+            media_type="application/json",
+            headers={"Cache-Control": "public, max-age=30"},
+        )
 
     product = await _catalog_db.get_product(product_id)
     if not product:
@@ -2507,7 +2517,6 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
         if _STOREFRONT_DOMAIN
         else None
     )
-    bot_username = _STOREFRONT_BOT_USERNAME or (bot.username if bot else None) or ""
     bot_deep_link = f"https://t.me/{bot_username}?start=product_{product_id}" if bot_username else None
 
     payload = json.dumps({
@@ -2525,6 +2534,8 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
         "storefront_url": storefront_url,
         "bot_deep_link": bot_deep_link,
     })
+
+    _api_result_cache_set(cache_key, payload)
 
     return Response(
         content=payload,

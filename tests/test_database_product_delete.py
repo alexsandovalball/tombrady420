@@ -92,6 +92,39 @@ def test_media_registry_write_cache_deduplicates_repeated_range_requests():
 
 
 @pytest.mark.asyncio
+async def test_add_product_does_not_reuse_deleted_product_ids(db):
+    await db.init_db()
+
+    first_id = await db.add_product(
+        file_id="file-a",
+        file_type="photo",
+        caption="first",
+        message_id=1,
+        chat_id=-100,
+    )
+    second_id = await db.add_product(
+        file_id="file-b",
+        file_type="photo",
+        caption="second",
+        message_id=2,
+        chat_id=-100,
+    )
+
+    assert await db.delete_product(first_id) is True
+
+    third_id = await db.add_product(
+        file_id="file-c",
+        file_type="photo",
+        caption="third",
+        message_id=3,
+        chat_id=-100,
+    )
+
+    assert third_id > second_id
+    assert third_id != first_id
+
+
+@pytest.mark.asyncio
 async def test_get_products_page_matches_existing_filters(db):
     await db.init_db()
 
