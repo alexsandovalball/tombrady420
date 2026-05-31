@@ -22,6 +22,8 @@
         ERROR_DISPLAY_MS: 4000,  // Duration to show error messages on buttons
         INITIAL_DATA_TIMEOUT_MS: 10000,  // Timeout for initial data load to prevent infinite loading
         MAX_VIDEO_PREVIEW_CACHE_SIZE: 80,  // Captured video preview frames kept in memory
+        MAX_CONCURRENT_VIDEO_PREVIEWS: 2,  // Keep category/detail thumbnail video probes light
+        VIDEO_PREVIEW_ROOT_MARGIN: '220px',
         MAX_CACHE_SIZE: 20  // Maximum number of cached API responses to prevent memory leaks
     };
 
@@ -221,10 +223,14 @@
         cache: {},  // Simple cache for API responses
         loadingInProgress: false,  // Prevent duplicate requests
         pendingRequests: new Map(),  // Track pending requests for deduplication
+        webappSessionReady: false,
         initialDataLoadFailed: false  // Track if initial data load failed/timed out
     };
 
     const videoPreviewFrameCache = new Map();
+    const videoPreviewQueue = [];
+    let activeVideoPreviewLoads = 0;
+    let videoPreviewObserver = null;
     
     // Create debounced pagination handler once (reused across renders)
     const debouncedPageChange = debounce(async (newPage, category, subcategory) => {
@@ -827,6 +833,7 @@
         checkWithDelay(CONFIG.USER_DATA_CHECK_INTERVALS[2], 3);
         
         setupEventListeners();
+        await establishWebAppSession();
         
         // Apply initial translations
         applyTranslations();
@@ -978,6 +985,28 @@
                 state.initialDataLoadFailed = true;
             }
         }
+    }
+
+    async function establishWebAppSession() {
+        if (!tg.initData || state.webappSessionReady) {
+            return state.webappSessionReady;
+        }
+
+        try {
+            const response = await fetch('/api/webapp-session', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'X-Telegram-Init-Data': tg.initData }
+            });
+            state.webappSessionReady = response.ok;
+            if (!response.ok) {
+                logger.apiCall('webapp_session', 'error', { status: response.status });
+            }
+        } catch (err) {
+            state.webappSessionReady = false;
+            logger.error('webapp_session', err.message);
+        }
+        return state.webappSessionReady;
     }
 
     function queueUserBackgroundRefresh() {
@@ -2013,6 +2042,50 @@
         return `${productId}:${mediaIndex}`;
     }
 
+    function scheduleVideoPreviewLoad(task) {
+        return new Promise(resolve => {
+            videoPreviewQueue.push({ task, resolve });
+            pumpVideoPreviewQueue();
+        });
+    }
+
+    function pumpVideoPreviewQueue() {
+        while (
+            activeVideoPreviewLoads < CONFIG.MAX_CONCURRENT_VIDEO_PREVIEWS &&
+            videoPreviewQueue.length > 0
+        ) {
+            const { task, resolve } = videoPreviewQueue.shift();
+            activeVideoPreviewLoads++;
+            Promise.resolve()
+                .then(task)
+                .catch(() => {})
+                .finally(() => {
+                    activeVideoPreviewLoads = Math.max(0, activeVideoPreviewLoads - 1);
+                    resolve();
+                    pumpVideoPreviewQueue();
+                });
+        }
+    }
+
+    function getVideoPreviewObserver() {
+        if (!('IntersectionObserver' in window)) return null;
+        if (!videoPreviewObserver) {
+            videoPreviewObserver = new IntersectionObserver(entries => {
+                entries.forEach(entry => {
+                    if (!entry.isIntersecting) return;
+                    videoPreviewObserver.unobserve(entry.target);
+                    if (typeof entry.target.startVideoPreviewLoad === 'function') {
+                        entry.target.startVideoPreviewLoad();
+                    }
+                });
+            }, {
+                rootMargin: CONFIG.VIDEO_PREVIEW_ROOT_MARGIN,
+                threshold: 0.01
+            });
+        }
+        return videoPreviewObserver;
+    }
+
     function safeLogUrl(url) {
         try {
             return new URL(url, window.location.origin).pathname;
@@ -2021,26 +2094,35 @@
         }
     }
 
-    function createVideoPreview(mediaUrl, fallbackContainer, cacheKey = '') {
+    function createVideoPreview(mediaUrl, fallbackContainer, cacheKey = '', options = {}) {
         const cachedPreview = getVideoPreviewFrame(cacheKey);
         if (cachedPreview) {
             return createPreviewImage(cachedPreview);
         }
 
         const vid = document.createElement('video');
-        vid.src = mediaUrl;
         vid.muted = true;
         vid.playsInline = true;
         vid.setAttribute('playsinline', '');
         vid.preload = 'metadata';
         vid.className = 'video-preview';
 
+        let started = false;
+        let settled = false;
         let previewLoaded = false;
         let frameCaptured = false;
+        const settle = () => {
+            if (settled) return;
+            settled = true;
+            if (typeof options.onSettled === 'function') {
+                options.onSettled();
+            }
+        };
         const markLoaded = () => {
             if (previewLoaded) return;
             previewLoaded = true;
             vid.classList.add('loaded');
+            settle();
         };
         const capturePreviewFrame = () => {
             if (frameCaptured || !fallbackContainer || !vid.videoWidth || !vid.videoHeight) {
@@ -2062,10 +2144,25 @@
                     vid.parentNode.replaceChild(img, vid);
                 }
                 frameCaptured = true;
+                settle();
             } catch (err) {
                 markLoaded();
             }
         };
+
+        const startLoading = () => {
+            if (started) return;
+            started = true;
+            vid.src = mediaUrl;
+            try {
+                vid.load();
+            } catch (err) {
+                markLoaded();
+            }
+            setTimeout(markLoaded, 1200);
+        };
+
+        vid.startVideoPreviewLoad = startLoading;
 
         vid.addEventListener('loadedmetadata', () => {
             try {
@@ -2086,10 +2183,68 @@
                 fallbackContainer.classList.add('placeholder');
                 fallbackContainer.textContent = '🎬';
             }
+            settle();
         };
-        setTimeout(markLoaded, 1200);
+        if (!options.deferLoad) {
+            startLoading();
+        }
 
         return vid;
+    }
+
+    function createLazyVideoPreview(mediaUrl, fallbackContainer, cacheKey = '') {
+        const cachedPreview = getVideoPreviewFrame(cacheKey);
+        if (cachedPreview) {
+            return createPreviewImage(cachedPreview);
+        }
+
+        const placeholder = document.createElement('div');
+        placeholder.className = 'video-preview video-preview-placeholder loaded';
+        placeholder.textContent = '🎬';
+
+        let started = false;
+        placeholder.startVideoPreviewLoad = () => {
+            if (started) return;
+            started = true;
+            scheduleVideoPreviewLoad(() => new Promise(resolve => {
+                if (!placeholder.isConnected) {
+                    resolve();
+                    return;
+                }
+                const preview = createVideoPreview(mediaUrl, fallbackContainer, cacheKey, {
+                    deferLoad: true,
+                    onSettled: resolve
+                });
+                if (placeholder.parentNode) {
+                    placeholder.parentNode.replaceChild(preview, placeholder);
+                } else {
+                    resolve();
+                    return;
+                }
+                preview.startVideoPreviewLoad();
+            }));
+        };
+
+        const observer = getVideoPreviewObserver();
+        if (observer) {
+            observer.observe(placeholder);
+        } else {
+            setTimeout(() => placeholder.startVideoPreviewLoad(), 0);
+        }
+        return placeholder;
+    }
+
+    function createVideoPosterPlaceholder(media, item, mediaIndex) {
+        const cachedPreview = getVideoPreviewFrame(videoPreviewCacheKey(item.id, mediaIndex));
+        if (cachedPreview) {
+            media.appendChild(createPreviewImage(cachedPreview));
+        } else {
+            media.classList.add('video-poster-placeholder');
+            const icon = document.createElement('div');
+            icon.className = 'video-poster-icon';
+            icon.textContent = '🎬';
+            media.appendChild(icon);
+        }
     }
 
     function createProductCard(item) {
@@ -2120,8 +2275,7 @@
         const mediaUrl = buildMediaUrl(item, mediaIndex);
         if (mediaUrl) {
             if (selectedMediaType === 'video') {
-                const vid = createVideoPreview(mediaUrl, media, videoPreviewCacheKey(item.id, mediaIndex));
-                media.appendChild(vid);
+                createVideoPosterPlaceholder(media, item, mediaIndex);
 
                 // Play icon overlay for video cards
                 const playOverlay = document.createElement('div');
@@ -2185,13 +2339,7 @@
 
     function buildMediaUrl(item, mediaIndex) {
         if (!item.media_count || !item.id) return null;
-        if (tg.initData) {
-            const encodedInit = encodeURIComponent(tg.initData);
-            return `/api/catalog/${item.id}/media/${mediaIndex}?init_data=${encodedInit}`;
-        } else {
-            // Preview mode - no initData
-            return `/api/catalog/${item.id}/media/${mediaIndex}`;
-        }
+        return `/api/catalog/${item.id}/media/${mediaIndex}`;
     }
 
     function formatDate(dateString) {
@@ -2518,7 +2666,7 @@
                 
                 if (mediaType === 'video') {
                     if (thumbUrl) {
-                        const previewVideo = createVideoPreview(
+                        const previewVideo = createLazyVideoPreview(
                             thumbUrl,
                             thumbContent,
                             videoPreviewCacheKey(product.id, i)

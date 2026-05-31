@@ -261,7 +261,9 @@ h1 {
 }
 
 .card-media img,
-.card-media video {
+.card-media video,
+.card-media .video-preview-placeholder,
+.card-media .video-poster-icon {
     position: absolute;
     top: 0;
     left: 0;
@@ -279,6 +281,22 @@ h1 {
 
 .video-preview.loaded {
     opacity: 1;
+}
+
+.video-preview-placeholder,
+.video-poster-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.video-poster-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 34px;
+    color: #ffffff;
+    background: linear-gradient(135deg, #171c23 0%, #2a3038 100%);
 }
 
 .card-video-play-overlay {
@@ -587,7 +605,8 @@ a.btn {
 }
 
 .thumb-content img,
-.thumb-content video {
+.thumb-content video,
+.thumb-content .video-preview-placeholder {
     position: absolute;
     top: 0;
     left: 0;

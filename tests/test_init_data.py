@@ -184,6 +184,7 @@ class TestGetValidatedInitData:
         """Return a MagicMock that looks like a FastAPI Request."""
         req = MagicMock()
         req.headers = {"X-Telegram-Init-Data": init_data} if (use_header and init_data) else {}
+        req.cookies = {}
         req.query_params = MagicMock()
         req.query_params.get = MagicMock(return_value=init_data if not use_header else None)
         req.url = MagicMock()
@@ -263,6 +264,28 @@ class TestGetValidatedInitData:
         assert user.id == _SAMPLE_USER["id"]
         assert bot_idx == 0
         assert returned_init_data == init_data
+
+    def test_valid_init_data_can_be_resolved_from_webapp_session_cookie(self):
+        """Media URLs can authenticate through the short-lived WebApp session cookie."""
+        from webhook_server import (
+            WEBAPP_SESSION_COOKIE,
+            _get_validated_init_data,
+            _remember_webapp_session,
+            _webapp_session_tokens,
+        )
+
+        init_data = _build_init_data(_VALID_INIT_DATA_PARAMS, _FAKE_TOKEN)
+        token = _remember_webapp_session(init_data)
+        req = self._make_request("")
+        req.cookies = {WEBAPP_SESSION_COOKIE: token}
+
+        with patch("webhook_server.Config") as mock_cfg:
+            mock_cfg.BOT_TOKENS = [_FAKE_TOKEN]
+            result_data, bot_idx = _get_validated_init_data(req, allow_preview=False)
+
+        assert result_data == init_data
+        assert bot_idx == 0
+        _webapp_session_tokens.pop(token, None)
 
     def test_same_user_guard_rejects_other_user_id(self):
         """Authenticated WebApp users must not mutate another user's state."""

@@ -435,6 +435,16 @@ class TestRequestDeduplicator:
         result = self._run(self.d.is_duplicate(0, 100, "browse_category|CONCENTRATES"))
         assert result is True
 
+    def test_same_callback_data_with_different_query_ids_not_duplicate(self):
+        self._run(self.d.is_duplicate(0, 100, "categories", callback_query_id="query-a"))
+        result = self._run(self.d.is_duplicate(0, 100, "categories", callback_query_id="query-b"))
+        assert result is False
+
+    def test_same_callback_query_id_is_duplicate(self):
+        self._run(self.d.is_duplicate(0, 100, "categories", callback_query_id="query-a"))
+        result = self._run(self.d.is_duplicate(0, 100, "categories", callback_query_id="query-a"))
+        assert result is True
+
     def test_different_callback_data_not_duplicate(self):
         self._run(self.d.is_duplicate(0, 100, "browse_category|CONCENTRATES"))
         result = self._run(self.d.is_duplicate(0, 100, "browse_category|SHROOMS"))

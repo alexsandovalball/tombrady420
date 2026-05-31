@@ -5,7 +5,8 @@ Prevents accidental double-processing of identical callback queries that
 arrive within a short time window (e.g., due to Telegram retries or a user
 double-tapping a button before the first response is acknowledged).
 
-Deduplication key: ``(bot_index, user_id, callback_data)``
+Deduplication key: callback query id when available, otherwise
+``(bot_index, user_id, callback_data)``.
 TTL: configurable, defaults to 5 seconds
 
 Usage example::
@@ -15,7 +16,7 @@ Usage example::
     deduplicator = RequestDeduplicator()
 
     # In webhook handler:
-    if deduplicator.is_duplicate(bot_index, user_id, callback_data):
+    if deduplicator.is_duplicate(bot_index, user_id, callback_data, callback_query_id):
         return Response(status_code=200)  # Silently acknowledge duplicate
     ...
 
@@ -53,8 +54,9 @@ class RequestDeduplicator:
     """In-memory TTL cache that detects duplicate webhook callback queries.
 
     Two requests are considered duplicates when they share the same
-    ``bot_index``, ``user_id``, and ``callback_data`` and arrive within
-    ``ttl`` seconds of each other.
+    the same Telegram ``callback_query.id`` and arrive within ``ttl`` seconds
+    of each other.  When the callback query id is not available, it falls back
+    to ``bot_index``, ``user_id``, and ``callback_data``.
 
     Navigation-style callbacks that differ only in a page number
     (``callback_data`` contains a different value) are treated as distinct
@@ -79,6 +81,7 @@ class RequestDeduplicator:
         bot_index: int,
         user_id: int,
         callback_data: str,
+        callback_query_id: str | None = None,
     ) -> bool:
         """Return True if an identical request was seen within ``self.ttl`` seconds.
 
@@ -89,11 +92,14 @@ class RequestDeduplicator:
             bot_index: Index of the bot that received the callback.
             user_id: Telegram user ID who sent the callback.
             callback_data: The ``data`` field of the Telegram CallbackQuery.
+            callback_query_id: Telegram's unique CallbackQuery id.  Passing this
+                avoids suppressing legitimate repeated navigation taps that
+                intentionally reuse the same callback_data.
 
         Returns:
             True if the request appears to be a duplicate; False otherwise.
         """
-        key = (bot_index, user_id, callback_data)
+        key = ("callback_query", callback_query_id) if callback_query_id else (bot_index, user_id, callback_data)
         now = _time.monotonic()
 
         async with self._lock:

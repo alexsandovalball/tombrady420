@@ -99,6 +99,11 @@ _ORPHAN_LEGACY_CACHE_MAX = 2048
 _ORPHAN_LEGACY_CACHE_TTL_SECONDS = 10 * 60
 _ORPHAN_LEGACY_LOG_INTERVAL_SECONDS = 15 * 60
 
+WEBAPP_SESSION_COOKIE = "brady_webapp_session"
+WEBAPP_SESSION_TTL_SECONDS = _bounded_int_env("WEBAPP_SESSION_TTL_SECONDS", 3600, 300, 24 * 3600)
+_webapp_session_tokens: OrderedDict[str, tuple[str, float]] = OrderedDict()
+_WEBAPP_SESSION_MAX = 8192
+
 # Media cache configuration. Disk cache is app-owned, bounded, and self-pruning.
 _DEFAULT_MEDIA_STORAGE_MODE = "persistent" if Path("/data").exists() else "temp"
 MEDIA_STORAGE_MODE = os.getenv("MEDIA_STORAGE_MODE", _DEFAULT_MEDIA_STORAGE_MODE).strip().lower()
@@ -2143,6 +2148,42 @@ def _get_primary_bot(request: Request, required: bool = True):
     return None
 
 
+def _remember_webapp_session(init_data: str) -> str:
+    """Create a short-lived same-origin token for media URLs/cookies."""
+    now = _time.time()
+    expires_at = now + WEBAPP_SESSION_TTL_SECONDS
+    token = secrets.token_urlsafe(24)
+    _webapp_session_tokens[token] = (init_data, expires_at)
+    _webapp_session_tokens.move_to_end(token)
+
+    while _webapp_session_tokens:
+        oldest_token, (_, oldest_expiry) = next(iter(_webapp_session_tokens.items()))
+        if oldest_expiry > now and len(_webapp_session_tokens) <= _WEBAPP_SESSION_MAX:
+            break
+        _webapp_session_tokens.pop(oldest_token, None)
+    return token
+
+
+def _get_webapp_session_init_data(request: Request) -> str:
+    """Resolve initData from the short-lived WebApp session cookie/query token."""
+    token = request.cookies.get(WEBAPP_SESSION_COOKIE) or request.query_params.get("session")
+    if not token:
+        return ""
+
+    entry = _webapp_session_tokens.get(token)
+    if not entry:
+        return ""
+
+    init_data, expires_at = entry
+    now = _time.time()
+    if expires_at <= now:
+        _webapp_session_tokens.pop(token, None)
+        return ""
+
+    _webapp_session_tokens.move_to_end(token)
+    return init_data
+
+
 def _get_validated_init_data(request: Request, allow_preview: bool = False) -> tuple:
     """
     Validate Telegram WebApp initData from header or query params.
@@ -2156,6 +2197,9 @@ def _get_validated_init_data(request: Request, allow_preview: bool = False) -> t
         In preview mode with no valid auth returns ("", -1).
     """
     init_data = request.headers.get("X-Telegram-Init-Data")
+
+    if not init_data:
+        init_data = _get_webapp_session_init_data(request)
     
     # If not in header, try query params with robust extraction
     if not init_data:
@@ -3012,6 +3056,35 @@ async def search_products(
         logger.exception(f"Search failed for query '{q}': {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Search failed")
 
+
+@app.post("/api/webapp-session")
+async def create_webapp_session(request: Request):
+    """Exchange signed Telegram initData for a short same-origin media session."""
+    init_data, _ = _get_validated_init_data(request, allow_preview=False)
+    await _check_user_not_blocked(init_data, get_client_ip(request))
+
+    token = _remember_webapp_session(init_data)
+    secure_cookie = (
+        request.url.scheme == "https"
+        or request.headers.get("X-Forwarded-Proto", "").split(",")[0].strip() == "https"
+    )
+    response = Response(
+        content=json.dumps({"ok": True, "expires_in": WEBAPP_SESSION_TTL_SECONDS}),
+        media_type="application/json",
+        headers={"Cache-Control": "no-store"},
+    )
+    response.set_cookie(
+        WEBAPP_SESSION_COOKIE,
+        token,
+        max_age=WEBAPP_SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=secure_cookie,
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
 @app.get("/api/user/subscription")
 async def get_user_subscription(request: Request, user_id: int):
     """Get user subscription status."""
@@ -3430,7 +3503,10 @@ async def process_webhook_request(request: Request, bot_registry_id: str):
                 request.app.state, "request_deduplicator", None
             )
             if deduplicator is not None and await deduplicator.is_duplicate(
-                bot_registry_id, user_id, callback_data
+                bot_registry_id,
+                user_id,
+                callback_data,
+                getattr(update.callback_query, "id", None),
             ):
                 logger.info(
                     "[%s] Bot %s: Duplicate callback query suppressed (user=%s data=%r)",
