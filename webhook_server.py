@@ -40,7 +40,7 @@ from database import Database
 from utils.helpers import get_channel_id, get_channel_username, get_file_id_cache_size, get_bot_specific_file_id, is_admin, register_bot_handlers
 from utils.categories import get_all_categories, get_category_display_name, get_subcategory_display_name, get_subcategories, EXCLUDED_FROM_ALL_PRODUCTS
 from utils.fuzzy_search import fuzzy_search_products, normalize_text
-from translations.translator import get_translated_string_async, translation_service
+from translations.translator import translation_service
 from utils.metrics import metrics
 from utils.monitoring import monitor as _webhook_monitor, record_webhook_result
 from utils.resource_manager import (
@@ -2341,22 +2341,7 @@ async def get_categories(request: Request, lang: str = "en"):
     for category in get_all_categories():
         subcategories_list = get_subcategories(category)
         
-        # Translate category display name
-        # Translation keys follow pattern: "category_{category_name_lowercase}"
-        # e.g., "category_cartridges", "category_edibles"
-        category_display = get_category_display_name(category)
-        if lang and lang != "en":
-            try:
-                # Try to get translation for category
-                category_key = f"category_{category.lower()}"
-                category_display = await get_translated_string_async(
-                    category_key, 
-                    lang,
-                    default=category_display
-                )
-            except Exception as e:
-                logger.debug(f"Could not translate category {category}: {e}")
-                # Fall back to original display name
+        category_display = get_category_display_name(category, lang)
         
         category_data = {
             "name": category,
