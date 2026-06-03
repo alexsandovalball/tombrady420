@@ -30,7 +30,22 @@ def _build_media_unavailable_text(product: dict, caption: str) -> str:
     )
 
 
-def _build_media_fallback_keyboard(product_id: int, bot_username: str, back_callback: str):
+def _build_admin_action_buttons(product_id: int, user_id: int) -> list[list[InlineKeyboardButton]]:
+    if not is_admin(user_id):
+        return []
+    return [[
+        InlineKeyboardButton(
+            "🔄 Recategorize",
+            callback_data=f"recategorize|{product_id}"
+        ),
+        InlineKeyboardButton(
+            "🗑 Delete this product",
+            callback_data=f"delete|{product_id}"
+        )
+    ]]
+
+
+def _build_media_fallback_keyboard(product_id: int, bot_username: str, back_callback: str, user_id: int):
     buttons = []
     webapp_deep_link = build_webapp_product_url(Config.WEB_APP_URL, product_id)
     if webapp_deep_link:
@@ -38,6 +53,7 @@ def _build_media_fallback_keyboard(product_id: int, bot_username: str, back_call
     if bot_username:
         buttons.append([InlineKeyboardButton("Open inline search", switch_inline_query_current_chat=str(product_id))])
     buttons.append([InlineKeyboardButton("Retry media", callback_data=f"product|{product_id}")])
+    buttons.extend(_build_admin_action_buttons(product_id, user_id))
     buttons.append([InlineKeyboardButton("🔙 Back to results", callback_data=back_callback)])
     return InlineKeyboardMarkup(buttons)
 
@@ -183,17 +199,19 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     "current_bot": current_bot,
                     "original_bot": product_bot,
                     "failures": [f.error for f in resolution_failures],
-                    "fallback_used": True,
+                    "fallback_used": not resolved_media_list,
+                    "partial_media_count": len(resolved_media_list),
                 },
             )
-            await safe_send_message(
-                context.bot,
-                update.effective_chat.id,
-                text=_build_media_unavailable_text(product, caption),
-                parse_mode=None,
-                reply_markup=_build_media_fallback_keyboard(product_id, current_bot, back_callback),
-            )
-            return
+            if not resolved_media_list:
+                await safe_send_message(
+                    context.bot,
+                    update.effective_chat.id,
+                    text=_build_media_unavailable_text(product, caption),
+                    parse_mode=None,
+                    reply_markup=_build_media_fallback_keyboard(product_id, current_bot, back_callback, user_id),
+                )
+                return
 
         media_list = resolved_media_list
         
@@ -205,6 +223,11 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         
         # Build full caption
         full_caption = f"{caption}\n\n📂 {category_info}"
+        if resolution_failures:
+            full_caption += (
+                f"\n\n⚠️ {len(resolution_failures)} of {total_media} media file(s) "
+                "could not be delivered by this bot."
+            )
         
         # Create keyboard with back button and admin buttons
         keyboard_buttons = []
@@ -215,22 +238,12 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         ])
         
         # Add delete and recategorize buttons for admins
-        if is_admin(user_id):
-            keyboard_buttons.append([
-                InlineKeyboardButton(
-                    "🔄 Recategorize",
-                    callback_data=f"recategorize|{product_id}"
-                ),
-                InlineKeyboardButton(
-                    "🗑 Delete this product",
-                    callback_data=f"delete|{product_id}"
-                )
-            ])
+        keyboard_buttons.extend(_build_admin_action_buttons(product_id, user_id))
         
         keyboard = InlineKeyboardMarkup(keyboard_buttons)
         
         # Send all media at once
-        if total_media == 1:
+        if len(media_list) == 1:
             # Single media - send with caption
             file_id, file_type = media_list[0]
             await send_media_message(
