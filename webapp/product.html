@@ -45,10 +45,12 @@
         .seo-btn { display: inline-block; padding: .75rem 1rem; border-radius: 8px; text-decoration: none; font-weight: 700; }
         .seo-btn.primary { background: #2481cc; color: #fff; }
         .seo-btn.secondary { border: 1px solid var(--border, #333); color: var(--text-primary, #fff); }
-        .related-list { list-style: none; padding: 0; margin: .75rem 0 0; }
-        .related-list li { border-top: 1px solid var(--border, #333); padding: .7rem 0; }
-        .related-list a { color: var(--text-primary, #fff); text-decoration: none; }
-        .related-list a:hover { color: var(--accent, #2481cc); }
+        .related-list { list-style: none; padding: 0; margin: .75rem 0 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .85rem; }
+        .related-card { min-width: 0; }
+        .related-card a { display: block; color: var(--text-primary, #fff); text-decoration: none; }
+        .related-thumb { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 8px; background: var(--card-bg, #1e1e1e); border: 1px solid var(--border, #333); }
+        .related-title { display: block; margin-top: .45rem; font-size: .94rem; line-height: 1.25; }
+        .related-card a:hover .related-title { color: var(--accent, #2481cc); }
     </style>
 </head>
 <body>
@@ -90,7 +92,12 @@
             <h2 id="related-heading">Related products</h2>
             <ul class="related-list">
                 {% for item in related_products %}
-                <li><a href="{{ item.url }}">{{ item.title }}</a></li>
+                <li class="related-card">
+                    <a href="{{ item.url }}">
+                        <img class="related-thumb" src="{{ item.image_url }}" alt="{{ item.title }}" loading="lazy">
+                        <span class="related-title">{{ item.title }}</span>
+                    </a>
+                </li>
                 {% endfor %}
             </ul>
         </section>

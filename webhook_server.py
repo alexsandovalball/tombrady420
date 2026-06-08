@@ -41,6 +41,13 @@ from database import Database
 from utils.helpers import get_channel_id, get_channel_username, get_file_id_cache_size, get_bot_specific_file_id, is_admin, register_bot_handlers
 from utils.categories import get_all_categories, get_category_display_name, get_subcategory_display_name, get_subcategories, EXCLUDED_FROM_ALL_PRODUCTS
 from utils.fuzzy_search import fuzzy_search_products, normalize_text
+from utils.seo_terms import (
+    build_query_variants,
+    build_taxonomy_intro,
+    get_learn_page,
+    get_learn_pages,
+    get_terms_for_taxonomy,
+)
 from translations.translator import translation_service
 from utils.metrics import metrics
 from utils.monitoring import monitor as _webhook_monitor, record_webhook_result
@@ -1742,6 +1749,14 @@ def _canonical_subcategory_url(category: str, subcategory: str) -> str:
     return _absolute_storefront_url(_canonical_subcategory_path(category, subcategory))
 
 
+def _learn_page_path(slug: str) -> str:
+    return f"/learn/{_generate_slug(slug)}"
+
+
+def _learn_page_url(slug: str) -> str:
+    return _absolute_storefront_url(_learn_page_path(slug))
+
+
 def _caption_parts(caption: str) -> tuple[str, str, list[str]]:
     lines = [line.strip() for line in (caption or "").splitlines() if line.strip()]
     title = lines[0] if lines else "Product"
@@ -1786,6 +1801,37 @@ def _resolve_category_name(category_slug: str) -> Optional[str]:
 def _resolve_subcategory_name(category: str, subcategory_slug: str) -> Optional[str]:
     subcategory_slug = _taxonomy_slug(subcategory_slug)
     return next((subcategory for subcategory in get_subcategories(category) if _taxonomy_slug(subcategory) == subcategory_slug), None)
+
+
+async def _missing_product_redirect(product_id: int, *, permanent_when_known: bool = True) -> RedirectResponse:
+    """Redirect unavailable public product links to the closest useful storefront page."""
+    try:
+        if hasattr(_catalog_db, "get_deleted_product_redirect"):
+            redirect_meta = await _catalog_db.get_deleted_product_redirect(product_id)
+        else:
+            redirect_meta = None
+    except Exception as exc:
+        logger.debug("Failed to load deleted product redirect for product_id=%s: %s", product_id, exc)
+        redirect_meta = None
+
+    if redirect_meta:
+        category = redirect_meta.get("category") or ""
+        subcategory = redirect_meta.get("subcategory") or ""
+        matched_category = _resolve_category_name(category) if category else None
+        if matched_category and subcategory:
+            matched_subcategory = _resolve_subcategory_name(matched_category, subcategory)
+            if matched_subcategory:
+                return RedirectResponse(
+                    url=_canonical_subcategory_path(matched_category, matched_subcategory),
+                    status_code=status.HTTP_301_MOVED_PERMANENTLY if permanent_when_known else status.HTTP_302_FOUND,
+                )
+        if matched_category:
+            return RedirectResponse(
+                url=_canonical_category_path(matched_category),
+                status_code=status.HTTP_301_MOVED_PERMANENTLY if permanent_when_known else status.HTTP_302_FOUND,
+            )
+
+    return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
 
 
 def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
@@ -1979,6 +2025,15 @@ async def serve_sitemap_xml():
                 f"    <priority>0.85</priority>\n"
                 f"  </url>"
             )
+    for page in get_learn_pages():
+        urls.append(
+            f"  <url>\n"
+            f"    <loc>{html.escape(_learn_page_url(page.get('slug', '')))}</loc>\n"
+            f"    <lastmod>{today}</lastmod>\n"
+            f"    <changefreq>monthly</changefreq>\n"
+            f"    <priority>0.7</priority>\n"
+            f"  </url>"
+        )
     for p in products:
         pid = p.get("id") or p.get("product_id")
         if pid is None:
@@ -2039,6 +2094,77 @@ async def serve_webapp(request: Request):
     return _serve_storefront_index(request)
 
 
+@app.get("/learn", response_class=HTMLResponse)
+async def serve_learn_index(request: Request):
+    """Serve an index of approved educational/navigation glossary pages."""
+    pages = []
+    for page in get_learn_pages():
+        category = page.get("category") or ""
+        subcategory = page.get("subcategory") or ""
+        pages.append({
+            **page,
+            "url": _learn_page_path(page.get("slug", "")),
+            "category_url": _canonical_category_path(category) if category else "",
+            "subcategory_url": _canonical_subcategory_path(category, subcategory) if category and subcategory else "",
+            "category_display": get_category_display_name(category) if category else "",
+            "subcategory_display": get_subcategory_display_name(subcategory) if subcategory else "",
+        })
+
+    ctx = _build_seo_context(
+        title="Cannabis and Mushroom Product Guides | Top Shelf Cali Plug",
+        desc="Browse product terminology guides that connect common searches to current menu categories.",
+        url=_absolute_storefront_url("/learn"),
+        keywords=", ".join(page.get("title", "") for page in pages[:12]),
+    )
+    ctx["request"] = request
+    ctx["learn_pages"] = pages
+    return templates.TemplateResponse(request, "learn_index.html", context=ctx)
+
+
+@app.get("/learn/{slug}", response_class=HTMLResponse)
+async def serve_learn_page(slug: str, request: Request):
+    """Serve one approved glossary/content page for search-friendly navigation."""
+    page = get_learn_page(slug)
+    if not page:
+        return RedirectResponse(url="/learn", status_code=status.HTTP_302_FOUND)
+
+    canonical_path = _learn_page_path(page.get("slug", ""))
+    if request.url.path != canonical_path:
+        return RedirectResponse(url=canonical_path, status_code=status.HTTP_301_MOVED_PERMANENTLY)
+
+    category = page.get("category") or ""
+    subcategory = page.get("subcategory") or ""
+    page_url = _learn_page_url(page.get("slug", ""))
+    ctx = _build_seo_context(
+        title=f"{page.get('title')} | Top Shelf Cali Plug",
+        desc=page.get("summary") or "",
+        url=page_url,
+        keywords=", ".join(page.get("terms", [])[:12]),
+        category=category,
+    )
+    ctx["seo_schema"] = json.dumps({
+        "@context": "https://schema.org",
+        "@type": "Article",
+        "headline": page.get("title"),
+        "description": page.get("summary"),
+        "url": page_url,
+        "mainEntityOfPage": page_url,
+        "about": page.get("terms", [])[:10],
+        "publisher": {
+            "@type": "Organization",
+            "name": "Top Shelf Cali Plug",
+            "url": _absolute_storefront_url("/"),
+        },
+    }, ensure_ascii=False)
+    ctx["request"] = request
+    ctx["page"] = page
+    ctx["category_display"] = get_category_display_name(category) if category else ""
+    ctx["subcategory_display"] = get_subcategory_display_name(subcategory) if subcategory else ""
+    ctx["category_url"] = _canonical_category_path(category) if category else ""
+    ctx["subcategory_url"] = _canonical_subcategory_path(category, subcategory) if category and subcategory else ""
+    return templates.TemplateResponse(request, "learn.html", context=ctx)
+
+
 @app.get("/admin", response_class=HTMLResponse)
 @app.get("/admin/", response_class=HTMLResponse)
 async def serve_admin_dashboard():
@@ -2080,7 +2206,7 @@ async def serve_product_page(product_id: int, request: Request):
     """Redirect short product URLs to their canonical slug URL."""
     product = await _catalog_db.get_product(product_id)
     if not product:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+        return await _missing_product_redirect(product_id)
     return RedirectResponse(
         url=_canonical_product_path(product_id, product.get("caption") or ""),
         status_code=301,
@@ -2092,7 +2218,7 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
     """Serve an individual product page with crawlable HTML and dynamic SEO metadata."""
     product = await _catalog_db.get_product(product_id)
     if not product:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+        return await _missing_product_redirect(product_id)
 
     caption: str = product.get("caption") or ""
     canonical_slug = _generate_slug(caption)
@@ -2112,12 +2238,21 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
     related_products = []
     if category:
         try:
-            candidates = await _catalog_db.get_products_by_category(category, limit=8)
+            if hasattr(_catalog_db, "get_related_products"):
+                candidates = await _catalog_db.get_related_products(
+                    product_id,
+                    category,
+                    subcategory=subcategory,
+                    limit=6,
+                )
+            else:
+                candidates = await _catalog_db.get_products_by_category(category, limit=12)
             related_products = [
                 {
                     "id": p.get("id") or p.get("product_id"),
                     "title": _caption_parts(p.get("caption") or "")[0],
                     "url": _canonical_product_path(p.get("id") or p.get("product_id"), p.get("caption") or ""),
+                    "image_url": _product_primary_image_url(p, absolute=False) or "/og-image.png",
                 }
                 for p in candidates
                 if (p.get("id") or p.get("product_id")) != product_id
@@ -2189,9 +2324,11 @@ async def serve_category_page(category_name: str, request: Request):
 
     # Build keyword list from category + subcategory names
     subcat_names = ", ".join(subcategories) if subcategories else ""
+    seo_terms = get_terms_for_taxonomy(matched_category)
     keywords = ", ".join(filter(None, [
         display_name,
         subcat_names,
+        ", ".join(seo_terms),
         "Top Shelf Cali Plug",
         "buy online",
     ]))
@@ -2234,6 +2371,8 @@ async def serve_category_page(category_name: str, request: Request):
     ctx["current_subcategory"] = ""
     ctx["current_subcategory_display"] = ""
     ctx["parent_category_url"] = ""
+    ctx["seo_intro"] = build_taxonomy_intro(matched_category, total=total)
+    ctx["seo_terms"] = seo_terms
     ctx["telegram_bot_url"] = f"https://t.me/{_STOREFRONT_BOT_USERNAME}"
     ctx["storefront_domain"] = _STOREFRONT_DOMAIN
 
@@ -2286,6 +2425,7 @@ async def serve_subcategory_page(category_name: str, subcategory_name: str, requ
     products = await _catalog_db.get_products_by_category_and_subcategory(matched_category, matched_subcategory, limit=50)
     total = await _catalog_db.count_products_by_category_and_subcategory(matched_category, matched_subcategory)
     page_url = _canonical_subcategory_url(matched_category, matched_subcategory)
+    seo_terms = get_terms_for_taxonomy(matched_category, matched_subcategory)
 
     ctx = _build_seo_context(
         title=f"{subcategory_display} {category_display} | Top Shelf Cali Plug",
@@ -2294,6 +2434,7 @@ async def serve_subcategory_page(category_name: str, subcategory_name: str, requ
         keywords=", ".join(filter(None, [
             subcategory_display,
             category_display,
+            ", ".join(seo_terms),
             "Top Shelf Cali Plug",
             "Telegram store",
         ])),
@@ -2320,6 +2461,8 @@ async def serve_subcategory_page(category_name: str, subcategory_name: str, requ
     ctx["current_subcategory"] = matched_subcategory
     ctx["current_subcategory_display"] = subcategory_display
     ctx["parent_category_url"] = _canonical_category_path(matched_category)
+    ctx["seo_intro"] = build_taxonomy_intro(matched_category, matched_subcategory, total=total)
+    ctx["seo_terms"] = seo_terms
     ctx["telegram_bot_url"] = f"https://t.me/{_STOREFRONT_BOT_USERNAME}"
     ctx["storefront_domain"] = _STOREFRONT_DOMAIN
 
@@ -3248,32 +3391,61 @@ async def search_products(
     offset = max(0, offset)
 
     try:
-        all_products = await _catalog_db.get_all_products_for_search()
-        matched_products = fuzzy_search_products(all_products, query, score_cutoff=75)
+        try:
+            db_mappings = await _catalog_db.get_approved_seo_query_mappings()
+        except Exception as exc:
+            logger.debug("SEO query mappings unavailable for search expansion: %s", exc)
+            db_mappings = []
+
+        query_variants = build_query_variants(query, db_mappings=db_mappings, limit=8)
+        candidate_limit = min(max(offset + limit, min(100, limit * 3)), 300)
+        candidate_map: "OrderedDict[int, dict]" = OrderedDict()
+        for variant in query_variants:
+            rows = await _catalog_db.search_products_filtered(
+                variant,
+                EXCLUDED_FROM_ALL_PRODUCTS,
+                limit=candidate_limit,
+                offset=0,
+            )
+            for row in rows:
+                product_key = row.get("id") or row.get("product_id")
+                if product_key is not None and product_key not in candidate_map:
+                    candidate_map[product_key] = row
+
+        matched_products = list(candidate_map.values())
+        if not matched_products:
+            all_products = await _catalog_db.get_all_products_for_search()
+            matched_products = fuzzy_search_products(
+                all_products,
+                " ".join(query_variants[:4]),
+                score_cutoff=70,
+            )
+
         total = len(matched_products)
         products = matched_products[offset:offset + limit]
+        expanded_query = ", ".join(query_variants)
 
         if total == 0:
             normalized_query = normalize_text(query)
-            field_matches = {
-                "caption": 0,
-                "category": 0,
-                "subcategory": 0,
-            }
-            for product in all_products:
-                if normalized_query and normalized_query in normalize_text(product.get("caption", "") or ""):
-                    field_matches["caption"] += 1
-                if normalized_query and normalized_query in normalize_text(product.get("category", "") or ""):
-                    field_matches["category"] += 1
-                if normalized_query and normalized_query in normalize_text(product.get("subcategory", "") or ""):
-                    field_matches["subcategory"] += 1
-            logger.info(
-                "[webapp_search_empty] query=%r normalized=%r total_indexed=%d matched_fields=%s",
-                query,
-                normalized_query,
-                len(all_products),
-                field_matches,
+            logger.info("[webapp_search_empty] query=%r normalized=%r expanded=%r", query, normalized_query, expanded_query)
+
+        user_id = None
+        try:
+            user_obj = init_data.get("user") if isinstance(init_data, dict) else getattr(init_data, "user", None)
+            user_id = user_obj.get("id") if isinstance(user_obj, dict) else getattr(user_obj, "id", None)
+        except Exception:
+            user_id = None
+        try:
+            await _catalog_db.log_search_query(
+                query=query,
+                expanded_query=expanded_query,
+                matched_count=total,
+                source="webapp",
+                user_id=user_id,
+                ip_address=get_client_ip(request),
             )
+        except Exception as exc:
+            logger.debug("Failed to log search query: %s", exc)
 
         order_contact = await _catalog_db.get_order_contact()
         order_contact_username = _normalize_contact(order_contact)
@@ -3296,6 +3468,7 @@ async def search_products(
             "items": items,
             "total": total,
             "query": q,
+            "expanded_query": expanded_query,
             "order_contact": order_contact,
             "order_contact_username": order_contact_username
         }

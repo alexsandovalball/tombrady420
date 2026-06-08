@@ -667,6 +667,7 @@ def register_bot_handlers(application: "Application", bot_index: int = 0):
         setcontact_command, setlink_command, clearcache_command,
         botusers_command, prunebots_command, reinitbots_command,
         adminstatus_command,
+        seostatus_command, seoimport_command, seoapprove_command,
         enable_broadcasts_command, disable_broadcasts_command, list_broadcasts_command,
     )
     from handlers.broadcast import my_chat_member_handler
@@ -677,6 +678,9 @@ def register_bot_handlers(application: "Application", bot_index: int = 0):
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("language", language_command))
     application.add_handler(CommandHandler("adminstatus", adminstatus_command))
+    application.add_handler(CommandHandler("seostatus", seostatus_command))
+    application.add_handler(CommandHandler("seoimport", seoimport_command))
+    application.add_handler(CommandHandler("seoapprove", seoapprove_command))
     application.add_handler(CommandHandler("nuke", nuke_command))
     application.add_handler(CommandHandler("recategorize", recategorize_command))
     application.add_handler(CommandHandler("users", users_command))

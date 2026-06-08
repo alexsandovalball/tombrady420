@@ -54,6 +54,80 @@ async def test_delete_product_removes_dependent_rows(db):
 
 
 @pytest.mark.asyncio
+async def test_delete_product_preserves_public_redirect_metadata(db):
+    await db.init_db()
+
+    async with aiosqlite.connect(db.db_path) as conn:
+        await conn.execute(
+            """
+            INSERT INTO products (
+                id, file_id, file_type, caption, message_id, chat_id,
+                category, subcategory
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (977, "file", "photo", "redirect me", 123, -100, "FLOWER", "EXOTICS"),
+        )
+        await conn.commit()
+
+    assert await db.delete_product(977) is True
+
+    redirect = await db.get_deleted_product_redirect(977)
+    assert redirect is not None
+    assert redirect["caption"] == "redirect me"
+    assert redirect["category"] == "FLOWER"
+    assert redirect["subcategory"] == "EXOTICS"
+
+
+@pytest.mark.asyncio
+async def test_get_related_products_excludes_current_and_prefers_same_subcategory(db):
+    await db.init_db()
+
+    async with aiosqlite.connect(db.db_path) as conn:
+        rows = [
+            (10, "current", "photo", "Current", 10, -100, "FLOWER", "EXOTICS", "2026-06-08 12:00:00"),
+            (11, "same", "photo", "Same Subcategory", 11, -100, " flower ", "exotics", "2026-06-08 12:01:00"),
+            (12, "other", "photo", "Other Flower", 12, -100, "FLOWER", "LIGHTDEPS", "2026-06-08 12:02:00"),
+            (13, "wrong", "photo", "Wrong Category", 13, -100, "VAPES", "EXOTICS", "2026-06-08 12:03:00"),
+        ]
+        await conn.executemany(
+            """
+            INSERT INTO products (
+                id, file_id, file_type, caption, message_id, chat_id,
+                category, subcategory, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        await conn.commit()
+
+    related = await db.get_related_products(10, "FLOWER", subcategory="EXOTICS", limit=6)
+
+    assert [item["id"] for item in related] == [11, 12]
+
+
+@pytest.mark.asyncio
+async def test_seo_query_mappings_and_search_events_are_persisted(db):
+    await db.init_db()
+
+    imported = await db.upsert_seo_query_mappings(
+        [{"term": "hash rosin", "category": "CONCENTRATES", "subcategory": "SOLVENTLESS"}],
+        source="test",
+        approved=True,
+    )
+    assert imported == 1
+
+    mappings = await db.get_approved_seo_query_mappings()
+    assert mappings[0]["term"] == "hash rosin"
+    assert mappings[0]["category"] == "CONCENTRATES"
+
+    await db.log_search_query(query="rare query", expanded_query="rare query", matched_count=0)
+    unmapped = await db.get_unmapped_search_queries()
+    assert unmapped[0]["query"] == "rare query"
+
+
+@pytest.mark.asyncio
 async def test_delete_missing_product_leaves_related_rows(db):
     await db.init_db()
 

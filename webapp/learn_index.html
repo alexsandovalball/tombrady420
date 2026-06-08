@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ seo_title }}</title>
+    <meta name="description" content="{{ seo_desc }}">
+    <link rel="canonical" href="{{ seo_url }}">
+    <meta name="robots" content="index, follow">
+    <meta name="googlebot" content="index, follow, max-snippet:-1, max-image-preview:large">
+    <meta property="og:type" content="{{ og_type }}">
+    <meta property="og:title" content="{{ seo_title }}">
+    <meta property="og:description" content="{{ seo_desc }}">
+    <meta property="og:image" content="{{ seo_image }}">
+    <meta property="og:url" content="{{ seo_url }}">
+    <meta name="twitter:card" content="summary_large_image">
+    <script type="application/ld+json">{{ seo_schema | safe }}</script>
+    <link rel="icon" type="image/png" href="/og-image.png">
+    <link rel="shortcut icon" href="/favicon.ico">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="stylesheet" href="/assets/style.css">
+    <style>
+        .learn-page { max-width: 900px; margin: 0 auto; padding: 1rem; }
+        .learn-nav a { color: var(--accent, #2481cc); text-decoration: none; }
+        .learn-grid { list-style: none; padding: 0; margin: 1rem 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: .9rem; }
+        .learn-card { border: 1px solid var(--border, #333); border-radius: 8px; padding: 1rem; background: var(--card-bg, #1e1e1e); }
+        .learn-card a { color: var(--text-primary, #fff); text-decoration: none; }
+        .learn-card a:hover { color: var(--accent, #2481cc); }
+        .learn-card p { color: var(--text-secondary, #aaa); line-height: 1.45; }
+        .learn-taxonomy { font-size: .86rem; color: var(--text-secondary, #aaa); }
+    </style>
+</head>
+<body>
+    <main class="learn-page">
+        <nav class="learn-nav"><a href="/">Home</a></nav>
+        <h1>Product Guides</h1>
+        <p>Common search terms connected to current product categories and menu navigation.</p>
+        <ul class="learn-grid">
+            {% for page in learn_pages %}
+            <li class="learn-card">
+                <a href="{{ page.url }}"><h2>{{ page.title }}</h2></a>
+                <p>{{ page.summary }}</p>
+                {% if page.category_display %}
+                <div class="learn-taxonomy">
+                    Related: <a href="{{ page.subcategory_url or page.category_url }}">{{ page.subcategory_display or page.category_display }}</a>
+                </div>
+                {% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+    </main>
+</body>
+</html>

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ seo_title }}</title>
+    <meta name="description" content="{{ seo_desc }}">
+    <link rel="canonical" href="{{ seo_url }}">
+    <meta name="robots" content="index, follow">
+    <meta name="googlebot" content="index, follow, max-snippet:-1, max-image-preview:large">
+    <meta property="og:type" content="{{ og_type }}">
+    <meta property="og:title" content="{{ seo_title }}">
+    <meta property="og:description" content="{{ seo_desc }}">
+    <meta property="og:image" content="{{ seo_image }}">
+    <meta property="og:url" content="{{ seo_url }}">
+    <meta name="twitter:card" content="summary_large_image">
+    <script type="application/ld+json">{{ seo_schema | safe }}</script>
+    <link rel="icon" type="image/png" href="/og-image.png">
+    <link rel="shortcut icon" href="/favicon.ico">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="stylesheet" href="/assets/style.css">
+    <style>
+        .learn-article { max-width: 820px; margin: 0 auto; padding: 1rem; }
+        .learn-nav { display: flex; flex-wrap: wrap; gap: .5rem; color: var(--text-secondary, #aaa); }
+        .learn-nav a { color: var(--accent, #2481cc); text-decoration: none; }
+        .learn-article h1 { font-size: 1.9rem; line-height: 1.15; }
+        .learn-summary, .learn-article p { color: var(--text-secondary, #aaa); line-height: 1.58; }
+        .term-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: .45rem; margin: 1rem 0; }
+        .term-list li { border: 1px solid var(--border, #333); border-radius: 999px; padding: .28rem .65rem; color: var(--text-secondary, #aaa); font-size: .86rem; }
+        .learn-cta { display: inline-block; margin-top: 1rem; padding: .7rem 1rem; border-radius: 8px; background: #2481cc; color: #fff; text-decoration: none; font-weight: 700; }
+    </style>
+</head>
+<body>
+    <main class="learn-article">
+        <nav class="learn-nav" aria-label="Breadcrumb">
+            <a href="/">Home</a><span>/</span><a href="/learn">Guides</a>
+            {% if category_url %}<span>/</span><a href="{{ category_url }}">{{ category_display }}</a>{% endif %}
+            {% if subcategory_url %}<span>/</span><a href="{{ subcategory_url }}">{{ subcategory_display }}</a>{% endif %}
+        </nav>
+        <article>
+            <h1>{{ page.title }}</h1>
+            <p class="learn-summary">{{ page.summary }}</p>
+            {% if page.terms %}
+            <ul class="term-list">
+                {% for term in page.terms %}
+                <li>{{ term }}</li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+            {% for section in page.sections %}
+            <p>{{ section }}</p>
+            {% endfor %}
+            {% if subcategory_url or category_url %}
+            <a class="learn-cta" href="{{ subcategory_url or category_url }}">Browse Related Products</a>
+            {% endif %}
+        </article>
+    </main>
+</body>
+</html>

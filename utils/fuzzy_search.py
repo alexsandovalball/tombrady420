@@ -95,6 +95,16 @@ def expand_query_with_synonyms(query: str) -> List[str]:
             if synonym_query not in variants:
                 variants.append(synonym_query)
 
+    try:
+        from utils.seo_terms import build_query_variants
+        for variant in build_query_variants(query, limit=8):
+            normalized_variant = normalize_text(variant)
+            if normalized_variant and normalized_variant not in variants:
+                variants.append(normalized_variant)
+    except Exception:
+        # Search must keep working even if the optional SEO dictionary is invalid.
+        pass
+
     return variants
 
 

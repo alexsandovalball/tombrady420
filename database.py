@@ -136,6 +136,16 @@ class Database:
             """)
 
             await db.execute("""
+                CREATE TABLE IF NOT EXISTS deleted_product_redirects (
+                    product_id INTEGER PRIMARY KEY,
+                    caption TEXT,
+                    category TEXT,
+                    subcategory TEXT,
+                    deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS pagination_state (
                     user_id INTEGER NOT NULL,
                     state_type TEXT NOT NULL,
@@ -301,6 +311,35 @@ class Database:
                     details_json TEXT,
                     client_timestamp TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS search_query_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    query TEXT NOT NULL,
+                    normalized_query TEXT NOT NULL,
+                    expanded_query TEXT,
+                    matched_count INTEGER NOT NULL DEFAULT 0,
+                    source TEXT NOT NULL DEFAULT 'webapp',
+                    user_id TEXT,
+                    ip_address TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS seo_query_mappings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    term TEXT NOT NULL,
+                    normalized_term TEXT NOT NULL UNIQUE,
+                    category TEXT,
+                    subcategory TEXT,
+                    source TEXT NOT NULL DEFAULT 'admin',
+                    approved INTEGER NOT NULL DEFAULT 1,
+                    hits INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
@@ -559,6 +598,10 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_webapp_events_created ON webapp_events(created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_webapp_events_user ON webapp_events(user_id, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_webapp_events_type_action ON webapp_events(event_type, action)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_search_query_events_created ON search_query_events(created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_search_query_events_matched ON search_query_events(matched_count, created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_query_mappings_approved ON seo_query_mappings(approved, normalized_term)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_query_mappings_taxonomy ON seo_query_mappings(category, subcategory)")
 
             # Broadcast chats indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_chats_bot_username ON broadcast_chats(bot_username)")
@@ -779,6 +822,16 @@ class Database:
                 if row:
                     return dict(row)
                 return None
+
+    async def get_deleted_product_redirect(self, product_id: int) -> Optional[Dict[str, Any]]:
+        """Get redirect metadata for a product that has been deleted."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM deleted_product_redirects WHERE product_id = ?
+            """, (product_id,)) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
     
     async def get_all_products(self, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
         """Get all products with pagination."""
@@ -1024,6 +1077,14 @@ class Database:
         try:
             async with self.get_connection() as db:
                 await db.execute("BEGIN")
+                await db.execute("""
+                    INSERT OR REPLACE INTO deleted_product_redirects (
+                        product_id, caption, category, subcategory, deleted_at
+                    )
+                    SELECT id, caption, category, subcategory, CURRENT_TIMESTAMP
+                    FROM products
+                    WHERE id = ?
+                """, (product_id,))
                 pending_cursor = await db.execute(
                     "DELETE FROM pending_categorization WHERE product_id = ?",
                     (product_id,),
@@ -1249,6 +1310,37 @@ class Database:
             if limit:
                 query += f" LIMIT {limit} OFFSET {offset}"
             async with db.execute(query, (category,)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    async def get_related_products(
+        self,
+        product_id: int,
+        category: str,
+        subcategory: Optional[str] = None,
+        limit: int = 6,
+    ) -> List[Dict[str, Any]]:
+        """Get other products in the same category for public product pages."""
+        if not category:
+            return []
+
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            params: list[Any] = [category, product_id]
+            same_subcategory_order = "1"
+            if subcategory:
+                same_subcategory_order = "CASE WHEN LOWER(TRIM(COALESCE(subcategory, ''))) = LOWER(TRIM(?)) THEN 0 ELSE 1 END"
+                params.append(subcategory)
+
+            params.append(limit)
+            async with db.execute(f"""
+                SELECT *
+                FROM products
+                WHERE LOWER(TRIM(COALESCE(category, ''))) = LOWER(TRIM(?))
+                  AND id != ?
+                ORDER BY {same_subcategory_order}, created_at DESC, id DESC
+                LIMIT ?
+            """, tuple(params)) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
     
@@ -3442,6 +3534,176 @@ class Database:
             await db.commit()
         return len(rows)
 
+    async def log_search_query(
+        self,
+        *,
+        query: str,
+        expanded_query: str = "",
+        matched_count: int = 0,
+        source: str = "webapp",
+        user_id: Optional[str] = None,
+        ip_address: Optional[str] = None,
+    ) -> None:
+        """Persist a search query for SEO/search intelligence."""
+        from utils.seo_terms import normalize_term
+
+        normalized_query = normalize_term(query)
+        if not normalized_query:
+            return
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO search_query_events
+                    (query, normalized_query, expanded_query, matched_count, source, user_id, ip_address)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    query[:300],
+                    normalized_query[:300],
+                    expanded_query[:1000],
+                    max(0, int(matched_count or 0)),
+                    source[:40],
+                    str(user_id)[:80] if user_id is not None else None,
+                    str(ip_address)[:80] if ip_address is not None else None,
+                ),
+            )
+            await db.commit()
+
+    async def upsert_seo_query_mappings(
+        self,
+        mappings: List[Dict[str, Any]],
+        *,
+        source: str = "admin_import",
+        approved: bool = True,
+    ) -> int:
+        """Insert/update approved SEO query mappings imported from admin CSV/text."""
+        from utils.seo_terms import normalize_term
+
+        rows = []
+        seen = set()
+        for mapping in mappings:
+            term = str(mapping.get("term") or "").strip()
+            normalized = normalize_term(term)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            rows.append((
+                term[:300],
+                normalized[:300],
+                str(mapping.get("category") or "").strip()[:80],
+                str(mapping.get("subcategory") or "").strip()[:120],
+                source[:80],
+                int(bool(approved)),
+            ))
+
+        if not rows:
+            return 0
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.executemany(
+                """
+                INSERT INTO seo_query_mappings (
+                    term, normalized_term, category, subcategory, source, approved, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(normalized_term) DO UPDATE SET
+                    term = excluded.term,
+                    category = excluded.category,
+                    subcategory = excluded.subcategory,
+                    source = excluded.source,
+                    approved = excluded.approved,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                rows,
+            )
+            await db.commit()
+        return len(rows)
+
+    async def get_approved_seo_query_mappings(self, limit: int = 2000) -> List[Dict[str, Any]]:
+        """Return admin-approved SEO query mappings."""
+        limit = max(1, min(limit, 5000))
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT term, category, subcategory, source, hits
+                FROM seo_query_mappings
+                WHERE approved = 1
+                ORDER BY hits DESC, updated_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    async def get_unmapped_search_queries(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Return frequent no-result queries that are not yet approved mappings."""
+        limit = max(1, min(limit, 100))
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT
+                    e.query,
+                    e.normalized_query,
+                    COUNT(*) AS count,
+                    MAX(e.created_at) AS last_seen
+                FROM search_query_events e
+                LEFT JOIN seo_query_mappings m
+                    ON m.normalized_term = e.normalized_query AND m.approved = 1
+                WHERE e.matched_count = 0
+                  AND m.id IS NULL
+                GROUP BY e.normalized_query
+                ORDER BY count DESC, last_seen DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    async def get_search_intelligence_snapshot(self, limit: int = 10) -> Dict[str, Any]:
+        """Compact snapshot for the /seostatus admin command."""
+        limit = max(1, min(limit, 50))
+        since_24h = datetime.now() - timedelta(hours=24)
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+
+            async def scalar(sql: str, params: tuple = ()) -> int:
+                async with db.execute(sql, params) as cursor:
+                    row = await cursor.fetchone()
+                    return int(row[0] or 0) if row else 0
+
+            async def rows(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
+                async with db.execute(sql, params) as cursor:
+                    result = await cursor.fetchall()
+                    return [dict(row) for row in result]
+
+            return {
+                "queries_24h": await scalar(
+                    "SELECT COUNT(*) FROM search_query_events WHERE created_at >= ?",
+                    (since_24h,),
+                ),
+                "no_result_24h": await scalar(
+                    "SELECT COUNT(*) FROM search_query_events WHERE matched_count = 0 AND created_at >= ?",
+                    (since_24h,),
+                ),
+                "approved_mappings": await scalar("SELECT COUNT(*) FROM seo_query_mappings WHERE approved = 1"),
+                "top_queries": await rows(
+                    """
+                    SELECT query, COUNT(*) AS count, MAX(matched_count) AS last_matched_count
+                    FROM search_query_events
+                    GROUP BY normalized_query
+                    ORDER BY count DESC, MAX(created_at) DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ),
+                "unmapped": await self.get_unmapped_search_queries(limit=limit),
+            }
+
     async def get_admin_dashboard_snapshot(self, recent_limit: int = 30) -> Dict[str, Any]:
         """Return read-only dashboard data from persistent application state."""
         recent_limit = max(5, min(recent_limit, 100))
@@ -3482,6 +3744,15 @@ class Database:
                     "SELECT COUNT(*) FROM inline_chosen_results WHERE created_at >= ?",
                     (since_24h,),
                 ),
+                "search_queries_24h": await scalar(
+                    "SELECT COUNT(*) FROM search_query_events WHERE created_at >= ?",
+                    (since_24h,),
+                ),
+                "search_no_result_24h": await scalar(
+                    "SELECT COUNT(*) FROM search_query_events WHERE matched_count = 0 AND created_at >= ?",
+                    (since_24h,),
+                ),
+                "seo_query_mappings": await scalar("SELECT COUNT(*) FROM seo_query_mappings WHERE approved = 1"),
             }
 
             async def rows(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:

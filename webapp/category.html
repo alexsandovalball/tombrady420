@@ -49,6 +49,9 @@
         .cat-page header a { text-decoration: none; color: inherit; }
         .cat-page h1 { font-size: 1.8rem; margin: 0.5rem 0; }
         .cat-subtitle { color: var(--text-secondary, #888); margin: 0 0 1.5rem; }
+        .cat-intro { color: var(--text-secondary, #aaa); line-height: 1.5; margin: -0.75rem 0 1.25rem; }
+        .term-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.45rem; margin: 0 0 1.5rem; }
+        .term-list li { border: 1px solid var(--border, #333); border-radius: 999px; padding: 0.28rem 0.65rem; color: var(--text-secondary, #aaa); font-size: 0.84rem; }
         .subcat-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.5rem; }
         .subcat-list li a { display: block; background: var(--card-bg, #1e1e1e); border-radius: 8px; padding: 0.4rem 0.8rem; font-size: 0.9rem; color: var(--text-primary, #fff); text-decoration: none; }
         .product-list { list-style: none; padding: 0; }
@@ -73,7 +76,18 @@
             {% endif %}
             <h1>{% if current_subcategory %}{{ current_subcategory_display }} {{ category_display }}{% else %}{{ category_display }}{% endif %}</h1>
             <p class="cat-subtitle">{{ total }} product{% if total != 1 %}s{% endif %} available &mdash; Order via Telegram</p>
+            {% if seo_intro %}<p class="cat-intro">{{ seo_intro }}</p>{% endif %}
         </header>
+
+        {% if seo_terms %}
+        <section aria-label="Related search terms">
+            <ul class="term-list">
+                {% for term in seo_terms[:10] %}
+                <li>{{ term }}</li>
+                {% endfor %}
+            </ul>
+        </section>
+        {% endif %}
 
         {% if subcategories %}
         <section>
