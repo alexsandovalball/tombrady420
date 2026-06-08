@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ seo_title }}</title>
+    <meta name="description" content="{{ seo_desc }}">
+    <link rel="canonical" href="{{ seo_url }}">
+
+    <meta name="robots" content="index, follow">
+    <meta name="googlebot" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
+    <meta name="author" content="Top Shelf Cali Plug">
+    <meta name="theme-color" content="#2481cc">
+
+    <meta property="og:type" content="{{ og_type }}">
+    <meta property="og:title" content="{{ seo_title }}">
+    <meta property="og:description" content="{{ seo_desc }}">
+    <meta property="og:image" content="{{ seo_image }}">
+    <meta property="og:url" content="{{ seo_url }}">
+    <meta property="og:site_name" content="Top Shelf Cali Plug">
+    <meta property="og:locale" content="en_US">
+
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="{{ seo_title }}">
+    <meta name="twitter:description" content="{{ seo_desc }}">
+    <meta name="twitter:image" content="{{ seo_image }}">
+
+    <script type="application/ld+json">{{ seo_schema | safe }}</script>
+
+    <link rel="icon" type="image/png" href="/og-image.png">
+    <link rel="shortcut icon" href="/favicon.ico">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="manifest" href="/assets/manifest.json">
+    <link rel="stylesheet" href="/assets/style.css">
+    <style>
+        .seo-page { max-width: 900px; margin: 0 auto; padding: 1rem; }
+        .seo-nav { display: flex; gap: .5rem; flex-wrap: wrap; font-size: .92rem; margin-bottom: 1rem; }
+        .seo-nav a { color: var(--accent, #2481cc); text-decoration: none; }
+        .seo-hero { display: grid; gap: 1rem; }
+        .seo-media { width: 100%; max-height: 520px; object-fit: cover; border-radius: 8px; background: var(--card-bg, #1e1e1e); }
+        .seo-kicker { color: var(--text-secondary, #888); margin: 0 0 .35rem; }
+        .seo-title { font-size: 1.9rem; line-height: 1.15; margin: 0 0 1rem; }
+        .seo-description p { margin: 0 0 .8rem; line-height: 1.55; }
+        .seo-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin: 1.25rem 0; }
+        .seo-btn { display: inline-block; padding: .75rem 1rem; border-radius: 8px; text-decoration: none; font-weight: 700; }
+        .seo-btn.primary { background: #2481cc; color: #fff; }
+        .seo-btn.secondary { border: 1px solid var(--border, #333); color: var(--text-primary, #fff); }
+        .related-list { list-style: none; padding: 0; margin: .75rem 0 0; }
+        .related-list li { border-top: 1px solid var(--border, #333); padding: .7rem 0; }
+        .related-list a { color: var(--text-primary, #fff); text-decoration: none; }
+        .related-list a:hover { color: var(--accent, #2481cc); }
+    </style>
+</head>
+<body>
+    <main class="seo-page">
+        <nav class="seo-nav" aria-label="Breadcrumb">
+            <a href="/">Home</a>
+            {% if category_url %}<span>/</span><a href="{{ category_url }}">{{ category_display }}</a>{% endif %}
+            {% if subcategory_url %}<span>/</span><a href="{{ subcategory_url }}">{{ subcategory_display }}</a>{% endif %}
+        </nav>
+
+        <article class="seo-hero">
+            {% if product_image %}
+            <img class="seo-media" src="{{ product_image }}" alt="{{ product_title }}" loading="eager">
+            {% endif %}
+
+            <section>
+                {% if category_display %}
+                <p class="seo-kicker">
+                    {{ category_display }}{% if subcategory_display %} / {{ subcategory_display }}{% endif %}
+                </p>
+                {% endif %}
+                <h1 class="seo-title">{{ product_title }}</h1>
+
+                <div class="seo-description">
+                    {% for line in description_lines %}
+                    <p>{{ line }}</p>
+                    {% endfor %}
+                </div>
+
+                <div class="seo-actions">
+                    {% if webapp_product_url %}<a class="seo-btn primary" href="{{ webapp_product_url }}">View in WebApp</a>{% endif %}
+                    {% if telegram_bot_url %}<a class="seo-btn secondary" href="{{ telegram_bot_url }}">Get Product in Bot Chat</a>{% endif %}
+                </div>
+            </section>
+        </article>
+
+        {% if related_products %}
+        <section aria-labelledby="related-heading">
+            <h2 id="related-heading">Related products</h2>
+            <ul class="related-list">
+                {% for item in related_products %}
+                <li><a href="{{ item.url }}">{{ item.title }}</a></li>
+                {% endfor %}
+            </ul>
+        </section>
+        {% endif %}
+    </main>
+</body>
+</html>

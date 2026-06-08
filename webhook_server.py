@@ -5,6 +5,7 @@ which is more suitable for serverless deployments like Render.com.
 """
 import asyncio
 import hashlib
+import html
 import json
 import logging
 import mimetypes
@@ -20,7 +21,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request, Response, status
-from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from telegram import Update
@@ -61,6 +62,7 @@ from utils.resource_manager import (
 from utils.webhook_identity import BotSlot, build_bot_slot, build_registry_webhook_secret
 from middleware.request_deduplicator import RequestDeduplicator
 from configs.telegram_ip_whitelist import is_telegram_ip
+from utils.deeplinks import build_webapp_product_url
 
 # Configure logging
 from configs.logging_config import configure_logging
@@ -1701,6 +1703,91 @@ def _generate_slug(caption: str) -> str:
     return slug or "product"
 
 
+def _taxonomy_slug(value: str) -> str:
+    """Generate a stable lowercase slug for categories and subcategories."""
+    slug = re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")
+    return slug or "all"
+
+
+def _absolute_storefront_url(path: str = "") -> str:
+    if not path:
+        return _STOREFRONT_DOMAIN or ""
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    normalized = path if path.startswith("/") else f"/{path}"
+    return f"{_STOREFRONT_DOMAIN}{normalized}" if _STOREFRONT_DOMAIN else normalized
+
+
+def _canonical_product_path(product_id: int, caption: str) -> str:
+    return f"/product/{product_id}/{_generate_slug(caption)}"
+
+
+def _canonical_product_url(product_id: int, caption: str) -> str:
+    return _absolute_storefront_url(_canonical_product_path(product_id, caption))
+
+
+def _canonical_category_path(category: str) -> str:
+    return f"/category/{_taxonomy_slug(category)}"
+
+
+def _canonical_subcategory_path(category: str, subcategory: str) -> str:
+    return f"{_canonical_category_path(category)}/{_taxonomy_slug(subcategory)}"
+
+
+def _canonical_category_url(category: str) -> str:
+    return _absolute_storefront_url(_canonical_category_path(category))
+
+
+def _canonical_subcategory_url(category: str, subcategory: str) -> str:
+    return _absolute_storefront_url(_canonical_subcategory_path(category, subcategory))
+
+
+def _caption_parts(caption: str) -> tuple[str, str, list[str]]:
+    lines = [line.strip() for line in (caption or "").splitlines() if line.strip()]
+    title = lines[0] if lines else "Product"
+    body_lines = lines[1:] or lines[:1]
+    desc = " ".join(body_lines).strip() or title
+    if len(desc) > 160:
+        desc = desc[:157].rstrip() + "..."
+    return title, desc, body_lines
+
+
+def _sitemap_lastmod(value, fallback: str) -> str:
+    if isinstance(value, str) and value:
+        normalized = value.replace("T", " ").split(" ", 1)[0]
+        return normalized if re.match(r"^\d{4}-\d{2}-\d{2}$", normalized) else fallback
+    return fallback
+
+
+def _product_public_media_path(product_id: int, media_index: int = 0) -> str:
+    return f"/media/products/{product_id}/{media_index}"
+
+
+def _product_public_media_url(product_id: int, media_index: int = 0) -> str:
+    return _absolute_storefront_url(_product_public_media_path(product_id, media_index))
+
+
+def _product_primary_image_url(product: dict, *, absolute: bool = True) -> str:
+    """Return the first photo media URL for SEO/social previews."""
+    product_id = product.get("id")
+    if product_id is None:
+        return ""
+    for idx, media in enumerate(_collect_media_info(product)):
+        if media.get("type") == "photo":
+            return _product_public_media_url(product_id, idx) if absolute else _product_public_media_path(product_id, idx)
+    return ""
+
+
+def _resolve_category_name(category_slug: str) -> Optional[str]:
+    category_slug = _taxonomy_slug(category_slug)
+    return next((category for category in get_all_categories() if _taxonomy_slug(category) == category_slug), None)
+
+
+def _resolve_subcategory_name(category: str, subcategory_slug: str) -> Optional[str]:
+    subcategory_slug = _taxonomy_slug(subcategory_slug)
+    return next((subcategory for subcategory in get_subcategories(category) if _taxonomy_slug(subcategory) == subcategory_slug), None)
+
+
 def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
                         product: Optional[dict] = None, deep_link: str = "",
                         keywords: str = "", category: str = "", og_type: str = "website") -> dict:
@@ -1712,22 +1799,16 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
             "@type": "Product",
             "name": title,
             "description": desc,
-            "image": image,
             "url": product_url,
+            "mainEntityOfPage": product_url,
+            "category": category or product.get("category", ""),
             "brand": {
                 "@type": "Brand",
                 "name": "Top Shelf Cali Plug",
             },
-            "offers": {
-                "@type": "Offer",
-                "url": product_url,
-                "availability": "https://schema.org/InStock",
-                "seller": {
-                    "@type": "Organization",
-                    "name": "Top Shelf Cali Plug",
-                },
-            },
         }
+        if image:
+            product_schema["image"] = [image]
         breadcrumb: dict = {
             "@type": "BreadcrumbList",
             "itemListElement": [
@@ -1741,7 +1822,7 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
                     "@type": "ListItem",
                     "position": 2,
                     "name": category or "Products",
-                    "item": f"{_STOREFRONT_DOMAIN}/?category={urllib.parse.quote(category)}" if category else f"{_STOREFRONT_DOMAIN}/",
+                    "item": _canonical_category_url(category) if category else _absolute_storefront_url("/"),
                 },
                 {
                     "@type": "ListItem",
@@ -1801,6 +1882,22 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
         "telegram_deep_link": deep_link or f"https://t.me/{_STOREFRONT_BOT_USERNAME}",
     }
 
+def _read_brand_icon_png() -> bytes:
+    image_path = Path(__file__).parent / "webapp" / "og-football.png"
+    if not image_path.exists():
+        raise HTTPException(status_code=404, detail="Brand image not found")
+    return image_path.read_bytes()
+
+
+def _png_response(image_bytes: bytes, *, max_age: int = 86400) -> Response:
+    return Response(
+        content=image_bytes,
+        media_type="image/png",
+        headers={
+            "Cache-Control": f"public, max-age={max_age}",
+            "Content-Length": str(len(image_bytes)),
+        },
+    )
 
 
 @app.get("/og-image.png", response_class=Response)
@@ -1811,19 +1908,20 @@ async def serve_og_image():
     (WhatsApp, iMessage, Twitter/X, Facebook, Discord, Slack, Telegram) require
     a real HTTP/HTTPS URL — data: URIs are never fetched by these crawlers.
     """
-    import pathlib
-    image_path = pathlib.Path(__file__).parent / "webapp" / "og-football.png"
-    if not image_path.exists():
-        raise HTTPException(status_code=404, detail="OG image not found")
-    image_bytes = image_path.read_bytes()
-    return Response(
-        content=image_bytes,
-        media_type="image/png",
-        headers={
-            "Cache-Control": "public, max-age=86400",
-            "Content-Length": str(len(image_bytes)),
-        },
-    )
+    return _png_response(_read_brand_icon_png())
+
+
+@app.get("/favicon.ico", response_class=Response)
+async def serve_favicon():
+    """Serve a fallback favicon for browsers and crawlers that probe /favicon.ico."""
+    return _png_response(_read_brand_icon_png(), max_age=604800)
+
+
+@app.get("/apple-touch-icon.png", response_class=Response)
+@app.get("/apple-touch-icon-precomposed.png", response_class=Response)
+async def serve_apple_touch_icon():
+    """Serve an Apple touch icon fallback to avoid crawler/mobile browser 404 noise."""
+    return _png_response(_read_brand_icon_png(), max_age=604800)
 
 
 @app.get("/robots.txt", response_class=Response)
@@ -1832,7 +1930,10 @@ async def serve_robots_txt():
     content = (
         "User-agent: *\n"
         "Allow: /\n"
+        "Allow: /media/products/\n"
         "Disallow: /api/\n"
+        "Disallow: /admin\n"
+        "Disallow: /admin/\n"
         "Disallow: /webhook\n"
         "Disallow: /webhook/\n"
         "Disallow: /webapp\n"
@@ -1853,7 +1954,7 @@ async def serve_sitemap_xml():
     urls = [
         (
             f"  <url>\n"
-            f"    <loc>{_STOREFRONT_DOMAIN}/</loc>\n"
+            f"    <loc>{html.escape(_absolute_storefront_url('/'))}</loc>\n"
             f"    <lastmod>{today}</lastmod>\n"
             f"    <changefreq>weekly</changefreq>\n"
             f"    <priority>1.0</priority>\n"
@@ -1863,25 +1964,30 @@ async def serve_sitemap_xml():
     for category in get_all_categories():
         urls.append(
             f"  <url>\n"
-            f"    <loc>{_STOREFRONT_DOMAIN}/category/{urllib.parse.quote(category)}</loc>\n"
+            f"    <loc>{html.escape(_canonical_category_url(category))}</loc>\n"
             f"    <lastmod>{today}</lastmod>\n"
             f"    <changefreq>weekly</changefreq>\n"
             f"    <priority>0.9</priority>\n"
             f"  </url>"
         )
+        for subcategory in get_subcategories(category):
+            urls.append(
+                f"  <url>\n"
+                f"    <loc>{html.escape(_canonical_subcategory_url(category, subcategory))}</loc>\n"
+                f"    <lastmod>{today}</lastmod>\n"
+                f"    <changefreq>weekly</changefreq>\n"
+                f"    <priority>0.85</priority>\n"
+                f"  </url>"
+            )
     for p in products:
         pid = p.get("id") or p.get("product_id")
         if pid is None:
             continue
-        lastmod = p.get("created_at") or today
-        if isinstance(lastmod, str) and "T" in lastmod:
-            lastmod = lastmod.split("T")[0]
-        elif not isinstance(lastmod, str):
-            lastmod = today
-        slug = _generate_slug(p.get("caption") or "")
+        lastmod = _sitemap_lastmod(p.get("created_at"), today)
+        loc = _canonical_product_url(pid, p.get("caption") or "")
         urls.append(
             f"  <url>\n"
-            f"    <loc>{_STOREFRONT_DOMAIN}/product/{pid}/{slug}</loc>\n"
+            f"    <loc>{html.escape(loc)}</loc>\n"
             f"    <lastmod>{lastmod}</lastmod>\n"
             f"    <changefreq>monthly</changefreq>\n"
             f"    <priority>0.8</priority>\n"
@@ -1905,6 +2011,10 @@ def _serve_storefront_index(request: Request) -> HTMLResponse:
         url=_STOREFRONT_DOMAIN,
     )
     ctx["request"] = request
+    ctx["seo_categories"] = [
+        {"url": _canonical_category_path(category), "label": get_category_display_name(category)}
+        for category in get_all_categories()
+    ]
     return templates.TemplateResponse(request, "index.html", context=ctx)
 
 
@@ -1967,23 +2077,53 @@ async def admin_dashboard_overview(request: Request):
 
 @app.get("/product/{product_id}", response_class=HTMLResponse)
 async def serve_product_page(product_id: int, request: Request):
-    """Serve an individual product page with dynamic SEO metadata."""
+    """Redirect short product URLs to their canonical slug URL."""
+    product = await _catalog_db.get_product(product_id)
+    if not product:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+    return RedirectResponse(
+        url=_canonical_product_path(product_id, product.get("caption") or ""),
+        status_code=301,
+    )
+
+
+@app.get("/product/{product_id}/{slug}", response_class=HTMLResponse)
+async def serve_product_page_with_slug(product_id: int, slug: str, request: Request):
+    """Serve an individual product page with crawlable HTML and dynamic SEO metadata."""
     product = await _catalog_db.get_product(product_id)
     if not product:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
 
-    # Build SEO fields from product data
     caption: str = product.get("caption") or ""
-    # First line of caption as title, rest as description
-    lines = [l.strip() for l in caption.splitlines() if l.strip()]
-    seo_title = lines[0] if lines else f"Product #{product_id}"
-    seo_desc = " ".join(lines[1:]) if len(lines) > 1 else seo_title
+    canonical_slug = _generate_slug(caption)
+    if slug != canonical_slug:
+        return RedirectResponse(
+            url=_canonical_product_path(product_id, caption),
+            status_code=301,
+        )
 
-    # Prefer photo file_id represented as a media URL served by this server
-    seo_image = f"{_STOREFRONT_DOMAIN}/api/media/{product_id}/0" if product.get("file_id") else ""
-
-    product_url = f"{_STOREFRONT_DOMAIN}/product/{product_id}/{_generate_slug(caption)}"
+    seo_title, seo_desc, description_lines = _caption_parts(caption)
+    seo_image = _product_primary_image_url(product)
+    product_url = _canonical_product_url(product_id, caption)
     deep_link = f"https://t.me/{_STOREFRONT_BOT_USERNAME}?start=product_{product_id}"
+    webapp_link = build_webapp_product_url(Config.WEB_APP_URL, product_id)
+    category = product.get("category") or ""
+    subcategory = product.get("subcategory") or ""
+    related_products = []
+    if category:
+        try:
+            candidates = await _catalog_db.get_products_by_category(category, limit=8)
+            related_products = [
+                {
+                    "id": p.get("id") or p.get("product_id"),
+                    "title": _caption_parts(p.get("caption") or "")[0],
+                    "url": _canonical_product_path(p.get("id") or p.get("product_id"), p.get("caption") or ""),
+                }
+                for p in candidates
+                if (p.get("id") or p.get("product_id")) != product_id
+            ][:6]
+        except Exception as exc:
+            logger.debug("Failed to load related products for SEO page: %s", exc)
 
     ctx = _build_seo_context(
         title=seo_title,
@@ -2001,29 +2141,35 @@ async def serve_product_page(product_id: int, request: Request):
             "buy online",
             "Telegram store",
         ])),
-        category=product.get("category", ""),
+        category=category,
     )
     ctx["request"] = request
-    return templates.TemplateResponse(request, "index.html", context=ctx)
-
-
-@app.get("/product/{product_id}/{slug}", response_class=HTMLResponse)
-async def serve_product_page_with_slug(product_id: int, slug: str, request: Request):
-    """Serve an individual product page using a slug URL — delegates to serve_product_page."""
-    return await serve_product_page(product_id, request)
+    ctx["product"] = product
+    ctx["product_id"] = product_id
+    ctx["product_title"] = seo_title
+    ctx["description_lines"] = description_lines
+    ctx["category"] = category
+    ctx["category_display"] = get_category_display_name(category) if category else ""
+    ctx["category_url"] = _canonical_category_path(category) if category else ""
+    ctx["subcategory"] = subcategory
+    ctx["subcategory_display"] = get_subcategory_display_name(subcategory) if subcategory else ""
+    ctx["subcategory_url"] = _canonical_subcategory_path(category, subcategory) if category and subcategory else ""
+    ctx["product_image"] = _product_primary_image_url(product, absolute=False)
+    ctx["telegram_bot_url"] = deep_link
+    ctx["webapp_product_url"] = webapp_link
+    ctx["related_products"] = related_products
+    return templates.TemplateResponse(request, "product.html", context=ctx)
 
 
 @app.get("/category/{category_name}", response_class=HTMLResponse)
 async def serve_category_page(category_name: str, request: Request):
     """Serve a server-rendered category landing page for SEO crawlability."""
-    # Case-insensitive match against canonical category names
-    all_categories = get_all_categories()
-    matched_category = next(
-        (c for c in all_categories if c.lower() == category_name.lower()),
-        None,
-    )
+    matched_category = _resolve_category_name(category_name)
     if matched_category is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found")
+    canonical_path = _canonical_category_path(matched_category)
+    if request.url.path != canonical_path:
+        return RedirectResponse(url=canonical_path, status_code=301)
 
     display_name = get_category_display_name(matched_category)
     subcategories = get_subcategories(matched_category)
@@ -2039,7 +2185,7 @@ async def serve_category_page(category_name: str, request: Request):
         for item in all_subcategories_data.get(matched_category, [])
     }
 
-    category_url = f"{_STOREFRONT_DOMAIN}/category/{urllib.parse.quote(matched_category)}"
+    category_url = _canonical_category_url(matched_category)
 
     # Build keyword list from category + subcategory names
     subcat_names = ", ".join(subcategories) if subcategories else ""
@@ -2062,21 +2208,32 @@ async def serve_category_page(category_name: str, request: Request):
     ctx["category_name"] = matched_category
     ctx["category_display"] = display_name
     ctx["subcategories"] = [
-        {"name": s, "display": get_subcategory_display_name(s), "count": subcategory_counts.get(s, 0)}
+        {
+            "name": s,
+            "display": get_subcategory_display_name(s),
+            "count": subcategory_counts.get(s, 0),
+            "url": _canonical_subcategory_path(matched_category, s),
+        }
         for s in subcategories
     ]
     ctx["products"] = [
         {
             "id": p.get("id") or p.get("product_id"),
             "caption": p.get("caption") or "",
+            "title": _caption_parts(p.get("caption") or "")[0],
             "category": p.get("category") or "",
             "subcategory": p.get("subcategory") or "",
             "subcategory_display": get_subcategory_display_name(p.get("subcategory")) if p.get("subcategory") else "",
             "slug": _generate_slug(p.get("caption") or ""),
+            "url": _canonical_product_path(p.get("id") or p.get("product_id"), p.get("caption") or ""),
+            "image_url": _product_primary_image_url(p, absolute=False),
         }
         for p in products
     ]
     ctx["total"] = total
+    ctx["current_subcategory"] = ""
+    ctx["current_subcategory_display"] = ""
+    ctx["parent_category_url"] = ""
     ctx["telegram_bot_url"] = f"https://t.me/{_STOREFRONT_BOT_USERNAME}"
     ctx["storefront_domain"] = _STOREFRONT_DOMAIN
 
@@ -2091,8 +2248,8 @@ async def serve_category_page(category_name: str, request: Request):
             {
                 "@type": "ListItem",
                 "position": i + 1,
-                "url": f"{_STOREFRONT_DOMAIN}/product/{p['id']}/{p['slug']}",
-                "name": (p["caption"].split("\n")[0].strip() if p["caption"] else f"Product #{p['id']}"),
+                "url": _absolute_storefront_url(p["url"]),
+                "name": p["title"],
             }
             for i, p in enumerate(ctx["products"])
         ],
@@ -2107,6 +2264,91 @@ async def serve_category_page(category_name: str, request: Request):
     }
     ctx["seo_schema"] = json.dumps({"@context": "https://schema.org", "@graph": [item_list_schema, breadcrumb_schema]})
 
+    return templates.TemplateResponse(request, "category.html", context=ctx)
+
+
+@app.get("/category/{category_name}/{subcategory_name}", response_class=HTMLResponse)
+async def serve_subcategory_page(category_name: str, subcategory_name: str, request: Request):
+    """Serve a server-rendered subcategory page for stronger crawlable category depth."""
+    matched_category = _resolve_category_name(category_name)
+    if matched_category is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found")
+    matched_subcategory = _resolve_subcategory_name(matched_category, subcategory_name)
+    if matched_subcategory is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subcategory not found")
+
+    canonical_path = _canonical_subcategory_path(matched_category, matched_subcategory)
+    if request.url.path != canonical_path:
+        return RedirectResponse(url=canonical_path, status_code=301)
+
+    category_display = get_category_display_name(matched_category)
+    subcategory_display = get_subcategory_display_name(matched_subcategory)
+    products = await _catalog_db.get_products_by_category_and_subcategory(matched_category, matched_subcategory, limit=50)
+    total = await _catalog_db.count_products_by_category_and_subcategory(matched_category, matched_subcategory)
+    page_url = _canonical_subcategory_url(matched_category, matched_subcategory)
+
+    ctx = _build_seo_context(
+        title=f"{subcategory_display} {category_display} | Top Shelf Cali Plug",
+        desc=f"Browse {total} {subcategory_display} products in our {category_display} collection. Order via Telegram.",
+        url=page_url,
+        keywords=", ".join(filter(None, [
+            subcategory_display,
+            category_display,
+            "Top Shelf Cali Plug",
+            "Telegram store",
+        ])),
+    )
+    ctx["request"] = request
+    ctx["category_name"] = matched_category
+    ctx["category_display"] = category_display
+    ctx["subcategories"] = []
+    ctx["products"] = [
+        {
+            "id": p.get("id") or p.get("product_id"),
+            "caption": p.get("caption") or "",
+            "title": _caption_parts(p.get("caption") or "")[0],
+            "category": p.get("category") or "",
+            "subcategory": p.get("subcategory") or "",
+            "subcategory_display": subcategory_display,
+            "slug": _generate_slug(p.get("caption") or ""),
+            "url": _canonical_product_path(p.get("id") or p.get("product_id"), p.get("caption") or ""),
+            "image_url": _product_primary_image_url(p, absolute=False),
+        }
+        for p in products
+    ]
+    ctx["total"] = total
+    ctx["current_subcategory"] = matched_subcategory
+    ctx["current_subcategory_display"] = subcategory_display
+    ctx["parent_category_url"] = _canonical_category_path(matched_category)
+    ctx["telegram_bot_url"] = f"https://t.me/{_STOREFRONT_BOT_USERNAME}"
+    ctx["storefront_domain"] = _STOREFRONT_DOMAIN
+
+    item_list_schema = {
+        "@context": "https://schema.org",
+        "@type": "ItemList",
+        "name": f"{subcategory_display} {category_display}",
+        "url": page_url,
+        "numberOfItems": total,
+        "itemListElement": [
+            {
+                "@type": "ListItem",
+                "position": i + 1,
+                "url": _absolute_storefront_url(p["url"]),
+                "name": p["title"],
+            }
+            for i, p in enumerate(ctx["products"])
+        ],
+    }
+    breadcrumb_schema = {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            {"@type": "ListItem", "position": 1, "name": "Home", "item": _absolute_storefront_url("/")},
+            {"@type": "ListItem", "position": 2, "name": category_display, "item": _canonical_category_url(matched_category)},
+            {"@type": "ListItem", "position": 3, "name": subcategory_display, "item": page_url},
+        ],
+    }
+    ctx["seo_schema"] = json.dumps({"@context": "https://schema.org", "@graph": [item_list_schema, breadcrumb_schema]})
     return templates.TemplateResponse(request, "category.html", context=ctx)
 
 
@@ -2557,7 +2799,7 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
     order_link = await _catalog_db.get_order_link()
 
     storefront_url = (
-        f"{_STOREFRONT_DOMAIN}/product/{product_id}"
+        _canonical_product_url(product_id, product.get("caption") or "")
         if _STOREFRONT_DOMAIN
         else None
     )
@@ -2586,6 +2828,12 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
         media_type="application/json",
         headers={"Cache-Control": "public, max-age=30"},
     )
+
+
+@app.get("/media/products/{product_id}/{media_index}")
+async def stream_public_product_media(request: Request, product_id: int, media_index: int):
+    """Public crawlable media URL used by SSR SEO/social preview pages."""
+    return await stream_catalog_media(request, product_id, media_index)
 
 
 @app.get("/api/catalog/{product_id}/media/{media_index}")

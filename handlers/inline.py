@@ -161,12 +161,12 @@ async def _build_product_article(
                 )
 
     # --- Fallback: article with thumbnail from storefront ---
-    # Use the storefront /api/catalog URL for the thumbnail so the image loads
-    # quickly for the (up to INLINE_PAGE_SIZE) results shown.
+    # Use the public media URL so crawlers and Telegram previews do not rely on
+    # API paths that are intentionally disallowed in robots.txt.
     thumbnail_url: Optional[str] = None
     storefront_domain = Config.STOREFRONT_DOMAIN or (Config.WEBHOOK_URL or "").rstrip('/')
     if storefront_domain and file_type in ("photo", "video"):
-        thumbnail_url = f"{storefront_domain.rstrip('/')}/api/catalog/{product_id}/media/0"
+        thumbnail_url = f"{storefront_domain.rstrip('/')}/media/products/{product_id}/0"
 
     return InlineQueryResultArticle(
         id=f"product_{product_id}",
