@@ -44,7 +44,25 @@
 
     <link rel="stylesheet" href="/assets/style.css">
     <style>
-        .cat-page { max-width: 800px; margin: 0 auto; padding: 1rem; }
+        html { background: #101614; }
+        body {
+            background-color: #101614;
+            color: #f5f7f4;
+            --accent: #55b86a;
+            --text-primary: #f5f7f4;
+            --text-secondary: #b9c8bc;
+            --card-bg: rgba(18, 25, 21, .94);
+            --border: rgba(150, 190, 160, .28);
+        }
+        .cat-page {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 1rem;
+            position: relative;
+            z-index: 1;
+            min-height: 100vh;
+            background: linear-gradient(180deg, rgba(16, 22, 20, .96), rgba(16, 22, 20, .9));
+        }
         .cat-page header { margin-bottom: 1.5rem; }
         .cat-page header a { text-decoration: none; color: inherit; }
         .cat-page h1 { font-size: 1.8rem; margin: 0.5rem 0; }
@@ -53,16 +71,16 @@
         .term-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.45rem; margin: 0 0 1.5rem; }
         .term-list li { border: 1px solid var(--border, #333); border-radius: 999px; padding: 0.28rem 0.65rem; color: var(--text-secondary, #aaa); font-size: 0.84rem; }
         .subcat-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.5rem; }
-        .subcat-list li a { display: block; background: var(--card-bg, #1e1e1e); border-radius: 8px; padding: 0.4rem 0.8rem; font-size: 0.9rem; color: var(--text-primary, #fff); text-decoration: none; }
+        .subcat-list li a { display: block; background: var(--card-bg, #1e1e1e); border: 1px solid var(--border, #333); border-radius: 8px; padding: 0.4rem 0.8rem; font-size: 0.9rem; color: var(--text-primary, #fff); text-decoration: none; }
         .product-list { list-style: none; padding: 0; }
         .product-list li { border-bottom: 1px solid var(--border, #333); padding: 0.75rem 0; }
         .product-list li a { text-decoration: none; color: var(--text-primary, #fff); display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: .75rem; align-items: center; }
         .product-list li a:hover { color: var(--accent, #2481cc); }
-        .product-thumb { width: 72px; height: 72px; border-radius: 8px; object-fit: cover; background: var(--card-bg, #1e1e1e); }
+        .cat-page img.product-thumb, .product-thumb { display: block; width: 72px; height: 72px; border-radius: 8px; object-fit: cover; background: rgba(255, 255, 255, .06); border: 1px solid var(--border, #333); opacity: 1; }
         .product-thumb.placeholder { display: block; }
         .product-title { font-weight: 600; }
         .product-badge { font-size: 0.8rem; color: var(--text-secondary, #888); margin-top: 0.2rem; }
-        .cta-btn { display: inline-block; margin: 1.5rem 0; padding: 0.75rem 1.5rem; background: #2481cc; color: #fff; border-radius: 8px; text-decoration: none; font-weight: 600; }
+        .cta-btn { display: inline-block; margin: 1.5rem 0; padding: 0.75rem 1.5rem; background: #2f9e55; color: #fff; border-radius: 8px; text-decoration: none; font-weight: 600; }
         .cat-footer { margin-top: 2rem; border-top: 1px solid var(--border, #333); padding-top: 1rem; font-size: 0.9rem; }
         .cat-footer a { color: var(--accent, #2481cc); text-decoration: none; }
     </style>
@@ -105,7 +123,7 @@
                 <li>
                     <a href="{{ p.url }}">
                         {% if p.image_url %}
-                        <img class="product-thumb" src="{{ p.image_url }}" alt="{{ p.title }}" loading="lazy">
+                        <img class="product-thumb" src="{{ p.image_url }}" alt="{{ p.title }}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
                         {% else %}
                         <span class="product-thumb placeholder" aria-hidden="true"></span>
                         {% endif %}

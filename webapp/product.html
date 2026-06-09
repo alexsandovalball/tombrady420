@@ -33,23 +33,52 @@
     <link rel="manifest" href="/assets/manifest.json">
     <link rel="stylesheet" href="/assets/style.css">
     <style>
-        .seo-page { max-width: 900px; margin: 0 auto; padding: 1rem; }
+        html { background: #101614; }
+        body {
+            background-color: #101614;
+            color: #f5f7f4;
+            --accent: #55b86a;
+            --text-primary: #f5f7f4;
+            --text-secondary: #b9c8bc;
+            --card-bg: rgba(18, 25, 21, .94);
+            --border: rgba(150, 190, 160, .28);
+        }
+        .seo-page {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 1rem;
+            position: relative;
+            z-index: 1;
+            min-height: 100vh;
+            background: linear-gradient(180deg, rgba(16, 22, 20, .96), rgba(16, 22, 20, .9));
+        }
         .seo-nav { display: flex; gap: .5rem; flex-wrap: wrap; font-size: .92rem; margin-bottom: 1rem; }
         .seo-nav a { color: var(--accent, #2481cc); text-decoration: none; }
         .seo-hero { display: grid; gap: 1rem; }
-        .seo-media { width: 100%; max-height: 520px; object-fit: cover; border-radius: 8px; background: var(--card-bg, #1e1e1e); }
+        .seo-media { display: block; width: 100%; max-height: 520px; object-fit: cover; border-radius: 8px; background: var(--card-bg, #1e1e1e); border: 1px solid var(--border, #333); }
         .seo-kicker { color: var(--text-secondary, #888); margin: 0 0 .35rem; }
         .seo-title { font-size: 1.9rem; line-height: 1.15; margin: 0 0 1rem; }
         .seo-description p { margin: 0 0 .8rem; line-height: 1.55; }
         .seo-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin: 1.25rem 0; }
         .seo-btn { display: inline-block; padding: .75rem 1rem; border-radius: 8px; text-decoration: none; font-weight: 700; }
-        .seo-btn.primary { background: #2481cc; color: #fff; }
+        .seo-btn.primary { background: #2f9e55; color: #fff; }
         .seo-btn.secondary { border: 1px solid var(--border, #333); color: var(--text-primary, #fff); }
         .related-list { list-style: none; padding: 0; margin: .75rem 0 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .85rem; }
         .related-card { min-width: 0; }
-        .related-card a { display: block; color: var(--text-primary, #fff); text-decoration: none; }
-        .related-thumb { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 8px; background: var(--card-bg, #1e1e1e); border: 1px solid var(--border, #333); }
-        .related-title { display: block; margin-top: .45rem; font-size: .94rem; line-height: 1.25; }
+        .related-card a {
+            display: grid;
+            grid-template-rows: auto 1fr;
+            height: 100%;
+            padding: .5rem;
+            color: var(--text-primary, #fff);
+            text-decoration: none;
+            background: var(--card-bg, #1e1e1e);
+            border: 1px solid var(--border, #333);
+            border-radius: 8px;
+            box-shadow: 0 10px 24px rgba(0, 0, 0, .22);
+        }
+        .seo-page img.related-thumb { display: block; width: 100%; min-height: 112px; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 6px; background: rgba(255, 255, 255, .06); border: 1px solid var(--border, #333); opacity: 1; }
+        .related-title { display: block; margin-top: .55rem; font-size: .94rem; line-height: 1.25; color: var(--text-primary, #fff); }
         .related-card a:hover .related-title { color: var(--accent, #2481cc); }
     </style>
 </head>
@@ -63,7 +92,7 @@
 
         <article class="seo-hero">
             {% if product_image %}
-            <img class="seo-media" src="{{ product_image }}" alt="{{ product_title }}" loading="eager">
+            <img class="seo-media" src="{{ product_image }}" alt="{{ product_title }}" loading="eager" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
             {% endif %}
 
             <section>
@@ -94,7 +123,7 @@
                 {% for item in related_products %}
                 <li class="related-card">
                     <a href="{{ item.url }}">
-                        <img class="related-thumb" src="{{ item.image_url }}" alt="{{ item.title }}" loading="lazy">
+                        <img class="related-thumb" src="{{ item.image_url or '/og-image.png' }}" alt="{{ item.title }}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
                         <span class="related-title">{{ item.title }}</span>
                     </a>
                 </li>

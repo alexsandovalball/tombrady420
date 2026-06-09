@@ -197,6 +197,10 @@ def test_product_page_renders_crawlable_html(monkeypatch):
     assert '<link rel="canonical" href="https://example.com/product/927/blue-nerdz">' in response.text
     assert 'src="/media/products/927/0"' in response.text
     assert 'src="/media/products/928/0"' in response.text
+    assert "z-index: 1" in response.text
+    assert "related-card a" in response.text
+    assert ".seo-page img.related-thumb" in response.text
+    assert "onerror=\"this.onerror=null;this.src='/og-image.png';\"" in response.text
     assert "Blue Nerdz" in response.text
     assert "Related Item" in response.text
     fake_db.get_related_products.assert_awaited_once_with(
