@@ -44,7 +44,9 @@ _product_cache_lock = asyncio.Lock()
 # Per-user debouncing and task cancellation
 # Maps user_id -> (task, timestamp) for in-flight inline query tasks
 # ---------------------------------------------------------------------------
-_DEBOUNCE_DELAY = 0.5  # 500ms debounce
+# Keep a tiny debounce so rapid typing cancels stale work, but do not make
+# Telegram's inline picker feel delayed before search even starts.
+_DEBOUNCE_DELAY = 0.15
 _user_query_tasks: Dict[int, asyncio.Task] = {}
 _user_query_tasks_lock = asyncio.Lock()
 
@@ -200,7 +202,15 @@ async def _resolve_file_id_for_inline(
         return None
 
     current_bot = (context.bot.username or "").lower()
-    result = await MediaResolver(context.bot, db).resolve_media_for_bot(product, current_bot, 0)
+    # Inline search must answer quickly. Use rich cached media when available,
+    # but do not forward/rehydrate missing bot-specific file IDs while a user is
+    # typing; the article fallback still carries a public thumbnail URL.
+    result = await MediaResolver(context.bot, db).resolve_media_for_bot(
+        product,
+        current_bot,
+        0,
+        allow_rehydrate=False,
+    )
     if result.success:
         return result.file_id
 
@@ -450,7 +460,13 @@ async def _handle_query_search(
 
         # Default: fuzzy search
         else:
-            matched = fuzzy_search_products(products, query, score_cutoff=60, limit=None)
+            matched = fuzzy_search_products(
+                products,
+                query,
+                score_cutoff=75,
+                limit=INLINE_PAGE_SIZE,
+                include_seo_terms=False,
+            )
 
     except Exception as exc:
         logger.error("Error searching products for inline query: %s", exc)

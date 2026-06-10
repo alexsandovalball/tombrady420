@@ -52,3 +52,29 @@ class TestSearchQueryBuilder:
         from database import Database
 
         assert Database._build_fts_query("!!!") is None
+
+    def test_fuzzy_search_can_skip_seo_expansion_for_inline_mode(self):
+        from utils.fuzzy_search import fuzzy_search_products
+
+        products = [
+            {"id": 1, "caption": "Premium flower menu", "category": "FLOWER"},
+            {"id": 2, "caption": "Static hash rosin", "category": "CONCENTRATES"},
+        ]
+
+        seo_expanded = fuzzy_search_products(
+            products,
+            "za",
+            score_cutoff=75,
+            limit=5,
+            include_seo_terms=True,
+        )
+        inline_style = fuzzy_search_products(
+            products,
+            "za",
+            score_cutoff=75,
+            limit=5,
+            include_seo_terms=False,
+        )
+
+        assert [p["id"] for p in seo_expanded] == [1]
+        assert inline_style == []

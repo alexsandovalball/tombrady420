@@ -51,6 +51,7 @@ class MediaResolver:
         product: dict[str, Any],
         current_bot_username: str,
         media_index: int = 0,
+        allow_rehydrate: bool = True,
     ) -> MediaResolutionResult:
         product_id = product.get("id")
         original_bot = (product.get("bot_username") or "").lower()
@@ -110,6 +111,14 @@ class MediaResolver:
             )
         else:
             logger.info("Media resolution cache miss", extra={**log_extra, "cache_hit": False})
+
+        if not allow_rehydrate:
+            error = "cache miss; rehydrate skipped"
+            logger.info(
+                "Media resolution skipped rehydrate",
+                extra={**log_extra, "resolution_source": "cache", "reason": error, "fallback_used": True},
+            )
+            return MediaResolutionResult(False, None, "cache", error)
 
         async with _resolve_semaphore:
             resolved = await self._rehydrate_with_retry(

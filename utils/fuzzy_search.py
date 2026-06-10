@@ -73,7 +73,7 @@ def normalize_text(text: str) -> str:
     return text
 
 
-def expand_query_with_synonyms(query: str) -> List[str]:
+def expand_query_with_synonyms(query: str, include_seo_terms: bool = True) -> List[str]:
     """
     Expand query with synonyms/aliases.
 
@@ -95,15 +95,16 @@ def expand_query_with_synonyms(query: str) -> List[str]:
             if synonym_query not in variants:
                 variants.append(synonym_query)
 
-    try:
-        from utils.seo_terms import build_query_variants
-        for variant in build_query_variants(query, limit=8):
-            normalized_variant = normalize_text(variant)
-            if normalized_variant and normalized_variant not in variants:
-                variants.append(normalized_variant)
-    except Exception:
-        # Search must keep working even if the optional SEO dictionary is invalid.
-        pass
+    if include_seo_terms:
+        try:
+            from utils.seo_terms import build_query_variants
+            for variant in build_query_variants(query, limit=8):
+                normalized_variant = normalize_text(variant)
+                if normalized_variant and normalized_variant not in variants:
+                    variants.append(normalized_variant)
+        except Exception:
+            # Search must keep working even if the optional SEO dictionary is invalid.
+            pass
 
     return variants
 
@@ -112,7 +113,8 @@ def fuzzy_search_products(
     products: List[Dict[str, Any]],
     query: str,
     score_cutoff: int = 75,
-    limit: int = None
+    limit: int = None,
+    include_seo_terms: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     Perform fuzzy search on products with two-stage ranking:
@@ -131,8 +133,11 @@ def fuzzy_search_products(
     if not products or not query:
         return []
 
+    if limit is not None and limit <= 0:
+        return []
+
     # Expand query with synonyms
-    query_variants = expand_query_with_synonyms(query)
+    query_variants = expand_query_with_synonyms(query, include_seo_terms=include_seo_terms)
     primary_query = query_variants[0]
 
     # Stage 1: Exact and substring matches
@@ -161,7 +166,11 @@ def fuzzy_search_products(
 
     fuzzy_matches = []
 
-    if RAPIDFUZZ_AVAILABLE:
+    fuzzy_limit = len(remaining_products)
+    if limit is not None:
+        fuzzy_limit = max(limit - len(exact_matches), 0)
+
+    if RAPIDFUZZ_AVAILABLE and fuzzy_limit > 0:
         # Use rapidfuzz for better performance
         remaining_captions = [
             normalize_text(p[0].get("caption", "") or "")
@@ -172,14 +181,14 @@ def fuzzy_search_products(
             primary_query,
             remaining_captions,
             scorer=fuzz.partial_ratio,
-            limit=len(remaining_captions),
+            limit=fuzzy_limit,
             score_cutoff=score_cutoff
         )
 
         for caption, score, search_idx in results:
             original_product, original_idx = remaining_products[search_idx]
             fuzzy_matches.append(original_product)
-    else:
+    elif fuzzy_limit > 0:
         # Fallback to difflib
         for product, idx in remaining_products:
             caption = normalize_text(product.get("caption", "") or "")

@@ -48,6 +48,29 @@ async def test_cross_bot_resolution_does_not_use_original_file_id():
 
 
 @pytest.mark.asyncio
+async def test_cross_bot_resolution_can_skip_rehydrate_for_inline_search():
+    bot = _bot("currentbot")
+    db = MagicMock()
+    db.get_bot_file_id = AsyncMock(return_value=None)
+    db.delete_bot_file_id_cache_entry = AsyncMock()
+    rehydrate = AsyncMock(return_value="NEW_FILE_ID")
+
+    with patch("utils.media_resolver.get_bot_specific_file_id", rehydrate):
+        result = await MediaResolver(bot, db).resolve_media_for_bot(
+            _product(bot_username="originbot"),
+            "currentbot",
+            0,
+            allow_rehydrate=False,
+        )
+
+    assert result.success is False
+    assert result.file_id is None
+    assert result.source == "cache"
+    rehydrate.assert_not_awaited()
+    bot.get_file.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_cache_hit_is_validated_and_returned():
     bot = _bot("currentbot")
     db = MagicMock()
