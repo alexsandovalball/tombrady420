@@ -1,189 +1,114 @@
-# WebApp Read-Only Mirror - Implementation Summary
+# Implementation Notes
 
-## Overview
-Converted the WebApp into a fully functional read-only mirror of the Telegram bot with complete language translation and notification management capabilities.
+This file summarizes the current backend/WebApp design without the historical
+debug notes.
 
-## Features Implemented
+## Backend
 
-### 1. API Authentication & Preview Mode
-- **Modified**: `webhook_server.py` - `_get_validated_init_data()`
-- Added `allow_preview` parameter to enable API access without strict Telegram authentication
-- Allows testing and development without full Telegram integration
-- API endpoints `/api/categories` and `/api/products` now work in preview mode
+`webhook_server.py` owns production startup:
 
-### 2. Multi-Language Translation System
-- **Added**: Complete translation framework in `webapp/app.js`
-- **Supported Languages**: English (US/UK), German, Spanish, French, Italian, Dutch
-- **Implementation**:
-  - Translation object with 6 complete language sets
-  - `t(key)` function for dynamic translation lookup
-  - `applyTranslations()` function updates entire UI
-  - `data-i18n` attributes on HTML elements for auto-translation
-  - Language persists during session
+- initializes SQLite
+- starts every Telegram bot Application
+- resolves each bot's registry UUID and webhook secret
+- registers Telegram webhooks
+- serves bot webhooks, WebApp APIs, media, SEO pages, and admin dashboard APIs
 
-### 3. User Notification Toggle
-- **Added**: Backend API endpoints for subscription management
-  - `GET /api/user/subscription?user_id={id}` - Get subscription status
-  - `POST /api/user/subscription` - Update subscription status
-- **Frontend**: Functional toggle button that syncs with backend
-- **Database**: Uses existing `users` table with `is_subscribed` column
-- **Security**: Requires valid Telegram initData authentication
+`main.py` owns polling mode and shared Telegram command setup.
 
-### 4. Improved Error Handling
-- Better error messages with detailed API response status
-- Graceful fallback when APIs are unavailable
-- Clear user feedback for all operations
+`database.py` owns schema creation, migrations, product/user/settings queries,
+notification queues, bot registry identity, media registry, WebApp event storage,
+and product-search FTS maintenance.
 
-### 5. Database Fixes
-- **Fixed**: `get_all_products_excluding_categories()` method signature
-- Added `limit` and `offset` parameters for proper pagination
-- Ensures consistent API across all product query methods
+## WebApp APIs
 
-## API Endpoints
+Public/preview-readable catalog routes:
 
-### Read-Only Catalog Endpoints (Allow Preview)
-```
+```text
 GET /api/categories
-- Returns: List of all categories with product counts
-- Auth: Optional (works in preview mode)
-
-GET /api/products?category={cat}&subcategory={sub}&limit={n}&offset={o}
-- Returns: Filtered product list with pagination
-- Auth: Optional (works in preview mode)
+GET /api/products
+GET /api/products/{product_id}
+GET /api/search
+GET /api/catalog/{product_id}/media/{media_index}
+GET /media/products/{product_id}/{media_index}
 ```
 
-### User Management Endpoints (Require Auth)
-```
-GET /api/user/subscription?user_id={id}
-- Returns: User subscription status
-- Auth: Required (valid Telegram initData)
+Authenticated user routes:
 
+```text
+POST /api/webapp-session
+GET  /api/user/subscription
 POST /api/user/subscription
-- Body: { "user_id": int, "is_subscribed": bool }
-- Returns: Updated subscription status
-- Auth: Required (valid Telegram initData)
+GET  /api/user/info
+POST /api/user/track
+POST /api/webapp-logs
 ```
 
-## Translation Keys
+Telegram `initData` is verified for user-specific writes. Preview mode is allowed
+for read-only catalog and logging paths so open-web product/category pages work.
 
-All UI elements support translation via `data-i18n` attributes:
+## Frontend
 
-```javascript
-- welcome_title: '👋 Welcome to Tom Brady Menu!'
-- welcome_subtitle: 'Browse our complete product catalog'
-- btn_view_catalog: 'View Catalog'
-- btn_search: 'Search Products'
-- btn_language: 'Change Language'
-- btn_notifications: 'Toggle Notifications'
-- language_title: '🌐 Select Language'
-- status_ready: 'Ready'
-- status_connected: 'Connected'
-- status_preview: 'Preview mode'
-- categories_title: 'Categories'
-- products_title: 'Products'
-- all_products: 'All Products'
-- order_contact_prefix: 'To place an order, contact:'
-- notifications_on: 'Notifications ON'
-- notifications_off: 'Notifications OFF'
+`webapp/app.js` drives:
+
+- Telegram WebApp user detection
+- category/subcategory browsing
+- direct product deep links
+- product media gallery
+- video preview frame cache
+- session-token based API calls
+- multilingual UI strings
+- WebApp event logging
+
+Category card previews prefer lightweight previews. Full video streams should be
+touched only when a product is opened or the user plays media.
+
+## Media
+
+The media path is:
+
+1. product stores source `file_id`, type, source chat/message, and album metadata
+2. resolver validates whether the current bot can use the cached file ID
+3. cross-bot cache misses are rehydrated from source channel messages
+4. WebApp streams media through FastAPI with Range support
+5. temp and persistent cache cleanup removes old/idle/oversized entries
+
+Persistent video cache is recommended on Render when disk is available. A
+700 MB cap is a practical balance for a 1 GB disk with `/data/catalog.db`.
+
+## Inline Mode
+
+`handlers/inline.py` returns at most 10 closest products. It uses strict
+catalog-focused fuzzy search rather than broad SEO expansion. Cached media
+results include both preview media and text content so the inline picker does
+not split into "media without caption" versus "caption without media" behavior.
+
+## SEO
+
+The open-web routes render product/category HTML, metadata, related products,
+media thumbnails, canonical links, sitemap, robots, favicon, and Open Graph
+assets. Deleted or missing product URLs should fall back to the product category
+when possible, otherwise to the home page.
+
+SEO search-term expansion lives in:
+
+```text
+configs/seo_terms.json
+utils/seo_terms.py
+handlers/admin.py   (/seostatus, /seoimport, /seoapprove)
 ```
 
-## User Flow
+Do not create pages full of disconnected keyword stuffing. Keep search terms
+mapped to real categories/products and expose them through useful category,
+learn, or product pages.
 
-1. **Welcome Screen**
-   - Shows translated welcome message
-   - Displays order contact info
-   - 4 action buttons: View Catalog, Search, Language, Notifications
+## Production Checks
 
-2. **Language Selection**
-   - Grid of 7 language options with flags
-   - Selected language highlighted with checkmark
-   - Instantly translates entire UI on selection
+After deploy, verify:
 
-3. **Notification Toggle**
-   - One-click toggle between ON/OFF
-   - Syncs with backend API
-   - Shows current status in user info bar
-
-4. **Category Browsing**
-   - Displays all categories with product counts
-   - Supports subcategories
-   - "All Products" option available
-
-5. **Product Viewing**
-   - Paginated product lists
-   - Product detail modal with full media gallery
-   - Direct link to order contact
-
-## Files Modified
-
-```
-webhook_server.py:
-- Added preview mode authentication
-- Added user subscription API endpoints  
-- Added aiosqlite import
-- Modified _get_primary_bot() to be optional
-
-database.py:
-- Fixed get_all_products_excluding_categories() signature
-- Added limit/offset parameters
-
-webapp/index.html:
-- Restored language selector button
-- Restored notification toggle button
-- Added data-i18n attributes to elements
-- Added notification status display
-
-webapp/app.js:
-- Added complete translation framework (200+ lines)
-- Implemented language switching functionality
-- Implemented notification toggle with API
-- Added user session tracking
-- Improved error handling throughout
-```
-
-## Testing
-
-Tested successfully:
-- ✓ API categories endpoint (returns 9 categories)
-- ✓ API products endpoint (returns 17 products)
-- ✓ Category filtering (FLOWER, CONCENTRATES, etc.)
-- ✓ Subcategory filtering
-- ✓ Pagination support
-- ✓ Order contact retrieval
-- ✓ Translation framework (6 languages)
-- ✓ Database queries
-
-## Next Steps for Deployment
-
-1. Set environment variables in production:
-   ```
-   BOT_TOKEN=<your_actual_bot_token>
-   CHANNEL_ID=<your_channel_id>
-   ADMIN_IDS=<admin_user_ids>
-   ORDER_CONTACT=<order_contact>
-   DB_PATH=<path_to_database>
-   ```
-
-2. Ensure database has all required tables:
-   - products
-   - bot_settings
-   - users
-   - bot_file_id_cache
-
-3. Access WebApp via Telegram:
-   - Open from Telegram mini app
-   - Full authentication and features available
-   - Translations based on user's Telegram language
-   - Notifications sync with user preferences
-
-4. Preview mode (development):
-   - Access directly via browser
-   - Limited to read-only catalog browsing
-   - No user-specific features (notifications won't work)
-
-## Security Notes
-
-- User data endpoints require valid Telegram initData
-- initData verified using HMAC-SHA256 per Telegram specs
-- Preview mode only allows read-only catalog access
-- User modifications require authentication
+- active bot count matches intended tokens
+- webhook URLs are UUID paths, not numeric paths
+- stale `/webhook/9` deliveries return 200 with `[WEBHOOK_ORPHAN_DRAINED]`
+- `/health` returns OK
+- `/admin/api/overview` requires the admin dashboard token
+- direct product WebApp links open the expected product
+- inline mode returns 10 closest matches with previews and text

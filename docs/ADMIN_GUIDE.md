@@ -1,438 +1,134 @@
-# Admin Guide - Telegram Catalog Bot
-
-## Overview
-This guide explains how to use the admin features of the bot.
-
-## Accessing Admin Commands
-
-Admin commands are automatically displayed in your Telegram command menu. The bot sets up personalized command lists:
-- **User commands** - Visible to all users (start, menu)
-- **Admin commands** - Additional commands visible only to admins
-
-The command menu appears below the text input bar. Tap the menu icon (☰) or type `/` to see available commands.
-
-**Note:** Some commands like `/language`, `/subscribe`, `/unsubscribe`, `/block`, and `/unblock` are not shown in the command menu but are still available by typing them directly.
-
-## Admin Commands
-
-### `/start`
-Welcome message - available to all users
-
-### `/menu`
-Browse products by category - available to all users
-- Shows category selection menu
-- Each category displays product count
-- Click category to view filtered products
-
-### `/users`
-View and manage bot users grouped by bot instance (admin only)
-- **Multi-bot setups**: Shows bot selection menu, choose which bot's users to manage
-- **Single-bot setups**: Automatically shows users (no selection needed)
-- Displays: username, full name, ID, interaction count, last seen, notification status
-- **Toggle notifications** for individual users with one click
-- **Block/unblock users** to prevent/allow bot access
-- Navigate pages with ⬅️ Previous / ➡️ Next buttons
-- Useful for monitoring bot engagement and controlling who gets notifications
-
-### `/botusers`
-View users grouped by bot instance (admin only)
-- Shows users organized by which bot instance they interacted with
-- Active bots marked with ✅
-- Inactive/deleted bots marked with ⚠️ (users should be pruned)
-- **Individual user management**:
-  - Delete individual users with confirmation
-  - View user details (ID, username, name, notification status, block status)
-- **Bulk operations**:
-  - Delete all users from a specific bot instance
-- **Pagination**: 10 users per page
-- **Use case**: Clean up users from old/deleted bot instances
-
-### `/prunebots`
-Prune users from inactive/deleted bots (admin only)
-- **Preview mode** (default): Shows what would be deleted without actually deleting
-- **Execute mode**: Use confirmation button to actually delete
-- Automatically removes:
-  - Users from inactive bot instances
-  - Products posted by inactive bots
-  - Pending notifications for those users
-  - Queued custom messages
-- **Safety**: Preserves all data from active bots
-- **Use case**: Run after replacing or removing bot tokens
-
-### `/reinitbots`
-Reinitialise all bot Application instances at runtime (admin only).
-Use this whenever a Telegram bot token is replaced, rotated, or a bot is deleted and
-recreated — without needing to redeploy the service.
-
-**Subcommands:**
-
-| Subcommand | Effect |
-|---|---|
-| `/reinitbots` | Show usage instructions |
-| `/reinitbots dryrun` | Display expected webhook secret prefix (first 8 chars) for each bot index and the previous prefix (if a reinit has occurred this session). **No changes made.** |
-| `/reinitbots confirm` | Stop all running bot instances, recreate them from `BOT_TOKENS`, and re-register webhooks. Runs in the background. |
-
-**No new environment variables are required.** The command uses the existing
-`ADMIN_IDS` (`is_admin`) check — only users listed in `ADMIN_IDS` can run it.
-
-**Operator rollout checklist (after replacing a bot token):**
-1. Update `BOT_TOKEN` / `BOT_TOKEN_N` (or `BOT_TOKENS`) in your hosting environment.
-2. From a Telegram account listed in `ADMIN_IDS`, send `/reinitbots confirm`.
-3. Check service logs for `"Webhook set for bot N"` lines and the new secret-token prefix.
-4. Run `/reinitbots dryrun` to confirm the expected prefix matches what Telegram will send.
-5. Optionally: revoke the old token only after verifying the new one works end-to-end.
-
-**Rollback:** Either restart the service with the previous config (the webhook secret is
-deterministic from the token, so the old token's secret is automatically restored), or run
-`/reinitbots confirm` again after restoring the original token.
-
-**Security note:** The previous webhook secret is kept in-memory only and exists solely to
-avoid transient 401 errors during the brief overlap window after a reinitialisation.  It is
-not persisted to disk or database, and is lost on restart — this is intentional and safe.
-
-
-Delete ALL products from catalog (admin only)
-- **Double confirmation required!**
-- First confirmation: "Are you sure?"
-- Second confirmation: "Are you ABSOLUTELY SURE?"
-- **Channel messages remain intact** - admins must manually clear channel if needed
-- Use with extreme caution!
-
-### `/recategorize`
-Send categorization notifications for products needing (re)categorization (admin only)
-- Scans for products without categories OR with categories but missing subcategories
-- When a category has subcategories defined, products in that category MUST have a subcategory
-- Sends up to 10 categorization requests per command
-- Run multiple times to process all products needing categorization
-- Useful after saving products with "Save without subcategory" option
-
-### `/send`
-Send a message to a specific user (admin only) - **Interactive Workflow**
-
-**New 3-Step Process:**
-1. **Start Command**: Type `/send`
-2. **Enter User ID**: Bot asks for user ID, you reply with the ID
-3. **Enter Message**: Bot asks for message, you type your message
-4. **Confirm & Send**: Bot shows confirmation with buttons - click "Confirm & Send" to complete
-
-**Features:**
-- Validates user exists and is not blocked
-- Shows clear confirmation before sending
-- Can cancel at any step
-- Rate limited to prevent spam
-
-### `/broadcast`
-Send a message to all users (admin only) - **Interactive Workflow**
-
-**New 2-Step Process:**
-1. **Start Command**: Type `/broadcast`
-2. **Enter Message**: Bot asks for message, you type your broadcast
-3. **Confirm & Send**: Bot shows confirmation with user count - click "Confirm & Broadcast" to complete
-
-**Features:**
-- Shows how many users will receive the message
-- Automatically excludes blocked users and admins
-- Rate limiting applies per user
-- Can cancel before sending
-- Messages are queued and delivered with delays
-
-### `/block` and `/unblock`
-Block/unblock users from using the bot (admin only)
-
-**Note:** These commands are not shown in the command menu but are still available.
-
-**Usage:**
-- `/block <user_id>` - Block a user (e.g., `/block 123456789`)
-- `/unblock <user_id>` - Unblock a user (e.g., `/unblock 123456789`)
-- Use `/users` to find user IDs
-
-### `/clearcache`
-Clear the bot-specific file ID cache (admin only)
-- Clears all cached bot-specific media file IDs from persistent database
-- **New in latest version**: Cache is now persistent across bot restarts
-- Shows count of cleared entries
-- Useful when:
-  - Adding new secondary bot instances
-  - Media stops displaying correctly
-  - After configuration changes
-  - Testing media file resolution
-- **Multi-bot setup**: Each bot automatically caches its own file IDs when viewing products
-- After clearing cache, media will be automatically re-cached on next product view
-- **Important**: Admins should `/start` each secondary bot to enable proper file ID caching via message forwarding
-
-### `/setcontact`
-Set the order contact username (admin only)
-- Interactive workflow asks for new contact username
-- Must start with `@` (e.g., `@username`)
-- This contact appears in product views for users to place orders
-
-## New Product Workflows
-
-### Automatic Product Detection from Channel
-
-When a new product is posted to the monitored channel:
-
-1. **Bot detects the post**
-   - Single media OR media album (multiple photos/videos)
-   - Caption is extracted
-
-2. **Product is saved to database**
-   - Status: UNCATEGORIZED
-
-3. **Admin receives notification**
-   - Message with product caption preview
-   - Product ID displayed
-   - Category selection buttons shown
-
-4. **Admin selects category**
-   - Click on category button (e.g., 🛒 Cartridges)
-
-5. **If category has subcategories**
-   - Subcategory selection menu appears
-   - Choose appropriate subcategory OR
-   - Select "Save without subcategory"
-
-6. **Product is categorized**
-   - Confirmation message shown
-   - Product now appears in category filter
-   - **All subscribed users are notified automatically**
-
-## User Notification Management
-
-### Viewing Users
-
-Use `/users` command to see all bot users:
-- **Paginated view**: 10 users per page
-- **User details**: Username, full name, ID, interactions, last seen
-- **Notification status**: 🔔 ON or 🔕 OFF for each user
-
-### Toggling Notifications
-
-Each user has a toggle button in the `/users` interface:
-- **Click button** to toggle notifications for that user
-- **Immediate effect**: Changes apply instantly
-- **Visual feedback**: Button updates to show new status
-- **Use cases**:
-  - Disable notifications for inactive users
-  - Prevent notifications to specific users
-  - Re-enable for users who want to subscribe again
-
-### Best Practices
-
-**Selective Notifications:**
-- Review user list regularly
-- Disable notifications for users who don't interact
-- Enable only for engaged/premium users if desired
-
-**Spam Prevention:**
-- System automatically limits to 5 notifications per user per hour
-- Disable problem users manually via `/users`
-- Users who block the bot are auto-unsubscribed
-
-**User Privacy:**
-- Users can self-manage via `/subscribe` and `/unsubscribe`
-- Admin toggles override user preferences
-- Use responsibly to maintain user trust
-
-## Categories & Subcategories
-
-### 🛒 Cartridges
-- AUTHENTICS
-- REPLICAS
-
-### 🍫 Edibles
-- FLOWER EDIBLES
-- SHROOM EDIBLES
-
-### 💎 Concentrates
-- SOLVENTLESS
-- LIVE RESIN AND EXTRACTS
-- OILS AND ISOLATES
-- HASH AND KIEF
-- OTHERS
-
-### 🚬 Pre-Rolls
-- FLOWER PREROLLS
-- INFUSED FLOWER PREROLLS
-
-### 🍄 Shrooms
-_(No subcategories)_
-
-### 🌸 Flower
-- TOPSHELFCANDY
-- PREMIUMEXOTICS
-- EXOTICS
-- PREMIUMLIGHTDEPS
-- LIGHTDEPS
-- LIGHTASSIST
-- LOWS
-- MOONROCKS AND SNOWCAPS
-
-### 📅 Dated Proofs
-_(No subcategories)_
-
-### ✈️ Client Touchdowns
-_(No subcategories)_
-
-### 📢 Announcements
-_(No subcategories)_
-
-> **Note:** Products in ANNOUNCEMENTS, DATEDPROOFS, and CLIENTTOUCHDOWNS categories are **excluded from the "All Products" view** and can only be accessed by browsing their specific category.
-> 
-> **Important:** All categories **WILL trigger notifications** to subscribed users.
-
-
-## Tips for Admins
-
-### Categorizing Products
-- **Respond quickly** - Users expect products to be browsable soon after posting
-- **Be consistent** - Use the same subcategory for similar products
-- **Don't skip** - All products should be categorized for best user experience
-
-### Media Albums
-- Albums (multiple photos/videos) are stored as ONE product
-- The caption from the first message is used
-- All photos/videos are shown when users view the product
-
-### Managing Users
-- Check `/users` periodically to see engagement
-- High interaction count = active user
-- Last seen shows recent activity
-
-### Safety
-- **Never use `/nuke` unless absolutely necessary**
-- The double confirmation exists for a reason
-- Consider backing up catalog.db before nuking
-- **Deleted products leave channel messages intact** - you can manually clear channel messages if desired
-
-### Products Needing Categorization
-- Use `/recategorize` to find products that need categorization or re-categorization
-- Includes products without categories AND products missing required subcategories
-- Check regularly to ensure complete catalog
-- Process in batches of 10 to avoid notification spam
-- If you saved a product with "Save without subcategory", use `/recategorize` to add the subcategory later
-
-## Troubleshooting
-
-### Product not showing in category
-- Verify product was categorized (check notification history)
-- Try `/recategorize` to send new categorization request
-- Check if product was accidentally deleted
-
-### Too many notifications
-- This is normal when backlog exists
-- Use `/recategorize` to control flow (10 at a time)
-- Categorize promptly to avoid backlog
-
-### Users not tracked
-- User tracking is automatic
-- Users must send a message or use /start
-- Just browsing catalog via buttons doesn't trigger tracking
-
-### Media album showing as single photo
-- Check if all photos arrived at same time
-- Bot waits 1.5 seconds to collect album
-- If photos sent separately, they're separate products
-
-## Environment Setup
-
-Admin IDs are configured in `.env` file:
-```
-ADMIN_IDS=123456789,987654321
+# Admin Guide
+
+This is the compact operator guide for the Bradycadia Telegram catalog.
+
+## Admin Access
+
+Admins are Telegram user IDs listed in `ADMIN_IDS`. Admin commands are installed
+into each admin's private command menu at startup. Some hidden commands still
+work when typed directly.
+
+## Daily Commands
+
+```text
+/adminstatus      View runtime bot, WebApp, cache, webhook, and latency status
+/seostatus        View SEO search-term and mapping status
+/users            View/manage users by bot instance
+/botusers         Inspect users grouped by bot instance
+/send             Send one user a direct message
+/broadcast        Broadcast a custom message to users
+/setcontact       Set order contact handle
+/setlink          Set order/contact URL
+/recategorize     Re-send category prompts for uncategorized products
+/clearcache       Clear bot-specific file_id cache
+/prunebots        Preview/remove users/products from inactive bot instances
+/reinitbots       Recreate bot Application instances and webhooks
+/list_broadcasts List group/channel broadcast destinations
+/nuke             Delete all products with confirmation
 ```
 
-- **ADMIN_IDS**: Comma-separated list of admin user IDs who can use admin commands
-- Get your ID from @userinfobot on Telegram
-- All listed IDs in ADMIN_IDS have full admin privileges
+Hidden but supported:
 
-## Translation System
+```text
+/block <user_id>
+/unblock <user_id>
+/subscribe
+/unsubscribe
+```
 
-The bot supports 7 languages with automatic translation. Key features:
+## Product Workflow
 
-### User Names and Contact Information
-- **User names are never translated** - they appear exactly as in Telegram profiles
-- **Order contact usernames remain unchanged** - e.g., @yourusername stays the same in all languages
-- This prevents confusion and maintains proper communication channels
+1. Post product media and caption in the monitored channel.
+2. The primary bot saves the product and album media.
+3. Admin receives a category/subcategory prompt.
+4. Once categorized, subscribed users are queued for notification.
+5. Product appears in bot menus, inline mode, WebApp, and SEO pages.
 
-### How It Works
-1. Message templates are translated with placeholders intact (e.g., "Welcome, {name}!")
-2. User data is inserted after translation, preserving original values
-3. Example: Spanish translation becomes "Bienvenido, {name}!" then displays as "Bienvenido, Hans!"
-4. Translations are cached for performance
+Product IDs are stable and are not reused after deletion.
 
-### Setting Order Contact
-Use `/setcontact` to update the order contact username (default: @yourusername). This contact appears in welcome messages and product views across all languages.
+## User Management
 
-## Multi-Bot Setup and Analytics
+Use `/users` for normal user work:
 
-### Using Multiple Bot Instances
+- view user ID, username, name, last seen, interaction count
+- toggle notification subscription
+- block or unblock a user
+- page through users per bot instance
 
-The bot supports running multiple bot instances (primary + secondary bots) for:
-- **Load distribution** across different bot accounts
-- **Testing** new features on a secondary bot
-- **Regional deployment** with separate bots per region
-- **Analytics** to track which bot users prefer
+Use `/botusers` and `/prunebots` after token removals or bot replacement. Always
+run the preview first, then confirm only when the active bot list looks correct.
 
-### Bot Username Tracking
+Blocked users should be rejected in bot handlers and authenticated WebApp routes.
+If a user has already opened a public SEO page, their browser can still request
+public static/open-web routes unless you also know and block their IP.
 
-When using multiple bot instances, the bot automatically tracks which bot posted each product:
-- **Products remember their source bot** - stored in database with `bot_username` field
-- **Automatic file ID resolution** - when viewing from a different bot, file IDs are automatically converted
-- **Persistent cache** - bot-specific file IDs are cached in the database (survives restarts)
-- **First bot a user interacts with is recorded** in user tracking
+## Cache Operations
 
-The `/users` command shows which bot each user interacted with:
-- **🤖 Bot: @botusername** - Displayed in user details
-- Helps understand user distribution across bot instances
-- Useful for analyzing which bot is more popular
+`/clearcache` deletes persistent bot-specific Telegram `file_id` mappings.
 
-### Setting Up Secondary Bots
+Use it only when:
 
-**Configuration:**
-1. Add multiple bot tokens to `.env`:
-   ```
-   BOT_TOKEN=primary_bot_token
-   BOT_TOKEN_1=secondary_bot_token_1
-   BOT_TOKEN_2=secondary_bot_token_2
-   ```
-2. Each bot gets its own webhook endpoint: `/webhook`, `/webhook/1`, `/webhook/2`
+- media previews fail after token or bot changes
+- a bot was newly added and old mappings are invalid
+- an admin is deliberately repairing media resolution
 
-**Important for Media Display:**
-- Telegram file IDs are **bot-specific** (a file ID from Bot A won't work with Bot B)
-- **New products automatically save the posting bot's username**
-- When viewing products from a different bot, file IDs are **automatically converted**
-- **Admins must `/start` each secondary bot** to enable file ID caching via message forwarding
-- Conversion happens transparently - users won't notice any difference
-- File ID cache is **persistent** in database and survives bot restarts
+Avoid routine use. Clearing it forces bots to rehydrate file IDs through Telegram
+message forwarding, which makes the next media views slower.
 
-**After Adding a Secondary Bot:**
-1. Send `/start` to the new bot from your admin account (required for file ID forwarding)
-2. Add the bot as admin to your channel (if posting new products)
-3. Test by viewing products through the secondary bot
-4. Use `/clearcache` if you experience any media display issues
+Temporary WebApp media files and persistent disk media cache clean themselves.
+Old cache entries are removed by age, idle time, and size pressure.
 
-### Troubleshooting Multi-Bot Issues
+## Webhook Operations
 
-**Media not displaying on secondary bot:**
-- **Most common cause**: Admin hasn't `/start`ed the secondary bot yet
-- **Solution**: Send `/start` to the secondary bot from your admin account
-- Check logs for "bot can't initiate conversation" errors
-- Use `/clearcache` to force re-caching of file IDs if needed
+Normal startup registers each bot at:
 
-**File ID Resolution Process:**
-1. User views product through Bot B (product was posted by Bot A)
-2. Bot B detects file ID is from Bot A (checks `bot_username` in database)
-3. Bot B checks its persistent cache for a cached file ID
-4. If not cached, Bot B forwards the original message to admin to get Bot B's file ID
-5. Bot B caches the new file ID in database for future use
-6. Bot B displays the media using its own file ID
+```text
+/webhook/<registry_uuid>
+```
 
-**Cache warnings on startup:**
-- Warning: "File ID cache is empty"
-- This is normal on first startup with multiple bots
-- Follow the guidance to `/start` each bot
+If logs show `/webhook/9` with `[WEBHOOK_ORPHAN_DRAINED]`, Telegram is retrying
+an old removed bot's webhook. If you still know that old bot token, run:
 
-**Analytics not showing bot username:**
-- Bot username is recorded on first interaction
-- Only shows for users who interacted after this feature was added
-- Existing users will show bot username on their next interaction
+```text
+https://api.telegram.org/bot<OLD_TOKEN>/deleteWebhook?drop_pending_updates=true
+```
+
+If the old token is gone, leave the 200 drain behavior in place.
+
+Use `/reinitbots confirm` after changing tokens without redeploying. Use
+`/reinitbots dryrun` to inspect expected webhook fingerprints.
+
+## Admin Dashboard
+
+Set:
+
+```text
+ADMIN_DASHBOARD_TOKEN=long-random-private-token
+```
+
+Open:
+
+```text
+https://your-domain.com/admin
+```
+
+Enter the token. The dashboard API is protected; the page shell alone contains
+no private data.
+
+## Database Maintenance
+
+Render production database path should be:
+
+```text
+/data/catalog.db
+```
+
+Useful checks:
+
+```powershell
+python scripts/sqlite_doctor.py /data/catalog.db
+python scripts/sqlite_doctor.py /data/catalog.db --rebuild-product-search
+```
+
+Routine deletes do not need `VACUUM`. SQLite WAL mode reuses free pages. Run
+manual maintenance only during quiet periods.
