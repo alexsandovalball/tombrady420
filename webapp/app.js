@@ -16,6 +16,7 @@
         VIDEO_BOUNDS_BUFFER: 0.1,  // Buffer to stay within video bounds
         VIDEO_SHORT_DURATION_THRESHOLD: 0.5,  // Videos shorter than this use proportional seek
         VIDEO_LOAD_TIMEOUT_MS: 10000,  // Timeout before showing tap-to-play for slow videos
+        VIDEO_PREVIEW_FALLBACK_MS: 3000,  // Desktop browsers may need longer to seek a poster frame
         USER_DATA_CHECK_INTERVALS: [300, 700, 1500],  // Retry intervals in ms for user data loading
         SEARCH_DEBOUNCE_MS: 300,  // Debounce time for search input
         WEBAPP_CLOSE_DELAY_MS: 1500,  // Delay before closing webapp after successful product send
@@ -2033,6 +2034,13 @@
         return img;
     }
 
+    function createVideoPreviewPlaceholder() {
+        const placeholder = document.createElement('div');
+        placeholder.className = 'video-preview-placeholder video-preview loaded';
+        placeholder.textContent = '▶';
+        return placeholder;
+    }
+
     function videoPreviewCacheKey(productId, mediaIndex) {
         return `${productId}:${mediaIndex}`;
     }
@@ -2056,18 +2064,25 @@
         vid.muted = true;
         vid.playsInline = true;
         vid.setAttribute('playsinline', '');
-        vid.preload = 'metadata';
+        vid.preload = 'auto';
         vid.className = 'video-preview';
 
         let previewLoaded = false;
         let frameCaptured = false;
+        let previewFinalized = false;
         const markLoaded = () => {
             if (previewLoaded) return;
             previewLoaded = true;
             vid.classList.add('loaded');
         };
+        const replaceVideoPreview = (replacement) => {
+            previewFinalized = true;
+            if (vid.parentNode) {
+                vid.parentNode.replaceChild(replacement, vid);
+            }
+        };
         const capturePreviewFrame = () => {
-            if (frameCaptured || !fallbackContainer || !vid.videoWidth || !vid.videoHeight) {
+            if (frameCaptured || previewFinalized || !fallbackContainer || !vid.videoWidth || !vid.videoHeight) {
                 markLoaded();
                 return;
             }
@@ -2082,13 +2097,15 @@
                 rememberVideoPreviewFrame(cacheKey, previewSrc);
                 const img = createPreviewImage(previewSrc);
 
-                if (vid.parentNode) {
-                    vid.parentNode.replaceChild(img, vid);
-                }
                 frameCaptured = true;
+                replaceVideoPreview(img);
             } catch (err) {
                 markLoaded();
             }
+        };
+        const showPlaceholder = () => {
+            if (frameCaptured || previewFinalized) return;
+            replaceVideoPreview(createVideoPreviewPlaceholder());
         };
 
         vid.addEventListener('loadedmetadata', () => {
@@ -2105,13 +2122,22 @@
                 markLoaded();
             }
         });
-        vid.onerror = () => {
-            if (fallbackContainer) {
-                fallbackContainer.classList.add('placeholder');
-                fallbackContainer.textContent = '🎬';
+        vid.addEventListener('canplay', () => {
+            if (!frameCaptured && vid.currentTime > 0.05) {
+                capturePreviewFrame();
             }
+        }, { once: true });
+        vid.onerror = () => {
+            showPlaceholder();
         };
-        setTimeout(markLoaded, 1200);
+        setTimeout(() => {
+            if (!frameCaptured && vid.readyState >= 2) {
+                capturePreviewFrame();
+            }
+            if (!frameCaptured) {
+                showPlaceholder();
+            }
+        }, CONFIG.VIDEO_PREVIEW_FALLBACK_MS);
 
         return vid;
     }

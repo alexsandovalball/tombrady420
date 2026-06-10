@@ -62,6 +62,10 @@ Blocked users should be rejected in bot handlers and authenticated WebApp routes
 If a user has already opened a public SEO page, their browser can still request
 public static/open-web routes unless you also know and block their IP.
 
+Broadcast destinations that become unreachable are tracked per bot. A successful
+product notification resets the counter; two consecutive failed product
+notification attempts automatically disable that group/channel.
+
 ## Cache Operations
 
 `/clearcache` deletes persistent bot-specific Telegram `file_id` mappings.

@@ -153,7 +153,6 @@ async def _build_product_article(
                     description=description,
                     caption=caption_text,
                     parse_mode="Markdown",
-                    input_message_content=message_content,
                     show_caption_above_media=True,
                     reply_markup=reply_markup,
                 )
@@ -165,7 +164,6 @@ async def _build_product_article(
                     description=description,
                     caption=caption_text,
                     parse_mode="Markdown",
-                    input_message_content=message_content,
                     show_caption_above_media=True,
                     reply_markup=reply_markup,
                 )
@@ -580,30 +578,25 @@ async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFA
 
         if file_id and file_type in ("photo", "video"):
             try:
-                # If the product was indexed by a different bot instance, attempt
-                # to resolve a file_id that is valid for the current bot.
-                product_bot = product.get("bot_username")
                 current_bot_username = bot_username or context.bot.username
-                if product_bot and current_bot_username and product_bot.lower() != current_bot_username.lower():
+                resolved = await MediaResolver(context.bot, db).resolve_media_for_bot(
+                    product,
+                    current_bot_username or "",
+                    0,
+                )
+                if resolved.success and resolved.file_id:
+                    file_id = resolved.file_id
                     logger.debug(
-                        "Product %s indexed by different bot (%s), resolving for %s",
-                        product_id, product_bot, current_bot_username,
+                        "Resolved chosen inline media for product %s using %s",
+                        product_id,
+                        resolved.source,
                     )
-                    bot_specific_id = await get_bot_specific_file_id(
-                        context,
-                        product.get("chat_id"),
-                        product.get("message_id"),
-                        file_type,
-                        file_index=0,
+                else:
+                    logger.warning(
+                        "Chosen inline media resolution failed for product %s: %s",
+                        product_id,
+                        resolved.error,
                     )
-                    if bot_specific_id:
-                        file_id = bot_specific_id
-                        logger.debug("Resolved bot-specific file_id for product %s", product_id)
-                    else:
-                        logger.warning(
-                            "Failed to resolve bot-specific file_id for product %s - will attempt with original file_id",
-                            product_id,
-                        )
 
                 # Validate file_id before attempting send.
                 if not file_id:

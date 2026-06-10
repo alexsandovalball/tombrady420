@@ -351,6 +351,9 @@ class Database:
                     chat_type TEXT NOT NULL,
                     title TEXT,
                     enabled INTEGER NOT NULL DEFAULT 0,
+                    delivery_failure_count INTEGER NOT NULL DEFAULT 0,
+                    last_delivery_failure TIMESTAMP,
+                    last_delivery_error TEXT,
                     added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     added_by_user_id INTEGER,
@@ -497,6 +500,9 @@ class Database:
                 ("bot_instances", "identity_hash", "TEXT", True),
                 ("bot_instances", "webhook_secret", "TEXT", True),
                 ("bot_instances", "telegram_username", "TEXT", True),
+                ("broadcast_chats", "delivery_failure_count", "INTEGER NOT NULL DEFAULT 0", True),
+                ("broadcast_chats", "last_delivery_failure", "TIMESTAMP", True),
+                ("broadcast_chats", "last_delivery_error", "TEXT", True),
             ]
 
             for table, column, definition, log_on_add in migrations:
@@ -3908,10 +3914,14 @@ class Database:
             cursor = await db.execute(
                 """
                 UPDATE broadcast_chats
-                SET enabled = ?, updated_at = ?
+                SET enabled = ?,
+                    delivery_failure_count = CASE WHEN ? = 1 THEN 0 ELSE delivery_failure_count END,
+                    last_delivery_failure = CASE WHEN ? = 1 THEN NULL ELSE last_delivery_failure END,
+                    last_delivery_error = CASE WHEN ? = 1 THEN NULL ELSE last_delivery_error END,
+                    updated_at = ?
                 WHERE bot_username = ? AND chat_id = ?
                 """,
-                (1 if enabled else 0, now, bot_username, chat_id),
+                (1 if enabled else 0, 1 if enabled else 0, 1 if enabled else 0, 1 if enabled else 0, now, bot_username, chat_id),
             )
             await db.commit()
             updated = cursor.rowcount > 0
@@ -3919,6 +3929,75 @@ class Database:
             f"set_broadcast_chat_enabled: bot=@{bot_username} chat_id={chat_id} enabled={enabled} updated={updated}"
         )
         return updated
+
+    async def record_broadcast_chat_success(self, bot_username: str, chat_id: int) -> None:
+        """Reset delivery failure state after a successful broadcast send."""
+        bot_username = self.normalize_bot_username(bot_username)
+        now = datetime.now()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE broadcast_chats
+                SET delivery_failure_count = 0,
+                    last_delivery_failure = NULL,
+                    last_delivery_error = NULL,
+                    updated_at = ?
+                WHERE bot_username = ? AND chat_id = ?
+                """,
+                (now, bot_username, chat_id),
+            )
+            await db.commit()
+
+    async def record_broadcast_chat_failure(
+        self,
+        bot_username: str,
+        chat_id: int,
+        error: str,
+        *,
+        disable_after: int = 2,
+    ) -> Dict[str, Any]:
+        """
+        Record a failed broadcast delivery and disable the destination after
+        ``disable_after`` consecutive failures.
+        """
+        bot_username = self.normalize_bot_username(bot_username)
+        now = datetime.now()
+        error = (error or "delivery failed")[:500]
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute(
+                """
+                UPDATE broadcast_chats
+                SET delivery_failure_count = COALESCE(delivery_failure_count, 0) + 1,
+                    last_delivery_failure = ?,
+                    last_delivery_error = ?,
+                    enabled = CASE
+                        WHEN COALESCE(delivery_failure_count, 0) + 1 >= ? THEN 0
+                        ELSE enabled
+                    END,
+                    updated_at = ?
+                WHERE bot_username = ? AND chat_id = ?
+                """,
+                (now, error, disable_after, now, bot_username, chat_id),
+            )
+            await db.commit()
+            async with db.execute(
+                """
+                SELECT delivery_failure_count, enabled, last_delivery_error
+                FROM broadcast_chats
+                WHERE bot_username = ? AND chat_id = ?
+                """,
+                (bot_username, chat_id),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return {"failure_count": 0, "disabled": False, "updated": False}
+                return {
+                    "failure_count": row["delivery_failure_count"],
+                    "disabled": row["enabled"] == 0,
+                    "updated": True,
+                    "last_delivery_error": row["last_delivery_error"],
+                }
 
     async def get_broadcast_chats(self, bot_username: str) -> List[Dict[str, Any]]:
         """Return all broadcast destinations for a bot (both enabled and disabled)."""
@@ -3928,6 +4007,7 @@ class Database:
             async with db.execute(
                 """
                 SELECT id, bot_username, chat_id, chat_type, title, enabled,
+                       delivery_failure_count, last_delivery_failure, last_delivery_error,
                        added_at, updated_at, added_by_user_id
                 FROM broadcast_chats
                 WHERE bot_username = ?
@@ -3946,6 +4026,7 @@ class Database:
             async with db.execute(
                 """
                 SELECT id, bot_username, chat_id, chat_type, title, enabled,
+                       delivery_failure_count, last_delivery_failure, last_delivery_error,
                        added_at, updated_at, added_by_user_id
                 FROM broadcast_chats
                 WHERE bot_username = ? AND enabled = 1

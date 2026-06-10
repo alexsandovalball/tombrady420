@@ -1299,15 +1299,35 @@ class NotificationService:
                     sent += 1
                     if reply_markup:
                         buttons_rendered += 1
+                    try:
+                        await self.db.record_broadcast_chat_success(bot_username, chat_id)
+                    except Exception as exc:
+                        logger.debug(
+                            f"[Broadcast] @{bot_username} → chat {chat_id}: "
+                            f"could not reset failure counter: {exc}"
+                        )
                     logger.info(
                         f"[Broadcast] @{bot_username} → chat {chat_id} "
                         f"({chat_label}): sent OK (buttons={'yes' if reply_markup else 'no'})"
                     )
                 else:
                     failed += 1
-                    logger.warning(
-                        f"[Broadcast] @{bot_username} → chat {chat_id} ({chat_label}): send returned None"
+                    failure_state = await self.db.record_broadcast_chat_failure(
+                        bot_username,
+                        chat_id,
+                        "send returned None",
                     )
+                    failure_count = failure_state.get("failure_count", 0)
+                    disabled = failure_state.get("disabled", False)
+                    logger.warning(
+                        f"[Broadcast] @{bot_username} → chat {chat_id} ({chat_label}): "
+                        f"send returned None failure_count={failure_count}"
+                    )
+                    if disabled:
+                        logger.warning(
+                            f"[Broadcast] @{bot_username} → chat {chat_id} ({chat_label}): "
+                            "auto-disabled after 2 failed notification attempts"
+                        )
 
                 # 0.5 s between sends to stay well under Telegram limits
                 await asyncio.sleep(0.5)
@@ -1315,11 +1335,22 @@ class NotificationService:
             except (Forbidden, TelegramError) as exc:
                 error_msg = str(exc).lower()
                 if any(kw in error_msg for kw in ("forbidden", "kicked", "chat not found", "not enough rights")):
-                    logger.warning(
-                        f"[Broadcast] @{bot_username} → chat {chat_id}: permanent error – "
-                        f"disabling destination. Error: {exc}"
+                    failure_state = await self.db.record_broadcast_chat_failure(
+                        bot_username,
+                        chat_id,
+                        str(exc),
                     )
-                    await self.db.set_broadcast_chat_enabled(bot_username, chat_id, False)
+                    failure_count = failure_state.get("failure_count", 0)
+                    disabled = failure_state.get("disabled", False)
+                    logger.warning(
+                        f"[Broadcast] @{bot_username} → chat {chat_id}: permanent error "
+                        f"failure_count={failure_count}. Error: {exc}"
+                    )
+                    if disabled:
+                        logger.warning(
+                            f"[Broadcast] @{bot_username} → chat {chat_id}: "
+                            "auto-disabled after 2 failed notification attempts"
+                        )
                 else:
                     logger.warning(
                         f"[Broadcast] @{bot_username} → chat {chat_id}: transient error – {exc}"
