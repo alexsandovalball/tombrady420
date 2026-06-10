@@ -78,3 +78,23 @@ class TestSearchQueryBuilder:
 
         assert [p["id"] for p in seo_expanded] == [1]
         assert inline_style == []
+
+    def test_fuzzy_search_can_rank_inline_results_by_closeness(self):
+        from utils.fuzzy_search import fuzzy_search_products
+
+        products = [
+            {"id": 1, "caption": "Static hash rosin extra menu text", "category": "CONCENTRATES"},
+            {"id": 2, "caption": "Static", "category": "CONCENTRATES"},
+            {"id": 3, "caption": "Blue dream flower", "category": "FLOWER"},
+        ]
+
+        matches = fuzzy_search_products(
+            products,
+            "static",
+            score_cutoff=75,
+            limit=2,
+            include_seo_terms=False,
+            rank_by_score=True,
+        )
+
+        assert [p["id"] for p in matches] == [2, 1]

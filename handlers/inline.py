@@ -136,6 +136,10 @@ async def _build_product_article(
         f"📦 *{title_escaped}*\n"
         f"📂 {category_escaped}"
     )
+    message_content = InputTextMessageContent(
+        message_text=caption_text,
+        parse_mode="Markdown",
+    )
 
     # --- Attempt rich media result for photo/video products ---
     if file_type in ("photo", "video"):
@@ -149,6 +153,8 @@ async def _build_product_article(
                     description=description,
                     caption=caption_text,
                     parse_mode="Markdown",
+                    input_message_content=message_content,
+                    show_caption_above_media=True,
                     reply_markup=reply_markup,
                 )
             else:  # video
@@ -159,6 +165,8 @@ async def _build_product_article(
                     description=description,
                     caption=caption_text,
                     parse_mode="Markdown",
+                    input_message_content=message_content,
+                    show_caption_above_media=True,
                     reply_markup=reply_markup,
                 )
 
@@ -167,17 +175,19 @@ async def _build_product_article(
     # API paths that are intentionally disallowed in robots.txt.
     thumbnail_url: Optional[str] = None
     storefront_domain = Config.STOREFRONT_DOMAIN or (Config.WEBHOOK_URL or "").rstrip('/')
-    if storefront_domain and file_type in ("photo", "video"):
-        thumbnail_url = f"{storefront_domain.rstrip('/')}/media/products/{product_id}/0"
+    if storefront_domain:
+        storefront_base = storefront_domain.rstrip("/")
+        thumbnail_url = (
+            f"{storefront_base}/media/products/{product_id}/0"
+            if file_type in ("photo", "video")
+            else f"{storefront_base}/og-image.png"
+        )
 
     return InlineQueryResultArticle(
         id=f"product_{product_id}",
         title=title,
         description=description,
-        input_message_content=InputTextMessageContent(
-            message_text=caption_text,
-            parse_mode="Markdown",
-        ),
+        input_message_content=message_content,
         reply_markup=reply_markup,
         thumbnail_url=thumbnail_url,
     )
@@ -202,14 +212,13 @@ async def _resolve_file_id_for_inline(
         return None
 
     current_bot = (context.bot.username or "").lower()
-    # Inline search must answer quickly. Use rich cached media when available,
-    # but do not forward/rehydrate missing bot-specific file IDs while a user is
-    # typing; the article fallback still carries a public thumbnail URL.
+    # Inline mode should prefer rich Telegram-native media previews. On a cache
+    # miss, allow the resolver to rehydrate the current bot's file_id so future
+    # searches stay fast and consistently show previews.
     result = await MediaResolver(context.bot, db).resolve_media_for_bot(
         product,
         current_bot,
         0,
-        allow_rehydrate=False,
     )
     if result.success:
         return result.file_id
@@ -466,6 +475,7 @@ async def _handle_query_search(
                 score_cutoff=75,
                 limit=INLINE_PAGE_SIZE,
                 include_seo_terms=False,
+                rank_by_score=True,
             )
 
     except Exception as exc:

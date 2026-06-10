@@ -115,6 +115,7 @@ def fuzzy_search_products(
     score_cutoff: int = 75,
     limit: int = None,
     include_seo_terms: bool = True,
+    rank_by_score: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Perform fuzzy search on products with two-stage ranking:
@@ -126,6 +127,9 @@ def fuzzy_search_products(
         query: Search query string
         score_cutoff: Minimum similarity score (0-100)
         limit: Maximum number of results
+        include_seo_terms: Whether to expand the query with broad SEO terms
+        rank_by_score: When true, rank every candidate by closeness instead of
+            preserving exact-match insertion order
 
     Returns:
         List of matching products ranked by relevance
@@ -139,6 +143,9 @@ def fuzzy_search_products(
     # Expand query with synonyms
     query_variants = expand_query_with_synonyms(query, include_seo_terms=include_seo_terms)
     primary_query = query_variants[0]
+
+    if rank_by_score:
+        return _rank_products_by_score(products, query_variants, score_cutoff, limit)
 
     # Stage 1: Exact and substring matches
     exact_matches = []
@@ -211,4 +218,59 @@ def fuzzy_search_products(
         all_matches = all_matches[:limit]
 
     return all_matches
+
+
+def _score_product(product: Dict[str, Any], query_variants: List[str]) -> float:
+    caption = normalize_text(product.get("caption", "") or "")
+    category = normalize_text(product.get("category", "") or "")
+    subcategory = normalize_text(product.get("subcategory", "") or "")
+    first_line = normalize_text((product.get("caption", "") or "").splitlines()[0] if product.get("caption") else "")
+    searchable = " ".join(part for part in (caption, category, subcategory) if part)
+
+    if not searchable:
+        return 0.0
+
+    best = 0.0
+    for variant in query_variants:
+        if not variant:
+            continue
+
+        if first_line == variant:
+            best = max(best, 110.0)
+        elif first_line.startswith(variant):
+            best = max(best, 106.0)
+        elif variant in caption:
+            best = max(best, 102.0)
+        elif variant in category or variant in subcategory:
+            best = max(best, 92.0)
+
+        if RAPIDFUZZ_AVAILABLE:
+            best = max(
+                best,
+                float(fuzz.partial_ratio(variant, caption)),
+                float(fuzz.partial_ratio(variant, searchable)) - 2.0,
+                float(fuzz.token_set_ratio(variant, searchable)) - 4.0,
+            )
+        else:
+            best = max(best, difflib.SequenceMatcher(None, variant, searchable).ratio() * 100)
+
+    return best
+
+
+def _rank_products_by_score(
+    products: List[Dict[str, Any]],
+    query_variants: List[str],
+    score_cutoff: int,
+    limit: int = None,
+) -> List[Dict[str, Any]]:
+    scored = []
+    for idx, product in enumerate(products):
+        score = _score_product(product, query_variants)
+        if score >= score_cutoff:
+            caption_len = len(product.get("caption", "") or "")
+            scored.append((score, -caption_len, -idx, product))
+
+    scored.sort(reverse=True)
+    matches = [product for _, _, _, product in scored]
+    return matches[:limit] if limit else matches
 
