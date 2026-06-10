@@ -153,7 +153,6 @@ async def _build_product_article(
                     description=description,
                     caption=caption_text,
                     parse_mode="Markdown",
-                    show_caption_above_media=True,
                     reply_markup=reply_markup,
                 )
             else:  # video
@@ -164,7 +163,6 @@ async def _build_product_article(
                     description=description,
                     caption=caption_text,
                     parse_mode="Markdown",
-                    show_caption_above_media=True,
                     reply_markup=reply_markup,
                 )
 

@@ -281,21 +281,6 @@ h1 {
     opacity: 1;
 }
 
-.video-preview-placeholder {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: #ffffff;
-    font-size: 32px;
-    background: linear-gradient(135deg, #171c23 0%, #2a3038 100%);
-    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.65);
-}
-
 .card-video-play-overlay {
     position: absolute;
     top: 50%;
