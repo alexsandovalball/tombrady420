@@ -35,17 +35,25 @@ USE_WEBHOOK=true
 WEBHOOK_URL=https://your-render-service.onrender.com
 STOREFRONT_DOMAIN=https://your-custom-domain.com
 DB_PATH=/data/catalog.db
-ADMIN_DASHBOARD_TOKEN=long-random-private-token
 ```
 
 `BOT_TOKENS` is exclusive when set. Do not also rely on stale `BOT_TOKEN_N`
 values. If `BOT_TOKENS` is absent, individual `BOT_TOKEN`, `BOT_TOKEN_`, and
 `BOT_TOKEN_1..10` values are loaded.
 
+The browser admin dashboard is disabled by default so scanners cannot discover
+the dashboard shell at `/admin`. Prefer Telegram `/adminstatus`. To expose the
+browser dashboard intentionally, set both:
+
+```text
+ADMIN_DASHBOARD_ENABLED=true
+ADMIN_DASHBOARD_TOKEN=long-random-private-token
+```
+
 ## Project Layout
 
 ```text
-admin/                 Admin dashboard shell
+admin/                 Optional browser dashboard shell, disabled by default
 configs/               Environment, logging, SEO terms, Telegram IP ranges
 database.py            SQLite schema, migrations, queries, registry tables
 docs/                  Compact operator and implementation notes

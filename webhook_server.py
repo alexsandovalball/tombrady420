@@ -846,6 +846,14 @@ def _get_admin_dashboard_token() -> str:
     return (os.getenv("ADMIN_DASHBOARD_TOKEN") or getattr(Config, "ADMIN_DASHBOARD_TOKEN", "") or "").strip()
 
 
+def _is_admin_dashboard_enabled() -> bool:
+    """Return whether the browser admin dashboard should be exposed."""
+    env_value = os.getenv("ADMIN_DASHBOARD_ENABLED")
+    if env_value is not None:
+        return env_value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(getattr(Config, "ADMIN_DASHBOARD_ENABLED", False))
+
+
 def _extract_admin_dashboard_token(request: Request) -> str:
     auth = request.headers.get("Authorization", "")
     if auth.lower().startswith("bearer "):
@@ -854,6 +862,8 @@ def _extract_admin_dashboard_token(request: Request) -> str:
 
 
 def _require_admin_dashboard_auth(request: Request) -> None:
+    if not _is_admin_dashboard_enabled():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     expected = _get_admin_dashboard_token()
     if not expected:
         raise HTTPException(
@@ -2016,7 +2026,8 @@ templates = Jinja2Templates(directory="webapp")
 # because it is resolved server-side relative to the server's own origin — no absolute URL
 # or CUSTOM_DOMAIN setting is required for static file serving to work correctly.
 app.mount("/assets", StaticFiles(directory="webapp"), name="assets")
-app.mount("/admin-assets", StaticFiles(directory="admin"), name="admin_assets")
+if _is_admin_dashboard_enabled():
+    app.mount("/admin-assets", StaticFiles(directory="admin"), name="admin_assets")
 
 _STOREFRONT_BOT_USERNAME = os.getenv("BOT_USERNAME", "").lstrip("@")
 _STOREFRONT_DOMAIN = Config.STOREFRONT_DOMAIN or ""
@@ -2658,6 +2669,8 @@ async def serve_learn_page(slug: str, request: Request):
 @app.get("/admin/", response_class=HTMLResponse)
 async def serve_admin_dashboard():
     """Serve the read-only admin monitoring dashboard shell."""
+    if not _is_admin_dashboard_enabled():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     dashboard_path = Path(__file__).parent / "admin" / "index.html"
     if not dashboard_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admin dashboard not found")
@@ -2686,6 +2699,34 @@ async def admin_dashboard_overview(request: Request):
         "webhook_401_total": _webhook_401_counter,
         "metrics": metrics_snapshot,
         "webhook_monitor": webhook_snapshot,
+        **db_snapshot,
+    }
+
+
+@app.get("/api/admin/status")
+async def webapp_admin_status(request: Request):
+    """Return admin monitoring data only to signed Telegram WebApp admins."""
+    user, _, init_data = _get_authenticated_webapp_user(request)
+    await _check_user_not_blocked(init_data, get_client_ip(request))
+    if int(user.id) not in {int(admin_id) for admin_id in Config.ADMIN_IDS}:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    db_snapshot = await _catalog_db.get_admin_dashboard_snapshot(recent_limit=10)
+    seo_snapshot = await _catalog_db.get_search_intelligence_snapshot(limit=10)
+    return {
+        "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "admin_user_id": int(user.id),
+        "configured_bot_count": len(Config.BOT_TOKENS),
+        "runtime_bots": _runtime_bot_snapshots(),
+        "cache_state": _cache_state_snapshot(),
+        "resource_usage": {
+            "tmp": get_tmp_usage(),
+            "cache": get_cache_usage(),
+        },
+        "webhook_401_total": _webhook_401_counter,
+        "metrics": metrics.snapshot(),
+        "webhook_monitor": _webhook_monitor.snapshot(),
+        "seo": seo_snapshot,
         **db_snapshot,
     }
 

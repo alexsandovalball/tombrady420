@@ -212,6 +212,9 @@
         botUsername: null,  // Store bot username for deep links
         lastLoggedUserStateId: null,  // Track last logged user state ID to avoid duplicate logging
         history: [],  // Navigation history for back button
+        adminStatus: null,
+        adminStatusLoaded: false,
+        adminStatusLoading: false,
         languages: [
             { code: 'en', name: 'English (USA)', flag: '🇺🇸' },
             { code: 'de', name: 'German', flag: '🇩🇪' },
@@ -910,6 +913,7 @@
         // Re-render user info after loading data from backend
         // This ensures we show updated status if user ID was fetched from backend
         renderUserInfo();
+        queueAdminPanelRefresh();
         
         // Open product-specific WebApp links directly when inline mode provides one.
         const openedDeepLink = await openDeepLinkedProduct();
@@ -1116,6 +1120,157 @@
         } catch (err) {
             logger.error('load_subscription_status', 'Failed to load subscription status: ' + err.message);
         }
+    }
+
+    function formatAdminCount(value) {
+        const number = Number(value || 0);
+        if (!Number.isFinite(number)) return '0';
+        return number.toLocaleString();
+    }
+
+    function formatAdminMs(value) {
+        const number = Number(value || 0);
+        if (!Number.isFinite(number)) return '0ms';
+        return `${Math.round(number)}ms`;
+    }
+
+    function appendAdminMetric(grid, label, value) {
+        const item = document.createElement('div');
+        item.className = 'admin-metric';
+
+        const labelEl = document.createElement('span');
+        labelEl.className = 'admin-metric-label';
+        labelEl.textContent = label;
+
+        const valueEl = document.createElement('strong');
+        valueEl.textContent = value;
+
+        item.append(labelEl, valueEl);
+        grid.appendChild(item);
+    }
+
+    function appendAdminList(section, title, items, formatter) {
+        if (!items || !items.length) return;
+
+        const group = document.createElement('div');
+        group.className = 'admin-list-group';
+
+        const heading = document.createElement('h4');
+        heading.textContent = title;
+        group.appendChild(heading);
+
+        const list = document.createElement('ul');
+        items.slice(0, 5).forEach(item => {
+            const li = document.createElement('li');
+            li.textContent = formatter(item);
+            list.appendChild(li);
+        });
+
+        group.appendChild(list);
+        section.appendChild(group);
+    }
+
+    function renderAdminPanel(data) {
+        const panel = document.getElementById('admin-panel');
+        if (!panel || !data) return;
+
+        const summary = data.summary || {};
+        const cache = data.cache_state || {};
+        const seo = data.seo || {};
+        const metrics = data.metrics?.endpoints || {};
+        const activeBots = (data.runtime_bots || []).filter(bot => bot.username);
+
+        panel.replaceChildren();
+        panel.hidden = false;
+
+        const header = document.createElement('div');
+        header.className = 'admin-panel-header';
+
+        const title = document.createElement('h3');
+        title.textContent = 'Admin Monitor';
+
+        const meta = document.createElement('span');
+        meta.textContent = data.generated_at ? `Updated ${data.generated_at.replace('T', ' ').replace('Z', '')}` : 'Live';
+
+        header.append(title, meta);
+        panel.appendChild(header);
+
+        const grid = document.createElement('div');
+        grid.className = 'admin-metric-grid';
+        appendAdminMetric(grid, 'Bots online', `${formatAdminCount(activeBots.length)}/${formatAdminCount(data.configured_bot_count)}`);
+        appendAdminMetric(grid, 'Products', formatAdminCount(summary.products));
+        appendAdminMetric(grid, 'Users 24h', formatAdminCount(summary.active_users_24h));
+        appendAdminMetric(grid, 'Blocked users', formatAdminCount(summary.blocked_users));
+        appendAdminMetric(grid, 'Pending notifications', formatAdminCount(summary.pending_notifications));
+        appendAdminMetric(grid, 'WebApp events 24h', formatAdminCount(summary.webapp_events_24h));
+        appendAdminMetric(grid, 'Inline queries 24h', formatAdminCount(summary.inline_queries_24h));
+        appendAdminMetric(grid, 'No-result searches', formatAdminCount(summary.search_no_result_24h));
+        appendAdminMetric(grid, 'Google queries 7d', formatAdminCount(seo.search_console_queries_7d));
+        appendAdminMetric(grid, 'Google clicks/impr.', `${formatAdminCount(seo.search_console_clicks_7d)}/${formatAdminCount(seo.search_console_impressions_7d)}`);
+        appendAdminMetric(grid, 'SEO mappings', formatAdminCount(summary.seo_query_mappings));
+        appendAdminMetric(grid, 'Webhook 401 total', formatAdminCount(data.webhook_401_total));
+        appendAdminMetric(grid, 'File ID cache', formatAdminCount(summary.file_id_cache_entries));
+        appendAdminMetric(grid, 'Memory cache', formatAdminCount(cache.api_results));
+        panel.appendChild(grid);
+
+        const latency = document.createElement('div');
+        latency.className = 'admin-latency-row';
+        ['api_products', 'api_categories', 'webhook_401'].forEach(name => {
+            const stat = metrics[name];
+            if (!stat) return;
+            const chip = document.createElement('span');
+            chip.textContent = `${name}: avg ${formatAdminMs(stat.avg_ms)} p95 ${formatAdminMs(stat.p95_ms)}`;
+            latency.appendChild(chip);
+        });
+        if (latency.childElementCount) panel.appendChild(latency);
+
+        appendAdminList(panel, 'Top Google Searches', seo.top_search_console_queries || [], item =>
+            `${item.query}: ${formatAdminCount(item.clicks)} clicks, ${formatAdminCount(item.impressions)} impressions, avg pos ${item.avg_position || '-'}`
+        );
+        appendAdminList(panel, 'Recent Search Mappings', seo.recent_mappings || [], item =>
+            `${item.term} -> ${item.category || 'catalog'}${item.subcategory ? ` / ${item.subcategory}` : ''}`
+        );
+        appendAdminList(panel, 'Top Bots By Users', data.bot_user_counts || [], item =>
+            `@${item.bot_username}: ${formatAdminCount(item.users)} users, ${formatAdminCount(item.active_24h)} active`
+        );
+        appendAdminList(panel, 'Top WebApp Events', data.webapp_event_counts || [], item =>
+            `${item.event_type}/${item.action}: ${formatAdminCount(item.count)}`
+        );
+    }
+
+    async function loadAdminPanel() {
+        if (!tg.initData || state.adminStatusLoading || state.adminStatusLoaded) return;
+        state.adminStatusLoading = true;
+
+        try {
+            const response = await fetch('/api/admin/status', {
+                headers: { 'X-Telegram-Init-Data': tg.initData },
+                credentials: 'same-origin'
+            });
+            if (!response.ok) {
+                state.adminStatusLoaded = response.status === 403 || response.status === 404;
+                return;
+            }
+            const data = await response.json();
+            state.adminStatus = data;
+            state.adminStatusLoaded = true;
+            renderAdminPanel(data);
+            logger.log('admin_monitor', 'loaded', 'success', '', {
+                products: data.summary?.products,
+                google_queries_7d: data.seo?.search_console_queries_7d
+            });
+        } catch (err) {
+            logger.error('admin_monitor', err.message);
+        } finally {
+            state.adminStatusLoading = false;
+        }
+    }
+
+    function queueAdminPanelRefresh() {
+        if (!tg.initData || !state.userId) return;
+        setTimeout(() => {
+            loadAdminPanel().catch(err => logger.error('admin_monitor', err.message));
+        }, 0);
     }
 
     function applyThemeColors() {
@@ -1469,6 +1624,12 @@
                 const username = normalizeContactUsername(state.orderContact);
                 contactInfo.innerHTML = `${t('order_contact_prefix')} <a href="https://t.me/${username}" target="_blank">${state.orderContact}</a>`;
             }
+        }
+
+        if (state.adminStatus) {
+            renderAdminPanel(state.adminStatus);
+        } else {
+            queueAdminPanelRefresh();
         }
         
         // Show warning if initial data load failed or timed out

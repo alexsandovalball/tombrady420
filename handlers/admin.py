@@ -45,6 +45,7 @@ def _fmt_ms(value) -> str:
 
 def _format_admin_status_message(snapshot: dict) -> str:
     summary = snapshot.get("summary", {})
+    seo = snapshot.get("seo", {})
     metrics = snapshot.get("metrics", {}).get("endpoints", {})
     runtime_bots = snapshot.get("runtime_bots", [])
     cache_state = snapshot.get("cache_state", {})
@@ -84,6 +85,8 @@ def _format_admin_status_message(snapshot: dict) -> str:
         f"• WebApp searches 24h: {_fmt_count(summary.get('search_queries_24h'))}",
         f"• No-result searches 24h: {_fmt_count(summary.get('search_no_result_24h'))}",
         f"• SEO mappings: {_fmt_count(summary.get('seo_query_mappings'))}",
+        f"• Google queries 7d: {_fmt_count(seo.get('search_console_queries_7d'))}",
+        f"• Google clicks/impressions 7d: {_fmt_count(seo.get('search_console_clicks_7d'))}/{_fmt_count(seo.get('search_console_impressions_7d'))}",
         "",
         "⚙️ Caches",
         f"• File ID DB: {_fmt_count(summary.get('file_id_cache_entries'))}",
@@ -91,6 +94,7 @@ def _format_admin_status_message(snapshot: dict) -> str:
         f"• Media info memory: {_fmt_count(cache_state.get('media_info'))}",
         f"• Resolved file IDs: {_fmt_count(cache_state.get('resolved_file_ids'))}",
         f"• Orphan legacy secrets: {_fmt_count(cache_state.get('orphan_legacy_secrets'))}",
+        f"• Webhook 401 total: {_fmt_count(snapshot.get('webhook_401_total'))}",
     ])
 
     if metrics:
@@ -130,6 +134,7 @@ async def adminstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Handle /adminstatus command - compact runtime, user, WebApp, and cache status."""
     try:
         snapshot = await db.get_admin_dashboard_snapshot(recent_limit=10)
+        snapshot["seo"] = await db.get_search_intelligence_snapshot(limit=5)
         try:
             from webhook_server import (
                 _runtime_bot_snapshots,

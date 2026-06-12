@@ -188,6 +188,26 @@ def _load_service_account_credentials(
     return credentials
 
 
+def _search_console_site_candidates(site_url: str) -> list[str]:
+    """Return the configured property plus a matching domain property fallback."""
+    normalized = str(site_url or "").strip()
+    if not normalized:
+        return []
+
+    candidates = [normalized]
+    if not normalized.startswith("sc-domain:"):
+        parsed = urllib.parse.urlparse(normalized)
+        host = parsed.netloc or parsed.path
+        host = host.split("@")[-1].split(":")[0].strip().lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if host:
+            domain_property = f"sc-domain:{host}"
+            if domain_property not in candidates:
+                candidates.append(domain_property)
+    return candidates
+
+
 def _fetch_search_console_rows_sync(
     *,
     site_url: str,
@@ -224,8 +244,6 @@ def _fetch_search_console_rows_sync(
 
     end_date = (datetime.utcnow().date() - timedelta(days=1))
     start_date = end_date - timedelta(days=max(0, lookback_days - 1))
-    encoded_site = urllib.parse.quote(site_url, safe="")
-    endpoint = f"https://searchconsole.googleapis.com/webmasters/v3/sites/{encoded_site}/searchAnalytics/query"
     body = {
         "startDate": start_date.isoformat(),
         "endDate": end_date.isoformat(),
@@ -233,47 +251,60 @@ def _fetch_search_console_rows_sync(
         "rowLimit": max(10, min(2500, int(row_limit or 250))),
     }
 
-    try:
-        response = requests.post(
-            endpoint,
-            headers={
-                "Authorization": f"Bearer {credentials.token}",
-                "Content-Type": "application/json",
-            },
-            json=body,
-            timeout=20,
-        )
-    except requests.RequestException as exc:
-        logger.warning("[search_console] request_failed error=%s", exc)
-        return []
+    last_rows: list[dict[str, Any]] = []
+    for candidate_site_url in _search_console_site_candidates(site_url):
+        encoded_site = urllib.parse.quote(candidate_site_url, safe="")
+        endpoint = f"https://searchconsole.googleapis.com/webmasters/v3/sites/{encoded_site}/searchAnalytics/query"
 
-    if response.status_code >= 400:
-        logger.warning(
-            "[search_console] api_error auth=%s status=%s body=%s",
-            auth_source,
-            response.status_code,
-            response.text[:500],
-        )
-        return []
-
-    payload = response.json()
-    rows: list[dict[str, Any]] = []
-    for item in payload.get("rows") or []:
-        keys = item.get("keys") or []
-        if len(keys) < 5:
+        try:
+            response = requests.post(
+                endpoint,
+                headers={
+                    "Authorization": f"Bearer {credentials.token}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+                timeout=20,
+            )
+        except requests.RequestException as exc:
+            logger.warning("[search_console] request_failed site_url=%s error=%s", candidate_site_url, exc)
             continue
-        rows.append({
-            "date": keys[0],
-            "query": keys[1],
-            "page": keys[2],
-            "country": keys[3],
-            "device": keys[4],
-            "clicks": int(item.get("clicks") or 0),
-            "impressions": int(item.get("impressions") or 0),
-            "ctr": float(item.get("ctr") or 0),
-            "position": float(item.get("position") or 0),
-        })
-    return rows
+
+        if response.status_code >= 400:
+            logger.warning(
+                "[search_console] api_error auth=%s site_url=%s status=%s body=%s",
+                auth_source,
+                candidate_site_url,
+                response.status_code,
+                response.text[:500],
+            )
+            continue
+
+        payload = response.json()
+        rows: list[dict[str, Any]] = []
+        for item in payload.get("rows") or []:
+            keys = item.get("keys") or []
+            if len(keys) < 5:
+                continue
+            rows.append({
+                "date": keys[0],
+                "query": keys[1],
+                "page": keys[2],
+                "country": keys[3],
+                "device": keys[4],
+                "clicks": int(item.get("clicks") or 0),
+                "impressions": int(item.get("impressions") or 0),
+                "ctr": float(item.get("ctr") or 0),
+                "position": float(item.get("position") or 0),
+                "property_url": candidate_site_url,
+            })
+        if rows:
+            if candidate_site_url != site_url:
+                logger.info("[search_console] fallback_property_used site_url=%s rows=%d", candidate_site_url, len(rows))
+            return rows
+        last_rows = rows
+
+    return last_rows
 
 
 async def fetch_search_console_rows(

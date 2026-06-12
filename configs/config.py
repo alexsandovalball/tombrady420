@@ -32,6 +32,7 @@ class ConfigClass:
         self.WEB_APP_URL: Optional[str] = None
         self.STOREFRONT_DOMAIN: Optional[str] = None
         self.ORDER_CONTACT: Optional[str] = None  # Configurable order contact
+        self.ADMIN_DASHBOARD_ENABLED: bool = False
         self.ADMIN_DASHBOARD_TOKEN: Optional[str] = None
         self.SEO_AUTO_LEARN_ENABLED: bool = True
         self.SEO_AUTO_LEARN_INTERVAL_SECONDS: int = 1800
@@ -130,6 +131,7 @@ class ConfigClass:
         self.USE_WEBHOOK = config('USE_WEBHOOK', default=False, cast=bool)
         self.WEBHOOK_URL = config('WEBHOOK_URL', default=None)
         self.ORDER_CONTACT = config('ORDER_CONTACT', default=None)
+        self.ADMIN_DASHBOARD_ENABLED = config('ADMIN_DASHBOARD_ENABLED', default=False, cast=bool)
         self.ADMIN_DASHBOARD_TOKEN = config('ADMIN_DASHBOARD_TOKEN', default=None)
         self.SEO_AUTO_LEARN_ENABLED = config('SEO_AUTO_LEARN_ENABLED', default=True, cast=bool)
         self.SEO_AUTO_LEARN_INTERVAL_SECONDS = max(
