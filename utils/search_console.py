@@ -78,6 +78,43 @@ def is_search_console_configured(
     return bool(enabled and site_url and (has_service_account or has_oauth))
 
 
+def describe_search_console_setup(
+    *,
+    enabled: bool,
+    site_url: Optional[str],
+    service_account_json: Optional[str],
+    service_account_file: Optional[str],
+    oauth_client_json: Optional[str] = None,
+    oauth_client_file: Optional[str] = None,
+    oauth_token_json: Optional[str] = None,
+    oauth_token_file: Optional[str] = None,
+) -> dict[str, Any]:
+    """Return non-secret Search Console setup details for logs/status checks."""
+    service_account_file_exists = bool(service_account_file and Path(service_account_file).exists())
+    oauth_client_file_exists = bool(oauth_client_file and Path(oauth_client_file).exists())
+    oauth_token_file_exists = bool(oauth_token_file and Path(oauth_token_file).exists())
+    has_service_account = bool(service_account_json or service_account_file_exists)
+    has_oauth = bool((oauth_client_json or oauth_client_file_exists) and (oauth_token_json or oauth_token_file_exists))
+    configured = bool(enabled and site_url and (has_service_account or has_oauth))
+    if has_oauth:
+        auth_source = "oauth"
+    elif has_service_account:
+        auth_source = "service_account"
+    else:
+        auth_source = "none"
+    return {
+        "enabled": bool(enabled),
+        "site_url": site_url,
+        "configured": configured,
+        "auth_source": auth_source,
+        "has_service_account": has_service_account,
+        "has_oauth": has_oauth,
+        "service_account_file_exists": service_account_file_exists,
+        "oauth_client_file_exists": oauth_client_file_exists,
+        "oauth_token_file_exists": oauth_token_file_exists,
+    }
+
+
 def _load_oauth_credentials(
     *,
     oauth_client_json: Optional[str],

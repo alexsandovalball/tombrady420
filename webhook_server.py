@@ -51,7 +51,7 @@ from utils.seo_terms import (
 )
 from utils.seo_autolearn import build_taxonomy_profiles, infer_seo_query_mapping
 from utils.external_seo_signals import load_external_seo_signal_file
-from utils.search_console import fetch_search_console_rows
+from utils.search_console import describe_search_console_setup, fetch_search_console_rows
 from translations.language_config import SUPPORTED_LANGUAGES
 from translations.translator import translation_service
 from utils.metrics import metrics
@@ -1518,6 +1518,28 @@ async def _import_search_console_signals(
     profiles: dict[tuple[str, str], dict[str, Any]],
 ) -> int:
     """Import Search Console queries and convert confident matches into approved signals."""
+    setup = describe_search_console_setup(
+        enabled=Config.SEARCH_CONSOLE_ENABLED,
+        site_url=Config.SEARCH_CONSOLE_SITE_URL,
+        service_account_json=Config.SEARCH_CONSOLE_SERVICE_ACCOUNT_JSON,
+        service_account_file=Config.SEARCH_CONSOLE_SERVICE_ACCOUNT_FILE,
+        oauth_client_json=Config.SEARCH_CONSOLE_OAUTH_CLIENT_JSON,
+        oauth_client_file=Config.SEARCH_CONSOLE_OAUTH_CLIENT_FILE,
+        oauth_token_json=Config.SEARCH_CONSOLE_OAUTH_TOKEN_JSON,
+        oauth_token_file=Config.SEARCH_CONSOLE_OAUTH_TOKEN_FILE,
+    )
+    if not setup["configured"]:
+        logger.info(
+            "[search_console] skipped reason=not_configured enabled=%s site_url=%s auth=%s oauth_client_file=%s oauth_token_file=%s service_account_file=%s",
+            setup["enabled"],
+            setup["site_url"],
+            setup["auth_source"],
+            setup["oauth_client_file_exists"],
+            setup["oauth_token_file_exists"],
+            setup["service_account_file_exists"],
+        )
+        return 0
+
     rows = await fetch_search_console_rows(
         enabled=Config.SEARCH_CONSOLE_ENABLED,
         site_url=Config.SEARCH_CONSOLE_SITE_URL,
@@ -1531,6 +1553,13 @@ async def _import_search_console_signals(
         row_limit=Config.SEARCH_CONSOLE_ROW_LIMIT,
     )
     if not rows:
+        logger.info(
+            "[search_console] rows=0 stored=0 approved_signals=0 site_url=%s auth=%s lookback_days=%s row_limit=%s",
+            setup["site_url"],
+            setup["auth_source"],
+            Config.SEARCH_CONSOLE_LOOKBACK_DAYS,
+            Config.SEARCH_CONSOLE_ROW_LIMIT,
+        )
         return 0
 
     imported_rows = await _catalog_db.upsert_search_console_query_events(rows)
@@ -1580,10 +1609,12 @@ async def _import_search_console_signals(
         approved=True,
     )
     logger.info(
-        "[search_console] rows=%d stored=%d approved_signals=%d",
+        "[search_console] rows=%d stored=%d approved_signals=%d site_url=%s auth=%s",
         len(rows),
         imported_rows,
         imported_signals,
+        setup["site_url"],
+        setup["auth_source"],
     )
     return imported_signals
 
