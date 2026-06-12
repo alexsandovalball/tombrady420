@@ -35,15 +35,15 @@
     <link rel="manifest" href="/assets/manifest.json">
     <link rel="stylesheet" href="/assets/style.css">
     <style>
-        html { background: #101614; }
+        html { background: #ffffff; }
         body {
-            background-color: #101614;
-            color: #f5f7f4;
-            --accent: #55b86a;
-            --text-primary: #f5f7f4;
-            --text-secondary: #b9c8bc;
-            --card-bg: rgba(18, 25, 21, .94);
-            --border: rgba(150, 190, 160, .28);
+            background-color: var(--tg-theme-bg-color);
+            color: var(--tg-theme-text-color);
+            --accent: var(--tg-theme-link-color, #2481cc);
+            --text-primary: var(--tg-theme-text-color, #111);
+            --text-secondary: var(--tg-theme-hint-color, #666);
+            --card-bg: rgba(255, 255, 255, .94);
+            --border: rgba(0, 0, 0, .12);
         }
         .seo-page {
             max-width: 900px;
@@ -52,19 +52,19 @@
             position: relative;
             z-index: 1;
             min-height: 100vh;
-            background: linear-gradient(180deg, rgba(16, 22, 20, .96), rgba(16, 22, 20, .9));
+            background: var(--tg-theme-bg-color, #fff);
         }
         .seo-nav { display: flex; gap: .5rem; flex-wrap: wrap; font-size: .92rem; margin-bottom: 1rem; }
         .seo-nav a { color: var(--accent, #2481cc); text-decoration: none; }
         .seo-hero { display: grid; gap: 1rem; }
-        .seo-media { display: block; width: 100%; max-height: 520px; object-fit: cover; border-radius: 8px; background: var(--card-bg, #1e1e1e); border: 1px solid var(--border, #333); }
-        .seo-kicker { color: var(--text-secondary, #888); margin: 0 0 .35rem; }
+        .seo-media { display: block; width: 100%; max-height: 520px; object-fit: cover; border-radius: 8px; background: rgba(0, 0, 0, .04); border: 1px solid var(--border, #ddd); }
+        .seo-kicker { color: var(--text-secondary, #666); margin: 0 0 .35rem; }
         .seo-title { font-size: 1.9rem; line-height: 1.15; margin: 0 0 1rem; }
         .seo-description p { margin: 0 0 .8rem; line-height: 1.55; }
         .seo-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin: 1.25rem 0; }
         .seo-btn { display: inline-block; padding: .75rem 1rem; border-radius: 8px; text-decoration: none; font-weight: 700; }
         .seo-btn.primary { background: #2f9e55; color: #fff; }
-        .seo-btn.secondary { border: 1px solid var(--border, #333); color: var(--text-primary, #fff); }
+        .seo-btn.secondary { border: 1px solid var(--border, #ddd); color: var(--text-primary, #111); }
         .related-list { list-style: none; padding: 0; margin: .75rem 0 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .85rem; }
         .related-card { min-width: 0; }
         .related-card a {
@@ -72,15 +72,15 @@
             grid-template-rows: auto 1fr;
             height: 100%;
             padding: .5rem;
-            color: var(--text-primary, #fff);
+            color: var(--text-primary, #111);
             text-decoration: none;
-            background: var(--card-bg, #1e1e1e);
-            border: 1px solid var(--border, #333);
+            background: var(--card-bg, #fff);
+            border: 1px solid var(--border, #ddd);
             border-radius: 8px;
-            box-shadow: 0 10px 24px rgba(0, 0, 0, .22);
+            box-shadow: 0 8px 18px rgba(0, 0, 0, .08);
         }
-        .seo-page img.related-thumb { display: block; width: 100%; min-height: 112px; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 6px; background: rgba(255, 255, 255, .06); border: 1px solid var(--border, #333); opacity: 1; }
-        .related-title { display: block; margin-top: .55rem; font-size: .94rem; line-height: 1.25; color: var(--text-primary, #fff); }
+        .seo-page img.related-thumb { display: block; width: 100%; min-height: 112px; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 6px; background: rgba(0, 0, 0, .04); border: 1px solid var(--border, #ddd); opacity: 1; }
+        .related-title { display: block; margin-top: .55rem; font-size: .94rem; line-height: 1.25; color: var(--text-primary, #111); }
         .related-card a:hover .related-title { color: var(--accent, #2481cc); }
     </style>
 </head>

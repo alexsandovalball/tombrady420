@@ -25,15 +25,15 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <link rel="stylesheet" href="/assets/style.css">
     <style>
-        html { background: #101614; }
+        html { background: #ffffff; }
         body {
-            background-color: #101614;
-            color: #f5f7f4;
-            --accent: #55b86a;
-            --text-primary: #f5f7f4;
-            --text-secondary: #b9c8bc;
-            --card-bg: rgba(18, 25, 21, .94);
-            --border: rgba(150, 190, 160, .28);
+            background-color: var(--tg-theme-bg-color);
+            color: var(--tg-theme-text-color);
+            --accent: var(--tg-theme-link-color, #2481cc);
+            --text-primary: var(--tg-theme-text-color, #111);
+            --text-secondary: var(--tg-theme-hint-color, #666);
+            --card-bg: rgba(255, 255, 255, .94);
+            --border: rgba(0, 0, 0, .12);
         }
         .learn-page {
             max-width: 900px;
@@ -42,15 +42,15 @@
             position: relative;
             z-index: 1;
             min-height: 100vh;
-            background: linear-gradient(180deg, rgba(16, 22, 20, .96), rgba(16, 22, 20, .9));
+            background: var(--tg-theme-bg-color, #fff);
         }
         .learn-nav a { color: var(--accent, #2481cc); text-decoration: none; }
         .learn-grid { list-style: none; padding: 0; margin: 1rem 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: .9rem; }
-        .learn-card { border: 1px solid var(--border, #333); border-radius: 8px; padding: 1rem; background: var(--card-bg, #1e1e1e); }
-        .learn-card a { color: var(--text-primary, #fff); text-decoration: none; }
+        .learn-card { border: 1px solid var(--border, #ddd); border-radius: 8px; padding: 1rem; background: var(--card-bg, #fff); box-shadow: 0 8px 18px rgba(0, 0, 0, .08); }
+        .learn-card a { color: var(--text-primary, #111); text-decoration: none; }
         .learn-card a:hover { color: var(--accent, #2481cc); }
-        .learn-card p { color: var(--text-secondary, #aaa); line-height: 1.45; }
-        .learn-taxonomy { font-size: .86rem; color: var(--text-secondary, #aaa); }
+        .learn-card p { color: var(--text-secondary, #666); line-height: 1.45; }
+        .learn-taxonomy { font-size: .86rem; color: var(--text-secondary, #666); }
     </style>
 </head>
 <body>
