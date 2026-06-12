@@ -47,7 +47,10 @@ from utils.seo_terms import (
     get_learn_page,
     get_learn_pages,
     get_terms_for_taxonomy,
+    normalize_term,
 )
+from utils.seo_autolearn import infer_seo_query_mapping
+from translations.language_config import SUPPORTED_LANGUAGES
 from translations.translator import translation_service
 from utils.metrics import metrics
 from utils.monitoring import monitor as _webhook_monitor, record_webhook_result
@@ -1377,6 +1380,126 @@ async def _wal_checkpoint_loop():
             logger.warning(f"WAL checkpoint loop error: {e}")
 
 
+def _is_useful_auto_seo_term(term: str) -> bool:
+    normalized = normalize_term(term)
+    if len(normalized) < 3 or len(normalized) > 80:
+        return False
+    if normalized.isdigit():
+        return False
+    if len(normalized.split()) > 7:
+        return False
+    return True
+
+
+async def _expand_auto_learn_mapping_terms(term: str) -> List[str]:
+    """Return original + translated variants for supported WebApp/bot languages."""
+    terms = [term]
+    for lang in SUPPORTED_LANGUAGES:
+        if lang == "en":
+            continue
+        try:
+            translated = await translation_service.translate(term, lang, source_lang="auto")
+        except Exception as exc:
+            logger.debug("[seo_auto_learn] translation_skipped term=%r lang=%s error=%s", term, lang, exc)
+            continue
+        if translated and translated != term:
+            terms.append(translated)
+
+    seen = set()
+    cleaned = []
+    for candidate in terms:
+        candidate = " ".join(str(candidate or "").split())
+        normalized = normalize_term(candidate)
+        if normalized in seen or not _is_useful_auto_seo_term(candidate):
+            continue
+        seen.add(normalized)
+        cleaned.append(candidate)
+    return cleaned
+
+
+async def _seo_auto_learn_once() -> int:
+    """Approve high-confidence no-result search mappings."""
+    if not Config.SEO_AUTO_LEARN_ENABLED:
+        return 0
+
+    candidates = await _catalog_db.get_seo_auto_learning_candidates(
+        limit=Config.SEO_AUTO_LEARN_MAX_PER_RUN,
+        min_count=Config.SEO_AUTO_LEARN_MIN_COUNT,
+        lookback_hours=Config.SEO_AUTO_LEARN_LOOKBACK_HOURS,
+    )
+    if not candidates:
+        return 0
+
+    products = await _catalog_db.get_all_products_for_search()
+    approvals = []
+    skipped = 0
+
+    for item in candidates:
+        query = str(item.get("query") or item.get("normalized_query") or "").strip()
+        if not query:
+            continue
+        inferred = infer_seo_query_mapping(
+            query,
+            products,
+            min_score=Config.SEO_AUTO_LEARN_SCORE,
+        )
+        if not inferred:
+            skipped += 1
+            continue
+
+        # One-off queries are approved only if they match the explicit SEO
+        # vocabulary. Catalog-only fuzzy guesses need repeated evidence.
+        if int(item.get("count") or 0) < 2 and inferred.get("reason") == "catalog":
+            skipped += 1
+            continue
+
+        learned_terms = await _expand_auto_learn_mapping_terms(query)
+        for learned_term in learned_terms:
+            approvals.append({
+                "term": learned_term,
+                "category": inferred["category"],
+                "subcategory": inferred["subcategory"],
+            })
+        logger.info(
+            "[seo_auto_learn] approve query=%r variants=%d category=%s subcategory=%s score=%s reason=%s count=%s",
+            query,
+            len(learned_terms),
+            inferred["category"],
+            inferred["subcategory"] or "",
+            inferred.get("score"),
+            inferred.get("reason"),
+            item.get("count"),
+        )
+
+    if not approvals:
+        if skipped:
+            logger.info("[seo_auto_learn] skipped=%d reason=no_confident_mapping", skipped)
+        return 0
+
+    approved = await _catalog_db.upsert_seo_query_mappings(
+        approvals,
+        source="auto_learn",
+        approved=True,
+    )
+    logger.info("[seo_auto_learn] approved=%d candidates=%d skipped=%d", approved, len(candidates), skipped)
+    return approved
+
+
+async def _seo_auto_learn_loop():
+    """Background task: learn safe SEO mappings from repeated no-result searches."""
+    if not Config.SEO_AUTO_LEARN_ENABLED:
+        logger.info("[seo_auto_learn] disabled")
+        return
+
+    await asyncio.sleep(60)
+    while True:
+        try:
+            await _seo_auto_learn_once()
+        except Exception as e:
+            logger.warning("[seo_auto_learn] loop_error error=%s", e)
+        await asyncio.sleep(Config.SEO_AUTO_LEARN_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan - startup and shutdown."""
@@ -1485,6 +1608,7 @@ async def lifespan(app: FastAPI):
     _bg_tasks = [
         asyncio.create_task(_media_cache_prune_loop(), name="media_cache_prune"),
         asyncio.create_task(_wal_checkpoint_loop(), name="wal_checkpoint"),
+        asyncio.create_task(_seo_auto_learn_loop(), name="seo_auto_learn"),
     ]
 
     # Load permanently blocked IPs from the database into the in-memory registry

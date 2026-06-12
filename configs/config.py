@@ -32,6 +32,12 @@ class ConfigClass:
         self.STOREFRONT_DOMAIN: Optional[str] = None
         self.ORDER_CONTACT: Optional[str] = None  # Configurable order contact
         self.ADMIN_DASHBOARD_TOKEN: Optional[str] = None
+        self.SEO_AUTO_LEARN_ENABLED: bool = True
+        self.SEO_AUTO_LEARN_INTERVAL_SECONDS: int = 1800
+        self.SEO_AUTO_LEARN_LOOKBACK_HOURS: int = 168
+        self.SEO_AUTO_LEARN_MIN_COUNT: int = 1
+        self.SEO_AUTO_LEARN_SCORE: int = 92
+        self.SEO_AUTO_LEARN_MAX_PER_RUN: int = 25
         self._load_config()
     
     def _load_config(self):
@@ -111,6 +117,27 @@ class ConfigClass:
         self.WEBHOOK_URL = config('WEBHOOK_URL', default=None)
         self.ORDER_CONTACT = config('ORDER_CONTACT', default=None)
         self.ADMIN_DASHBOARD_TOKEN = config('ADMIN_DASHBOARD_TOKEN', default=None)
+        self.SEO_AUTO_LEARN_ENABLED = config('SEO_AUTO_LEARN_ENABLED', default=True, cast=bool)
+        self.SEO_AUTO_LEARN_INTERVAL_SECONDS = max(
+            300,
+            config('SEO_AUTO_LEARN_INTERVAL_SECONDS', default=1800, cast=int),
+        )
+        self.SEO_AUTO_LEARN_LOOKBACK_HOURS = max(
+            1,
+            config('SEO_AUTO_LEARN_LOOKBACK_HOURS', default=168, cast=int),
+        )
+        self.SEO_AUTO_LEARN_MIN_COUNT = max(
+            1,
+            config('SEO_AUTO_LEARN_MIN_COUNT', default=1, cast=int),
+        )
+        self.SEO_AUTO_LEARN_SCORE = max(
+            70,
+            min(100, config('SEO_AUTO_LEARN_SCORE', default=92, cast=int)),
+        )
+        self.SEO_AUTO_LEARN_MAX_PER_RUN = max(
+            1,
+            min(100, config('SEO_AUTO_LEARN_MAX_PER_RUN', default=25, cast=int)),
+        )
         
         # Load WEB_APP_URL - if not set, derive from WEBHOOK_URL (existing behaviour)
         self.WEB_APP_URL = config('WEB_APP_URL', default=None)

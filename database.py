@@ -3644,6 +3644,60 @@ class Database:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
 
+    async def get_recent_seo_query_mappings(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Return recently approved SEO mappings for admin visibility."""
+        limit = max(1, min(limit, 50))
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT term, category, subcategory, source, updated_at
+                FROM seo_query_mappings
+                WHERE approved = 1
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    async def get_seo_auto_learning_candidates(
+        self,
+        *,
+        limit: int = 25,
+        min_count: int = 1,
+        lookback_hours: int = 168,
+    ) -> List[Dict[str, Any]]:
+        """Return repeated no-result searches that are not already approved mappings."""
+        limit = max(1, min(limit, 100))
+        min_count = max(1, min_count)
+        since = datetime.now() - timedelta(hours=max(1, lookback_hours))
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT
+                    e.query,
+                    e.normalized_query,
+                    COUNT(*) AS count,
+                    MAX(e.created_at) AS last_seen
+                FROM search_query_events e
+                LEFT JOIN seo_query_mappings m
+                    ON m.normalized_term = e.normalized_query AND m.approved = 1
+                WHERE e.matched_count = 0
+                  AND e.created_at >= ?
+                  AND m.id IS NULL
+                GROUP BY e.normalized_query
+                HAVING COUNT(*) >= ?
+                ORDER BY count DESC, last_seen DESC
+                LIMIT ?
+                """,
+                (since, min_count, limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
     async def get_unmapped_search_queries(self, limit: int = 20) -> List[Dict[str, Any]]:
         """Return frequent no-result queries that are not yet approved mappings."""
         limit = max(1, min(limit, 100))
@@ -3697,17 +3751,32 @@ class Database:
                     (since_24h,),
                 ),
                 "approved_mappings": await scalar("SELECT COUNT(*) FROM seo_query_mappings WHERE approved = 1"),
+                "auto_mappings": await scalar(
+                    "SELECT COUNT(*) FROM seo_query_mappings WHERE approved = 1 AND source = 'auto_learn'"
+                ),
                 "top_queries": await rows(
                     """
-                    SELECT query, COUNT(*) AS count, MAX(matched_count) AS last_matched_count
-                    FROM search_query_events
-                    GROUP BY normalized_query
-                    ORDER BY count DESC, MAX(created_at) DESC
+                    SELECT
+                        e.query,
+                        COUNT(*) AS count,
+                        MAX(e.created_at) AS last_seen,
+                        (
+                            SELECT e2.matched_count
+                            FROM search_query_events e2
+                            WHERE e2.normalized_query = e.normalized_query
+                            ORDER BY e2.created_at DESC, e2.id DESC
+                            LIMIT 1
+                        ) AS last_matched_count
+                    FROM search_query_events e
+                    WHERE e.created_at >= ?
+                    GROUP BY e.normalized_query
+                    ORDER BY count DESC, last_seen DESC
                     LIMIT ?
                     """,
-                    (limit,),
+                    (since_24h, limit),
                 ),
                 "unmapped": await self.get_unmapped_search_queries(limit=limit),
+                "recent_mappings": await self.get_recent_seo_query_mappings(limit=limit),
             }
 
     async def get_admin_dashboard_snapshot(self, recent_limit: int = 30) -> Dict[str, Any]:

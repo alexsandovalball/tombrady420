@@ -94,12 +94,15 @@ SEO search-term expansion lives in:
 ```text
 configs/seo_terms.json
 utils/seo_terms.py
-handlers/admin.py   (/seostatus, /seoimport, /seoapprove)
+utils/seo_autolearn.py
+handlers/admin.py   (/seostatus)
 ```
 
 Do not create pages full of disconnected keyword stuffing. Keep search terms
 mapped to real categories/products and expose them through useful category,
-learn, or product pages.
+learn, or product pages. The automatic learner approves only confident mappings
+to existing catalog taxonomy and expands them into supported bot/WebApp
+languages.
 
 ## Production Checks
 

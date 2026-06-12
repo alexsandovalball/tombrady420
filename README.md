@@ -149,6 +149,12 @@ The open web routes render product/category pages for crawlers:
 Unavailable product links should fall back to a related category or the home
 page rather than showing a blank JSON error.
 
+Search expansion starts from `configs/seo_terms.json` and improves itself from
+real WebApp searches. The background SEO learner maps repeated no-result
+queries to existing catalog categories/subcategories only when confidence is
+high, then adds translated variants for the supported bot/WebApp languages. Use
+`/seostatus` to see what people searched and what mappings were learned.
+
 ## Render Notes
 
 Use one persistent disk mounted at `/data`. Keep the database there, not in the

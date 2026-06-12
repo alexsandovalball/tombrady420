@@ -20,7 +20,6 @@ except Exception as exc:
 from utils.helpers import is_admin, get_channel_id, get_channel_username, escape_markdown_v1, resolve_admin_scope
 from utils.safe_send import safe_send_message, safe_edit_message_text
 from utils.decorators import command_admin_required
-from utils.seo_terms import parse_import_terms
 from middleware.rate_limiter import add_permanent_ip_block, remove_permanent_ip_block
 
 logger = logging.getLogger(__name__)
@@ -152,12 +151,12 @@ async def adminstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("❌ An error occurred while loading admin status.")
 
 
-def _parse_seo_taxonomy_arg(raw: str) -> tuple[str, str]:
-    raw = (raw or "").strip()
-    if "|" in raw:
-        category, subcategory = raw.split("|", 1)
-        return category.strip().upper(), subcategory.strip().upper()
-    return raw.upper(), ""
+def _format_seo_target(item: dict) -> str:
+    category = str(item.get("category") or "").strip()
+    subcategory = str(item.get("subcategory") or "").strip()
+    if category and subcategory:
+        return f"{category} / {subcategory}"
+    return category or "general catalog"
 
 
 @command_admin_required
@@ -166,103 +165,48 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         snapshot = await db.get_search_intelligence_snapshot(limit=10)
         lines = [
-            "🔎 SEO Search Status",
+            "🔎 SEO Search Learning",
             "",
-            f"• Searches 24h: {_fmt_count(snapshot.get('queries_24h'))}",
-            f"• No-result 24h: {_fmt_count(snapshot.get('no_result_24h'))}",
-            f"• Approved imported mappings: {_fmt_count(snapshot.get('approved_mappings'))}",
+            "What this means: the bot watches website/WebApp searches, learns safe search-word mappings, and uses them to send future searches to the right menu area.",
+            "",
+            "Today",
+            f"• Searches typed: {_fmt_count(snapshot.get('queries_24h'))}",
+            f"• Searches with no result: {_fmt_count(snapshot.get('no_result_24h'))}",
+            f"• Total approved mappings: {_fmt_count(snapshot.get('approved_mappings'))}",
+            f"• Made automatically: {_fmt_count(snapshot.get('auto_mappings'))}",
         ]
 
         top_queries = snapshot.get("top_queries") or []
         if top_queries:
-            lines.extend(["", "Top queries"])
+            lines.extend(["", "Searches People Typed"])
             for item in top_queries[:5]:
                 lines.append(
-                    f"• {item.get('query')}: {_fmt_count(item.get('count'))} hit(s), "
-                    f"last results={_fmt_count(item.get('last_matched_count'))}"
+                    f"• {item.get('query')}: searched {_fmt_count(item.get('count'))}x, "
+                    f"last found {_fmt_count(item.get('last_matched_count'))} product(s)"
                 )
+
+        recent_mappings = snapshot.get("recent_mappings") or []
+        if recent_mappings:
+            lines.extend(["", "New/Recent Search Mappings"])
+            for item in recent_mappings[:8]:
+                source = "auto" if item.get("source") == "auto_learn" else str(item.get("source") or "manual")
+                lines.append(f"• {item.get('term')} → {_format_seo_target(item)} ({source})")
 
         unmapped = snapshot.get("unmapped") or []
         if unmapped:
-            lines.extend(["", "No-result queries to review"])
+            lines.extend(["", "Still Being Studied"])
             for item in unmapped[:8]:
-                lines.append(f"• {item.get('query')} ({_fmt_count(item.get('count'))}x)")
+                lines.append(f"• {item.get('query')} ({_fmt_count(item.get('count'))} no-result search(es))")
 
         lines.extend([
             "",
-            "Import: /seoimport FLOWER|EXOTICS term one, term two",
-            "Approve: /seoapprove FLOWER|EXOTICS query words",
+            "Auto-learning runs in the background. No manual SEO import or approval command is needed.",
+            "Note: this shows searches typed on your site/WebApp; search engines do not always reveal exact external search terms.",
         ])
         await update.message.reply_text("\n".join(lines)[:3900])
     except Exception as e:
         logger.error("Error in seostatus command: %s", e, exc_info=True)
         await update.message.reply_text("❌ An error occurred while loading SEO status.")
-
-
-async def _read_replied_text_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
-    replied = getattr(update.message, "reply_to_message", None)
-    document = getattr(replied, "document", None) if replied else None
-    if not document:
-        return ""
-    telegram_file = await context.bot.get_file(document.file_id)
-    data = await telegram_file.download_as_bytearray()
-    return bytes(data).decode("utf-8", errors="ignore")
-
-
-@command_admin_required
-async def seoimport_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Import approved SEO terms from pasted text or a replied CSV/TXT file."""
-    args = list(context.args or [])
-    if not args:
-        await update.message.reply_text(
-            "Usage:\n"
-            "/seoimport CATEGORY|SUBCATEGORY term one, term two\n"
-            "Or reply to a Google Trends/Search Console CSV with:\n"
-            "/seoimport CATEGORY|SUBCATEGORY"
-        )
-        return
-
-    category, subcategory = _parse_seo_taxonomy_arg(args[0])
-    inline_text = " ".join(args[1:]).strip()
-    file_text = ""
-    if not inline_text:
-        try:
-            file_text = await _read_replied_text_file(update, context)
-        except Exception as exc:
-            logger.warning("Failed to read SEO import attachment: %s", exc)
-
-    terms = parse_import_terms(inline_text or file_text)
-    if not terms:
-        await update.message.reply_text("No importable terms found. Paste terms or reply to a CSV/TXT file.")
-        return
-
-    rows = [{"term": term, "category": category, "subcategory": subcategory} for term in terms]
-    imported = await db.upsert_seo_query_mappings(rows, source="admin_import", approved=True)
-    await update.message.reply_text(
-        f"✅ Imported {imported} SEO term mapping(s) to {category}"
-        f"{' / ' + subcategory if subcategory else ''}."
-    )
-
-
-@command_admin_required
-async def seoapprove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Approve one no-result query and map it to a menu category/subcategory."""
-    args = list(context.args or [])
-    if len(args) < 2:
-        await update.message.reply_text("Usage: /seoapprove CATEGORY|SUBCATEGORY query words")
-        return
-
-    category, subcategory = _parse_seo_taxonomy_arg(args[0])
-    term = " ".join(args[1:]).strip()
-    imported = await db.upsert_seo_query_mappings(
-        [{"term": term, "category": category, "subcategory": subcategory}],
-        source="admin_approve",
-        approved=True,
-    )
-    await update.message.reply_text(
-        f"✅ Approved {imported} mapping: {term} → {category}"
-        f"{' / ' + subcategory if subcategory else ''}."
-    )
 
 
 async def build_users_bot_selection_menu():

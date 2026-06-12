@@ -12,7 +12,7 @@ work when typed directly.
 
 ```text
 /adminstatus      View runtime bot, WebApp, cache, webhook, and latency status
-/seostatus        View SEO search-term and mapping status
+/seostatus        View automatic SEO search learning status
 /users            View/manage users by bot instance
 /botusers         Inspect users grouped by bot instance
 /send             Send one user a direct message
@@ -65,6 +65,22 @@ public static/open-web routes unless you also know and block their IP.
 Broadcast destinations that become unreachable are tracked per bot. A successful
 product notification resets the counter; two consecutive failed product
 notification attempts automatically disable that group/channel.
+
+## SEO Search Learning
+
+The bot automatically studies no-result WebApp searches and safely maps them to
+existing catalog categories/subcategories when the match is confident. It also
+learns translated variants for the supported WebApp languages: English, German,
+Dutch, Italian, Spanish, and French.
+
+Use `/seostatus` to see:
+
+- searches typed on the site/WebApp in the last 24 hours
+- searches that still returned no products
+- recent mappings the bot made automatically
+- where each learned search term now points in the catalog
+
+Manual SEO import/approval commands are intentionally not exposed anymore.
 
 ## Cache Operations
 

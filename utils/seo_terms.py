@@ -6,8 +6,6 @@ searches and page copy without creating doorway pages or hidden keyword dumps.
 
 from __future__ import annotations
 
-import csv
-import io
 import json
 import re
 import unicodedata
@@ -203,42 +201,3 @@ def get_learn_page(slug: str) -> Optional[dict[str, Any]]:
             return page
     return None
 
-
-def parse_import_terms(text: str) -> list[str]:
-    """Extract likely search queries from pasted text or Google Trends/Search Console CSV."""
-    if not text:
-        return []
-
-    terms: list[str] = []
-    sample = text[:2048]
-    looks_like_csv = "," in sample or "\t" in sample
-    if looks_like_csv:
-        try:
-            dialect = csv.Sniffer().sniff(sample, delimiters=",\t;")
-            reader = csv.DictReader(io.StringIO(text), dialect=dialect)
-            if reader.fieldnames:
-                query_fields = [
-                    field for field in reader.fieldnames
-                    if normalize_term(field) in {"query", "queries", "search query", "search queries", "related query", "related queries", "term", "keyword", "top"}
-                    or "query" in normalize_term(field)
-                    or "queries" in normalize_term(field)
-                    or "keyword" in normalize_term(field)
-                ]
-                for row in reader:
-                    for field in query_fields or reader.fieldnames[:1]:
-                        value = (row.get(field) or "").strip()
-                        if value and value.lower() not in {"breakout", "rising"}:
-                            terms.append(value)
-            else:
-                raise ValueError("no headers")
-        except Exception:
-            terms = []
-
-    if not terms:
-        for line in text.splitlines():
-            for part in re.split(r"[,;]", line):
-                value = part.strip()
-                if value and not value.lower().startswith(("query,", "term,", "keyword,")):
-                    terms.append(value)
-
-    return _dedupe(terms, limit=500)

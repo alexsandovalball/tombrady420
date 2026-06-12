@@ -26,8 +26,7 @@ from handlers.admin import (
     users_command, show_users_page, build_users_bot_selection_menu,
     block_command, unblock_command, send_command, broadcast_command,
     setcontact_command, handle_setcontact_input, setlink_command, handle_setlink_input,
-    clearcache_command, botusers_command, prunebots_command,
-    seostatus_command, seoimport_command, seoapprove_command
+    clearcache_command, botusers_command, prunebots_command
 )
 from handlers.inline import handle_inline_query, handle_chosen_inline_result
 from handlers.callback_router import route_callback
@@ -646,9 +645,7 @@ async def setup_bot_commands(bot):
         BotCommand("menu", "Browse the product catalog"),
         BotCommand("language", "Change bot language"),
         BotCommand("adminstatus", "View bot and WebApp status"),
-        BotCommand("seostatus", "View SEO search status"),
-        BotCommand("seoimport", "Import SEO search terms"),
-        BotCommand("seoapprove", "Approve a search mapping"),
+        BotCommand("seostatus", "View automatic SEO search learning"),
         BotCommand("users", "View and manage bot users"),
         BotCommand("botusers", "View users grouped by bot instance"),
         BotCommand("send", "Send a message to a specific user"),

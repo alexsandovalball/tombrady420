@@ -18,6 +18,7 @@
         VIDEO_LOAD_TIMEOUT_MS: 10000,  // Timeout before showing tap-to-play for slow videos
         USER_DATA_CHECK_INTERVALS: [300, 700, 1500],  // Retry intervals in ms for user data loading
         SEARCH_DEBOUNCE_MS: 300,  // Debounce time for search input
+        LANGUAGE_STORAGE_KEY: 'bradycadia_webapp_language',
         WEBAPP_CLOSE_DELAY_MS: 1500,  // Delay before closing webapp after successful product send
         ERROR_DISPLAY_MS: 4000,  // Duration to show error messages on buttons
         INITIAL_DATA_TIMEOUT_MS: 10000,  // Timeout for initial data load to prevent infinite loading
@@ -204,6 +205,7 @@
         orderLink: null,
         allProductsCount: 0,
         userLanguage: 'en',
+        languageSource: 'default',
         isSubscribed: true,
         userId: null,
         username: null,  // Store username for display
@@ -587,10 +589,69 @@
 
     // Helper: Find language object by code (handles language variants)
     function findLanguageByCode(langCode) {
+        if (!langCode) return state.languages[0];
         const baseLang = langCode.split('-')[0];
         return state.languages.find(l => 
             l.code === langCode || l.code.startsWith(baseLang)
         );
+    }
+
+    function normalizeSupportedLanguage(langCode) {
+        if (!langCode) return null;
+        const clean = String(langCode).trim();
+        if (!clean) return null;
+        const exact = state.languages.find(l => l.code.toLowerCase() === clean.toLowerCase());
+        if (exact) return exact.code;
+        const baseLang = clean.split('-')[0].toLowerCase();
+        const base = state.languages.find(l => l.code.toLowerCase() === baseLang);
+        return base ? base.code : null;
+    }
+
+    function readStoredLanguage() {
+        try {
+            return localStorage.getItem(CONFIG.LANGUAGE_STORAGE_KEY);
+        } catch (_err) {
+            return null;
+        }
+    }
+
+    function persistLanguage(langCode) {
+        try {
+            localStorage.setItem(CONFIG.LANGUAGE_STORAGE_KEY, langCode);
+        } catch (_err) {
+            // Storage can be unavailable in some embedded browsers; the app still works.
+        }
+    }
+
+    function applyDetectedLanguage() {
+        const params = new URLSearchParams(window.location.search || '');
+        const browserLanguages = Array.isArray(navigator.languages) ? navigator.languages : [];
+        const candidates = [
+            { source: 'url', value: params.get('lang') || params.get('language') },
+            { source: 'stored', value: readStoredLanguage() },
+            { source: 'telegram', value: tg.initDataUnsafe?.user?.language_code },
+            { source: 'browser', value: browserLanguages[0] || navigator.language || navigator.userLanguage }
+        ];
+
+        for (const candidate of candidates) {
+            const supported = normalizeSupportedLanguage(candidate.value);
+            if (supported) {
+                state.userLanguage = supported;
+                state.languageSource = candidate.source;
+                logger.log('language', 'auto_detected', 'success', '', {
+                    language: supported,
+                    source: candidate.source
+                });
+                return;
+            }
+        }
+
+        state.userLanguage = 'en';
+        state.languageSource = 'default';
+    }
+
+    function canAutoReplaceLanguage() {
+        return !['url', 'stored', 'manual'].includes(state.languageSource);
     }
 
     // Helper: Normalize contact username (remove @ prefix)
@@ -797,6 +858,7 @@
         // This ensures user data is available before rendering
         await new Promise(resolve => setTimeout(resolve, 100));
 
+        applyDetectedLanguage();
         renderUserInfo();
         
         // Re-check user info multiple times to ensure it gets loaded
@@ -939,8 +1001,10 @@
                             if (!state.username && userInfo.username) {
                                 state.username = userInfo.username;
                             }
-                            if (userInfo.language_code && !state.userLanguage) {
-                                state.userLanguage = userInfo.language_code;
+                            const backendLanguage = normalizeSupportedLanguage(userInfo.language_code);
+                            if (backendLanguage && canAutoReplaceLanguage()) {
+                                state.userLanguage = backendLanguage;
+                                state.languageSource = 'telegram';
                             }
                         }
                     }
@@ -1104,9 +1168,11 @@
                 state.lastLoggedUserStateId = userStateKey;
             }
             
-            // Get user language from Telegram
-            if (user.language_code) {
-                state.userLanguage = user.language_code;
+            // Get user language from Telegram unless URL/storage/manual choice won.
+            const telegramLanguage = normalizeSupportedLanguage(user.language_code);
+            if (telegramLanguage && canAutoReplaceLanguage()) {
+                state.userLanguage = telegramLanguage;
+                state.languageSource = 'telegram';
             }
             const lang = findLanguageByCode(state.userLanguage);
             if (lang && langEl) {
@@ -1471,6 +1537,8 @@
 
     function selectLanguage(lang) {
         state.userLanguage = lang.code;
+        state.languageSource = 'manual';
+        persistLanguage(lang.code);
         
         // Apply translations immediately
         applyTranslations();
