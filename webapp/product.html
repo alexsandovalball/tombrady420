@@ -65,6 +65,12 @@
         .seo-btn { display: inline-block; padding: .75rem 1rem; border-radius: 8px; text-decoration: none; font-weight: 700; }
         .seo-btn.primary { background: #2f9e55; color: #fff; }
         .seo-btn.secondary { border: 1px solid var(--border, #ddd); color: var(--text-primary, #111); }
+        .media-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: .85rem; margin: 1.25rem 0; }
+        .media-item { margin: 0; background: var(--card-bg, #fff); border: 1px solid var(--border, #ddd); border-radius: 8px; padding: .5rem; box-shadow: 0 8px 18px rgba(0, 0, 0, .08); }
+        .media-item img, .media-item video { display: block; width: 100%; max-height: 520px; object-fit: contain; border-radius: 6px; background: rgba(0, 0, 0, .04); }
+        .media-item figcaption { margin-top: .45rem; color: var(--text-secondary, #666); font-size: .86rem; }
+        .term-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: .45rem; margin: .75rem 0 1.25rem; }
+        .term-list li { border: 1px solid var(--border, #ddd); border-radius: 999px; padding: .28rem .65rem; color: var(--text-secondary, #666); font-size: .84rem; background: rgba(0, 0, 0, .03); }
         .related-list { list-style: none; padding: 0; margin: .75rem 0 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .85rem; }
         .related-card { min-width: 0; }
         .related-card a {
@@ -112,11 +118,41 @@
                 </div>
 
                 <div class="seo-actions">
-                    {% if webapp_product_url %}<a class="seo-btn primary" href="{{ webapp_product_url }}">View in WebApp</a>{% endif %}
-                    {% if telegram_bot_url %}<a class="seo-btn secondary" href="{{ telegram_bot_url }}">Get Product in Bot Chat</a>{% endif %}
+                    {% if telegram_bot_url %}<a class="seo-btn primary" href="{{ telegram_bot_url }}">Get Product in Bot Chat</a>{% endif %}
                 </div>
             </section>
         </article>
+
+        {% if product_media %}
+        <section aria-labelledby="media-heading">
+            <h2 id="media-heading">Product media</h2>
+            <div class="media-grid">
+                {% for media in product_media %}
+                <figure class="media-item">
+                    {% if media.type == "video" %}
+                    <video controls playsinline preload="metadata" src="{{ media.url }}">
+                        <a href="{{ media.url }}">Open video</a>
+                    </video>
+                    {% else %}
+                    <img src="{{ media.url }}" alt="{{ media.label }}" loading="{% if loop.first %}eager{% else %}lazy{% endif %}" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
+                    {% endif %}
+                    <figcaption>{{ media.label }}</figcaption>
+                </figure>
+                {% endfor %}
+            </div>
+        </section>
+        {% endif %}
+
+        {% if seo_side_notes %}
+        <section aria-labelledby="related-searches-heading">
+            <h2 id="related-searches-heading">Related searches</h2>
+            <ul class="term-list">
+                {% for term in seo_side_notes %}
+                <li>{{ term }}</li>
+                {% endfor %}
+            </ul>
+        </section>
+        {% endif %}
 
         {% if related_products %}
         <section aria-labelledby="related-heading">

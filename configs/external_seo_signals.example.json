@@ -1,0 +1,16 @@
+{
+  "signals": [
+    {
+      "term": "solventless hash",
+      "category": "CONCENTRATES",
+      "subcategory": "SOLVENTLESS",
+      "provider": "approved_taxonomy_export",
+      "source": "operator_curated",
+      "confidence": 96,
+      "approved": true,
+      "notes": {
+        "usage": "Short taxonomy terms only. Do not paste copied third-party descriptions here."
+      }
+    }
+  ]
+}

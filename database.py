@@ -344,6 +344,45 @@ class Database:
             """)
 
             await db.execute("""
+                CREATE TABLE IF NOT EXISTS search_console_query_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    query TEXT NOT NULL,
+                    normalized_query TEXT NOT NULL,
+                    page TEXT NOT NULL DEFAULT '',
+                    country TEXT NOT NULL DEFAULT '',
+                    device TEXT NOT NULL DEFAULT '',
+                    clicks INTEGER NOT NULL DEFAULT 0,
+                    impressions INTEGER NOT NULL DEFAULT 0,
+                    ctr REAL NOT NULL DEFAULT 0,
+                    position REAL NOT NULL DEFAULT 0,
+                    source_date TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(normalized_query, page, country, device, source_date)
+                )
+            """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS external_seo_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    term TEXT NOT NULL,
+                    normalized_term TEXT NOT NULL,
+                    term_type TEXT NOT NULL DEFAULT 'query',
+                    provider TEXT NOT NULL DEFAULT 'internal',
+                    source TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL DEFAULT '',
+                    subcategory TEXT NOT NULL DEFAULT '',
+                    confidence INTEGER NOT NULL DEFAULT 0,
+                    approved INTEGER NOT NULL DEFAULT 0,
+                    evidence_count INTEGER NOT NULL DEFAULT 1,
+                    notes_json TEXT,
+                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(provider, normalized_term, category, subcategory)
+                )
+            """)
+
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS broadcast_chats (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     bot_username TEXT NOT NULL,
@@ -608,6 +647,10 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_query_events_matched ON search_query_events(matched_count, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_query_mappings_approved ON seo_query_mappings(approved, normalized_term)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_query_mappings_taxonomy ON seo_query_mappings(category, subcategory)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_search_console_query_events_date ON search_console_query_events(source_date DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_search_console_query_events_query ON search_console_query_events(normalized_query, source_date DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_external_seo_signals_approved ON external_seo_signals(approved, confidence DESC, last_seen DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_external_seo_signals_taxonomy ON external_seo_signals(category, subcategory, approved)")
 
             # Broadcast chats indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_chats_bot_username ON broadcast_chats(bot_username)")
@@ -3626,6 +3669,255 @@ class Database:
             await db.commit()
         return len(rows)
 
+    async def upsert_search_console_query_events(self, rows: List[Dict[str, Any]]) -> int:
+        """Insert/update Search Console query snapshots."""
+        from utils.seo_terms import normalize_term
+
+        normalized_rows = []
+        seen = set()
+        for row in rows or []:
+            query = str(row.get("query") or "").strip()
+            normalized_query = normalize_term(query)
+            source_date = str(row.get("date") or row.get("source_date") or "").strip()
+            if not normalized_query or not source_date:
+                continue
+            page = str(row.get("page") or "")[:500]
+            country = str(row.get("country") or "")[:20]
+            device = str(row.get("device") or "")[:40]
+            key = (normalized_query, page, country, device, source_date)
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized_rows.append((
+                query[:300],
+                normalized_query[:300],
+                page,
+                country,
+                device,
+                max(0, int(row.get("clicks") or 0)),
+                max(0, int(row.get("impressions") or 0)),
+                float(row.get("ctr") or 0),
+                float(row.get("position") or 0),
+                source_date[:20],
+            ))
+
+        if not normalized_rows:
+            return 0
+
+        async with self.get_connection() as db:
+            await db.executemany(
+                """
+                INSERT INTO search_console_query_events (
+                    query, normalized_query, page, country, device,
+                    clicks, impressions, ctr, position, source_date
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(normalized_query, page, country, device, source_date) DO UPDATE SET
+                    query = excluded.query,
+                    clicks = excluded.clicks,
+                    impressions = excluded.impressions,
+                    ctr = excluded.ctr,
+                    position = excluded.position,
+                    created_at = CURRENT_TIMESTAMP
+                """,
+                normalized_rows,
+            )
+            await db.commit()
+        return len(normalized_rows)
+
+    async def upsert_external_seo_signals(
+        self,
+        signals: List[Dict[str, Any]],
+        *,
+        provider: str = "internal",
+        source: str = "",
+        approved: bool = False,
+    ) -> int:
+        """Record external SEO evidence such as Search Console or approved taxonomy exports."""
+        from utils.seo_terms import normalize_term
+
+        rows = []
+        seen = set()
+        for signal in signals or []:
+            term = str(signal.get("term") or "").strip()
+            normalized = normalize_term(term)
+            if not normalized:
+                continue
+            row_provider = str(signal.get("provider") or provider or "internal").strip()[:80]
+            category = str(signal.get("category") or "").strip()[:80]
+            subcategory = str(signal.get("subcategory") or "").strip()[:120]
+            key = (row_provider, normalized, category, subcategory)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                notes_json = json.dumps(signal.get("notes") or {}, ensure_ascii=True)
+            except (TypeError, ValueError):
+                notes_json = "{}"
+            rows.append((
+                term[:300],
+                normalized[:300],
+                str(signal.get("term_type") or "query").strip()[:40],
+                row_provider,
+                str(signal.get("source") or source or "").strip()[:120],
+                category,
+                subcategory,
+                max(0, min(100, int(signal.get("confidence") or 0))),
+                int(bool(signal.get("approved", approved))),
+                max(1, int(signal.get("evidence_count") or 1)),
+                notes_json[:2000],
+            ))
+
+        if not rows:
+            return 0
+
+        async with self.get_connection() as db:
+            await db.executemany(
+                """
+                INSERT INTO external_seo_signals (
+                    term, normalized_term, term_type, provider, source,
+                    category, subcategory, confidence, approved, evidence_count, notes_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider, normalized_term, category, subcategory) DO UPDATE SET
+                    term = excluded.term,
+                    term_type = excluded.term_type,
+                    source = excluded.source,
+                    confidence = max(external_seo_signals.confidence, excluded.confidence),
+                    approved = CASE
+                        WHEN external_seo_signals.approved = 1 OR excluded.approved = 1 THEN 1
+                        ELSE 0
+                    END,
+                    evidence_count = max(external_seo_signals.evidence_count, excluded.evidence_count),
+                    notes_json = excluded.notes_json,
+                    last_seen = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                rows,
+            )
+            await db.commit()
+        return len(rows)
+
+    async def get_approved_external_seo_signals_without_mapping(
+        self,
+        limit: int = 25,
+    ) -> List[Dict[str, Any]]:
+        """Return approved external terms that have not yet been promoted to mappings."""
+        limit = max(1, min(limit, 100))
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT
+                    s.term, s.normalized_term, s.provider, s.source,
+                    s.category, s.subcategory, s.confidence, s.evidence_count
+                FROM external_seo_signals s
+                LEFT JOIN seo_query_mappings m
+                    ON m.normalized_term = s.normalized_term AND m.approved = 1
+                WHERE s.approved = 1
+                  AND s.category != ''
+                  AND m.id IS NULL
+                ORDER BY s.confidence DESC, s.evidence_count DESC, s.last_seen DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    async def get_recent_external_seo_signals(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Return recent approved external SEO signals for admin status."""
+        limit = max(1, min(limit, 50))
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT term, provider, source, category, subcategory, confidence,
+                       evidence_count, last_seen
+                FROM external_seo_signals
+                WHERE approved = 1
+                ORDER BY last_seen DESC, confidence DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    async def get_seo_side_notes(
+        self,
+        category: str,
+        subcategory: str = "",
+        *,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Return approved, visible SEO side-note terms for a category page."""
+        category = str(category or "").strip()
+        subcategory = str(subcategory or "").strip()
+        if not category:
+            return []
+
+        limit = max(1, min(limit, 25))
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            params: list[Any] = [category]
+            subcategory_filter = ""
+            if subcategory:
+                subcategory_filter = "AND LOWER(TRIM(COALESCE(subcategory, ''))) = LOWER(TRIM(?))"
+                params.append(subcategory)
+
+            params.append(limit)
+            async with db.execute(
+                f"""
+                SELECT term, source, 'mapping' AS signal_type, hits AS evidence_count
+                FROM seo_query_mappings
+                WHERE approved = 1
+                  AND LOWER(TRIM(COALESCE(category, ''))) = LOWER(TRIM(?))
+                  {subcategory_filter}
+                ORDER BY hits DESC, updated_at DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ) as cursor:
+                mapping_rows = [dict(row) for row in await cursor.fetchall()]
+
+            remaining = max(0, limit - len(mapping_rows))
+            signal_rows: List[Dict[str, Any]] = []
+            if remaining:
+                params = [category]
+                subcategory_filter = ""
+                if subcategory:
+                    subcategory_filter = "AND LOWER(TRIM(COALESCE(subcategory, ''))) = LOWER(TRIM(?))"
+                    params.append(subcategory)
+                params.append(remaining)
+                async with db.execute(
+                    f"""
+                    SELECT term, provider AS source, 'external' AS signal_type, evidence_count
+                    FROM external_seo_signals
+                    WHERE approved = 1
+                      AND LOWER(TRIM(COALESCE(category, ''))) = LOWER(TRIM(?))
+                      {subcategory_filter}
+                    ORDER BY confidence DESC, evidence_count DESC, last_seen DESC
+                    LIMIT ?
+                    """,
+                    tuple(params),
+                ) as cursor:
+                    signal_rows = [dict(row) for row in await cursor.fetchall()]
+
+        seen = set()
+        merged = []
+        from utils.seo_terms import normalize_term
+
+        for row in [*mapping_rows, *signal_rows]:
+            key = normalize_term(row.get("term") or "")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append(row)
+            if len(merged) >= limit:
+                break
+        return merged
+
     async def get_approved_seo_query_mappings(self, limit: int = 2000) -> List[Dict[str, Any]]:
         """Return admin-approved SEO query mappings."""
         limit = max(1, min(limit, 5000))
@@ -3754,6 +4046,19 @@ class Database:
                 "auto_mappings": await scalar(
                     "SELECT COUNT(*) FROM seo_query_mappings WHERE approved = 1 AND source = 'auto_learn'"
                 ),
+                "search_console_queries_7d": await scalar(
+                    "SELECT COUNT(DISTINCT normalized_query) FROM search_console_query_events WHERE source_date >= ?",
+                    ((datetime.now() - timedelta(days=7)).date().isoformat(),),
+                ),
+                "search_console_clicks_7d": await scalar(
+                    "SELECT COALESCE(SUM(clicks), 0) FROM search_console_query_events WHERE source_date >= ?",
+                    ((datetime.now() - timedelta(days=7)).date().isoformat(),),
+                ),
+                "search_console_impressions_7d": await scalar(
+                    "SELECT COALESCE(SUM(impressions), 0) FROM search_console_query_events WHERE source_date >= ?",
+                    ((datetime.now() - timedelta(days=7)).date().isoformat(),),
+                ),
+                "external_signals": await scalar("SELECT COUNT(*) FROM external_seo_signals WHERE approved = 1"),
                 "top_queries": await rows(
                     """
                     SELECT
@@ -3777,6 +4082,23 @@ class Database:
                 ),
                 "unmapped": await self.get_unmapped_search_queries(limit=limit),
                 "recent_mappings": await self.get_recent_seo_query_mappings(limit=limit),
+                "recent_external_signals": await self.get_recent_external_seo_signals(limit=limit),
+                "top_search_console_queries": await rows(
+                    """
+                    SELECT
+                        query,
+                        SUM(clicks) AS clicks,
+                        SUM(impressions) AS impressions,
+                        ROUND(AVG(position), 1) AS avg_position,
+                        MAX(source_date) AS last_seen
+                    FROM search_console_query_events
+                    WHERE source_date >= ?
+                    GROUP BY normalized_query
+                    ORDER BY clicks DESC, impressions DESC, last_seen DESC
+                    LIMIT ?
+                    """,
+                    ((datetime.now() - timedelta(days=7)).date().isoformat(), limit),
+                ),
             }
 
     async def get_admin_dashboard_snapshot(self, recent_limit: int = 30) -> Dict[str, Any]:

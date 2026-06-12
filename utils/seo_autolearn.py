@@ -113,18 +113,24 @@ def _build_taxonomy_profiles(products: Iterable[dict[str, Any]]) -> dict[tuple[s
     return profiles
 
 
+def build_taxonomy_profiles(products: Iterable[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
+    """Build reusable taxonomy profiles for a batch of SEO inference calls."""
+    return _build_taxonomy_profiles(products)
+
+
 def infer_seo_query_mapping(
     query: str,
     products: Iterable[dict[str, Any]],
     *,
     min_score: int = 92,
+    profiles: Optional[dict[tuple[str, str], dict[str, Any]]] = None,
 ) -> Optional[dict[str, Any]]:
     """Infer a safe category/subcategory mapping for one no-result query."""
     query_norm = normalize_term(query)
     if len(query_norm) < 3:
         return None
 
-    profiles = _build_taxonomy_profiles(products)
+    profiles = profiles or _build_taxonomy_profiles(products)
     scored: list[dict[str, Any]] = []
 
     for profile in profiles.values():

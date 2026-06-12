@@ -15,12 +15,18 @@ def build_webapp_product_url(web_app_url: str, product_id: int) -> Optional[str]
         return None
 
     parts = urlsplit(web_app_url)
+    path = parts.path or "/webapp/index.html"
+    if path == "/" or not path.lower().endswith((".html", "/")):
+        path = "/webapp/index.html"
+    elif path.rstrip("/") == "/webapp":
+        path = "/webapp/index.html"
+
     query = dict(parse_qsl(parts.query, keep_blank_values=True))
     query["product_id"] = str(product_id)
     return urlunsplit((
         parts.scheme,
         parts.netloc,
-        parts.path,
+        path,
         urlencode(query),
         parts.fragment,
     ))

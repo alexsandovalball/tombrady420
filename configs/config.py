@@ -3,6 +3,7 @@ Configuration management using python-decouple for secure environment variable h
 """
 import logging
 import urllib.parse
+from pathlib import Path
 from typing import List, Optional
 from decouple import config, Csv, UndefinedValueError
 
@@ -38,6 +39,19 @@ class ConfigClass:
         self.SEO_AUTO_LEARN_MIN_COUNT: int = 1
         self.SEO_AUTO_LEARN_SCORE: int = 92
         self.SEO_AUTO_LEARN_MAX_PER_RUN: int = 25
+        self.SEO_EXTERNAL_SIGNAL_SCORE: int = 94
+        self.SEO_SIDE_NOTE_LIMIT: int = 10
+        self.SEARCH_CONSOLE_ENABLED: bool = False
+        self.SEARCH_CONSOLE_SITE_URL: Optional[str] = None
+        self.SEARCH_CONSOLE_SERVICE_ACCOUNT_JSON: Optional[str] = None
+        self.SEARCH_CONSOLE_SERVICE_ACCOUNT_FILE: Optional[str] = None
+        self.SEARCH_CONSOLE_OAUTH_CLIENT_JSON: Optional[str] = None
+        self.SEARCH_CONSOLE_OAUTH_CLIENT_FILE: Optional[str] = None
+        self.SEARCH_CONSOLE_OAUTH_TOKEN_JSON: Optional[str] = None
+        self.SEARCH_CONSOLE_OAUTH_TOKEN_FILE: Optional[str] = None
+        self.SEARCH_CONSOLE_LOOKBACK_DAYS: int = 7
+        self.SEARCH_CONSOLE_ROW_LIMIT: int = 250
+        self.EXTERNAL_SEO_SIGNALS_FILE: Optional[str] = None
         self._load_config()
     
     def _load_config(self):
@@ -138,6 +152,58 @@ class ConfigClass:
             1,
             min(100, config('SEO_AUTO_LEARN_MAX_PER_RUN', default=25, cast=int)),
         )
+        self.SEO_EXTERNAL_SIGNAL_SCORE = max(
+            80,
+            min(100, config('SEO_EXTERNAL_SIGNAL_SCORE', default=94, cast=int)),
+        )
+        self.SEO_SIDE_NOTE_LIMIT = max(
+            3,
+            min(25, config('SEO_SIDE_NOTE_LIMIT', default=10, cast=int)),
+        )
+        self.SEARCH_CONSOLE_SERVICE_ACCOUNT_JSON = config('SEARCH_CONSOLE_SERVICE_ACCOUNT_JSON', default=None)
+        default_search_console_file = '/data/search-console-service-account.json'
+        configured_search_console_file = config('SEARCH_CONSOLE_SERVICE_ACCOUNT_FILE', default=None)
+        self.SEARCH_CONSOLE_SERVICE_ACCOUNT_FILE = (
+            configured_search_console_file
+            or (default_search_console_file if Path(default_search_console_file).exists() else None)
+        )
+        self.SEARCH_CONSOLE_OAUTH_CLIENT_JSON = config('SEARCH_CONSOLE_OAUTH_CLIENT_JSON', default=None)
+        default_oauth_client_file = '/data/search-console-oauth-client.json'
+        configured_oauth_client_file = config('SEARCH_CONSOLE_OAUTH_CLIENT_FILE', default=None)
+        self.SEARCH_CONSOLE_OAUTH_CLIENT_FILE = (
+            configured_oauth_client_file
+            or (default_oauth_client_file if Path(default_oauth_client_file).exists() else None)
+        )
+        self.SEARCH_CONSOLE_OAUTH_TOKEN_JSON = config('SEARCH_CONSOLE_OAUTH_TOKEN_JSON', default=None)
+        default_oauth_token_file = '/data/search-console-oauth-token.json'
+        configured_oauth_token_file = config('SEARCH_CONSOLE_OAUTH_TOKEN_FILE', default=None)
+        self.SEARCH_CONSOLE_OAUTH_TOKEN_FILE = (
+            configured_oauth_token_file
+            or (default_oauth_token_file if Path(default_oauth_token_file).exists() else None)
+        )
+        search_console_has_credentials = bool(
+            self.SEARCH_CONSOLE_SERVICE_ACCOUNT_JSON
+            or self.SEARCH_CONSOLE_SERVICE_ACCOUNT_FILE
+            or (
+                (self.SEARCH_CONSOLE_OAUTH_CLIENT_JSON or self.SEARCH_CONSOLE_OAUTH_CLIENT_FILE)
+                and (self.SEARCH_CONSOLE_OAUTH_TOKEN_JSON or self.SEARCH_CONSOLE_OAUTH_TOKEN_FILE)
+            )
+        )
+        self.SEARCH_CONSOLE_ENABLED = config(
+            'SEARCH_CONSOLE_ENABLED',
+            default=search_console_has_credentials,
+            cast=bool,
+        )
+        self.SEARCH_CONSOLE_SITE_URL = config('SEARCH_CONSOLE_SITE_URL', default=None)
+        self.SEARCH_CONSOLE_LOOKBACK_DAYS = max(
+            1,
+            min(30, config('SEARCH_CONSOLE_LOOKBACK_DAYS', default=7, cast=int)),
+        )
+        self.SEARCH_CONSOLE_ROW_LIMIT = max(
+            10,
+            min(2500, config('SEARCH_CONSOLE_ROW_LIMIT', default=250, cast=int)),
+        )
+        self.EXTERNAL_SEO_SIGNALS_FILE = config('EXTERNAL_SEO_SIGNALS_FILE', default=None)
         
         # Load WEB_APP_URL - if not set, derive from WEBHOOK_URL (existing behaviour)
         self.WEB_APP_URL = config('WEB_APP_URL', default=None)
@@ -166,6 +232,9 @@ class ConfigClass:
             except Exception:  # urlparse is safe, but guard against unexpected input
                 derived = None
             self.STOREFRONT_DOMAIN = derived
+
+        if not self.SEARCH_CONSOLE_SITE_URL and self.STOREFRONT_DOMAIN:
+            self.SEARCH_CONSOLE_SITE_URL = self.STOREFRONT_DOMAIN.rstrip('/') + '/'
 
         # Ensure WEB_APP_URL exists (so Telegram MenuButton still works) even
         # when it was not derivable from WEBHOOK_URL above.

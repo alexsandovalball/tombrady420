@@ -155,6 +155,32 @@ queries to existing catalog categories/subcategories only when confidence is
 high, then adds translated variants for the supported bot/WebApp languages. Use
 `/seostatus` to see what people searched and what mappings were learned.
 
+Optional Search Console learning can import real Google query/click/impression
+data for your own verified site. The recommended setup is OAuth with your normal
+Search Console Google account:
+
+```powershell
+python scripts/search_console_oauth.py --client-json C:\path\to\oauth-client.json
+```
+
+Then place these two files on the Render persistent disk:
+
+```text
+/data/search-console-oauth-client.json
+/data/search-console-oauth-token.json
+```
+
+The app auto-enables Search Console learning when both OAuth files exist. The
+site URL is derived from `STOREFRONT_DOMAIN`, so `SEARCH_CONSOLE_ENABLED` and
+`SEARCH_CONSOLE_SITE_URL` are only needed when you want to override defaults.
+Service-account JSON is still supported for deployments where Search Console
+accepts the service-account identity.
+
+The learner also supports an optional approved taxonomy export file via
+`EXTERNAL_SEO_SIGNALS_FILE`. Use short terms and category mappings only; do not
+paste copied Leafly/Weedmaps page descriptions into the project. See
+`configs/external_seo_signals.example.json`.
+
 ## Render Notes
 
 Use one persistent disk mounted at `/data`. Keep the database there, not in the

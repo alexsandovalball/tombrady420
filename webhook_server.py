@@ -19,7 +19,7 @@ from collections import OrderedDict
 from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -49,7 +49,9 @@ from utils.seo_terms import (
     get_terms_for_taxonomy,
     normalize_term,
 )
-from utils.seo_autolearn import infer_seo_query_mapping
+from utils.seo_autolearn import build_taxonomy_profiles, infer_seo_query_mapping
+from utils.external_seo_signals import load_external_seo_signal_file
+from utils.search_console import fetch_search_console_rows
 from translations.language_config import SUPPORTED_LANGUAGES
 from translations.translator import translation_service
 from utils.metrics import metrics
@@ -1417,10 +1419,190 @@ async def _expand_auto_learn_mapping_terms(term: str) -> List[str]:
     return cleaned
 
 
+def _external_signal_file_path() -> str:
+    return Config.EXTERNAL_SEO_SIGNALS_FILE or str(Path(__file__).parent / "configs" / "external_seo_signals.json")
+
+
+async def _promote_approved_external_signals() -> int:
+    """Promote approved external signals into normal SEO mappings."""
+    candidates = await _catalog_db.get_approved_external_seo_signals_without_mapping(
+        limit=Config.SEO_AUTO_LEARN_MAX_PER_RUN,
+    )
+    if not candidates:
+        return 0
+
+    approvals = []
+    for item in candidates:
+        term = str(item.get("term") or "").strip()
+        if not _is_useful_auto_seo_term(term):
+            continue
+        for learned_term in await _expand_auto_learn_mapping_terms(term):
+            approvals.append({
+                "term": learned_term,
+                "category": item.get("category") or "",
+                "subcategory": item.get("subcategory") or "",
+            })
+
+    if not approvals:
+        return 0
+
+    promoted = await _catalog_db.upsert_seo_query_mappings(
+        approvals,
+        source="external_signal",
+        approved=True,
+    )
+    logger.info("[seo_external] promoted=%d signals=%d", promoted, len(candidates))
+    return promoted
+
+
+async def _import_external_signal_file(
+    products: list[dict[str, Any]],
+    profiles: dict[tuple[str, str], dict[str, Any]],
+) -> int:
+    """Import optional approved taxonomy terms from a local/provider JSON export."""
+    raw_signals = load_external_seo_signal_file(_external_signal_file_path())
+    if not raw_signals:
+        return 0
+
+    signals = []
+    for raw in raw_signals[:500]:
+        term = str(raw.get("term") or "").strip()
+        if not _is_useful_auto_seo_term(term):
+            continue
+
+        category = str(raw.get("category") or "").strip()
+        subcategory = str(raw.get("subcategory") or "").strip()
+        approved = bool(raw.get("approved"))
+        confidence = int(raw.get("confidence") or 0)
+
+        if not category:
+            inferred = infer_seo_query_mapping(
+                term,
+                products,
+                min_score=Config.SEO_EXTERNAL_SIGNAL_SCORE,
+                profiles=profiles,
+            )
+            if not inferred:
+                approved = False
+            else:
+                category = inferred["category"]
+                subcategory = inferred["subcategory"]
+                confidence = max(confidence, int(float(inferred.get("score") or 0)))
+                approved = True
+        elif confidence >= Config.SEO_EXTERNAL_SIGNAL_SCORE:
+            approved = True
+
+        signals.append({
+            **raw,
+            "term": term,
+            "category": category,
+            "subcategory": subcategory,
+            "confidence": confidence,
+            "approved": approved,
+            "source": raw.get("source") or "external_signal_file",
+        })
+
+    imported = await _catalog_db.upsert_external_seo_signals(
+        signals,
+        provider="external_file",
+        source="external_signal_file",
+        approved=False,
+    )
+    if imported:
+        logger.info("[seo_external] file_signals_imported=%d", imported)
+    return imported
+
+
+async def _import_search_console_signals(
+    products: list[dict[str, Any]],
+    profiles: dict[tuple[str, str], dict[str, Any]],
+) -> int:
+    """Import Search Console queries and convert confident matches into approved signals."""
+    rows = await fetch_search_console_rows(
+        enabled=Config.SEARCH_CONSOLE_ENABLED,
+        site_url=Config.SEARCH_CONSOLE_SITE_URL,
+        service_account_json=Config.SEARCH_CONSOLE_SERVICE_ACCOUNT_JSON,
+        service_account_file=Config.SEARCH_CONSOLE_SERVICE_ACCOUNT_FILE,
+        oauth_client_json=Config.SEARCH_CONSOLE_OAUTH_CLIENT_JSON,
+        oauth_client_file=Config.SEARCH_CONSOLE_OAUTH_CLIENT_FILE,
+        oauth_token_json=Config.SEARCH_CONSOLE_OAUTH_TOKEN_JSON,
+        oauth_token_file=Config.SEARCH_CONSOLE_OAUTH_TOKEN_FILE,
+        lookback_days=Config.SEARCH_CONSOLE_LOOKBACK_DAYS,
+        row_limit=Config.SEARCH_CONSOLE_ROW_LIMIT,
+    )
+    if not rows:
+        return 0
+
+    imported_rows = await _catalog_db.upsert_search_console_query_events(rows)
+    signals = []
+    for row in rows:
+        query = str(row.get("query") or "").strip()
+        impressions = int(row.get("impressions") or 0)
+        clicks = int(row.get("clicks") or 0)
+        if not _is_useful_auto_seo_term(query):
+            continue
+        if clicks <= 0 and impressions < 3:
+            continue
+        inferred = infer_seo_query_mapping(
+            query,
+            products,
+            min_score=Config.SEO_EXTERNAL_SIGNAL_SCORE,
+            profiles=profiles,
+        )
+        if not inferred:
+            continue
+
+        confidence = min(100, int(float(inferred.get("score") or 0)) + (1 if clicks > 0 else 0))
+        signals.append({
+            "term": query,
+            "term_type": "search_console_query",
+            "provider": "google_search_console",
+            "source": str(row.get("page") or "")[:120],
+            "category": inferred["category"],
+            "subcategory": inferred["subcategory"],
+            "confidence": confidence,
+            "approved": True,
+            "evidence_count": max(1, clicks * 5 + impressions),
+            "notes": {
+                "clicks": clicks,
+                "impressions": impressions,
+                "position": row.get("position"),
+                "date": row.get("date"),
+                "country": row.get("country"),
+                "device": row.get("device"),
+            },
+        })
+
+    imported_signals = await _catalog_db.upsert_external_seo_signals(
+        signals,
+        provider="google_search_console",
+        source="search_console",
+        approved=True,
+    )
+    logger.info(
+        "[search_console] rows=%d stored=%d approved_signals=%d",
+        len(rows),
+        imported_rows,
+        imported_signals,
+    )
+    return imported_signals
+
+
 async def _seo_auto_learn_once() -> int:
     """Approve high-confidence no-result search mappings."""
     if not Config.SEO_AUTO_LEARN_ENABLED:
         return 0
+
+    products = await _catalog_db.get_all_products_for_search()
+    profiles = build_taxonomy_profiles(products)
+    external_imports = 0
+    external_promoted = 0
+    try:
+        external_imports += await _import_external_signal_file(products, profiles)
+        external_imports += await _import_search_console_signals(products, profiles)
+        external_promoted = await _promote_approved_external_signals()
+    except Exception as exc:
+        logger.warning("[seo_external] import_or_promote_error error=%s", exc)
 
     candidates = await _catalog_db.get_seo_auto_learning_candidates(
         limit=Config.SEO_AUTO_LEARN_MAX_PER_RUN,
@@ -1428,9 +1610,8 @@ async def _seo_auto_learn_once() -> int:
         lookback_hours=Config.SEO_AUTO_LEARN_LOOKBACK_HOURS,
     )
     if not candidates:
-        return 0
+        return external_imports + external_promoted
 
-    products = await _catalog_db.get_all_products_for_search()
     approvals = []
     skipped = 0
 
@@ -1442,6 +1623,7 @@ async def _seo_auto_learn_once() -> int:
             query,
             products,
             min_score=Config.SEO_AUTO_LEARN_SCORE,
+            profiles=profiles,
         )
         if not inferred:
             skipped += 1
@@ -1482,7 +1664,7 @@ async def _seo_auto_learn_once() -> int:
         approved=True,
     )
     logger.info("[seo_auto_learn] approved=%d candidates=%d skipped=%d", approved, len(candidates), skipped)
-    return approved
+    return approved + external_imports + external_promoted
 
 
 async def _seo_auto_learn_loop():
@@ -1946,6 +2128,36 @@ def _product_primary_image_url(product: dict, *, absolute: bool = True) -> str:
         if media.get("type") == "photo":
             return _product_public_media_url(product_id, idx) if absolute else _product_public_media_path(product_id, idx)
     return ""
+
+
+async def _seo_side_note_terms(category: str, subcategory: str = "") -> list[str]:
+    """Return visible related terms from file + learned SEO mappings."""
+    category = str(category or "").strip()
+    if not category:
+        return []
+
+    terms = list(get_terms_for_taxonomy(category, subcategory, limit=Config.SEO_SIDE_NOTE_LIMIT))
+    try:
+        notes = await _catalog_db.get_seo_side_notes(
+            category,
+            subcategory,
+            limit=Config.SEO_SIDE_NOTE_LIMIT,
+        )
+        terms.extend(str(item.get("term") or "").strip() for item in notes)
+    except Exception as exc:
+        logger.debug("Failed to load SEO side notes for %s/%s: %s", category, subcategory, exc)
+
+    seen = set()
+    cleaned: list[str] = []
+    for term in terms:
+        normalized = normalize_term(term)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        cleaned.append(term)
+        if len(cleaned) >= Config.SEO_SIDE_NOTE_LIMIT:
+            break
+    return cleaned
 
 
 def _resolve_category_name(category_slug: str) -> Optional[str]:
@@ -2481,6 +2693,16 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
     webapp_link = build_webapp_product_url(Config.WEB_APP_URL, product_id)
     category = product.get("category") or ""
     subcategory = product.get("subcategory") or ""
+    seo_side_notes = await _seo_side_note_terms(category, subcategory) if category else []
+    product_media = [
+        {
+            "index": idx,
+            "type": media.get("type") or "document",
+            "url": _product_public_media_path(product_id, idx),
+            "label": f"{seo_title} media {idx + 1}",
+        }
+        for idx, media in enumerate(_collect_media_info(product))
+    ]
     related_products = []
     if category:
         try:
@@ -2536,9 +2758,11 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
     ctx["subcategory_display"] = get_subcategory_display_name(subcategory) if subcategory else ""
     ctx["subcategory_url"] = _canonical_subcategory_path(category, subcategory) if category and subcategory else ""
     ctx["product_image"] = _product_primary_image_url(product, absolute=False)
+    ctx["product_media"] = product_media
     ctx["telegram_bot_url"] = deep_link
     ctx["webapp_product_url"] = webapp_link
     ctx["related_products"] = related_products
+    ctx["seo_side_notes"] = seo_side_notes
     return templates.TemplateResponse(request, "product.html", context=ctx)
 
 
@@ -2570,7 +2794,7 @@ async def serve_category_page(category_name: str, request: Request):
 
     # Build keyword list from category + subcategory names
     subcat_names = ", ".join(subcategories) if subcategories else ""
-    seo_terms = get_terms_for_taxonomy(matched_category)
+    seo_terms = await _seo_side_note_terms(matched_category)
     keywords = ", ".join(filter(None, [
         display_name,
         subcat_names,
@@ -2671,7 +2895,7 @@ async def serve_subcategory_page(category_name: str, subcategory_name: str, requ
     products = await _catalog_db.get_products_by_category_and_subcategory(matched_category, matched_subcategory, limit=50)
     total = await _catalog_db.count_products_by_category_and_subcategory(matched_category, matched_subcategory)
     page_url = _canonical_subcategory_url(matched_category, matched_subcategory)
-    seo_terms = get_terms_for_taxonomy(matched_category, matched_subcategory)
+    seo_terms = await _seo_side_note_terms(matched_category, matched_subcategory)
 
     ctx = _build_seo_context(
         title=f"{subcategory_display} {category_display} | Top Shelf Cali Plug",

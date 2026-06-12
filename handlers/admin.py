@@ -174,6 +174,9 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Searches with no result: {_fmt_count(snapshot.get('no_result_24h'))}",
             f"• Total approved mappings: {_fmt_count(snapshot.get('approved_mappings'))}",
             f"• Made automatically: {_fmt_count(snapshot.get('auto_mappings'))}",
+            f"• Google queries imported (7d): {_fmt_count(snapshot.get('search_console_queries_7d'))}",
+            f"• Google clicks/impressions (7d): {_fmt_count(snapshot.get('search_console_clicks_7d'))}/{_fmt_count(snapshot.get('search_console_impressions_7d'))}",
+            f"• Approved external signals: {_fmt_count(snapshot.get('external_signals'))}",
         ]
 
         top_queries = snapshot.get("top_queries") or []
@@ -185,12 +188,30 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"last found {_fmt_count(item.get('last_matched_count'))} product(s)"
                 )
 
+        search_console_queries = snapshot.get("top_search_console_queries") or []
+        if search_console_queries:
+            lines.extend(["", "Google Searches That Found The Site"])
+            for item in search_console_queries[:5]:
+                lines.append(
+                    f"• {item.get('query')}: {_fmt_count(item.get('clicks'))} click(s), "
+                    f"{_fmt_count(item.get('impressions'))} impression(s), avg position {item.get('avg_position')}"
+                )
+
         recent_mappings = snapshot.get("recent_mappings") or []
         if recent_mappings:
             lines.extend(["", "New/Recent Search Mappings"])
             for item in recent_mappings[:8]:
                 source = "auto" if item.get("source") == "auto_learn" else str(item.get("source") or "manual")
                 lines.append(f"• {item.get('term')} → {_format_seo_target(item)} ({source})")
+
+        recent_external = snapshot.get("recent_external_signals") or []
+        if recent_external:
+            lines.extend(["", "New External/Google Signals"])
+            for item in recent_external[:5]:
+                lines.append(
+                    f"• {item.get('term')} → {_format_seo_target(item)} "
+                    f"({item.get('provider')}, confidence {item.get('confidence')})"
+                )
 
         unmapped = snapshot.get("unmapped") or []
         if unmapped:
@@ -201,7 +222,7 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.extend([
             "",
             "Auto-learning runs in the background. No manual SEO import or approval command is needed.",
-            "Note: this shows searches typed on your site/WebApp; search engines do not always reveal exact external search terms.",
+            "Google data appears here only after Search Console API credentials are configured on Render.",
         ])
         await update.message.reply_text("\n".join(lines)[:3900])
     except Exception as e:
