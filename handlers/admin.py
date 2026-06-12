@@ -51,6 +51,7 @@ def _format_admin_status_message(snapshot: dict) -> str:
     cache_state = snapshot.get("cache_state", {})
     event_counts = snapshot.get("webapp_event_counts", [])
     bot_user_counts = snapshot.get("bot_user_counts", [])
+    top_locations = snapshot.get("top_visitor_locations", [])
 
     active_bots = [bot for bot in runtime_bots if bot.get("username")]
     missing_bots = [bot for bot in runtime_bots if not bot.get("username")]
@@ -79,6 +80,10 @@ def _format_admin_status_message(snapshot: dict) -> str:
         f"• Queued custom messages: {_fmt_count(summary.get('queued_custom_messages'))}",
         "",
         "🌐 WebApp / Inline",
+        f"• Unique visitors 24h: {_fmt_count(summary.get('unique_visitors_24h'))}",
+        f"• Website visits 24h: {_fmt_count(summary.get('website_visits_24h'))}",
+        f"• WebApp opens 24h: {_fmt_count(summary.get('webapp_visits_24h'))}",
+        f"• Known Telegram visitors 24h: {_fmt_count(summary.get('known_visitor_users_24h'))}",
         f"• WebApp events 24h: {_fmt_count(summary.get('webapp_events_24h'))}",
         f"• Inline queries 24h: {_fmt_count(summary.get('inline_queries_24h'))}",
         f"• Inline chosen 24h: {_fmt_count(summary.get('inline_chosen_24h'))}",
@@ -113,6 +118,18 @@ def _format_admin_status_message(snapshot: dict) -> str:
             lines.append(
                 f"• @{item.get('bot_username')}: {_fmt_count(item.get('users'))} users "
                 f"({_fmt_count(item.get('active_24h'))} active 24h)"
+            )
+
+    if top_locations:
+        lines.extend(["", "📍 Top Visitor Locations"])
+        for item in top_locations[:5]:
+            place = ", ".join(
+                part for part in [item.get("city"), item.get("region"), item.get("country")]
+                if part and part != "Unknown"
+            ) or "Unknown"
+            lines.append(
+                f"• {place}: {_fmt_count(item.get('visitors'))} visitor(s), "
+                f"{_fmt_count(item.get('visits'))} visit(s)"
             )
 
     if event_counts:

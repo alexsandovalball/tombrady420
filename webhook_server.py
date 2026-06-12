@@ -744,6 +744,150 @@ def get_client_ip(request: Request) -> str:
     )
 
 
+def _first_header(request: Request, names: List[str]) -> str:
+    for name in names:
+        value = request.headers.get(name)
+        if value:
+            return urllib.parse.unquote(str(value).split(",")[0].strip())
+    return ""
+
+
+def _visitor_hash(request: Request, telegram_user_id: Optional[Any] = None) -> str:
+    salt = Config.BOT_TOKEN or Config.WEBHOOK_URL or "bradycadia"
+    if telegram_user_id is not None:
+        material = f"telegram:{telegram_user_id}"
+    else:
+        material = f"anonymous:{get_client_ip(request)}:{request.headers.get('user-agent', '')[:300]}"
+    return hashlib.sha256(f"{salt}:{material}".encode("utf-8")).hexdigest()[:32]
+
+
+def _user_agent_hash(request: Request) -> str:
+    user_agent = request.headers.get("user-agent", "")
+    if not user_agent:
+        return ""
+    salt = Config.BOT_TOKEN or Config.WEBHOOK_URL or "bradycadia"
+    return hashlib.sha256(f"{salt}:ua:{user_agent}".encode("utf-8")).hexdigest()[:24]
+
+
+def _visitor_device_type(request: Request) -> str:
+    user_agent = (request.headers.get("user-agent") or "").lower()
+    if any(token in user_agent for token in ("bot", "crawler", "spider", "bingpreview", "slurp")):
+        return "bot"
+    if "tablet" in user_agent or "ipad" in user_agent:
+        return "tablet"
+    if any(token in user_agent for token in ("mobile", "iphone", "android")):
+        return "mobile"
+    if user_agent:
+        return "desktop"
+    return "unknown"
+
+
+def _visitor_language(request: Request, user_data: Optional[TelegramUser] = None) -> str:
+    if user_data and user_data.language_code:
+        return str(user_data.language_code)[:40]
+    accept_language = request.headers.get("accept-language", "")
+    return accept_language.split(",")[0].strip()[:40] if accept_language else ""
+
+
+def _visitor_referrer(request: Request) -> str:
+    referrer = request.headers.get("referer") or request.headers.get("referrer") or ""
+    if not referrer:
+        return ""
+    try:
+        parsed = urllib.parse.urlparse(referrer)
+        return parsed.netloc[:200] or referrer[:200]
+    except Exception:
+        return referrer[:200]
+
+
+def _visitor_location(request: Request) -> Dict[str, str]:
+    country = _first_header(request, [
+        "CF-IPCountry",
+        "CloudFront-Viewer-Country",
+        "X-Vercel-IP-Country",
+        "X-Appengine-Country",
+        "X-Country-Code",
+        "X-Geo-Country",
+    ])
+    region = _first_header(request, [
+        "CF-Region",
+        "CloudFront-Viewer-Country-Region",
+        "X-Vercel-IP-Country-Region",
+        "X-Appengine-Region",
+        "X-Geo-Region",
+    ])
+    city = _first_header(request, [
+        "CF-IPCity",
+        "CloudFront-Viewer-City",
+        "X-Vercel-IP-City",
+        "X-Appengine-City",
+        "X-Geo-City",
+    ])
+    return {
+        "country": country.upper()[:80] if country else "Unknown",
+        "region": (region or "Unknown")[:120],
+        "city": (city or "Unknown")[:120],
+    }
+
+
+def _visitor_user_from_init_data(init_data: str) -> Optional[TelegramUser]:
+    if not init_data:
+        return None
+    try:
+        parsed = parse_init_data(init_data)
+        user_data = parsed.get("user")
+        return user_data if isinstance(user_data, TelegramUser) else None
+    except Exception:
+        return None
+
+
+def _queue_visitor_event(
+    request: Request,
+    *,
+    source: str,
+    page_type: str,
+    product_id: Optional[int] = None,
+    category: str = "",
+    subcategory: str = "",
+    init_data: str = "",
+) -> None:
+    """Record a page/app open in the background without storing raw IP."""
+    if request.method == "HEAD":
+        return
+
+    user_data = _visitor_user_from_init_data(init_data)
+    telegram_user_id = user_data.id if user_data else None
+    location = _visitor_location(request)
+    payload = {
+        "visitor_hash": _visitor_hash(request, telegram_user_id),
+        "telegram_user_id": telegram_user_id,
+        "username": user_data.username if user_data else "",
+        "source": source,
+        "page_type": page_type,
+        "path": request.url.path,
+        "product_id": product_id,
+        "category": category,
+        "subcategory": subcategory,
+        "language": _visitor_language(request, user_data),
+        "device_type": _visitor_device_type(request),
+        "user_agent_hash": _user_agent_hash(request),
+        "referrer": _visitor_referrer(request),
+        "is_authenticated": user_data is not None,
+        **location,
+    }
+
+    async def _write_event() -> None:
+        try:
+            await _catalog_db.log_visitor_event(**payload)
+        except Exception as exc:
+            logger.debug("Failed to log visitor event: %s", exc)
+
+    try:
+        asyncio.create_task(_write_event())
+    except RuntimeError:
+        logger.debug("Could not schedule visitor analytics write")
+
+
 def _is_cached_orphan_legacy_secret(legacy_index: str, incoming_fp: str, now: Optional[float] = None) -> bool:
     """Return True for a recently seen unknown Telegram legacy webhook secret."""
     now = now if now is not None else _time.monotonic()
@@ -2577,6 +2721,7 @@ async def serve_homepage(request: Request):
                 status_code=status.HTTP_301_MOVED_PERMANENTLY,
             )
         return await _missing_product_redirect(product_id, permanent_when_known=True)
+    _queue_visitor_event(request, source="website", page_type="home")
     return _serve_storefront_index(request)
 
 
@@ -2591,12 +2736,14 @@ async def serve_webapp(request: Request):
     Keeps backward compatibility with the original webapp path while the
     clearnet storefront is served at /.
     """
+    _queue_visitor_event(request, source="webapp", page_type="webapp_shell")
     return _serve_storefront_index(request)
 
 
 @app.get("/learn", response_class=HTMLResponse)
 async def serve_learn_index(request: Request):
     """Serve an index of approved educational/navigation glossary pages."""
+    _queue_visitor_event(request, source="website", page_type="learn_index")
     pages = []
     for page in get_learn_pages():
         category = page.get("category") or ""
@@ -2631,6 +2778,13 @@ async def serve_learn_page(slug: str, request: Request):
     canonical_path = _learn_page_path(page.get("slug", ""))
     if request.url.path != canonical_path:
         return RedirectResponse(url=canonical_path, status_code=status.HTTP_301_MOVED_PERMANENTLY)
+    _queue_visitor_event(
+        request,
+        source="website",
+        page_type="learn_page",
+        category=page.get("category") or "",
+        subcategory=page.get("subcategory") or "",
+    )
 
     category = page.get("category") or ""
     subcategory = page.get("subcategory") or ""
@@ -2765,6 +2919,14 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
     webapp_link = build_webapp_product_url(Config.WEB_APP_URL, product_id)
     category = product.get("category") or ""
     subcategory = product.get("subcategory") or ""
+    _queue_visitor_event(
+        request,
+        source="website",
+        page_type="product",
+        product_id=product_id,
+        category=category,
+        subcategory=subcategory,
+    )
     seo_side_notes = await _seo_side_note_terms(category, subcategory) if category else []
     product_media = [
         {
@@ -2847,6 +3009,7 @@ async def serve_category_page(category_name: str, request: Request):
     canonical_path = _canonical_category_path(matched_category)
     if request.url.path != canonical_path:
         return RedirectResponse(url=canonical_path, status_code=301)
+    _queue_visitor_event(request, source="website", page_type="category", category=matched_category)
 
     display_name = get_category_display_name(matched_category)
     subcategories = get_subcategories(matched_category)
@@ -2961,6 +3124,13 @@ async def serve_subcategory_page(category_name: str, subcategory_name: str, requ
     canonical_path = _canonical_subcategory_path(matched_category, matched_subcategory)
     if request.url.path != canonical_path:
         return RedirectResponse(url=canonical_path, status_code=301)
+    _queue_visitor_event(
+        request,
+        source="website",
+        page_type="subcategory",
+        category=matched_category,
+        subcategory=matched_subcategory,
+    )
 
     category_display = get_category_display_name(matched_category)
     subcategory_display = get_subcategory_display_name(matched_subcategory)
@@ -4025,6 +4195,7 @@ async def create_webapp_session(request: Request):
     """Exchange signed Telegram initData for a short same-origin media session."""
     init_data, _ = _get_validated_init_data(request, allow_preview=False)
     await _check_user_not_blocked(init_data, get_client_ip(request))
+    _queue_visitor_event(request, source="webapp", page_type="session", init_data=init_data)
 
     token = _remember_webapp_session(init_data)
     secure_cookie = (
@@ -4276,6 +4447,7 @@ async def track_webapp_user(request: Request):
             last_name=last_name,
             bot_username=bot_username
         )
+        _queue_visitor_event(request, source="webapp", page_type="user_track", init_data=init_data)
 
         # Record the client IP so it can be blocked alongside the account later
         client_ip = get_client_ip(request)

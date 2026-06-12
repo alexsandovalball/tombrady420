@@ -315,6 +315,30 @@ class Database:
             """)
 
             await db.execute("""
+                CREATE TABLE IF NOT EXISTS visitor_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    visitor_hash TEXT NOT NULL,
+                    telegram_user_id TEXT,
+                    username TEXT,
+                    source TEXT NOT NULL DEFAULT 'website',
+                    page_type TEXT NOT NULL DEFAULT '',
+                    path TEXT NOT NULL DEFAULT '',
+                    product_id INTEGER,
+                    category TEXT,
+                    subcategory TEXT,
+                    country TEXT NOT NULL DEFAULT 'Unknown',
+                    region TEXT NOT NULL DEFAULT 'Unknown',
+                    city TEXT NOT NULL DEFAULT 'Unknown',
+                    language TEXT NOT NULL DEFAULT '',
+                    device_type TEXT NOT NULL DEFAULT 'unknown',
+                    user_agent_hash TEXT NOT NULL DEFAULT '',
+                    referrer TEXT NOT NULL DEFAULT '',
+                    is_authenticated INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS search_query_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     query TEXT NOT NULL,
@@ -643,6 +667,10 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_webapp_events_created ON webapp_events(created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_webapp_events_user ON webapp_events(user_id, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_webapp_events_type_action ON webapp_events(event_type, action)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_visitor_events_created ON visitor_events(created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_visitor_events_visitor ON visitor_events(visitor_hash, created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_visitor_events_source ON visitor_events(source, page_type, created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_visitor_events_location ON visitor_events(country, region, city, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_query_events_created ON search_query_events(created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_query_events_matched ON search_query_events(matched_count, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_query_mappings_approved ON seo_query_mappings(approved, normalized_term)")
@@ -3583,6 +3611,64 @@ class Database:
             await db.commit()
         return len(rows)
 
+    async def log_visitor_event(
+        self,
+        *,
+        visitor_hash: str,
+        telegram_user_id: Optional[Any] = None,
+        username: Optional[str] = None,
+        source: str = "website",
+        page_type: str = "",
+        path: str = "",
+        product_id: Optional[int] = None,
+        category: Optional[str] = None,
+        subcategory: Optional[str] = None,
+        country: str = "Unknown",
+        region: str = "Unknown",
+        city: str = "Unknown",
+        language: str = "",
+        device_type: str = "unknown",
+        user_agent_hash: str = "",
+        referrer: str = "",
+        is_authenticated: bool = False,
+    ) -> None:
+        """Persist a privacy-aware visitor/page-open event."""
+        visitor_hash = str(visitor_hash or "").strip()
+        if not visitor_hash:
+            return
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO visitor_events (
+                    visitor_hash, telegram_user_id, username, source, page_type, path,
+                    product_id, category, subcategory, country, region, city, language,
+                    device_type, user_agent_hash, referrer, is_authenticated
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    visitor_hash[:80],
+                    str(telegram_user_id)[:80] if telegram_user_id is not None else None,
+                    str(username or "")[:120],
+                    str(source or "website")[:40],
+                    str(page_type or "")[:80],
+                    str(path or "")[:300],
+                    product_id,
+                    str(category or "")[:80],
+                    str(subcategory or "")[:120],
+                    str(country or "Unknown")[:80],
+                    str(region or "Unknown")[:120],
+                    str(city or "Unknown")[:120],
+                    str(language or "")[:40],
+                    str(device_type or "unknown")[:40],
+                    str(user_agent_hash or "")[:80],
+                    str(referrer or "")[:200],
+                    int(bool(is_authenticated)),
+                ),
+            )
+            await db.commit()
+
     async def log_search_query(
         self,
         *,
@@ -4133,6 +4219,26 @@ class Database:
                     "SELECT COUNT(*) FROM webapp_events WHERE created_at >= ?",
                     (since_24h,),
                 ),
+                "visitor_events_24h": await scalar(
+                    "SELECT COUNT(*) FROM visitor_events WHERE created_at >= ?",
+                    (since_24h,),
+                ),
+                "unique_visitors_24h": await scalar(
+                    "SELECT COUNT(DISTINCT visitor_hash) FROM visitor_events WHERE created_at >= ?",
+                    (since_24h,),
+                ),
+                "known_visitor_users_24h": await scalar(
+                    "SELECT COUNT(DISTINCT telegram_user_id) FROM visitor_events WHERE created_at >= ? AND telegram_user_id IS NOT NULL",
+                    (since_24h,),
+                ),
+                "website_visits_24h": await scalar(
+                    "SELECT COUNT(*) FROM visitor_events WHERE created_at >= ? AND source = 'website'",
+                    (since_24h,),
+                ),
+                "webapp_visits_24h": await scalar(
+                    "SELECT COUNT(*) FROM visitor_events WHERE created_at >= ? AND source = 'webapp'",
+                    (since_24h,),
+                ),
                 "inline_queries_24h": await scalar(
                     "SELECT COUNT(*) FROM inline_queries WHERE created_at >= ?",
                     (since_24h,),
@@ -4224,6 +4330,57 @@ class Database:
                 ORDER BY queries DESC
             """, (since_24h,))
 
+            top_visitor_locations = await rows("""
+                SELECT
+                    COALESCE(NULLIF(country, ''), 'Unknown') AS country,
+                    COALESCE(NULLIF(region, ''), 'Unknown') AS region,
+                    COALESCE(NULLIF(city, ''), 'Unknown') AS city,
+                    COUNT(*) AS visits,
+                    COUNT(DISTINCT visitor_hash) AS visitors,
+                    SUM(CASE WHEN is_authenticated = 1 THEN 1 ELSE 0 END) AS signed_visits
+                FROM visitor_events
+                WHERE created_at >= ?
+                GROUP BY
+                    COALESCE(NULLIF(country, ''), 'Unknown'),
+                    COALESCE(NULLIF(region, ''), 'Unknown'),
+                    COALESCE(NULLIF(city, ''), 'Unknown')
+                ORDER BY visitors DESC, visits DESC
+                LIMIT 20
+            """, (since_24h,))
+
+            top_public_pages = await rows("""
+                SELECT
+                    source, page_type, path,
+                    COUNT(*) AS visits,
+                    COUNT(DISTINCT visitor_hash) AS visitors
+                FROM visitor_events
+                WHERE created_at >= ?
+                GROUP BY source, page_type, path
+                ORDER BY visits DESC
+                LIMIT 20
+            """, (since_24h,))
+
+            visitor_devices = await rows("""
+                SELECT
+                    COALESCE(NULLIF(device_type, ''), 'unknown') AS device_type,
+                    COUNT(*) AS visits,
+                    COUNT(DISTINCT visitor_hash) AS visitors
+                FROM visitor_events
+                WHERE created_at >= ?
+                GROUP BY COALESCE(NULLIF(device_type, ''), 'unknown')
+                ORDER BY visitors DESC, visits DESC
+            """, (since_24h,))
+
+            recent_visitor_events = await rows("""
+                SELECT
+                    created_at, telegram_user_id, username, source, page_type, path,
+                    product_id, category, subcategory, country, region, city,
+                    language, device_type, is_authenticated
+                FROM visitor_events
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, (recent_limit,))
+
         return {
             "summary": summary,
             "bots": bots,
@@ -4233,6 +4390,10 @@ class Database:
             "recent_webapp_events": recent_webapp_events,
             "webapp_event_counts": webapp_event_counts,
             "inline_activity": inline_activity,
+            "top_visitor_locations": top_visitor_locations,
+            "top_public_pages": top_public_pages,
+            "visitor_devices": visitor_devices,
+            "recent_visitor_events": recent_visitor_events,
         }
 
     # ------------------------------------------------------------------

@@ -1201,6 +1201,10 @@
         appendAdminMetric(grid, 'Products', formatAdminCount(summary.products));
         appendAdminMetric(grid, 'Users 24h', formatAdminCount(summary.active_users_24h));
         appendAdminMetric(grid, 'Blocked users', formatAdminCount(summary.blocked_users));
+        appendAdminMetric(grid, 'Unique visitors 24h', formatAdminCount(summary.unique_visitors_24h));
+        appendAdminMetric(grid, 'Website visits 24h', formatAdminCount(summary.website_visits_24h));
+        appendAdminMetric(grid, 'WebApp opens 24h', formatAdminCount(summary.webapp_visits_24h));
+        appendAdminMetric(grid, 'Known visitors 24h', formatAdminCount(summary.known_visitor_users_24h));
         appendAdminMetric(grid, 'Pending notifications', formatAdminCount(summary.pending_notifications));
         appendAdminMetric(grid, 'WebApp events 24h', formatAdminCount(summary.webapp_events_24h));
         appendAdminMetric(grid, 'Inline queries 24h', formatAdminCount(summary.inline_queries_24h));
@@ -1226,6 +1230,16 @@
 
         appendAdminList(panel, 'Top Google Searches', seo.top_search_console_queries || [], item =>
             `${item.query}: ${formatAdminCount(item.clicks)} clicks, ${formatAdminCount(item.impressions)} impressions, avg pos ${item.avg_position || '-'}`
+        );
+        appendAdminList(panel, 'Top Visitor Locations', data.top_visitor_locations || [], item => {
+            const place = [item.city, item.region, item.country].filter(part => part && part !== 'Unknown').join(', ') || 'Unknown';
+            return `${place}: ${formatAdminCount(item.visitors)} visitors, ${formatAdminCount(item.visits)} visits`;
+        });
+        appendAdminList(panel, 'Top Public Pages', data.top_public_pages || [], item =>
+            `${item.page_type || item.source} ${item.path}: ${formatAdminCount(item.visits)} visits, ${formatAdminCount(item.visitors)} visitors`
+        );
+        appendAdminList(panel, 'Visitor Devices', data.visitor_devices || [], item =>
+            `${item.device_type}: ${formatAdminCount(item.visitors)} visitors, ${formatAdminCount(item.visits)} visits`
         );
         appendAdminList(panel, 'Recent Search Mappings', seo.recent_mappings || [], item =>
             `${item.term} -> ${item.category || 'catalog'}${item.subcategory ? ` / ${item.subcategory}` : ''}`
