@@ -1738,22 +1738,26 @@ class SecurityMiddleware(BaseHTTPMiddleware):
 class CacheControlMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
+        path = request.url.path
         
         # Add cache headers for static assets
-        if request.url.path.startswith('/assets/'):
+        if path.startswith('/assets/'):
             # Cache CSS and JS for 1 hour to reduce backend load and decrease latency
-            if request.url.path.endswith(('.js', '.css')):
+            if path.endswith(('.js', '.css')):
                 response.headers['Cache-Control'] = 'public, max-age=3600'
             # Cache images for 1 day (can be cached longer as they rarely change)
-            elif request.url.path.endswith(('.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico')):
+            elif path.endswith(('.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico')):
                 response.headers['Cache-Control'] = 'public, max-age=86400'
-            elif request.url.path.endswith('.html'):
+            elif path.endswith('.html'):
                 response.headers['Cache-Control'] = 'no-cache'
-        elif request.url.path in ('/webapp', '/webapp/', '/webapp/index.html'):
+        elif path in ('/webapp', '/webapp/', '/webapp/index.html'):
             # Allow conditional revalidation for the webapp entry point
             response.headers['Cache-Control'] = 'no-cache'
-        elif request.url.path == '/admin' or request.url.path.startswith('/admin/'):
+        elif path == '/admin' or path.startswith('/admin/'):
             response.headers['Cache-Control'] = 'no-store'
+
+        if path.startswith(('/api/', '/admin', '/admin-assets/', '/webhook/', '/webapp')):
+            response.headers['X-Robots-Tag'] = 'noindex, nofollow'
 
         # Security headers for HTML responses
         content_type = response.headers.get('content-type', '')
@@ -1898,6 +1902,33 @@ def _sitemap_lastmod(value, fallback: str) -> str:
     return fallback
 
 
+def _product_lastmod(product: dict, fallback: str) -> str:
+    return _sitemap_lastmod(product.get("updated_at") or product.get("created_at"), fallback)
+
+
+def _newest_lastmod(products: list[dict], fallback: str, *, category: str = "", subcategory: str = "") -> str:
+    dates: list[str] = []
+    for product in products:
+        if category and (product.get("category") or "") != category:
+            continue
+        if subcategory and (product.get("subcategory") or "") != subcategory:
+            continue
+        dates.append(_product_lastmod(product, fallback))
+    return max(dates) if dates else fallback
+
+
+def _static_seo_lastmod(fallback: str) -> str:
+    candidates = [
+        Path(__file__).parent / "configs" / "seo_terms.json",
+        Path(__file__).parent / "webapp" / "learn.html",
+        Path(__file__).parent / "webapp" / "learn_index.html",
+    ]
+    mtimes = [path.stat().st_mtime for path in candidates if path.exists()]
+    if not mtimes:
+        return fallback
+    return datetime.fromtimestamp(max(mtimes)).date().isoformat()
+
+
 def _product_public_media_path(product_id: int, media_index: int = 0) -> str:
     return f"/media/products/{product_id}/{media_index}"
 
@@ -1927,7 +1958,12 @@ def _resolve_subcategory_name(category: str, subcategory_slug: str) -> Optional[
     return next((subcategory for subcategory in get_subcategories(category) if _taxonomy_slug(subcategory) == subcategory_slug), None)
 
 
-async def _missing_product_redirect(product_id: int, *, permanent_when_known: bool = True) -> RedirectResponse:
+async def _missing_product_redirect(
+    product_id: int,
+    *,
+    slug: str = "",
+    permanent_when_known: bool = True,
+) -> RedirectResponse:
     """Redirect unavailable public product links to the closest useful storefront page."""
     try:
         if hasattr(_catalog_db, "get_deleted_product_redirect"):
@@ -1955,7 +1991,35 @@ async def _missing_product_redirect(product_id: int, *, permanent_when_known: bo
                 status_code=status.HTTP_301_MOVED_PERMANENTLY if permanent_when_known else status.HTTP_302_FOUND,
             )
 
+    inferred_path = await _infer_missing_product_redirect_path(slug)
+    if inferred_path:
+        return RedirectResponse(url=inferred_path, status_code=status.HTTP_302_FOUND)
+
     return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
+
+
+async def _infer_missing_product_redirect_path(slug: str) -> str:
+    """Infer a useful category fallback for old product URLs missing redirect metadata."""
+    query = normalize_term((slug or "").replace("-", " "))
+    if len(query) < 4:
+        return ""
+    try:
+        products = await _catalog_db.get_all_products_for_search()
+        inferred = infer_seo_query_mapping(query, products, min_score=88)
+    except Exception as exc:
+        logger.debug("Failed to infer deleted product redirect for slug=%r: %s", slug, exc)
+        return ""
+    if not inferred:
+        return ""
+    category = _resolve_category_name(inferred.get("category", ""))
+    subcategory = inferred.get("subcategory") or ""
+    if not category:
+        return ""
+    if subcategory:
+        matched_subcategory = _resolve_subcategory_name(category, subcategory)
+        if matched_subcategory:
+            return _canonical_subcategory_path(category, matched_subcategory)
+    return _canonical_category_path(category)
 
 
 def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
@@ -1971,12 +2035,22 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
             "description": desc,
             "url": product_url,
             "mainEntityOfPage": product_url,
+            "sku": str(product.get("id") or product.get("product_id") or ""),
             "category": category or product.get("category", ""),
             "brand": {
                 "@type": "Brand",
                 "name": "Top Shelf Cali Plug",
             },
         }
+        additional_properties = []
+        if product.get("subcategory"):
+            additional_properties.append({
+                "@type": "PropertyValue",
+                "name": "Subcategory",
+                "value": product.get("subcategory"),
+            })
+        if additional_properties:
+            product_schema["additionalProperty"] = additional_properties
         if image:
             product_schema["image"] = [image]
         breadcrumb: dict = {
@@ -2120,31 +2194,41 @@ async def serve_sitemap_xml():
     from datetime import date
     today = date.today().isoformat()
     products = await _catalog_db.get_all_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
+    newest_product_lastmod = _newest_lastmod(products, today)
+    static_seo_lastmod = _static_seo_lastmod(today)
+    home_lastmod = max(newest_product_lastmod, static_seo_lastmod)
 
     urls = [
         (
             f"  <url>\n"
             f"    <loc>{html.escape(_absolute_storefront_url('/'))}</loc>\n"
-            f"    <lastmod>{today}</lastmod>\n"
+            f"    <lastmod>{home_lastmod}</lastmod>\n"
             f"    <changefreq>weekly</changefreq>\n"
             f"    <priority>1.0</priority>\n"
             f"  </url>"
         )
     ]
     for category in get_all_categories():
+        category_lastmod = _newest_lastmod(products, static_seo_lastmod, category=category)
         urls.append(
             f"  <url>\n"
             f"    <loc>{html.escape(_canonical_category_url(category))}</loc>\n"
-            f"    <lastmod>{today}</lastmod>\n"
+            f"    <lastmod>{category_lastmod}</lastmod>\n"
             f"    <changefreq>weekly</changefreq>\n"
             f"    <priority>0.9</priority>\n"
             f"  </url>"
         )
         for subcategory in get_subcategories(category):
+            subcategory_lastmod = _newest_lastmod(
+                products,
+                category_lastmod,
+                category=category,
+                subcategory=subcategory,
+            )
             urls.append(
                 f"  <url>\n"
                 f"    <loc>{html.escape(_canonical_subcategory_url(category, subcategory))}</loc>\n"
-                f"    <lastmod>{today}</lastmod>\n"
+                f"    <lastmod>{subcategory_lastmod}</lastmod>\n"
                 f"    <changefreq>weekly</changefreq>\n"
                 f"    <priority>0.85</priority>\n"
                 f"  </url>"
@@ -2153,7 +2237,7 @@ async def serve_sitemap_xml():
         urls.append(
             f"  <url>\n"
             f"    <loc>{html.escape(_learn_page_url(page.get('slug', '')))}</loc>\n"
-            f"    <lastmod>{today}</lastmod>\n"
+            f"    <lastmod>{static_seo_lastmod}</lastmod>\n"
             f"    <changefreq>monthly</changefreq>\n"
             f"    <priority>0.7</priority>\n"
             f"  </url>"
@@ -2162,12 +2246,23 @@ async def serve_sitemap_xml():
         pid = p.get("id") or p.get("product_id")
         if pid is None:
             continue
-        lastmod = _sitemap_lastmod(p.get("created_at"), today)
+        lastmod = _product_lastmod(p, today)
         loc = _canonical_product_url(pid, p.get("caption") or "")
+        title = _caption_parts(p.get("caption") or "")[0]
+        image_url = _product_primary_image_url(p)
+        image_xml = ""
+        if image_url:
+            image_xml = (
+                f"    <image:image>\n"
+                f"      <image:loc>{html.escape(image_url)}</image:loc>\n"
+                f"      <image:title>{html.escape(title)}</image:title>\n"
+                f"    </image:image>\n"
+            )
         urls.append(
             f"  <url>\n"
             f"    <loc>{html.escape(loc)}</loc>\n"
             f"    <lastmod>{lastmod}</lastmod>\n"
+            f"{image_xml}"
             f"    <changefreq>monthly</changefreq>\n"
             f"    <priority>0.8</priority>\n"
             f"  </url>"
@@ -2175,7 +2270,8 @@ async def serve_sitemap_xml():
 
     sitemap = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" '
+        'xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">\n'
         + "\n".join(urls)
         + "\n</urlset>"
     )
@@ -2187,7 +2283,7 @@ def _serve_storefront_index(request: Request) -> HTMLResponse:
     ctx = _build_seo_context(
         title="Top Shelf Cali Plug – Premium Cannabis Storefront",
         desc="Browse our premium cannabis catalog. Order directly via Telegram.",
-        url=_STOREFRONT_DOMAIN,
+        url=_absolute_storefront_url("/"),
     )
     ctx["request"] = request
     ctx["seo_categories"] = [
@@ -2197,10 +2293,36 @@ def _serve_storefront_index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "index.html", context=ctx)
 
 
+def _product_id_from_query(request: Request) -> Optional[int]:
+    raw = request.query_params.get("product_id") or request.query_params.get("product")
+    if raw and raw.isdigit():
+        return int(raw)
+    return None
+
+
+def _looks_like_telegram_webapp_request(request: Request) -> bool:
+    """Avoid redirecting Telegram Mini App launches away from the WebApp shell."""
+    user_agent = (request.headers.get("user-agent") or "").lower()
+    if "telegram" in user_agent:
+        return True
+    if request.query_params.get("tgWebAppStartParam") or request.query_params.get("start_param"):
+        return True
+    return any(key.lower().startswith("tgwebapp") for key in request.query_params.keys())
+
+
 @app.get("/", response_class=HTMLResponse)
 @app.head("/", response_class=HTMLResponse)
 async def serve_homepage(request: Request):
     """Serve the homepage with default Storefront SEO metadata."""
+    product_id = _product_id_from_query(request)
+    if product_id and not _looks_like_telegram_webapp_request(request):
+        product = await _catalog_db.get_product(product_id)
+        if product:
+            return RedirectResponse(
+                url=_canonical_product_path(product_id, product.get("caption") or ""),
+                status_code=status.HTTP_301_MOVED_PERMANENTLY,
+            )
+        return await _missing_product_redirect(product_id, permanent_when_known=True)
     return _serve_storefront_index(request)
 
 
@@ -2342,7 +2464,7 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
     """Serve an individual product page with crawlable HTML and dynamic SEO metadata."""
     product = await _catalog_db.get_product(product_id)
     if not product:
-        return await _missing_product_redirect(product_id)
+        return await _missing_product_redirect(product_id, slug=slug)
 
     caption: str = product.get("caption") or ""
     canonical_slug = _generate_slug(caption)
