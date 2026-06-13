@@ -3,7 +3,6 @@ Product view handler.
 """
 import asyncio
 import logging
-import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, InputMediaAnimation, InputMediaDocument
 from telegram.ext import ContextTypes
 from database import Database
@@ -11,7 +10,7 @@ from configs.config import Config
 from utils.deeplinks import build_webapp_product_url
 from utils.helpers import send_media_message, is_admin, get_user_lang_async
 from utils.safe_send import safe_send_message
-from utils.media_resolver import MediaResolver
+from utils.media_resolver import MediaResolver, collect_product_media
 from utils.pagination import paginate_items
 from utils.categories import format_category_info
 from translations.translator import translate_text_async, get_translated_string_async
@@ -155,16 +154,19 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         
         category_info = format_category_info(product.get("category"), product.get("subcategory"), user_lang)
         
-        # Collect all media information
-        additional_file_ids = product.get("additional_file_ids")
-        media_list = [(product["file_id"], product["file_type"])]
-        
-        if additional_file_ids:
-            try:
-                file_data = json.loads(additional_file_ids)
-                media_list.extend(file_data)
-            except Exception as e:
-                logger.error(f"Error parsing additional_file_ids: {e}")
+        # Collect all media information using the shared parser so historical
+        # products and newer media-group products resolve the same way.
+        media_list = collect_product_media(product)
+        if not media_list:
+            logger.warning("Product %s has no deliverable media entries", product_id)
+            await safe_send_message(
+                context.bot,
+                update.effective_chat.id,
+                text=_build_media_unavailable_text(product, caption),
+                parse_mode=None,
+                reply_markup=_build_media_fallback_keyboard(product_id, context.bot.username or "", back_callback, user_id),
+            )
+            return
         
         total_media = len(media_list)
         media_group_id = product.get("media_group_id")
@@ -180,12 +182,14 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         resolution_results = await asyncio.gather(*[
             resolver.resolve_media_for_bot(product, current_bot, idx)
             for idx, _media in enumerate(media_list)
-        ])
+        ], return_exceptions=True)
 
         resolved_media_list = []
         resolution_failures = []
         for result, (_file_id, file_type) in zip(resolution_results, media_list):
-            if result.success and result.file_id:
+            if isinstance(result, Exception):
+                resolution_failures.append(result)
+            elif result.success and result.file_id:
                 resolved_media_list.append((result.file_id, file_type))
             else:
                 resolution_failures.append(result)
@@ -198,7 +202,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     "product_id": product_id,
                     "current_bot": current_bot,
                     "original_bot": product_bot,
-                    "failures": [f.error for f in resolution_failures],
+                    "failures": [getattr(f, "error", str(f)) for f in resolution_failures],
                     "fallback_used": not resolved_media_list,
                     "partial_media_count": len(resolved_media_list),
                 },

@@ -56,6 +56,7 @@ from translations.language_config import SUPPORTED_LANGUAGES
 from translations.translator import translation_service
 from utils.metrics import metrics
 from utils.monitoring import monitor as _webhook_monitor, record_webhook_result
+from utils.media_resolver import collect_product_media
 from utils.resource_manager import (
     APP_CACHE_DIR,
     APP_TMP_DIR,
@@ -3738,32 +3739,10 @@ def _collect_media_info(product: dict) -> List[dict]:
             _media_info_cache.move_to_end(product_id)
             return cached
 
-    media_info: List[dict] = []
-    
-    # Add primary media
-    primary_id = product.get("file_id")
-    primary_type = product.get("file_type", "photo")
-    if primary_id:
-        media_info.append({"id": primary_id, "type": primary_type})
-    
-    # Add additional media
-    additional_raw = product.get("additional_file_ids")
-    if additional_raw:
-        try:
-            additional_ids = json.loads(additional_raw)
-            if isinstance(additional_ids, list):
-                for item in additional_ids:
-                    if isinstance(item, str):
-                        # Just file_id, assume photo
-                        media_info.append({"id": item, "type": "photo"})
-                    elif isinstance(item, (list, tuple)) and len(item) >= 2:
-                        # (file_id, file_type) tuple
-                        media_info.append({"id": item[0], "type": item[1]})
-                    elif isinstance(item, (list, tuple)) and len(item) == 1:
-                        # Just file_id in tuple
-                        media_info.append({"id": item[0], "type": "photo"})
-        except Exception:
-            logger.warning("Failed to parse additional_file_ids for product %s", product.get("id"))
+    media_info: List[dict] = [
+        {"id": file_id, "type": file_type}
+        for file_id, file_type in collect_product_media(product)
+    ]
 
     if product_id is not None:
         _media_info_cache[product_id] = media_info

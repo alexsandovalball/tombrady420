@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time as _time
 from collections import OrderedDict
@@ -20,6 +21,90 @@ _resolve_semaphore = asyncio.Semaphore(4)
 _VALIDATED_FILE_ID_TTL_SECONDS = 60 * 60
 _VALIDATED_FILE_ID_MAX = 5000
 _validated_file_ids: OrderedDict[tuple[str, str], float] = OrderedDict()
+
+
+def _normalize_media_type(file_type: Any, fallback: str = "photo") -> str:
+    value = str(file_type or fallback or "photo").strip().lower()
+    return value or "photo"
+
+
+def _parse_additional_media_entry(entry: Any, fallback_type: str) -> Optional[tuple[str, str]]:
+    if isinstance(entry, str):
+        file_id = entry.strip()
+        return (file_id, fallback_type) if file_id else None
+
+    if isinstance(entry, dict):
+        file_id = (
+            entry.get("file_id")
+            or entry.get("id")
+            or entry.get("media")
+            or entry.get("media_id")
+        )
+        file_type = (
+            entry.get("file_type")
+            or entry.get("type")
+            or entry.get("media_type")
+            or fallback_type
+        )
+        return (str(file_id).strip(), _normalize_media_type(file_type, fallback_type)) if file_id else None
+
+    if isinstance(entry, (list, tuple)):
+        if not entry:
+            return None
+        file_id = entry[0]
+        if not file_id:
+            return None
+        file_type = entry[1] if len(entry) >= 2 else fallback_type
+        return (str(file_id).strip(), _normalize_media_type(file_type, fallback_type))
+
+    return None
+
+
+def collect_product_media(product: dict[str, Any]) -> list[tuple[str, str]]:
+    """Return all product media as (file_id, file_type), accepting historical JSON shapes."""
+    fallback_type = _normalize_media_type(product.get("file_type"), "photo")
+    media: list[tuple[str, str]] = []
+
+    primary_file_id = product.get("file_id")
+    if primary_file_id:
+        media.append((str(primary_file_id).strip(), fallback_type))
+
+    raw = product.get("additional_file_ids")
+    if not raw:
+        return media
+
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        logger.warning("Malformed additional_file_ids", extra={"product_id": product.get("id")})
+        return media
+
+    if isinstance(data, dict):
+        if isinstance(data.get("media"), list):
+            data = data["media"]
+        elif isinstance(data.get("items"), list):
+            data = data["items"]
+        elif isinstance(data.get("file_ids"), list):
+            file_ids = data.get("file_ids") or []
+            file_types = data.get("file_types") or []
+            data = [
+                (file_id, file_types[idx] if idx < len(file_types) else fallback_type)
+                for idx, file_id in enumerate(file_ids)
+            ]
+        else:
+            parsed = _parse_additional_media_entry(data, fallback_type)
+            return media + ([parsed] if parsed else [])
+
+    if not isinstance(data, list):
+        logger.warning("Unexpected additional_file_ids payload", extra={"product_id": product.get("id")})
+        return media
+
+    for entry in data:
+        parsed = _parse_additional_media_entry(entry, fallback_type)
+        if parsed:
+            media.append(parsed)
+
+    return [(file_id, file_type) for file_id, file_type in media if file_id]
 
 
 @dataclass
@@ -82,7 +167,15 @@ class MediaResolver:
                 "Original bot file_id validation failed",
                 extra={**log_extra, "reason": validation.error},
             )
-            return validation
+
+        if original_file_id and not same_bot:
+            validation = await self._validate_file_id(original_file_id)
+            if validation.success:
+                logger.info(
+                    "Media resolution succeeded",
+                    extra={**log_extra, "resolution_source": "original_fallback", "fallback_used": True},
+                )
+                return MediaResolutionResult(True, original_file_id, "original_fallback")
 
         if not source_chat_id or not source_message_id or not file_type:
             error = "missing source chat/message metadata"
@@ -126,6 +219,14 @@ class MediaResolver:
             )
 
         if not resolved:
+            if original_file_id and not same_bot:
+                validation = await self._validate_file_id(original_file_id)
+                if validation.success:
+                    logger.info(
+                        "Media resolution succeeded",
+                        extra={**log_extra, "resolution_source": "original_after_rehydrate_failed", "fallback_used": True},
+                    )
+                    return MediaResolutionResult(True, original_file_id, "original_after_rehydrate_failed")
             error = "forward/rehydrate failed"
             logger.warning(
                 "Bot-specific file_id resolution failed",
@@ -216,53 +317,36 @@ class MediaResolver:
         return None
 
     def _media_file_id(self, product: dict[str, Any], media_index: int) -> Optional[str]:
-        if media_index == 0:
-            return product.get("file_id")
-        media = self._additional_media(product)
-        if media_index - 1 < len(media):
-            return media[media_index - 1][0]
+        media = collect_product_media(product)
+        if 0 <= media_index < len(media):
+            return media[media_index][0]
         return None
 
     def _media_type(self, product: dict[str, Any], media_index: int) -> Optional[str]:
-        if media_index == 0:
-            return product.get("file_type")
-        media = self._additional_media(product)
-        if media_index - 1 < len(media):
-            return media[media_index - 1][1]
+        media = collect_product_media(product)
+        if 0 <= media_index < len(media):
+            return media[media_index][1]
         return None
 
     def _source_message_id(self, product: dict[str, Any], media_index: int) -> Optional[int]:
         if media_index == 0:
             return product.get("message_id")
         ids = self._additional_message_ids(product)
-        if media_index - 1 < len(ids):
+        if media_index - 1 < len(ids) and ids[media_index - 1] is not None:
             return ids[media_index - 1]
+        if product.get("media_group_id") and product.get("message_id") is not None:
+            try:
+                return int(product.get("message_id")) + media_index
+            except (TypeError, ValueError):
+                return None
         return None
 
     @staticmethod
     def _additional_media(product: dict[str, Any]) -> list[tuple[str, str]]:
-        import json
-
-        raw = product.get("additional_file_ids")
-        if not raw:
-            return []
-        try:
-            data = json.loads(raw)
-        except (TypeError, ValueError):
-            logger.warning("Malformed additional_file_ids", extra={"product_id": product.get("id")})
-            return []
-        if not isinstance(data, list):
-            return []
-        return [
-            (item[0], item[1])
-            for item in data
-            if isinstance(item, (list, tuple)) and len(item) == 2 and item[0] and item[1]
-        ]
+        return collect_product_media(product)[1:]
 
     @staticmethod
-    def _additional_message_ids(product: dict[str, Any]) -> list[int]:
-        import json
-
+    def _additional_message_ids(product: dict[str, Any]) -> list[Optional[int]]:
         raw = product.get("additional_message_ids")
         if not raw:
             return []
@@ -273,11 +357,12 @@ class MediaResolver:
             return []
         if not isinstance(data, list):
             return []
-        result: list[int] = []
+        result: list[Optional[int]] = []
         for item in data:
             try:
                 result.append(int(item))
             except (TypeError, ValueError):
+                result.append(None)
                 logger.warning(
                     "Invalid additional message id",
                     extra={"product_id": product.get("id"), "message_id": item},
