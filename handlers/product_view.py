@@ -44,7 +44,43 @@ def _build_admin_action_buttons(product_id: int, user_id: int) -> list[list[Inli
     ]]
 
 
-def _build_media_fallback_keyboard(product_id: int, bot_username: str, back_callback: str, user_id: int):
+def _product_category_navigation_buttons(product: dict, existing_callbacks: set[str]) -> list[list[InlineKeyboardButton]]:
+    buttons: list[list[InlineKeyboardButton]] = []
+    category = product.get("category")
+    subcategory = product.get("subcategory")
+
+    if category and subcategory:
+        subcategory_callback = f"subcategory|{category}|{subcategory}|1"
+        if subcategory_callback not in existing_callbacks:
+            buttons.append([
+                InlineKeyboardButton("🔙 Back to subcategory", callback_data=subcategory_callback)
+            ])
+            existing_callbacks.add(subcategory_callback)
+
+    if category:
+        category_callback = f"category|{category}|1"
+        if category_callback not in existing_callbacks:
+            buttons.append([
+                InlineKeyboardButton("🔙 Back to category", callback_data=category_callback)
+            ])
+            existing_callbacks.add(category_callback)
+
+    return buttons
+
+
+def _build_navigation_buttons(product: dict, back_callback: str, back_label: str) -> list[list[InlineKeyboardButton]]:
+    buttons = [[InlineKeyboardButton(back_label, callback_data=back_callback)]]
+    existing_callbacks = {back_callback}
+    buttons.extend(_product_category_navigation_buttons(product, existing_callbacks))
+    return buttons
+
+
+def _build_media_fallback_keyboard(
+    product_id: int,
+    bot_username: str,
+    navigation_buttons: list[list[InlineKeyboardButton]],
+    user_id: int,
+):
     buttons = []
     webapp_deep_link = build_webapp_product_url(Config.WEB_APP_URL, product_id)
     if webapp_deep_link:
@@ -53,7 +89,7 @@ def _build_media_fallback_keyboard(product_id: int, bot_username: str, back_call
         buttons.append([InlineKeyboardButton("Open inline search", switch_inline_query_current_chat=str(product_id))])
     buttons.append([InlineKeyboardButton("Retry media", callback_data=f"product|{product_id}")])
     buttons.extend(_build_admin_action_buttons(product_id, user_id))
-    buttons.append([InlineKeyboardButton("🔙 Back to results", callback_data=back_callback)])
+    buttons.extend(navigation_buttons)
     return InlineKeyboardMarkup(buttons)
 
 
@@ -78,6 +114,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         
         # Determine appropriate back button based on context
         back_callback = "menu|1"  # Default fallback
+        back_label = "🔙 Back to catalog"
         
         if latest_state and "state_type" in latest_state and "page" in latest_state:
             state_type = latest_state["state_type"]
@@ -93,9 +130,11 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     category = parts[1]
                     subcategory = parts[2]
                     back_callback = f"subcategory|{category}|{subcategory}|{page}"
+                    back_label = "🔙 Back to subcategory"
                 else:
                     # Fallback if format is unexpected
                     back_callback = "menu|1"
+                    back_label = "🔙 Back to catalog"
             # Check if user was browsing a category
             elif state_type.startswith("category_"):
                 # Extract category from state_type: category_{categoryname}
@@ -103,9 +142,11 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 if len(parts) >= 2:
                     category = parts[1]
                     back_callback = f"category|{category}|{page}"
+                    back_label = "🔙 Back to category"
                 else:
                     # Fallback
                     back_callback = "menu|1"
+                    back_label = "🔙 Back to catalog"
             elif state_type == "search":
                 # User was searching - use the query from the state
                 if query:
@@ -116,14 +157,18 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     if len(safe_query) > max_query_len:
                         safe_query = safe_query[:max_query_len]
                     back_callback = f"page|search|{safe_query}|{page}"
+                    back_label = "🔙 Back to search results"
                 else:
                     back_callback = "menu|1"
+                    back_label = "🔙 Back to catalog"
             elif state_type == "catalog":
                 # User was browsing all products
                 back_callback = f"menu|{page}"
+                back_label = "🔙 Back to catalog"
             else:
                 # Default fallback
                 back_callback = "menu|1"
+                back_label = "🔙 Back to catalog"
         else:
             # No pagination state found - user likely came from notification
             # Use product's category/subcategory to determine back button
@@ -133,10 +178,14 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
             if product_category and product_subcategory:
                 # Product has both category and subcategory - go to subcategory view
                 back_callback = f"subcategory|{product_category}|{product_subcategory}|1"
+                back_label = "🔙 Back to subcategory"
             elif product_category:
                 # Product has only category - go to category view
                 back_callback = f"category|{product_category}|1"
+                back_label = "🔙 Back to category"
             # else: keep default "menu|1"
+
+        navigation_buttons = _build_navigation_buttons(product, back_callback, back_label)
         
         # Get user's language preference
         user_lang = await get_user_lang_async(user_id)
@@ -164,7 +213,12 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 update.effective_chat.id,
                 text=_build_media_unavailable_text(product, caption),
                 parse_mode=None,
-                reply_markup=_build_media_fallback_keyboard(product_id, context.bot.username or "", back_callback, user_id),
+                reply_markup=_build_media_fallback_keyboard(
+                    product_id,
+                    context.bot.username or "",
+                    navigation_buttons,
+                    user_id,
+                ),
             )
             return
         
@@ -213,7 +267,12 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     update.effective_chat.id,
                     text=_build_media_unavailable_text(product, caption),
                     parse_mode=None,
-                    reply_markup=_build_media_fallback_keyboard(product_id, current_bot, back_callback, user_id),
+                    reply_markup=_build_media_fallback_keyboard(
+                        product_id,
+                        current_bot,
+                        navigation_buttons,
+                        user_id,
+                    ),
                 )
                 return
 
@@ -236,10 +295,8 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         # Create keyboard with back button and admin buttons
         keyboard_buttons = []
         
-        # Add back button
-        keyboard_buttons.append([
-            InlineKeyboardButton("🔙 Back to results", callback_data=back_callback)
-        ])
+        # Add navigation buttons
+        keyboard_buttons.extend(navigation_buttons)
         
         # Add delete and recategorize buttons for admins
         keyboard_buttons.extend(_build_admin_action_buttons(product_id, user_id))

@@ -6,13 +6,25 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, MessageHandler, filters
 from database import Database
 from utils.pagination import create_pagination_keyboard, paginate_items
-from utils.fuzzy_search import fuzzy_search_products
+from utils.fuzzy_search import rank_products_for_query
 from translations.translator import get_translated_string_async
 from utils.safe_send import safe_update_message, handle_handler_error
 from utils.helpers import get_user_lang_async
 
 logger = logging.getLogger(__name__)
 db = Database()
+
+_BOT_SEARCH_SCORE_CUTOFF = 70
+_BOT_SEARCH_MAX_RESULTS = 100
+
+
+def _rank_bot_search_results(all_products: list, query: str) -> list:
+    return rank_products_for_query(
+        all_products,
+        query,
+        score_cutoff=_BOT_SEARCH_SCORE_CUTOFF,
+        limit=_BOT_SEARCH_MAX_RESULTS,
+    )
 
 
 async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -37,8 +49,9 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(catalog_empty_text)
             return
 
-        # Perform fuzzy search
-        matched_products = fuzzy_search_products(all_products, query, score_cutoff=75)
+        # Perform ranked fuzzy search using the same closeness-first behavior
+        # as inline/WebApp search, without broad SEO expansion noise.
+        matched_products = _rank_bot_search_results(all_products, query)
 
         if not matched_products:
             no_products_found_text = await get_translated_string_async("no_products_found", user_lang, query=query)
@@ -107,7 +120,7 @@ async def handle_search_pagination(
         
         # Get all products and re-run search
         all_products = await db.get_all_products_for_search()
-        matched_products = fuzzy_search_products(all_products, original_query, score_cutoff=75)
+        matched_products = _rank_bot_search_results(all_products, original_query)
         
         if not matched_products:
             await update.callback_query.answer(

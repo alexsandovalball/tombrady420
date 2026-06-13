@@ -220,6 +220,30 @@ def fuzzy_search_products(
     return all_matches
 
 
+def rank_products_for_query(
+    products: List[Dict[str, Any]],
+    query: str,
+    *,
+    score_cutoff: int = 70,
+    limit: int = None,
+    include_seo_terms: bool = False,
+) -> List[Dict[str, Any]]:
+    """Rank products by closest user-visible match.
+
+    This is the shared search policy for fast bot, inline, and WebApp fallback
+    searches.  It avoids broad SEO expansion by default so user-facing results
+    stay close to what was typed.
+    """
+    return fuzzy_search_products(
+        products,
+        query,
+        score_cutoff=score_cutoff,
+        limit=limit,
+        include_seo_terms=include_seo_terms,
+        rank_by_score=True,
+    )
+
+
 def _score_product(product: Dict[str, Any], query_variants: List[str]) -> float:
     caption = normalize_text(product.get("caption", "") or "")
     category = normalize_text(product.get("category", "") or "")

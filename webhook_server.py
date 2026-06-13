@@ -40,7 +40,7 @@ from utils.webapp_security import verify_init_data, parse_init_data, TelegramUse
 from database import Database
 from utils.helpers import get_channel_id, get_channel_username, get_file_id_cache_size, get_bot_specific_file_id, is_admin, register_bot_handlers
 from utils.categories import get_all_categories, get_category_display_name, get_subcategory_display_name, get_subcategories, EXCLUDED_FROM_ALL_PRODUCTS
-from utils.fuzzy_search import fuzzy_search_products, normalize_text
+from utils.fuzzy_search import normalize_text, rank_products_for_query
 from utils.seo_terms import (
     build_query_variants,
     build_taxonomy_intro,
@@ -4433,10 +4433,11 @@ async def search_products(
         matched_products = list(candidate_map.values())
         if not matched_products:
             all_products = await _catalog_db.get_all_products_for_search()
-            matched_products = fuzzy_search_products(
+            matched_products = rank_products_for_query(
                 all_products,
                 " ".join(query_variants[:4]),
                 score_cutoff=70,
+                limit=limit,
             )
 
         total = len(matched_products)

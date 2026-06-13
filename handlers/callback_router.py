@@ -313,7 +313,57 @@ async def _handle_product(update, context, query, user_id, parts):
 @admin_required
 async def _handle_delete(update, context, query, user_id, parts):
     product_id = int(parts[1])
+    product = await db.get_product(product_id)
+    if not product:
+        await query.answer("Product not found.", show_alert=True)
+        return
+
+    title = (product.get("caption") or f"Product #{product_id}").strip().splitlines()[0]
+    if len(title) > 120:
+        title = title[:117] + "..."
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Yes, delete", callback_data=f"confirm_delete_product|{product_id}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_delete_product|{product_id}"),
+        ],
+        [InlineKeyboardButton("↩ Back to product", callback_data=f"product|{product_id}")],
+    ])
+    await safe_edit_message_text(
+        context.bot,
+        chat_id=query.message.chat_id,
+        message_id=query.message.message_id,
+        text=(
+            "Confirm product deletion\n\n"
+            f"Product: {title}\n"
+            f"ID: {product_id}\n\n"
+            "This removes the listing, queued notifications for it, and stored media-group rows."
+        ),
+        reply_markup=keyboard,
+        parse_mode=None,
+    )
+
+
+@admin_required
+async def _handle_confirm_delete_product(update, context, query, user_id, parts):
+    product_id = int(parts[1])
     await delete_product(update, context, product_id)
+
+
+@admin_required
+async def _handle_cancel_delete_product(update, context, query, user_id, parts):
+    product_id = int(parts[1]) if len(parts) > 1 else 0
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("↩ Back to product", callback_data=f"product|{product_id}")],
+    ]) if product_id else None
+    await safe_edit_message_text(
+        context.bot,
+        chat_id=query.message.chat_id,
+        message_id=query.message.message_id,
+        text="Deletion cancelled. No product was removed.",
+        reply_markup=keyboard,
+        parse_mode=None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1280,6 +1330,8 @@ _PREFIX_HANDLERS = {
     "menu": _handle_menu,
     "product": _handle_product,
     "delete": _handle_delete,
+    "confirm_delete_product": _handle_confirm_delete_product,
+    "cancel_delete_product": _handle_cancel_delete_product,
     "recategorize": _handle_recategorize,
     "recat_cancel": _handle_recat_cancel,
     "toggle_notif": _handle_toggle_notif,
