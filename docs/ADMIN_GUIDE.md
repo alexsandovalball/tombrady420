@@ -82,6 +82,12 @@ Use `/seostatus` to see:
 
 Manual SEO import/approval commands are intentionally not exposed anymore.
 
+IndexNow runs automatically in the background when the public storefront domain
+is configured. It generates a key on the persistent disk, serves the key file
+from the domain root, and submits changed product/category URLs in batches. Use
+`/adminstatus` to check whether URLs are pending, submitted, or failing. You do
+not need to manually submit every page after normal catalog updates.
+
 ## Cache Operations
 
 `/clearcache` deletes persistent bot-specific Telegram `file_id` mappings.

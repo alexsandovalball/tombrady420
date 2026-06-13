@@ -1976,6 +1976,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_media_cache_prune_loop(), name="media_cache_prune"),
         asyncio.create_task(_wal_checkpoint_loop(), name="wal_checkpoint"),
         asyncio.create_task(_seo_auto_learn_loop(), name="seo_auto_learn"),
+        asyncio.create_task(_indexnow_loop(), name="indexnow"),
     ]
 
     # Load permanently blocked IPs from the database into the in-memory registry
@@ -2316,6 +2317,252 @@ def _product_primary_image_url(product: dict, *, absolute: bool = True) -> str:
     return ""
 
 
+def _indexnow_enabled() -> bool:
+    return bool(Config.INDEXNOW_ENABLED and _STOREFRONT_DOMAIN)
+
+
+def _indexnow_key(*, create: bool = True) -> str:
+    """Load or create the persistent IndexNow key used for domain verification."""
+    if not _indexnow_enabled():
+        return ""
+
+    key_path = Path(Config.INDEXNOW_KEY_FILE or "indexnow.key")
+    try:
+        if key_path.exists():
+            key = key_path.read_text(encoding="utf-8").strip()
+            if re.fullmatch(r"[A-Za-z0-9-]{8,128}", key):
+                return key
+            logger.warning("[indexnow] invalid_key_file path=%s", key_path)
+        if not create:
+            return ""
+
+        key = secrets.token_hex(16)
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        key_path.write_text(key, encoding="utf-8")
+        try:
+            os.chmod(key_path, 0o600)
+        except OSError:
+            pass
+        logger.info("[indexnow] key_generated path=%s", key_path)
+        return key
+    except Exception as exc:
+        logger.warning("[indexnow] key_unavailable path=%s error=%s", key_path, exc)
+        return ""
+
+
+def _indexnow_key_location(key: str) -> str:
+    return _absolute_storefront_url(f"/{key}.txt")
+
+
+def _indexnow_host() -> str:
+    parsed = urllib.parse.urlparse(_STOREFRONT_DOMAIN)
+    return parsed.netloc or parsed.path
+
+
+def _indexnow_public_url(url: str) -> str:
+    url = str(url or "").strip()
+    if not url:
+        return ""
+    absolute = _absolute_storefront_url(url)
+    parsed_domain = urllib.parse.urlparse(_STOREFRONT_DOMAIN)
+    parsed_url = urllib.parse.urlparse(absolute)
+    if parsed_url.scheme not in {"http", "https"}:
+        return ""
+    if parsed_domain.netloc and parsed_url.netloc != parsed_domain.netloc:
+        return ""
+    return absolute
+
+
+def _indexnow_taxonomy_urls(category: str = "", subcategory: str = "") -> list[str]:
+    urls = [_indexnow_public_url("/")]
+    category = str(category or "").strip()
+    subcategory = str(subcategory or "").strip()
+    if category:
+        urls.append(_indexnow_public_url(_canonical_category_path(category)))
+        if subcategory:
+            urls.append(_indexnow_public_url(_canonical_subcategory_path(category, subcategory)))
+    return [url for url in urls if url]
+
+
+def _indexnow_product_urls(product: dict) -> list[str]:
+    product_id = product.get("id") or product.get("product_id")
+    caption = product.get("caption") or ""
+    urls = []
+    if product_id is not None:
+        urls.append(_indexnow_public_url(_canonical_product_path(int(product_id), caption)))
+    urls.extend(_indexnow_taxonomy_urls(product.get("category") or "", product.get("subcategory") or ""))
+    return [url for url in dict.fromkeys(urls) if url]
+
+
+async def _indexnow_bootstrap_once() -> int:
+    """Queue a modest one-time set of currently important URLs when IndexNow first starts."""
+    if not (_indexnow_enabled() and Config.INDEXNOW_BOOTSTRAP_ON_STARTUP):
+        return 0
+    if await _catalog_db.get_indexnow_submission_count() > 0:
+        return 0
+
+    urls = [_indexnow_public_url("/")]
+    for category in get_all_categories():
+        urls.append(_indexnow_public_url(_canonical_category_path(category)))
+        for subcategory in get_subcategories(category):
+            urls.append(_indexnow_public_url(_canonical_subcategory_path(category, subcategory)))
+    for page in get_learn_pages():
+        urls.append(_indexnow_public_url(_learn_page_path(page.get("slug", ""))))
+
+    if Config.INDEXNOW_BOOTSTRAP_LIMIT:
+        products = await _catalog_db.get_all_products_excluding_categories(
+            EXCLUDED_FROM_ALL_PRODUCTS,
+            limit=Config.INDEXNOW_BOOTSTRAP_LIMIT,
+        )
+        for product in products:
+            urls.extend(_indexnow_product_urls(product))
+
+    queued = await _catalog_db.enqueue_indexnow_urls(
+        [url for url in dict.fromkeys(urls) if url],
+        reason="bootstrap",
+    )
+    if queued:
+        logger.info("[indexnow] bootstrap_queued=%d", queued)
+    return queued
+
+
+async def _indexnow_scan_catalog_changes_once() -> int:
+    """Queue recently changed catalog URLs for IndexNow without touching page-view paths."""
+    if not _indexnow_enabled():
+        return 0
+
+    scan_started = datetime.now()
+    raw_since = await _catalog_db.get_bot_setting("indexnow_last_scan_at")
+    if raw_since:
+        try:
+            since = datetime.fromisoformat(raw_since)
+        except ValueError:
+            since = scan_started - timedelta(hours=Config.INDEXNOW_CHANGE_LOOKBACK_HOURS)
+    else:
+        since = scan_started - timedelta(hours=Config.INDEXNOW_CHANGE_LOOKBACK_HOURS)
+
+    urls = []
+    changed_products = await _catalog_db.get_recent_indexnow_product_changes(
+        since,
+        limit=Config.INDEXNOW_BATCH_SIZE * 3,
+    )
+    for product in changed_products:
+        urls.extend(_indexnow_product_urls(product))
+
+    deleted_products = await _catalog_db.get_recent_indexnow_deleted_products(
+        since,
+        limit=Config.INDEXNOW_BATCH_SIZE * 3,
+    )
+    for item in deleted_products:
+        product_id = item.get("product_id")
+        if product_id is not None:
+            urls.append(_indexnow_public_url(_canonical_product_path(int(product_id), item.get("caption") or "")))
+        urls.extend(_indexnow_taxonomy_urls(item.get("category") or "", item.get("subcategory") or ""))
+
+    queued = 0
+    if urls:
+        queued = await _catalog_db.enqueue_indexnow_urls(
+            [url for url in dict.fromkeys(urls) if url],
+            reason="catalog_change",
+        )
+        logger.info(
+            "[indexnow] changes_queued=%d products=%d deleted=%d since=%s",
+            queued,
+            len(changed_products),
+            len(deleted_products),
+            since.isoformat(sep=" ", timespec="seconds"),
+        )
+
+    await _catalog_db.set_bot_setting(
+        "indexnow_last_scan_at",
+        scan_started.isoformat(sep=" ", timespec="seconds"),
+    )
+    return queued
+
+
+async def _indexnow_submit_pending_once() -> int:
+    if not _indexnow_enabled():
+        return 0
+    key = _indexnow_key(create=True)
+    host = _indexnow_host()
+    if not key or not host:
+        return 0
+
+    pending = await _catalog_db.get_pending_indexnow_submissions(
+        limit=Config.INDEXNOW_BATCH_SIZE,
+    )
+    if not pending:
+        return 0
+
+    urls = [item["url"] for item in pending]
+    payload = {
+        "host": host,
+        "key": key,
+        "keyLocation": _indexnow_key_location(key),
+        "urlList": urls,
+    }
+
+    def _post_indexnow():
+        import requests
+        return requests.post(
+            Config.INDEXNOW_ENDPOINT,
+            json=payload,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            timeout=12,
+        )
+
+    try:
+        response = await asyncio.to_thread(_post_indexnow)
+    except Exception as exc:
+        await _catalog_db.mark_indexnow_submissions_failed(
+            urls,
+            error=str(exc),
+            retry=True,
+        )
+        logger.warning("[indexnow] submit_error urls=%d error=%s", len(urls), exc)
+        return 0
+
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    if status_code in {200, 202}:
+        await _catalog_db.mark_indexnow_submissions_submitted(urls, http_status=status_code)
+        logger.info("[indexnow] submitted urls=%d status=%d", len(urls), status_code)
+        return len(urls)
+
+    error_text = (getattr(response, "text", "") or "")[:300]
+    retry = status_code in {0, 408, 425, 429, 500, 502, 503, 504}
+    await _catalog_db.mark_indexnow_submissions_failed(
+        urls,
+        http_status=status_code,
+        error=error_text or f"HTTP {status_code}",
+        retry=retry,
+    )
+    logger.warning(
+        "[indexnow] submit_failed urls=%d status=%d retry=%s error=%s",
+        len(urls),
+        status_code,
+        retry,
+        error_text,
+    )
+    return 0
+
+
+async def _indexnow_loop():
+    """Background task: notify participating search engines about real URL changes."""
+    if not _indexnow_enabled():
+        logger.info("[indexnow] disabled")
+        return
+
+    await asyncio.sleep(90)
+    while True:
+        try:
+            await _indexnow_bootstrap_once()
+            await _indexnow_scan_catalog_changes_once()
+            await _indexnow_submit_pending_once()
+        except Exception as exc:
+            logger.warning("[indexnow] loop_error error=%s", exc)
+        await asyncio.sleep(Config.INDEXNOW_INTERVAL_SECONDS)
+
+
 async def _seo_side_note_terms(category: str, subcategory: str = "") -> list[str]:
     """Return visible related terms from file + learned SEO mappings."""
     category = str(category or "").strip()
@@ -2584,6 +2831,21 @@ async def serve_robots_txt():
         f"Sitemap: {_STOREFRONT_DOMAIN}/sitemap.xml\n"
     )
     return Response(content=content, media_type="text/plain")
+
+
+@app.get("/{indexnow_key}.txt", response_class=Response)
+async def serve_indexnow_key(indexnow_key: str):
+    """Serve the root IndexNow key file used by participating search engines."""
+    if not re.fullmatch(r"[A-Za-z0-9-]{8,128}", indexnow_key or ""):
+        raise HTTPException(status_code=404, detail="Not found")
+    key = _indexnow_key(create=True)
+    if not key or indexnow_key != key:
+        raise HTTPException(status_code=404, detail="Not found")
+    return Response(
+        content=key,
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
 
 
 @app.get("/sitemap.xml", response_class=Response)
@@ -2867,6 +3129,12 @@ async def webapp_admin_status(request: Request):
 
     db_snapshot = await _catalog_db.get_admin_dashboard_snapshot(recent_limit=10)
     seo_snapshot = await _catalog_db.get_search_intelligence_snapshot(limit=10)
+    indexnow_snapshot = dict(db_snapshot.get("indexnow") or {})
+    indexnow_snapshot.update({
+        "enabled": _indexnow_enabled(),
+        "endpoint": Config.INDEXNOW_ENDPOINT,
+        "key_file_available": bool(_indexnow_key(create=False)),
+    })
     return {
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "admin_user_id": int(user.id),
@@ -2882,6 +3150,7 @@ async def webapp_admin_status(request: Request):
         "webhook_monitor": _webhook_monitor.snapshot(),
         "seo": seo_snapshot,
         **db_snapshot,
+        "indexnow": indexnow_snapshot,
     }
 
 

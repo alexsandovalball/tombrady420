@@ -54,3 +54,7 @@ htmlcov/
 # Live bot-token mapping — contains secrets; never commit the real file.
 # Copy configs/bots.example.json → configs/bots.json and fill in real values.
 configs/bots.json
+
+# Locally generated IndexNow key. Production should persist this on /data.
+indexnow.key
+*.indexnow.key

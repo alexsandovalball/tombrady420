@@ -1177,6 +1177,7 @@
         const summary = data.summary || {};
         const cache = data.cache_state || {};
         const seo = data.seo || {};
+        const indexnow = data.indexnow || {};
         const metrics = data.metrics?.endpoints || {};
         const activeBots = (data.runtime_bots || []).filter(bot => bot.username);
 
@@ -1212,6 +1213,10 @@
         appendAdminMetric(grid, 'Google queries 7d', formatAdminCount(seo.search_console_queries_7d));
         appendAdminMetric(grid, 'Google clicks/impr.', `${formatAdminCount(seo.search_console_clicks_7d)}/${formatAdminCount(seo.search_console_impressions_7d)}`);
         appendAdminMetric(grid, 'SEO mappings', formatAdminCount(summary.seo_query_mappings));
+        appendAdminMetric(grid, 'IndexNow pending', formatAdminCount(indexnow.pending));
+        appendAdminMetric(grid, 'IndexNow sent', formatAdminCount(indexnow.submitted));
+        appendAdminMetric(grid, 'IndexNow failed', formatAdminCount(indexnow.failed));
+        appendAdminMetric(grid, 'IndexNow key', indexnow.key_file_available ? 'Ready' : (indexnow.enabled === false ? 'Off' : 'Pending'));
         appendAdminMetric(grid, 'Webhook 401 total', formatAdminCount(data.webhook_401_total));
         appendAdminMetric(grid, 'File ID cache', formatAdminCount(summary.file_id_cache_entries));
         appendAdminMetric(grid, 'Memory cache', formatAdminCount(cache.api_results));

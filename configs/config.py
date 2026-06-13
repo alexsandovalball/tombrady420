@@ -53,6 +53,14 @@ class ConfigClass:
         self.SEARCH_CONSOLE_LOOKBACK_DAYS: int = 7
         self.SEARCH_CONSOLE_ROW_LIMIT: int = 250
         self.EXTERNAL_SEO_SIGNALS_FILE: Optional[str] = None
+        self.INDEXNOW_ENABLED: bool = True
+        self.INDEXNOW_ENDPOINT: str = "https://api.indexnow.org/indexnow"
+        self.INDEXNOW_KEY_FILE: Optional[str] = None
+        self.INDEXNOW_INTERVAL_SECONDS: int = 900
+        self.INDEXNOW_BATCH_SIZE: int = 100
+        self.INDEXNOW_BOOTSTRAP_ON_STARTUP: bool = True
+        self.INDEXNOW_BOOTSTRAP_LIMIT: int = 50
+        self.INDEXNOW_CHANGE_LOOKBACK_HOURS: int = 48
         self._load_config()
     
     def _load_config(self):
@@ -242,6 +250,43 @@ class ConfigClass:
         # when it was not derivable from WEBHOOK_URL above.
         if not self.WEB_APP_URL and self.STOREFRONT_DOMAIN:
             self.WEB_APP_URL = self.STOREFRONT_DOMAIN.rstrip('/') + '/webapp/index.html'
+
+        default_indexnow_key_file = (
+            '/data/indexnow.key'
+            if Path('/data').exists()
+            else str((Path(self.DB_PATH).expanduser().resolve().parent / 'indexnow.key'))
+        )
+        self.INDEXNOW_ENABLED = config(
+            'INDEXNOW_ENABLED',
+            default=bool(self.STOREFRONT_DOMAIN),
+            cast=bool,
+        )
+        self.INDEXNOW_ENDPOINT = config(
+            'INDEXNOW_ENDPOINT',
+            default='https://api.indexnow.org/indexnow',
+        )
+        self.INDEXNOW_KEY_FILE = config('INDEXNOW_KEY_FILE', default=default_indexnow_key_file)
+        self.INDEXNOW_INTERVAL_SECONDS = max(
+            300,
+            min(24 * 3600, config('INDEXNOW_INTERVAL_SECONDS', default=900, cast=int)),
+        )
+        self.INDEXNOW_BATCH_SIZE = max(
+            1,
+            min(1000, config('INDEXNOW_BATCH_SIZE', default=100, cast=int)),
+        )
+        self.INDEXNOW_BOOTSTRAP_ON_STARTUP = config(
+            'INDEXNOW_BOOTSTRAP_ON_STARTUP',
+            default=True,
+            cast=bool,
+        )
+        self.INDEXNOW_BOOTSTRAP_LIMIT = max(
+            0,
+            min(250, config('INDEXNOW_BOOTSTRAP_LIMIT', default=50, cast=int)),
+        )
+        self.INDEXNOW_CHANGE_LOOKBACK_HOURS = max(
+            1,
+            min(168, config('INDEXNOW_CHANGE_LOOKBACK_HOURS', default=48, cast=int)),
+        )
 
         self._loaded = True
     

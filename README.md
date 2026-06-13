@@ -184,6 +184,14 @@ site URL is derived from `STOREFRONT_DOMAIN`, so `SEARCH_CONSOLE_ENABLED` and
 Service-account JSON is still supported for deployments where Search Console
 accepts the service-account identity.
 
+IndexNow is also enabled automatically when `STOREFRONT_DOMAIN` exists. The app
+generates a persistent key at `/data/indexnow.key`, serves it from
+`https://your-domain/<key>.txt`, queues canonical URLs when catalog content
+changes, and submits them in bounded background batches to participating search
+engines. This is intentionally change-based; page views do not submit URLs.
+Check `/adminstatus` or the admin WebApp monitor for pending, submitted, and
+failed IndexNow counts.
+
 The learner also supports an optional approved taxonomy export file via
 `EXTERNAL_SEO_SIGNALS_FILE`. Use short terms and category mappings only; do not
 paste copied Leafly/Weedmaps page descriptions into the project. See

@@ -52,6 +52,7 @@ def _format_admin_status_message(snapshot: dict) -> str:
     event_counts = snapshot.get("webapp_event_counts", [])
     bot_user_counts = snapshot.get("bot_user_counts", [])
     top_locations = snapshot.get("top_visitor_locations", [])
+    indexnow = snapshot.get("indexnow", {})
 
     active_bots = [bot for bot in runtime_bots if bot.get("username")]
     missing_bots = [bot for bot in runtime_bots if not bot.get("username")]
@@ -92,6 +93,10 @@ def _format_admin_status_message(snapshot: dict) -> str:
         f"• SEO mappings: {_fmt_count(summary.get('seo_query_mappings'))}",
         f"• Google queries 7d: {_fmt_count(seo.get('search_console_queries_7d'))}",
         f"• Google clicks/impressions 7d: {_fmt_count(seo.get('search_console_clicks_7d'))}/{_fmt_count(seo.get('search_console_impressions_7d'))}",
+        f"• IndexNow: {'on' if indexnow.get('enabled', True) else 'off'} "
+        f"(pending {_fmt_count(indexnow.get('pending'))}, "
+        f"sent {_fmt_count(indexnow.get('submitted'))}, "
+        f"failed {_fmt_count(indexnow.get('failed'))})",
         "",
         "⚙️ Caches",
         f"• File ID DB: {_fmt_count(summary.get('file_id_cache_entries'))}",
@@ -157,12 +162,19 @@ async def adminstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                 _runtime_bot_snapshots,
                 _cache_state_snapshot,
                 _webhook_401_counter,
+                _indexnow_enabled,
+                _indexnow_key,
                 metrics,
             )
             snapshot["runtime_bots"] = _runtime_bot_snapshots()
             snapshot["cache_state"] = _cache_state_snapshot()
             snapshot["webhook_401_total"] = _webhook_401_counter
             snapshot["metrics"] = metrics.snapshot()
+            snapshot["indexnow"] = {
+                **(snapshot.get("indexnow") or {}),
+                "enabled": _indexnow_enabled(),
+                "key_file_available": bool(_indexnow_key(create=False)),
+            }
         except Exception as import_error:
             logger.debug("adminstatus using DB-only snapshot: %s", import_error)
 

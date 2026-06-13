@@ -407,6 +407,21 @@ class Database:
             """)
 
             await db.execute("""
+                CREATE TABLE IF NOT EXISTS indexnow_submissions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    url TEXT NOT NULL UNIQUE,
+                    reason TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    http_status INTEGER,
+                    last_error TEXT,
+                    first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    submitted_at TIMESTAMP
+                )
+            """)
+
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS broadcast_chats (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     bot_username TEXT NOT NULL,
@@ -679,6 +694,8 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_console_query_events_query ON search_console_query_events(normalized_query, source_date DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_external_seo_signals_approved ON external_seo_signals(approved, confidence DESC, last_seen DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_external_seo_signals_taxonomy ON external_seo_signals(category, subcategory, approved)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_indexnow_submissions_status ON indexnow_submissions(status, updated_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_indexnow_submissions_submitted ON indexnow_submissions(submitted_at DESC)")
 
             # Broadcast chats indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_broadcast_chats_bot_username ON broadcast_chats(bot_username)")
@@ -4381,6 +4398,21 @@ class Database:
                 LIMIT ?
             """, (recent_limit,))
 
+            indexnow_last_rows = await rows("""
+                SELECT url, reason, status, attempts, http_status, last_error,
+                       first_seen, updated_at, submitted_at
+                FROM indexnow_submissions
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+            """)
+            indexnow = {
+                "pending": await scalar("SELECT COUNT(*) FROM indexnow_submissions WHERE status = 'pending'"),
+                "submitted": await scalar("SELECT COUNT(*) FROM indexnow_submissions WHERE status = 'submitted'"),
+                "failed": await scalar("SELECT COUNT(*) FROM indexnow_submissions WHERE status = 'failed'"),
+                "total": await scalar("SELECT COUNT(*) FROM indexnow_submissions"),
+                "last": indexnow_last_rows[0] if indexnow_last_rows else None,
+            }
+
         return {
             "summary": summary,
             "bots": bots,
@@ -4394,7 +4426,258 @@ class Database:
             "top_public_pages": top_public_pages,
             "visitor_devices": visitor_devices,
             "recent_visitor_events": recent_visitor_events,
+            "indexnow": indexnow,
         }
+
+    # ------------------------------------------------------------------
+    # Generic settings + IndexNow search-engine submission queue
+    # ------------------------------------------------------------------
+
+    async def get_bot_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        """Return a bot_settings value without touching the specialized cached settings."""
+        key = str(key or "").strip()
+        if not key:
+            return default
+        async with self.get_connection() as db:
+            async with db.execute("SELECT value FROM bot_settings WHERE key = ?", (key,)) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else default
+
+    async def set_bot_setting(self, key: str, value: str) -> None:
+        """Persist a simple bot_settings value."""
+        key = str(key or "").strip()
+        if not key:
+            return
+        async with self.get_connection() as db:
+            await db.execute(
+                """
+                INSERT INTO bot_settings (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (key, str(value or "")),
+            )
+            await db.commit()
+
+    async def enqueue_indexnow_urls(
+        self,
+        urls: List[str],
+        *,
+        reason: str = "catalog_change",
+    ) -> int:
+        """Queue canonical public URLs for bounded IndexNow submission."""
+        rows = []
+        seen = set()
+        clean_reason = str(reason or "catalog_change")[:80]
+        for url in urls or []:
+            url = str(url or "").strip()
+            if not (url.startswith("https://") or url.startswith("http://")):
+                continue
+            if url in seen:
+                continue
+            seen.add(url)
+            rows.append((url[:1000], clean_reason))
+
+        if not rows:
+            return 0
+
+        async with self.get_connection() as db:
+            await db.executemany(
+                """
+                INSERT INTO indexnow_submissions (
+                    url, reason, status, attempts, http_status, last_error,
+                    first_seen, updated_at, submitted_at
+                )
+                VALUES (?, ?, 'pending', 0, NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL)
+                ON CONFLICT(url) DO UPDATE SET
+                    reason = excluded.reason,
+                    status = 'pending',
+                    http_status = NULL,
+                    last_error = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                rows,
+            )
+            await db.commit()
+        return len(rows)
+
+    async def get_pending_indexnow_submissions(
+        self,
+        *,
+        limit: int = 100,
+        max_attempts: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """Return pending IndexNow URLs ready to submit."""
+        limit = max(1, min(limit, 1000))
+        max_attempts = max(1, max_attempts)
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute(
+                """
+                UPDATE indexnow_submissions
+                SET status = 'failed',
+                    last_error = COALESCE(last_error, 'max attempts reached'),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'pending'
+                  AND attempts >= ?
+                """,
+                (max_attempts,),
+            )
+            await db.commit()
+            async with db.execute(
+                """
+                SELECT id, url, reason, attempts, first_seen, updated_at
+                FROM indexnow_submissions
+                WHERE status = 'pending'
+                  AND attempts < ?
+                ORDER BY updated_at ASC, id ASC
+                LIMIT ?
+                """,
+                (max_attempts, limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    async def mark_indexnow_submissions_submitted(
+        self,
+        urls: List[str],
+        *,
+        http_status: int,
+    ) -> None:
+        """Mark IndexNow URLs as accepted by the endpoint."""
+        clean_urls = [str(url)[:1000] for url in urls or [] if url]
+        if not clean_urls:
+            return
+        placeholders = ",".join("?" * len(clean_urls))
+        async with self.get_connection() as db:
+            await db.execute(
+                f"""
+                UPDATE indexnow_submissions
+                SET status = 'submitted',
+                    attempts = attempts + 1,
+                    http_status = ?,
+                    last_error = NULL,
+                    submitted_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE url IN ({placeholders})
+                """,
+                (int(http_status), *clean_urls),
+            )
+            await db.commit()
+
+    async def mark_indexnow_submissions_failed(
+        self,
+        urls: List[str],
+        *,
+        http_status: Optional[int] = None,
+        error: str = "",
+        retry: bool = True,
+    ) -> None:
+        """Record a failed IndexNow batch; keep retryable failures pending."""
+        clean_urls = [str(url)[:1000] for url in urls or [] if url]
+        if not clean_urls:
+            return
+        placeholders = ",".join("?" * len(clean_urls))
+        next_status = "pending" if retry else "failed"
+        async with self.get_connection() as db:
+            await db.execute(
+                f"""
+                UPDATE indexnow_submissions
+                SET status = ?,
+                    attempts = attempts + 1,
+                    http_status = ?,
+                    last_error = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE url IN ({placeholders})
+                """,
+                (next_status, http_status, str(error or "")[:500], *clean_urls),
+            )
+            await db.commit()
+
+    async def get_indexnow_submission_count(self) -> int:
+        """Return total IndexNow queue rows."""
+        async with self.get_connection() as db:
+            async with db.execute("SELECT COUNT(*) FROM indexnow_submissions") as cursor:
+                row = await cursor.fetchone()
+                return int(row[0] or 0) if row else 0
+
+    async def get_indexnow_snapshot(self) -> Dict[str, Any]:
+        """Return a compact IndexNow queue snapshot for admin status."""
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+
+            async def scalar(sql: str, params: tuple = ()) -> int:
+                async with db.execute(sql, params) as cursor:
+                    row = await cursor.fetchone()
+                    return int(row[0] or 0) if row else 0
+
+            async with db.execute(
+                """
+                SELECT url, reason, status, attempts, http_status, last_error,
+                       first_seen, updated_at, submitted_at
+                FROM indexnow_submissions
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """
+            ) as cursor:
+                last_row = await cursor.fetchone()
+
+            return {
+                "pending": await scalar("SELECT COUNT(*) FROM indexnow_submissions WHERE status = 'pending'"),
+                "submitted": await scalar("SELECT COUNT(*) FROM indexnow_submissions WHERE status = 'submitted'"),
+                "failed": await scalar("SELECT COUNT(*) FROM indexnow_submissions WHERE status = 'failed'"),
+                "total": await scalar("SELECT COUNT(*) FROM indexnow_submissions"),
+                "last": dict(last_row) if last_row else None,
+            }
+
+    async def get_recent_indexnow_product_changes(
+        self,
+        since: datetime,
+        *,
+        limit: int = 250,
+    ) -> List[Dict[str, Any]]:
+        """Return recently added/recategorized products that should be re-announced."""
+        limit = max(1, min(limit, 1000))
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                f"""
+                SELECT id, caption, category, subcategory, created_at
+                FROM products
+                WHERE created_at >= ?
+                  AND (category IS NULL OR category = '' OR category NOT IN ({_EXCLUDED_PLACEHOLDERS}))
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?
+                """,
+                (since, *EXCLUDED_FROM_ALL_PRODUCTS, limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+    async def get_recent_indexnow_deleted_products(
+        self,
+        since: datetime,
+        *,
+        limit: int = 250,
+    ) -> List[Dict[str, Any]]:
+        """Return recently deleted product redirect metadata for IndexNow URL deletion notices."""
+        limit = max(1, min(limit, 1000))
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT product_id, caption, category, subcategory, deleted_at
+                FROM deleted_product_redirects
+                WHERE deleted_at >= ?
+                ORDER BY deleted_at ASC, product_id ASC
+                LIMIT ?
+                """,
+                (since, limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
 
     # ------------------------------------------------------------------
     # Broadcast chat CRUD methods
