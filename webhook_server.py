@@ -2264,6 +2264,60 @@ def _caption_parts(caption: str) -> tuple[str, str, list[str]]:
     return title, desc, body_lines
 
 
+_SEO_BRAND_NAME = "Top Shelf Cali Plug"
+_SEO_TITLE_MAX_LENGTH = 68
+
+
+def _clean_seo_title_part(value: str) -> str:
+    """Normalize a short phrase for use in search result titles."""
+    text = re.sub(r"\s+", " ", value or "").strip()
+    text = re.sub(r"\s+[|/-]\s+Top\s+Shelf\s+Cali\s+Plug\s*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"_+", " ", text)
+    text = re.sub(r"[^\w\s&+.'/-]", "", text, flags=re.UNICODE)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = text.strip(" \t\r\n-_|,.")
+    return text or "Product"
+
+
+def _title_already_contains(title: str, part: str) -> bool:
+    title_norm = normalize_term(title)
+    part_norm = normalize_term(part)
+    if not part_norm:
+        return False
+    variants = {part_norm}
+    if len(part_norm) > 3 and part_norm.endswith("s"):
+        variants.add(part_norm[:-1])
+    return any(variant in title_norm for variant in variants)
+
+
+def _fit_branded_seo_title(prefix: str) -> str:
+    prefix = _clean_seo_title_part(prefix)
+    suffix = f" | {_SEO_BRAND_NAME}"
+    max_prefix = max(24, _SEO_TITLE_MAX_LENGTH - len(suffix))
+    if len(prefix) > max_prefix:
+        prefix = prefix[: max_prefix - 3].rstrip(" -_|,.") + "..."
+    return f"{prefix}{suffix}"
+
+
+def _build_product_seo_title(title: str, category: str = "", subcategory: str = "") -> str:
+    parts = [_clean_seo_title_part(title)]
+    for value in (get_subcategory_display_name(subcategory) if subcategory else "",
+                  get_category_display_name(category) if category else ""):
+        cleaned = _clean_seo_title_part(value)
+        if cleaned and cleaned != "Product" and not _title_already_contains(" ".join(parts), cleaned):
+            parts.append(cleaned)
+    return _fit_branded_seo_title(" ".join(parts))
+
+
+def _build_category_seo_title(category_display: str) -> str:
+    return _fit_branded_seo_title(f"{_clean_seo_title_part(category_display)} Menu")
+
+
+def _build_subcategory_seo_title(category_display: str, subcategory_display: str) -> str:
+    prefix = f"{_clean_seo_title_part(subcategory_display)} {_clean_seo_title_part(category_display)} Menu"
+    return _fit_branded_seo_title(prefix)
+
+
 def _sitemap_lastmod(value, fallback: str) -> str:
     if isinstance(value, str) and value:
         normalized = value.replace("T", " ").split(" ", 1)[0]
@@ -2669,14 +2723,16 @@ async def _infer_missing_product_redirect_path(slug: str) -> str:
 
 def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
                         product: Optional[dict] = None, deep_link: str = "",
-                        keywords: str = "", category: str = "", og_type: str = "website") -> dict:
+                        keywords: str = "", category: str = "", og_type: str = "website",
+                        schema_title: str = "") -> dict:
     """Build template context dict for SSR SEO pages."""
     if product:
         product_url = url or _STOREFRONT_DOMAIN
+        schema_name = schema_title or title
         product_schema: dict = {
             "@context": "https://schema.org/",
             "@type": "Product",
-            "name": title,
+            "name": schema_name,
             "description": desc,
             "url": product_url,
             "mainEntityOfPage": product_url,
@@ -2716,7 +2772,7 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
                 {
                     "@type": "ListItem",
                     "position": 3,
-                    "name": title,
+                    "name": schema_name,
                     "item": product_url,
                 },
             ],
@@ -3181,13 +3237,14 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
             status_code=301,
         )
 
-    seo_title, seo_desc, description_lines = _caption_parts(caption)
+    category = product.get("category") or ""
+    subcategory = product.get("subcategory") or ""
+    product_title, seo_desc, description_lines = _caption_parts(caption)
+    seo_title = _build_product_seo_title(product_title, category, subcategory)
     seo_image = _product_primary_image_url(product)
     product_url = _canonical_product_url(product_id, caption)
     deep_link = f"https://t.me/{_STOREFRONT_BOT_USERNAME}?start=product_{product_id}"
     webapp_link = build_webapp_product_url(Config.WEB_APP_URL, product_id)
-    category = product.get("category") or ""
-    subcategory = product.get("subcategory") or ""
     _queue_visitor_event(
         request,
         source="website",
@@ -3202,7 +3259,7 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
             "index": idx,
             "type": media.get("type") or "document",
             "url": _product_public_media_path(product_id, idx),
-            "label": f"{seo_title} media {idx + 1}",
+            "label": f"{product_title} media {idx + 1}",
         }
         for idx, media in enumerate(_collect_media_info(product))
     ]
@@ -3239,6 +3296,7 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
         product=product,
         deep_link=deep_link,
         og_type="product",
+        schema_title=product_title,
         keywords=", ".join(filter(None, [
             product.get("category", ""),
             product.get("subcategory", ""),
@@ -3252,7 +3310,7 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
     ctx["request"] = request
     ctx["product"] = product
     ctx["product_id"] = product_id
-    ctx["product_title"] = seo_title
+    ctx["product_title"] = product_title
     ctx["description_lines"] = description_lines
     ctx["category"] = category
     ctx["category_display"] = get_category_display_name(category) if category else ""
@@ -3308,7 +3366,7 @@ async def serve_category_page(category_name: str, request: Request):
     ]))
 
     ctx = _build_seo_context(
-        title=f"{display_name} | Top Shelf Cali Plug",
+        title=_build_category_seo_title(display_name),
         desc=f"Browse our {display_name} collection. {total} products available. Order via Telegram.",
         url=category_url,
         keywords=keywords,
@@ -3409,7 +3467,7 @@ async def serve_subcategory_page(category_name: str, subcategory_name: str, requ
     seo_terms = await _seo_side_note_terms(matched_category, matched_subcategory)
 
     ctx = _build_seo_context(
-        title=f"{subcategory_display} {category_display} | Top Shelf Cali Plug",
+        title=_build_subcategory_seo_title(category_display, subcategory_display),
         desc=f"Browse {total} {subcategory_display} products in our {category_display} collection. Order via Telegram.",
         url=page_url,
         keywords=", ".join(filter(None, [
