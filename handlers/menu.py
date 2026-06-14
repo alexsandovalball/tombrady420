@@ -9,7 +9,7 @@ from telegram.ext import ContextTypes
 from telegram.error import TelegramError
 from database import Database
 from utils.pagination import create_pagination_keyboard
-from utils.helpers import is_admin, get_user_lang_async
+from utils.helpers import is_admin, get_user_lang_async, is_media_message
 from utils.categories import (
     get_all_categories,
     get_catalog_ui_text,
@@ -42,25 +42,61 @@ def _menu_callback(callback_data: str, render_token: str) -> str:
 
 async def _update_menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, keyboard: InlineKeyboardMarkup):
     """Update a menu message, falling back to a fresh send if Telegram refuses the edit."""
+    user_id = getattr(update.effective_user, "id", None)
+    chat_id = getattr(update.effective_chat, "id", None)
+    callback_data = None
+    message_id = None
+    operation = "send_command_reply"
+
+    if update.callback_query:
+        query = update.callback_query
+        callback_data = query.data
+        message_id = getattr(query.message, "message_id", None)
+        operation = "send_after_media_callback" if is_media_message(query.message) else "edit_callback_message"
+
+    started = time.monotonic()
     result = await safe_update_message(update, context, text, reply_markup=keyboard, parse_mode=None)
+    api_ms = (time.monotonic() - started) * 1000
+    logger.info(
+        "Menu Telegram update user_id=%s chat_id=%s operation=%s callback_data=%r message_id=%s api_ms=%.1f result=%s result_message_id=%s",
+        user_id,
+        chat_id,
+        operation,
+        callback_data,
+        message_id,
+        api_ms,
+        "ok" if result is not None else "none",
+        getattr(result, "message_id", None),
+    )
     if result is not None:
         return result
 
     if update.callback_query and update.effective_chat:
         logger.warning(
-            "Menu update returned no message; sending fresh menu fallback",
-            extra={
-                "callback_data": update.callback_query.data,
-                "chat_id": update.effective_chat.id,
-            },
+            "Menu update returned no message; sending fresh menu fallback user_id=%s chat_id=%s callback_data=%r message_id=%s",
+            user_id,
+            chat_id,
+            callback_data,
+            message_id,
         )
-        return await safe_send_message(
+        fallback_started = time.monotonic()
+        fallback_result = await safe_send_message(
             context.bot,
             chat_id=update.effective_chat.id,
             text=text,
             reply_markup=keyboard,
             parse_mode=None,
         )
+        logger.info(
+            "Menu Telegram fallback user_id=%s chat_id=%s callback_data=%r api_ms=%.1f result=%s result_message_id=%s",
+            user_id,
+            chat_id,
+            callback_data,
+            (time.monotonic() - fallback_started) * 1000,
+            "ok" if fallback_result is not None else "none",
+            getattr(fallback_result, "message_id", None),
+        )
+        return fallback_result
 
     return result
 
