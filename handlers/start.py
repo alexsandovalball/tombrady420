@@ -10,6 +10,7 @@ from configs.config import Config
 from translations.translator import get_translated_string_async
 from translations.language_config import LANGUAGE_DISPLAY, DEFAULT_LANGUAGE
 from utils.helpers import is_admin, get_user_display_name, ADMIN_COMMANDS_FALLBACK, escape_markdown_v1, get_bot_username, get_user_lang_async
+from utils.access_control import is_user_blocked_cached, track_user_debounced
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -58,7 +59,11 @@ async def _reply_if_blocked(update: Update, user_id: int) -> bool:
     """Send a blocked message if user is non-admin and blocked. Returns True if blocked."""
     if is_admin(user_id):
         return False
-    if await db.is_user_blocked(user_id):
+    if await is_user_blocked_cached(
+        db,
+        user_id,
+        username=getattr(update.effective_user, "username", None),
+    ):
         await update.message.reply_text(
             "🚫 You have been blocked from using this bot.\n\n"
             "If you believe this is an error, please contact an administrator."
@@ -96,12 +101,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Track user
     bot_username = get_bot_username(context)
-    await db.track_user(
+    await track_user_debounced(
+        db,
         user_id=user.id,
         username=user.username,
         first_name=user.first_name,
         last_name=user.last_name,
-        bot_username=bot_username
+        bot_username=bot_username,
+        force=is_new_user,
     )
 
     # For new users, show language selection menu
@@ -213,12 +220,13 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Track user
     bot_username = get_bot_username(context)
-    await db.track_user(
+    await track_user_debounced(
+        db,
         user_id=user_id,
         username=update.effective_user.username,
         first_name=update.effective_user.first_name,
         last_name=update.effective_user.last_name,
-        bot_username=bot_username
+        bot_username=bot_username,
     )
 
     # Get user's language preference

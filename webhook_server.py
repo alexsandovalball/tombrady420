@@ -76,6 +76,11 @@ from utils.webhook_identity import BotSlot, build_bot_slot, build_registry_webho
 from middleware.request_deduplicator import RequestDeduplicator
 from configs.telegram_ip_whitelist import is_telegram_ip
 from utils.deeplinks import build_webapp_product_url
+from utils.access_control import (
+    is_user_blocked_cached,
+    record_user_ip_debounced,
+    track_user_debounced,
+)
 
 # Configure logging
 from configs.logging_config import configure_logging
@@ -3711,11 +3716,12 @@ async def _check_user_not_blocked(init_data: str, client_ip: str = "") -> None:
     if not isinstance(user_data, TelegramUser):
         return
     user_id = user_data.id
-    if await _catalog_db.is_entity_blocked(
-        telegram_user_id=user_id,
+    if await is_user_blocked_cached(
+        _catalog_db,
+        user_id,
         username=user_data.username,
-        ip_address=client_ip if client_ip and client_ip != "unknown" else None,
-    ) or await _catalog_db.is_user_blocked(user_id):
+        ip_address=client_ip,
+    ):
         logger_security.warning(
             "[WEBAPP_BLOCKED] user_id=%d attempted WebApp API access while blocked",
             user_id,
@@ -3724,7 +3730,7 @@ async def _check_user_not_blocked(init_data: str, client_ip: str = "") -> None:
     # Record IP → user mapping for future block enforcement
     if client_ip and client_ip != "unknown":
         try:
-            await _catalog_db.record_user_ip(user_id, client_ip)
+            await record_user_ip_debounced(_catalog_db, user_id, client_ip)
         except Exception as _e:
             logger.debug("Failed to record user IP: %s", _e)
 
@@ -4723,11 +4729,12 @@ async def track_webapp_user(request: Request):
             return {"success": False, "message": "No user_id available"}
         
         # Reject blocked users — do not re-register them in the database
-        if await _catalog_db.is_entity_blocked(
-            telegram_user_id=int(user_id),
+        if await is_user_blocked_cached(
+            _catalog_db,
+            int(user_id),
             username=username,
             ip_address=get_client_ip(request),
-        ) or await _catalog_db.is_user_blocked(int(user_id)):
+        ):
             logger_security.warning(
                 "[WEBAPP_BLOCKED] user_id=%s attempted /api/user/track while blocked",
                 user_id,
@@ -4747,7 +4754,8 @@ async def track_webapp_user(request: Request):
             if hasattr(bot_app, 'bot') and hasattr(bot_app.bot, 'username'):
                 bot_username = bot_app.bot.username
         
-        await _catalog_db.track_user(
+        await track_user_debounced(
+            _catalog_db,
             user_id=int(user_id),
             username=username,
             first_name=first_name,
@@ -4760,7 +4768,7 @@ async def track_webapp_user(request: Request):
         client_ip = get_client_ip(request)
         if client_ip and client_ip != "unknown":
             try:
-                await _catalog_db.record_user_ip(int(user_id), client_ip)
+                await record_user_ip_debounced(_catalog_db, int(user_id), client_ip)
             except Exception as _ip_err:
                 logger.debug("Failed to record user IP in /api/user/track: %s", _ip_err)
         
@@ -4907,12 +4915,10 @@ async def process_webhook_request(request: Request, bot_registry_id: str):
         callback_data_for_log = None
         effective_user = update.effective_user
         if effective_user and not is_admin(effective_user.id):
-            is_blocked = (
-                await _catalog_db.is_entity_blocked(
-                    telegram_user_id=effective_user.id,
-                    username=effective_user.username,
-                )
-                or await _catalog_db.is_user_blocked(effective_user.id)
+            is_blocked = await is_user_blocked_cached(
+                _catalog_db,
+                effective_user.id,
+                username=effective_user.username,
             )
             if is_blocked:
                 logger_security.warning(

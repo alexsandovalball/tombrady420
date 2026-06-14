@@ -54,6 +54,7 @@ except Exception as exc:
 from utils.notification_manager import notification_service
 from utils.safe_send import safe_send_message, safe_edit_message_text
 from utils.primary_instance import is_primary_instance
+from utils.access_control import is_user_blocked_cached, track_user_debounced
 
 # Configure logging
 from configs.logging_config import configure_logging
@@ -380,7 +381,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     # Check if user is blocked (except for admins)
     user_id = update.effective_user.id
     if not is_admin(user_id):
-        is_blocked = await db.is_user_blocked(user_id)
+        is_blocked = await is_user_blocked_cached(
+            db,
+            user_id,
+            username=getattr(update.effective_user, "username", None),
+        )
         if is_blocked:
             await query.answer(
                 "🚫 You have been blocked from using this bot.",
@@ -425,27 +430,32 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.channel_post:
         return
     
-    # Track user
     user = update.effective_user
-    bot_username = context.bot.username if hasattr(context.bot, 'username') else None
-    await db.track_user(
-        user_id=user.id,
-        username=user.username,
-        first_name=user.first_name,
-        last_name=user.last_name,
-        bot_username=bot_username
-    )
-    
     # Check if user is blocked
     user_id = update.effective_user.id
     if not is_admin(user_id):
-        is_blocked = await db.is_user_blocked(user_id)
+        is_blocked = await is_user_blocked_cached(
+            db,
+            user_id,
+            username=getattr(user, "username", None),
+        )
         if is_blocked:
             await update.message.reply_text(
                 "🚫 You have been blocked from using this bot.\n\n"
                 "If you believe this is an error, please contact an administrator."
             )
             return
+
+    # Track normal message activity, but debounce repeated writes.
+    bot_username = context.bot.username if hasattr(context.bot, 'username') else None
+    await track_user_debounced(
+        db,
+        user_id=user.id,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        bot_username=bot_username,
+    )
     
     # Rate limiting (simple)
     current_time = datetime.now().timestamp()

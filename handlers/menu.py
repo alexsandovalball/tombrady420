@@ -3,6 +3,7 @@ Menu and catalog handlers.
 """
 import logging
 import math
+import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import TelegramError
@@ -18,16 +19,76 @@ from utils.categories import (
     CATEGORIES,
     EXCLUDED_FROM_ALL_PRODUCTS,
 )
-from utils.safe_send import safe_edit_message_text, safe_update_message, handle_handler_error
+from utils.safe_send import safe_edit_message_text, safe_update_message, safe_send_message, handle_handler_error
+from utils.access_control import is_user_blocked_cached
 
 logger = logging.getLogger(__name__)
 db = Database()
+
+_MENU_CACHE_TTL_SECONDS = 20
+_category_summary_cache = {"expires_at": 0.0, "value": None}
+_subcategory_summary_cache: dict[str, dict] = {}
+
+
+async def _update_menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, keyboard: InlineKeyboardMarkup):
+    """Update a menu message, falling back to a fresh send if Telegram refuses the edit."""
+    result = await safe_update_message(update, context, text, reply_markup=keyboard, parse_mode=None)
+    if result is not None:
+        return result
+
+    if update.callback_query and update.effective_chat:
+        logger.warning(
+            "Menu update returned no message; sending fresh menu fallback",
+            extra={
+                "callback_data": update.callback_query.data,
+                "chat_id": update.effective_chat.id,
+            },
+        )
+        return await safe_send_message(
+            context.bot,
+            chat_id=update.effective_chat.id,
+            text=text,
+            reply_markup=keyboard,
+            parse_mode=None,
+        )
+
+    return result
+
+
+async def _get_cached_category_summary():
+    now = time.monotonic()
+    cached = _category_summary_cache.get("value")
+    if cached is not None and now < _category_summary_cache.get("expires_at", 0.0):
+        return cached
+
+    value = await db.get_category_summary(EXCLUDED_FROM_ALL_PRODUCTS)
+    _category_summary_cache["value"] = value
+    _category_summary_cache["expires_at"] = now + _MENU_CACHE_TTL_SECONDS
+    return value
+
+
+async def _get_cached_subcategory_summary(category: str):
+    now = time.monotonic()
+    cached = _subcategory_summary_cache.get(category)
+    if cached and now < cached.get("expires_at", 0.0):
+        return cached["value"]
+
+    value = await db.get_subcategory_summary(category)
+    _subcategory_summary_cache[category] = {
+        "value": value,
+        "expires_at": now + _MENU_CACHE_TTL_SECONDS,
+    }
+    return value
 
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /menu command - show category selection."""
     user_id = update.effective_user.id
-    if not is_admin(user_id) and await db.is_user_blocked(user_id):
+    if not is_admin(user_id) and await is_user_blocked_cached(
+        db,
+        user_id,
+        username=getattr(update.effective_user, "username", None),
+    ):
         await update.message.reply_text(
             "🚫 You have been blocked from using this bot.\n\n"
             "If you believe this is an error, please contact an administrator."
@@ -40,13 +101,14 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show category selection menu."""
     user_id = update.effective_user.id
+    started = time.monotonic()
 
     try:
         # Get user's language preference
         user_lang = await get_user_lang_async(user_id)
 
         # Get category counts and the storefront total in one connection.
-        category_counts, _, total_count = await db.get_category_summary(EXCLUDED_FROM_ALL_PRODUCTS)
+        category_counts, _, total_count = await _get_cached_category_summary()
         category_buttons = []
 
         for category in get_all_categories():
@@ -79,8 +141,14 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         text = get_catalog_ui_text("product_categories", user_lang)
 
-        # Use safe_update_message to handle media/text messages
-        await safe_update_message(update, context, text, reply_markup=keyboard)
+        await _update_menu_message(update, context, text, keyboard)
+        logger.info(
+            "Category menu rendered",
+            extra={
+                "user_id": user_id,
+                "duration_ms": round((time.monotonic() - started) * 1000, 1),
+            },
+        )
 
     except Exception as e:
         await handle_handler_error(update, user_id, e, "Error showing category menu", logger)
@@ -89,6 +157,7 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, category: str):
     """Show subcategory selection menu for a given category."""
     user_id = update.effective_user.id
+    started = time.monotonic()
 
     try:
         # Get user's language preference
@@ -103,7 +172,7 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
             return
 
         # Get subcategory counts and the all-in-category total in one connection.
-        subcategory_counts, all_count = await db.get_subcategory_summary(category)
+        subcategory_counts, all_count = await _get_cached_subcategory_summary(category)
         count_dict = {item["subcategory"]: item["count"] for item in subcategory_counts}
 
         # Build subcategory buttons
@@ -138,13 +207,17 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
         keyboard = InlineKeyboardMarkup(subcategory_buttons)
 
         select_subcat_text = get_catalog_ui_text("select_subcategory", user_lang)
-        text = (
-            f"📂 **{translated_category}**\n\n"
-            f"{select_subcat_text}"
-        )
+        text = f"📂 {translated_category}\n\n{select_subcat_text}"
 
-        # Use safe_update_message to handle media/text messages
-        await safe_update_message(update, context, text, reply_markup=keyboard)
+        await _update_menu_message(update, context, text, keyboard)
+        logger.info(
+            "Subcategory menu rendered",
+            extra={
+                "user_id": user_id,
+                "category": category,
+                "duration_ms": round((time.monotonic() - started) * 1000, 1),
+            },
+        )
 
     except Exception as e:
         await handle_handler_error(update, user_id, e, "Error showing subcategory menu", logger)
@@ -153,6 +226,7 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
 async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1, category: str = None, subcategory: str = None):
     """Show a page of the catalog, optionally filtered by category and subcategory."""
     user_id = update.effective_user.id
+    started = time.monotonic()
 
     try:
         # Get user's language preference
@@ -312,8 +386,17 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
         text = f"{title}\n\n{showing_text}"
 
-        # Use safe_update_message to handle media/text messages
-        await safe_update_message(update, context, text, reply_markup=keyboard)
+        await _update_menu_message(update, context, text, keyboard)
+        logger.info(
+            "Catalog page rendered",
+            extra={
+                "user_id": user_id,
+                "category": category,
+                "subcategory": subcategory,
+                "page": page,
+                "duration_ms": round((time.monotonic() - started) * 1000, 1),
+            },
+        )
 
     except Exception as e:
         await handle_handler_error(update, user_id, e, "Error showing catalog page", logger)

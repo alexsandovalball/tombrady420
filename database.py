@@ -2177,6 +2177,11 @@ class Database:
                 )
             await db.commit()
             logger.info("[block] persisted user_id=%s ip_count=%d", user_id, len(ip_list))
+        try:
+            from utils.access_control import invalidate_block_cache
+            invalidate_block_cache(user_id=user_id)
+        except Exception:
+            logger.debug("Could not invalidate block cache for user %s", user_id, exc_info=True)
         return ip_list
 
     async def unblock_user(self, user_id: int) -> list:
@@ -2206,6 +2211,11 @@ class Database:
                 )
             await db.commit()
             logger.info("[block] manually_unblocked user_id=%s ip_count=%d", user_id, len(ip_list))
+        try:
+            from utils.access_control import invalidate_block_cache
+            invalidate_block_cache(user_id=user_id)
+        except Exception:
+            logger.debug("Could not invalidate block cache for user %s", user_id, exc_info=True)
         return ip_list
     
     async def is_user_blocked(self, user_id: int) -> bool:

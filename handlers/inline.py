@@ -28,6 +28,7 @@ from utils.deeplinks import build_bot_product_url, build_webapp_product_url
 from utils.fuzzy_search import rank_products_for_query
 from utils.helpers import get_bot_username, escape_markdown_v1
 from utils.media_resolver import MediaResolver
+from utils.access_control import is_user_blocked_cached
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -317,7 +318,11 @@ async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     user_id = inline_query.from_user.id
-    if await db.is_user_blocked(user_id):
+    if await is_user_blocked_cached(
+        db,
+        user_id,
+        username=getattr(inline_query.from_user, "username", None),
+    ):
         logger.warning("Blocked user %s attempted inline query access", user_id)
         await inline_query.answer(results=[], cache_time=60, is_personal=True)
         return
@@ -553,7 +558,11 @@ async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFA
         return
 
     user_id = chosen.from_user.id
-    if await db.is_user_blocked(user_id):
+    if await is_user_blocked_cached(
+        db,
+        user_id,
+        username=getattr(chosen.from_user, "username", None),
+    ):
         logger.warning("Blocked user %s attempted chosen inline result access", user_id)
         return
 

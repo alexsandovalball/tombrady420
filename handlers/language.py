@@ -10,6 +10,7 @@ from translations.language_config import LANGUAGE_DISPLAY, is_valid_language, DE
 from translations.translator import get_translated_string_async
 from utils.helpers import is_admin, get_user_display_name, ADMIN_COMMANDS_FALLBACK, escape_markdown_v1, get_user_lang_async
 from utils.safe_send import safe_send_message, safe_edit_message_text
+from utils.access_control import is_user_blocked_cached
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -18,7 +19,11 @@ db = Database()
 async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /language command - show language selection menu."""
     user_id = update.effective_user.id
-    if not is_admin(user_id) and await db.is_user_blocked(user_id):
+    if not is_admin(user_id) and await is_user_blocked_cached(
+        db,
+        user_id,
+        username=getattr(update.effective_user, "username", None),
+    ):
         await update.message.reply_text(
             "🚫 You have been blocked from using this bot.\n\n"
             "If you believe this is an error, please contact an administrator."

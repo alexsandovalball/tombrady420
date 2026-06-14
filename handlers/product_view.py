@@ -44,35 +44,8 @@ def _build_admin_action_buttons(product_id: int, user_id: int) -> list[list[Inli
     ]]
 
 
-def _product_category_navigation_buttons(product: dict, existing_callbacks: set[str]) -> list[list[InlineKeyboardButton]]:
-    buttons: list[list[InlineKeyboardButton]] = []
-    category = product.get("category")
-    subcategory = product.get("subcategory")
-
-    if category and subcategory:
-        subcategory_callback = f"subcategory|{category}|{subcategory}|1"
-        if subcategory_callback not in existing_callbacks:
-            buttons.append([
-                InlineKeyboardButton("🔙 Back to subcategory", callback_data=subcategory_callback)
-            ])
-            existing_callbacks.add(subcategory_callback)
-
-    if category:
-        category_callback = f"category|{category}|1"
-        if category_callback not in existing_callbacks:
-            buttons.append([
-                InlineKeyboardButton("🔙 Back to category", callback_data=category_callback)
-            ])
-            existing_callbacks.add(category_callback)
-
-    return buttons
-
-
-def _build_navigation_buttons(product: dict, back_callback: str, back_label: str) -> list[list[InlineKeyboardButton]]:
-    buttons = [[InlineKeyboardButton(back_label, callback_data=back_callback)]]
-    existing_callbacks = {back_callback}
-    buttons.extend(_product_category_navigation_buttons(product, existing_callbacks))
-    return buttons
+def _build_navigation_buttons(back_callback: str, back_label: str) -> list[list[InlineKeyboardButton]]:
+    return [[InlineKeyboardButton(back_label, callback_data=back_callback)]]
 
 
 def _build_media_fallback_keyboard(
@@ -185,7 +158,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 back_label = "🔙 Back to category"
             # else: keep default "menu|1"
 
-        navigation_buttons = _build_navigation_buttons(product, back_callback, back_label)
+        navigation_buttons = _build_navigation_buttons(back_callback, back_label)
         
         # Get user's language preference
         user_lang = await get_user_lang_async(user_id)
