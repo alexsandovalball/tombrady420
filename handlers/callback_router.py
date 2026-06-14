@@ -1313,6 +1313,8 @@ _EXACT_HANDLERS = {
 
 # Prefix-match callbacks: callback_data.split("|")[0] == key
 _PREFIX_HANDLERS = {
+    "noop": _handle_noop,
+    "categories": _handle_categories,
     "setlang": _handle_setlang,
     "setlang_start": _handle_setlang_start,
     "broadcast_confirm_single": _handle_broadcast_confirm_single,

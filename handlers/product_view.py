@@ -395,7 +395,7 @@ async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_
     callback_data = update.callback_query.data
     parts = callback_data.split("|")
     
-    if len(parts) == 2 and parts[0] == "product":
+    if len(parts) >= 2 and parts[0] == "product":
         product_id = int(parts[1])
         await show_product_media(update, context, product_id)
     else:

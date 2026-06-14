@@ -30,6 +30,16 @@ _category_summary_cache = {"expires_at": 0.0, "value": None}
 _subcategory_summary_cache: dict[str, dict] = {}
 
 
+def _new_menu_render_token() -> str:
+    """Small per-render suffix to avoid stale client-side callback reuse."""
+    return f"r{int(time.monotonic() * 1000) % 65536:04x}"
+
+
+def _menu_callback(callback_data: str, render_token: str) -> str:
+    tagged = f"{callback_data}|{render_token}"
+    return tagged if len(tagged) <= 64 else callback_data
+
+
 async def _update_menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, keyboard: InlineKeyboardMarkup):
     """Update a menu message, falling back to a fresh send if Telegram refuses the edit."""
     result = await safe_update_message(update, context, text, reply_markup=keyboard, parse_mode=None)
@@ -110,6 +120,7 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Get category counts and the storefront total in one connection.
         category_counts, _, total_count = await _get_cached_category_summary()
         category_buttons = []
+        render_token = _new_menu_render_token()
 
         for category in get_all_categories():
             count = category_counts.get(category, 0)
@@ -122,10 +133,10 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
             if subcategories:
                 # Use browse_category to show subcategory menu
-                callback_data = f"browse_category|{category}"
+                callback_data = _menu_callback(f"browse_category|{category}", render_token)
             else:
                 # No subcategories, go directly to products
-                callback_data = f"category|{category}|1"
+                callback_data = _menu_callback(f"category|{category}|1", render_token)
 
             category_buttons.append([
                 InlineKeyboardButton(button_text, callback_data=callback_data)
@@ -134,7 +145,10 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Add "All Products" option
         all_products_text = get_catalog_ui_text("all_products", user_lang)
         category_buttons.insert(0, [
-            InlineKeyboardButton(f"{all_products_text} ({total_count})", callback_data="menu|1")
+            InlineKeyboardButton(
+                f"{all_products_text} ({total_count})",
+                callback_data=_menu_callback("menu|1", render_token),
+            )
         ])
 
         keyboard = InlineKeyboardMarkup(category_buttons)
@@ -143,11 +157,11 @@ async def show_category_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         await _update_menu_message(update, context, text, keyboard)
         logger.info(
-            "Category menu rendered",
-            extra={
-                "user_id": user_id,
-                "duration_ms": round((time.monotonic() - started) * 1000, 1),
-            },
+            "Category menu rendered user_id=%s token=%s duration_ms=%.1f buttons=%d",
+            user_id,
+            render_token,
+            (time.monotonic() - started) * 1000,
+            len(category_buttons),
         )
 
     except Exception as e:
@@ -177,6 +191,7 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
 
         # Build subcategory buttons
         subcategory_buttons = []
+        render_token = _new_menu_render_token()
 
         for subcat in subcategories:
             count = count_dict.get(subcat, 0)
@@ -184,7 +199,10 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
             translated_subcat = get_subcategory_display_name(subcat, user_lang)
             button_text = f"{translated_subcat} ({count})"
             subcategory_buttons.append([
-                InlineKeyboardButton(button_text, callback_data=f"subcategory|{category}|{subcat}|1")
+                InlineKeyboardButton(
+                    button_text,
+                    callback_data=_menu_callback(f"subcategory|{category}|{subcat}|1", render_token),
+                )
             ])
 
         translated_category = get_category_display_name(category, user_lang)
@@ -195,13 +213,16 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
         subcategory_buttons.insert(0, [
-            InlineKeyboardButton(all_in_category_text, callback_data=f"category|{category}|1")
+            InlineKeyboardButton(
+                all_in_category_text,
+                callback_data=_menu_callback(f"category|{category}|1", render_token),
+            )
         ])
 
         # Add back button
         back_to_cats_text = get_catalog_ui_text("button_back_to_categories", user_lang)
         subcategory_buttons.append([
-            InlineKeyboardButton(back_to_cats_text, callback_data="categories")
+            InlineKeyboardButton(back_to_cats_text, callback_data=_menu_callback("categories", render_token))
         ])
 
         keyboard = InlineKeyboardMarkup(subcategory_buttons)
@@ -211,12 +232,12 @@ async def show_subcategory_menu(update: Update, context: ContextTypes.DEFAULT_TY
 
         await _update_menu_message(update, context, text, keyboard)
         logger.info(
-            "Subcategory menu rendered",
-            extra={
-                "user_id": user_id,
-                "category": category,
-                "duration_ms": round((time.monotonic() - started) * 1000, 1),
-            },
+            "Subcategory menu rendered user_id=%s category=%s token=%s duration_ms=%.1f buttons=%d",
+            user_id,
+            category,
+            render_token,
+            (time.monotonic() - started) * 1000,
+            len(subcategory_buttons),
         )
 
     except Exception as e:
@@ -325,6 +346,7 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
         # Create keyboard with product buttons
         keyboard_buttons = []
+        render_token = _new_menu_render_token()
 
         # Add product buttons
         for product in products_page:
@@ -334,7 +356,9 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 button_text = f"Product #{product['id']}"
 
             callback_data = f"product|{product['id']}"
-            keyboard_buttons.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+            keyboard_buttons.append([
+                InlineKeyboardButton(button_text, callback_data=_menu_callback(callback_data, render_token))
+            ])
 
         # Add pagination controls
         if total_pages > 1:
@@ -345,23 +369,23 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
             if page > 1:
                 if subcategory and category:
-                    prev_data = f"subcategory|{category}|{subcategory}|{page - 1}"
+                    prev_data = _menu_callback(f"subcategory|{category}|{subcategory}|{page - 1}", render_token)
                 elif category:
-                    prev_data = f"category|{category}|{page - 1}"
+                    prev_data = _menu_callback(f"category|{category}|{page - 1}", render_token)
                 else:
-                    prev_data = f"page|catalog|{page - 1}"
+                    prev_data = _menu_callback(f"page|catalog|{page - 1}", render_token)
                 nav_buttons.append(InlineKeyboardButton(previous_text, callback_data=prev_data))
 
             page_text = get_catalog_ui_text("page_indicator", user_lang, page=page, total_pages=total_pages)
-            nav_buttons.append(InlineKeyboardButton(page_text, callback_data="noop"))
+            nav_buttons.append(InlineKeyboardButton(page_text, callback_data=_menu_callback("noop", render_token)))
 
             if page < total_pages:
                 if subcategory and category:
-                    next_data = f"subcategory|{category}|{subcategory}|{page + 1}"
+                    next_data = _menu_callback(f"subcategory|{category}|{subcategory}|{page + 1}", render_token)
                 elif category:
-                    next_data = f"category|{category}|{page + 1}"
+                    next_data = _menu_callback(f"category|{category}|{page + 1}", render_token)
                 else:
-                    next_data = f"page|catalog|{page + 1}"
+                    next_data = _menu_callback(f"page|catalog|{page + 1}", render_token)
                 nav_buttons.append(InlineKeyboardButton(next_text, callback_data=next_data))
 
             keyboard_buttons.append(nav_buttons)
@@ -371,9 +395,16 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         back_to_cats_text = get_catalog_ui_text("button_back_to_categories", user_lang)
 
         if subcategory and category:
-            keyboard_buttons.append([InlineKeyboardButton(back_to_subcats_text, callback_data=f"browse_category|{category}")])
+            keyboard_buttons.append([
+                InlineKeyboardButton(
+                    back_to_subcats_text,
+                    callback_data=_menu_callback(f"browse_category|{category}", render_token),
+                )
+            ])
         else:
-            keyboard_buttons.append([InlineKeyboardButton(back_to_cats_text, callback_data="categories")])
+            keyboard_buttons.append([
+                InlineKeyboardButton(back_to_cats_text, callback_data=_menu_callback("categories", render_token))
+            ])
 
         keyboard = InlineKeyboardMarkup(keyboard_buttons)
 
@@ -388,14 +419,14 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
         await _update_menu_message(update, context, text, keyboard)
         logger.info(
-            "Catalog page rendered",
-            extra={
-                "user_id": user_id,
-                "category": category,
-                "subcategory": subcategory,
-                "page": page,
-                "duration_ms": round((time.monotonic() - started) * 1000, 1),
-            },
+            "Catalog page rendered user_id=%s category=%s subcategory=%s page=%s token=%s duration_ms=%.1f buttons=%d",
+            user_id,
+            category or "",
+            subcategory or "",
+            page,
+            render_token,
+            (time.monotonic() - started) * 1000,
+            len(keyboard_buttons),
         )
 
     except Exception as e:
