@@ -108,6 +108,18 @@ _WEBHOOK_UPDATE_CONCURRENCY = _bounded_int_env("WEBHOOK_UPDATE_CONCURRENCY", 4, 
 _webhook_processing_semaphores: Dict[str, asyncio.Semaphore] = {}
 _bot_applications_by_registry_id: Dict[str, Application] = {}
 _runtime_index_to_registry_id: Dict[int, str] = {}
+_VISITOR_EVENT_QUEUE_MAX = _bounded_int_env("VISITOR_EVENT_QUEUE_MAX", 2048, 100, 20000)
+_VISITOR_EVENT_LOG_EVERY = _bounded_int_env("VISITOR_EVENT_LOG_EVERY", 500, 50, 10000)
+_visitor_event_queue: Optional[asyncio.Queue] = None
+_visitor_events_written = 0
+_visitor_events_dropped = 0
+_SEO_AUTO_LEARN_STARTUP_DELAY_SECONDS = _bounded_int_env(
+    "SEO_AUTO_LEARN_STARTUP_DELAY_SECONDS",
+    300,
+    60,
+    3600,
+)
+_seo_auto_learn_lock: Optional[asyncio.Lock] = None
 
 # Per-process counter for webhook 401 rejections (in-memory, not persisted).
 # Useful for setting alerts: check logs for [WEBHOOK_401] or watch this counter
@@ -847,6 +859,34 @@ def _visitor_user_from_init_data(init_data: str) -> Optional[TelegramUser]:
         return None
 
 
+async def _visitor_event_writer_loop() -> None:
+    """Serialize visitor analytics writes so public traffic cannot fan out DB commits."""
+    global _visitor_events_written
+
+    queue = _visitor_event_queue
+    if queue is None:
+        logger.warning("[visitor_analytics] writer_not_started reason=queue_missing")
+        return
+
+    logger.info("[visitor_analytics] writer_started queue_max=%d", _VISITOR_EVENT_QUEUE_MAX)
+    while True:
+        payload = await queue.get()
+        try:
+            await _catalog_db.log_visitor_event(**payload)
+            _visitor_events_written += 1
+            if _visitor_events_written % _VISITOR_EVENT_LOG_EVERY == 0:
+                logger.info(
+                    "[visitor_analytics] written=%d queued=%d dropped=%d",
+                    _visitor_events_written,
+                    queue.qsize(),
+                    _visitor_events_dropped,
+                )
+        except Exception as exc:
+            logger.debug("Failed to log visitor event: %s", exc)
+        finally:
+            queue.task_done()
+
+
 def _queue_visitor_event(
     request: Request,
     *,
@@ -881,6 +921,23 @@ def _queue_visitor_event(
         "is_authenticated": user_data is not None,
         **location,
     }
+
+    queue = _visitor_event_queue
+    if queue is not None:
+        try:
+            queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            global _visitor_events_dropped
+            _visitor_events_dropped += 1
+            if _visitor_events_dropped == 1 or _visitor_events_dropped % 100 == 0:
+                logger.warning(
+                    "[visitor_analytics] event_dropped dropped=%d queue_max=%d source=%s page_type=%s",
+                    _visitor_events_dropped,
+                    _VISITOR_EVENT_QUEUE_MAX,
+                    source,
+                    page_type,
+                )
+        return
 
     async def _write_event() -> None:
         try:
@@ -1858,16 +1915,36 @@ async def _seo_auto_learn_once() -> int:
     return approved + external_imports + external_promoted
 
 
+def _get_seo_auto_learn_lock() -> asyncio.Lock:
+    global _seo_auto_learn_lock
+    if _seo_auto_learn_lock is None:
+        _seo_auto_learn_lock = asyncio.Lock()
+    return _seo_auto_learn_lock
+
+
 async def _seo_auto_learn_loop():
     """Background task: learn safe SEO mappings from repeated no-result searches."""
     if not Config.SEO_AUTO_LEARN_ENABLED:
         logger.info("[seo_auto_learn] disabled")
         return
 
-    await asyncio.sleep(60)
+    await asyncio.sleep(_SEO_AUTO_LEARN_STARTUP_DELAY_SECONDS)
     while True:
         try:
-            await _seo_auto_learn_once()
+            lock = _get_seo_auto_learn_lock()
+            if lock.locked():
+                logger.info("[seo_auto_learn] skipped reason=previous_run_active")
+            else:
+                started = _time.monotonic()
+                async with lock:
+                    learned = await _seo_auto_learn_once()
+                duration_ms = (_time.monotonic() - started) * 1000
+                if learned or duration_ms > 1000:
+                    logger.info(
+                        "[seo_auto_learn] run_complete changed=%d duration_ms=%.1f",
+                        learned,
+                        duration_ms,
+                    )
         except Exception as e:
             logger.warning("[seo_auto_learn] loop_error error=%s", e)
         await asyncio.sleep(Config.SEO_AUTO_LEARN_INTERVAL_SECONDS)
@@ -1878,6 +1955,7 @@ async def lifespan(app: FastAPI):
     """Manage application lifespan - startup and shutdown."""
     global _bot_applications, _webhook_secret_tokens
     global _bot_applications_by_registry_id, _runtime_index_to_registry_id
+    global _visitor_event_queue
 
     # Startup
     logger.info("Starting webhook server...")
@@ -1978,7 +2056,9 @@ async def lifespan(app: FastAPI):
             logger.warning("Could not read file ID cache size during startup: %s", exc)
 
     # Start background maintenance tasks
+    _visitor_event_queue = asyncio.Queue(maxsize=_VISITOR_EVENT_QUEUE_MAX)
     _bg_tasks = [
+        asyncio.create_task(_visitor_event_writer_loop(), name="visitor_event_writer"),
         asyncio.create_task(_media_cache_prune_loop(), name="media_cache_prune"),
         asyncio.create_task(_wal_checkpoint_loop(), name="wal_checkpoint"),
         asyncio.create_task(_seo_auto_learn_loop(), name="seo_auto_learn"),
@@ -2000,6 +2080,7 @@ async def lifespan(app: FastAPI):
     for task in _bg_tasks:
         task.cancel()
     await asyncio.gather(*_bg_tasks, return_exceptions=True)
+    _visitor_event_queue = None
 
     # Shutdown
     logger.info("Shutting down bot applications...")
