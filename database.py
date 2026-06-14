@@ -14,6 +14,7 @@ import json
 
 from configs.config import Config
 from utils.categories import EXCLUDED_FROM_ALL_PRODUCTS
+from utils.countries import country_code, country_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -4290,6 +4291,13 @@ class Database:
                     fetched = await cursor.fetchall()
                     return [dict(row) for row in fetched]
 
+            def expand_country_names(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                for item in items:
+                    stored_country = item.get("country")
+                    item["country_code"] = country_code(stored_country)
+                    item["country"] = country_display_name(stored_country)
+                return items
+
             bots = await rows("""
                 SELECT
                     bot_id, telegram_bot_id, bot_username, status,
@@ -4374,6 +4382,7 @@ class Database:
                 ORDER BY visitors DESC, visits DESC
                 LIMIT 20
             """, (since_24h,))
+            top_visitor_locations = expand_country_names(top_visitor_locations)
 
             top_public_pages = await rows("""
                 SELECT
@@ -4407,6 +4416,7 @@ class Database:
                 ORDER BY created_at DESC
                 LIMIT ?
             """, (recent_limit,))
+            recent_visitor_events = expand_country_names(recent_visitor_events)
 
             indexnow_last_rows = await rows("""
                 SELECT url, reason, status, attempts, http_status, last_error,
