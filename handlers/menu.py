@@ -361,6 +361,7 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         if not products_page:
             context_str = 'subcategory' if subcategory else 'category' if category else 'catalog'
             text = get_catalog_ui_text("no_products_in_category", user_lang, context=context_str)
+            render_token = _new_menu_render_token()
 
             # Build back button based on context
             back_buttons = []
@@ -369,11 +370,26 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             refresh_text = get_catalog_ui_text("button_refresh", user_lang)
 
             if subcategory and category:
-                back_buttons.append([InlineKeyboardButton(back_to_subcats_text, callback_data=f"browse_category|{category}")])
+                back_buttons.append([
+                    InlineKeyboardButton(
+                        back_to_subcats_text,
+                        callback_data=_menu_callback(f"browse_category|{category}", render_token),
+                    )
+                ])
             elif category:
-                back_buttons.append([InlineKeyboardButton(back_to_cats_text, callback_data="categories")])
+                back_buttons.append([
+                    InlineKeyboardButton(
+                        back_to_cats_text,
+                        callback_data=_menu_callback("categories", render_token),
+                    )
+                ])
             else:
-                back_buttons.append([InlineKeyboardButton(back_to_cats_text, callback_data="categories")])
+                back_buttons.append([
+                    InlineKeyboardButton(
+                        back_to_cats_text,
+                        callback_data=_menu_callback("categories", render_token),
+                    )
+                ])
 
             # Add refresh button
             if subcategory and category:
@@ -382,21 +398,20 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 refresh_data = f"category|{category}|1"
             else:
                 refresh_data = "menu|1"
-            back_buttons.append([InlineKeyboardButton(refresh_text, callback_data=refresh_data)])
+            back_buttons.append([
+                InlineKeyboardButton(refresh_text, callback_data=_menu_callback(refresh_data, render_token))
+            ])
 
             keyboard = InlineKeyboardMarkup(back_buttons)
-
-            if update.callback_query:
-                query = update.callback_query
-                await safe_edit_message_text(
-                    context.bot,
-                    chat_id=query.message.chat_id,
-                    message_id=query.message.message_id,
-                    text=text,
-                    reply_markup=keyboard
-                )
-            else:
-                await update.message.reply_text(text, reply_markup=keyboard)
+            await _update_menu_message(update, context, text, keyboard)
+            logger.info(
+                "Empty catalog page rendered user_id=%s category=%s subcategory=%s token=%s duration_ms=%.1f",
+                user_id,
+                category or "",
+                subcategory or "",
+                render_token,
+                (time.monotonic() - started) * 1000,
+            )
             return
 
         total_pages = max(1, math.ceil(total_products / per_page))

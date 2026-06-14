@@ -10,6 +10,7 @@ Handler signature:
 """
 import asyncio
 import logging
+import re
 import aiosqlite
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -53,6 +54,17 @@ db = Database()
 
 # Maximum allowed length for callback_data (Telegram's hard limit is 64 bytes)
 _MAX_CALLBACK_DATA_LEN = 64
+_RENDER_TOKEN_RE = re.compile(r"^r[0-9a-f]{4}$", re.IGNORECASE)
+_RENDER_TOKEN_PREFIXES = {
+    "noop",
+    "categories",
+    "category",
+    "browse_category",
+    "subcategory",
+    "page",
+    "menu",
+    "product",
+}
 
 
 def _is_expired_callback_error(exc: Exception) -> bool:
@@ -72,6 +84,17 @@ async def _safe_query_answer(query, *args, **kwargs) -> bool:
     except Exception:
         logger.debug("Callback answer failed", exc_info=True)
         return False
+
+
+def _strip_render_token(parts: list[str]) -> list[str]:
+    """Remove per-render menu callback token before domain handlers parse data."""
+    if (
+        len(parts) > 1
+        and parts[0] in _RENDER_TOKEN_PREFIXES
+        and _RENDER_TOKEN_RE.match(parts[-1] or "")
+    ):
+        return parts[:-1]
+    return parts
 
 
 # ---------------------------------------------------------------------------
@@ -1388,6 +1411,7 @@ async def route_callback(
 
     parts = callback_data.split("|")
     prefix = parts[0]
+    handler_parts = _strip_render_token(parts)
 
     # Exact match takes precedence (avoids ambiguity for bare keywords)
     handler = _EXACT_HANDLERS.get(callback_data) or _PREFIX_HANDLERS.get(prefix)
@@ -1402,7 +1426,7 @@ async def route_callback(
         answered = await _safe_query_answer(query)
 
     try:
-        await handler(update, context, query, user_id, parts)
+        await handler(update, context, query, user_id, handler_parts)
     except ValueError as e:
         logger.error(f"Invalid callback data format: {callback_data}, error: {e}")
         if not answered:
