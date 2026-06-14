@@ -1,6 +1,7 @@
 """
 Menu and catalog handlers.
 """
+import asyncio
 import logging
 import math
 import time
@@ -40,6 +41,18 @@ def _menu_callback(callback_data: str, render_token: str) -> str:
     return tagged if len(tagged) <= 64 else callback_data
 
 
+async def _delete_old_menu_message(bot, chat_id: int, message_id: int) -> None:
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except TelegramError as exc:
+        logger.debug(
+            "Could not delete superseded menu message chat_id=%s message_id=%s: %s",
+            chat_id,
+            message_id,
+            exc,
+        )
+
+
 async def _update_menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, keyboard: InlineKeyboardMarkup):
     """Update a menu message, falling back to a fresh send if Telegram refuses the edit."""
     user_id = getattr(update.effective_user, "id", None)
@@ -47,15 +60,36 @@ async def _update_menu_message(update: Update, context: ContextTypes.DEFAULT_TYP
     callback_data = None
     message_id = None
     operation = "send_command_reply"
+    should_send_fresh = False
 
     if update.callback_query:
         query = update.callback_query
         callback_data = query.data
         message_id = getattr(query.message, "message_id", None)
-        operation = "send_after_media_callback" if is_media_message(query.message) else "edit_callback_message"
+        message_has_media = is_media_message(query.message)
+        should_send_fresh = message_has_media or not is_admin(user_id)
+        if message_has_media:
+            operation = "send_after_media_callback"
+        elif should_send_fresh:
+            operation = "send_fresh_user_callback"
+        else:
+            operation = "edit_callback_message"
 
     started = time.monotonic()
-    result = await safe_update_message(update, context, text, reply_markup=keyboard, parse_mode=None)
+    if should_send_fresh and update.callback_query and update.effective_chat:
+        result = await safe_send_message(
+            context.bot,
+            chat_id=update.effective_chat.id,
+            text=text,
+            reply_markup=keyboard,
+            parse_mode=None,
+        )
+        if result is not None and message_id and operation == "send_fresh_user_callback":
+            asyncio.create_task(
+                _delete_old_menu_message(context.bot, update.callback_query.message.chat_id, message_id)
+            )
+    else:
+        result = await safe_update_message(update, context, text, reply_markup=keyboard, parse_mode=None)
     api_ms = (time.monotonic() - started) * 1000
     logger.info(
         "Menu Telegram update user_id=%s chat_id=%s operation=%s callback_data=%r message_id=%s api_ms=%.1f result=%s result_message_id=%s",
