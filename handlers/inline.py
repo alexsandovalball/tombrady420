@@ -20,6 +20,7 @@ from telegram import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from database import Database
@@ -44,7 +45,7 @@ _product_cache_lock = asyncio.Lock()
 # Per-user debouncing and task cancellation
 # Maps user_id -> (task, timestamp) for in-flight inline query tasks
 # ---------------------------------------------------------------------------
-_DEBOUNCE_DELAY = 0.5  # 500ms debounce
+_DEBOUNCE_DELAY = 0.15
 _user_query_tasks: Dict[int, asyncio.Task] = {}
 _user_query_tasks_lock = asyncio.Lock()
 
@@ -53,6 +54,15 @@ _user_query_tasks_lock = asyncio.Lock()
 # stay in sync without touching helper builders individually.
 INLINE_PAGE_SIZE = 10
 _INLINE_PAGE_SIZE = INLINE_PAGE_SIZE  # Internal alias kept for backward compat
+_INLINE_MEDIA_RESOLVE_TIMEOUT = 0.65
+_INLINE_RESULT_REJECTION_MARKERS = (
+    "photo_invalid",
+    "video_invalid",
+    "document_invalid",
+    "wrong file identifier",
+    "file identifier",
+    "file_id",
+)
 
 
 async def _get_cached_products() -> List[Dict[str, Any]]:
@@ -84,10 +94,40 @@ def _build_product_webapp_url(product_id: int) -> Optional[str]:
     return build_webapp_product_url(Config.WEB_APP_URL, product_id)
 
 
+def _inline_result_rejected(exc: Exception) -> bool:
+    if not isinstance(exc, BadRequest):
+        return False
+    message = str(exc).lower()
+    return any(marker in message for marker in _INLINE_RESULT_REJECTION_MARKERS)
+
+
+def _inline_article_thumbnail_url(
+    product_id: Any,
+    file_type: str,
+    *,
+    safe_only: bool = False,
+) -> Optional[str]:
+    """Return a thumbnail URL that Telegram can safely treat as an image."""
+    if product_id is None:
+        return None
+
+    storefront_domain = Config.STOREFRONT_DOMAIN or (Config.WEBHOOK_URL or "").rstrip("/")
+    if not storefront_domain:
+        return None
+
+    storefront_base = storefront_domain.rstrip("/")
+    if not safe_only and file_type == "photo":
+        return f"{storefront_base}/api/catalog/{product_id}/media/0"
+
+    return f"{storefront_base}/og-image.png"
+
+
 async def _build_product_article(
     product: Dict[str, Any],
     bot_username: str,
     context: ContextTypes.DEFAULT_TYPE,
+    *,
+    force_article: bool = False,
 ) -> InlineQueryResult:
     """Build an inline result for a single product.
 
@@ -136,7 +176,7 @@ async def _build_product_article(
     )
 
     # --- Attempt rich media result for photo/video products ---
-    if file_type in ("photo", "video"):
+    if not force_article and file_type in ("photo", "video"):
         resolved_file_id = await _resolve_file_id_for_inline(product, context)
         if resolved_file_id:
             if file_type == "photo":
@@ -160,13 +200,11 @@ async def _build_product_article(
                     reply_markup=reply_markup,
                 )
 
-    # --- Fallback: article with thumbnail from storefront ---
-    # Use the storefront /api/catalog URL for the thumbnail so the image loads
-    # quickly for the (up to INLINE_PAGE_SIZE) results shown.
-    thumbnail_url: Optional[str] = None
-    storefront_domain = Config.STOREFRONT_DOMAIN or (Config.WEBHOOK_URL or "").rstrip('/')
-    if storefront_domain and file_type in ("photo", "video"):
-        thumbnail_url = f"{storefront_domain.rstrip('/')}/api/catalog/{product_id}/media/0"
+    # --- Fallback: article with a Telegram-safe thumbnail from storefront ---
+    # Article thumbnails must be images. Photo products can use their public
+    # preview URL; videos/documents use the default image to avoid Telegram
+    # rejecting the entire inline answer with Photo_invalid/Document_invalid.
+    thumbnail_url = _inline_article_thumbnail_url(product_id, file_type, safe_only=force_article)
 
     return InlineQueryResultArticle(
         id=f"product_{product_id}",
@@ -187,10 +225,8 @@ async def _resolve_file_id_for_inline(
 ) -> Optional[str]:
     """Return a file_id usable by the current bot for the given product.
 
-    Checks the persistent DB cache first; on a cache miss, triggers a
-    message-forward via ``get_bot_specific_file_id`` to populate the cache
-    and returns the resolved file_id.  Returns ``None`` only if forwarding
-    explicitly fails or the product has no media.
+    Inline queries must answer quickly. Use original/cached media when it is
+    already available, but skip slow forwarding while a user is typing.
     """
     if not product.get("file_id"):
         logger.debug(
@@ -200,11 +236,67 @@ async def _resolve_file_id_for_inline(
         return None
 
     current_bot = (context.bot.username or "").lower()
-    result = await MediaResolver(context.bot, db).resolve_media_for_bot(product, current_bot, 0)
+    try:
+        result = await asyncio.wait_for(
+            MediaResolver(context.bot, db).resolve_media_for_bot(
+                product,
+                current_bot,
+                0,
+                allow_rehydrate=False,
+            ),
+            timeout=_INLINE_MEDIA_RESOLVE_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.info(
+            "Inline media lookup timed out for product %s; using article fallback",
+            product.get("id"),
+        )
+        return None
+    except Exception as exc:
+        logger.warning(
+            "Inline media lookup failed for product %s: %s",
+            product.get("id"),
+            exc,
+        )
+        return None
+
     if result.success:
         return result.file_id
 
     return None
+
+
+async def _build_product_results(
+    products: List[Dict[str, Any]],
+    bot_username: str,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    force_article: bool = False,
+) -> List[InlineQueryResult]:
+    built = await asyncio.gather(
+        *[
+            _build_product_article(
+                product,
+                bot_username,
+                context,
+                force_article=force_article,
+            )
+            for product in products
+        ],
+        return_exceptions=True,
+    )
+
+    results: List[InlineQueryResult] = []
+    for product, result in zip(products, built):
+        if isinstance(result, Exception):
+            logger.warning(
+                "Skipping inline product %s after result build failure: %s",
+                product.get("id"),
+                result,
+            )
+            continue
+        results.append(result)
+    return results
 
 
 def _build_webapp_article(bot_username: str, web_app_url: str) -> InlineQueryResultArticle:
@@ -229,11 +321,18 @@ async def _build_new_arrivals_articles(
     bot_username: str,
     context: ContextTypes.DEFAULT_TYPE,
     limit: int = 5,
+    *,
+    force_article: bool = False,
 ) -> List[InlineQueryResult]:
     """Return newest products as inline results."""
     # Products are sorted by created_at DESC in DB, so first items are newest
     newest = products[:limit]
-    return list(await asyncio.gather(*[_build_product_article(p, bot_username, context) for p in newest]))
+    return await _build_product_results(
+        newest,
+        bot_username,
+        context,
+        force_article=force_article,
+    )
 
 
 async def _build_popular_articles(
@@ -241,11 +340,18 @@ async def _build_popular_articles(
     bot_username: str,
     context: ContextTypes.DEFAULT_TYPE,
     limit: int = 5,
+    *,
+    force_article: bool = False,
 ) -> List[InlineQueryResult]:
     """Return trending / most-recently-added products as inline results."""
     # Simple heuristic: products are already sorted by created_at DESC in the DB query
     popular = products[:limit]
-    return list(await asyncio.gather(*[_build_product_article(p, bot_username, context) for p in popular]))
+    return await _build_product_results(
+        popular,
+        bot_username,
+        context,
+        force_article=force_article,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -362,13 +468,43 @@ async def _process_inline_query(update: Update, context: ContextTypes.DEFAULT_TY
         # - is_personal=False: Results are identical for all users (no per-user personalization)
         # - cache_time=30: Cache for 30 seconds to balance freshness and load
         # NOTE: If adding language-based strings or per-user features, set is_personal=True
-        await inline_query.answer(
-            results=results,
-            cache_time=30,
-            is_personal=False,
-            next_offset=next_offset,
-            **_extra,
-        )
+        try:
+            await inline_query.answer(
+                results=results,
+                cache_time=30,
+                is_personal=False,
+                next_offset=next_offset,
+                **_extra,
+            )
+        except BadRequest as exc:
+            if not _inline_result_rejected(exc):
+                raise
+
+            logger.warning(
+                "Inline answer rejected by Telegram (%s); retrying with safe article results",
+                exc,
+            )
+            if query:
+                fallback_results = await _handle_query_search(
+                    query,
+                    bot_username,
+                    context,
+                    force_article=True,
+                )
+            else:
+                fallback_results = await _handle_empty_query(
+                    bot_username,
+                    context,
+                    force_article=True,
+                )
+
+            await inline_query.answer(
+                results=fallback_results[:INLINE_PAGE_SIZE],
+                cache_time=5,
+                is_personal=False,
+                next_offset="",
+                **_extra,
+            )
     except Exception as exc:
         logger.error("Error answering inline query: %s", exc, exc_info=True)
         # Answer with empty results to avoid Telegram timeout
@@ -378,7 +514,12 @@ async def _process_inline_query(update: Update, context: ContextTypes.DEFAULT_TY
             pass
 
 
-async def _handle_empty_query(bot_username: str, context: ContextTypes.DEFAULT_TYPE) -> List[InlineQueryResult]:
+async def _handle_empty_query(
+    bot_username: str,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    force_article: bool = False,
+) -> List[InlineQueryResult]:
     """Return default results for an empty inline query with enhanced discoverability."""
     results: List[InlineQueryResult] = []
 
@@ -390,9 +531,25 @@ async def _handle_empty_query(bot_username: str, context: ContextTypes.DEFAULT_T
     try:
         products = await _get_cached_products()
         # Add new arrivals (first 3 products)
-        results.extend(await _build_new_arrivals_articles(products, bot_username, context, limit=3))
+        results.extend(
+            await _build_new_arrivals_articles(
+                products,
+                bot_username,
+                context,
+                limit=3,
+                force_article=force_article,
+            )
+        )
         # Add popular/trending (next 3 products – skip new-arrivals slice to avoid duplicate IDs)
-        results.extend(await _build_popular_articles(products[3:], bot_username, context, limit=3))
+        results.extend(
+            await _build_popular_articles(
+                products[3:],
+                bot_username,
+                context,
+                limit=3,
+                force_article=force_article,
+            )
+        )
     except Exception as exc:
         logger.warning("Could not fetch products for inline empty query: %s", exc)
 
@@ -403,6 +560,8 @@ async def _handle_query_search(
     query: str,
     bot_username: str,
     context: ContextTypes.DEFAULT_TYPE,
+    *,
+    force_article: bool = False,
 ) -> List[InlineQueryResult]:
     """Return fuzzy-search results for a non-empty query (no pagination).
 
@@ -450,7 +609,13 @@ async def _handle_query_search(
 
         # Default: fuzzy search
         else:
-            matched = fuzzy_search_products(products, query, score_cutoff=60, limit=None)
+            matched = fuzzy_search_products(
+                products,
+                query,
+                score_cutoff=60,
+                limit=INLINE_PAGE_SIZE,
+                include_seo_terms=False,
+            )
 
     except Exception as exc:
         logger.error("Error searching products for inline query: %s", exc)
@@ -474,8 +639,12 @@ async def _handle_query_search(
 
     # Cap before building articles so we don't do unnecessary async work.
     page_items = matched[:INLINE_PAGE_SIZE]
-    results = list(await asyncio.gather(*[_build_product_article(p, bot_username, context) for p in page_items]))
-    return results
+    return await _build_product_results(
+        page_items,
+        bot_username,
+        context,
+        force_article=force_article,
+    )
 
 
 async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
