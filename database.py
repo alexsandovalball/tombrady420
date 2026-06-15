@@ -2859,8 +2859,11 @@ class Database:
         bot_username: str,
         slot_id: Optional[int] = None,
         identity_hash: Optional[str] = None,
+        file_type: Optional[str] = None,
     ) -> Optional[str]:
         """Get cached bot-specific file ID from database."""
+        normalized_file_type = (file_type or "").strip().lower() or None
+        normalized_bot_username = self.normalize_bot_username(bot_username)
         async with self.get_connection() as db:
             if slot_id is not None:
                 sql = """
@@ -2868,15 +2871,33 @@ class Database:
                     WHERE source_chat_id = ? AND source_message_id = ?
                       AND file_index = ? AND slot_id = ?
                       AND (? IS NULL OR identity_hash = ?)
+                      AND (? IS NULL OR lower(file_type) = ?)
                 """
-                params = (source_chat_id, source_message_id, file_index, slot_id, identity_hash, identity_hash)
+                params = (
+                    source_chat_id,
+                    source_message_id,
+                    file_index,
+                    slot_id,
+                    identity_hash,
+                    identity_hash,
+                    normalized_file_type,
+                    normalized_file_type,
+                )
             else:
                 sql = """
                     SELECT file_id, last_used FROM bot_file_id_cache
                     WHERE source_chat_id = ? AND source_message_id = ?
                       AND file_index = ? AND bot_username = ?
+                      AND (? IS NULL OR lower(file_type) = ?)
                 """
-                params = (source_chat_id, source_message_id, file_index, bot_username.lower())
+                params = (
+                    source_chat_id,
+                    source_message_id,
+                    file_index,
+                    normalized_bot_username,
+                    normalized_file_type,
+                    normalized_file_type,
+                )
             async with db.execute(sql, params) as cursor:
                 row = await cursor.fetchone()
                 if row:

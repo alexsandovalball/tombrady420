@@ -28,7 +28,6 @@ from configs.config import Config
 from utils.deeplinks import build_bot_product_url, build_webapp_product_url
 from utils.fuzzy_search import fuzzy_search_products
 from utils.helpers import get_bot_username, escape_markdown_v1, get_bot_specific_file_id
-from utils.media_resolver import MediaResolver
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -54,7 +53,7 @@ _user_query_tasks_lock = asyncio.Lock()
 # stay in sync without touching helper builders individually.
 INLINE_PAGE_SIZE = 10
 _INLINE_PAGE_SIZE = INLINE_PAGE_SIZE  # Internal alias kept for backward compat
-_INLINE_MEDIA_RESOLVE_TIMEOUT = 0.65
+_INLINE_MEDIA_RESOLVE_TIMEOUT = 1.5
 _INLINE_RESULT_REJECTION_MARKERS = (
     "photo_invalid",
     "video_invalid",
@@ -63,6 +62,9 @@ _INLINE_RESULT_REJECTION_MARKERS = (
     "file identifier",
     "file_id",
 )
+_INLINE_BAD_MEDIA_TTL_SECONDS = 10 * 60
+_INLINE_BAD_MEDIA_MAX = 512
+_inline_bad_media_results: Dict[Tuple[str, str], float] = {}
 
 
 async def _get_cached_products() -> List[Dict[str, Any]]:
@@ -122,6 +124,50 @@ def _inline_article_thumbnail_url(
     return f"{storefront_base}/og-image.png"
 
 
+def _inline_media_quarantined(bot_username: str, product_id: Any) -> bool:
+    """Return True when Telegram recently rejected this product as rich media."""
+    if product_id is None:
+        return False
+    key = ((bot_username or "").lower(), str(product_id))
+    marked_at = _inline_bad_media_results.get(key)
+    if marked_at is None:
+        return False
+    if time.monotonic() - marked_at > _INLINE_BAD_MEDIA_TTL_SECONDS:
+        _inline_bad_media_results.pop(key, None)
+        return False
+    return True
+
+
+def _remember_inline_media_rejection(
+    results: List[InlineQueryResult],
+    bot_username: str,
+) -> None:
+    """Temporarily stop retrying rich inline media that Telegram rejected."""
+    now = time.monotonic()
+    bot_key = (bot_username or "").lower()
+    marked = 0
+
+    for result in results:
+        if not isinstance(result, (InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo)):
+            continue
+        result_id = getattr(result, "id", "")
+        if not result_id.startswith("product_"):
+            continue
+        product_id = result_id.removeprefix("product_")
+        _inline_bad_media_results[(bot_key, product_id)] = now
+        marked += 1
+
+    while len(_inline_bad_media_results) > _INLINE_BAD_MEDIA_MAX:
+        oldest_key = min(_inline_bad_media_results, key=_inline_bad_media_results.get)
+        _inline_bad_media_results.pop(oldest_key, None)
+
+    if marked:
+        logger.info(
+            "Quarantined %d inline rich-media result(s) after Telegram rejected the batch",
+            marked,
+        )
+
+
 async def _build_product_article(
     product: Dict[str, Any],
     bot_username: str,
@@ -176,7 +222,8 @@ async def _build_product_article(
     )
 
     # --- Attempt rich media result for photo/video products ---
-    if not force_article and file_type in ("photo", "video"):
+    media_quarantined = _inline_media_quarantined(bot_username, product_id)
+    if not force_article and not media_quarantined and file_type in ("photo", "video"):
         resolved_file_id = await _resolve_file_id_for_inline(product, context)
         if resolved_file_id:
             if file_type == "photo":
@@ -204,7 +251,11 @@ async def _build_product_article(
     # Article thumbnails must be images. Photo products can use their public
     # preview URL; videos/documents use the default image to avoid Telegram
     # rejecting the entire inline answer with Photo_invalid/Document_invalid.
-    thumbnail_url = _inline_article_thumbnail_url(product_id, file_type, safe_only=force_article)
+    thumbnail_url = _inline_article_thumbnail_url(
+        product_id,
+        file_type,
+        safe_only=force_article or media_quarantined,
+    )
 
     return InlineQueryResultArticle(
         id=f"product_{product_id}",
@@ -225,43 +276,58 @@ async def _resolve_file_id_for_inline(
 ) -> Optional[str]:
     """Return a file_id usable by the current bot for the given product.
 
-    Inline queries must answer quickly. Use original/cached media when it is
-    already available, but skip slow forwarding while a user is typing.
+    This intentionally follows the older, stable inline path: same-bot
+    products use their original file_id immediately; cross-bot products use
+    the typed bot-specific cache and only rehydrate when that cache is empty.
     """
-    if not product.get("file_id"):
+    raw_file_id = product.get("file_id")
+    if not raw_file_id:
         logger.debug(
             "No raw_file_id for product %s – will fall back to article result",
             product.get("id"),
         )
         return None
 
+    product_bot = (product.get("bot_username") or "").lower()
     current_bot = (context.bot.username or "").lower()
-    try:
-        result = await asyncio.wait_for(
-            MediaResolver(context.bot, db).resolve_media_for_bot(
-                product,
-                current_bot,
-                0,
-                allow_rehydrate=False,
-            ),
-            timeout=_INLINE_MEDIA_RESOLVE_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        logger.info(
-            "Inline media lookup timed out for product %s; using article fallback",
-            product.get("id"),
-        )
-        return None
-    except Exception as exc:
-        logger.warning(
-            "Inline media lookup failed for product %s: %s",
-            product.get("id"),
-            exc,
-        )
-        return None
 
-    if result.success:
-        return result.file_id
+    if product_bot and current_bot and product_bot == current_bot:
+        return raw_file_id
+
+    chat_id = product.get("chat_id")
+    message_id = product.get("message_id")
+    file_type = product.get("file_type")
+    if chat_id and message_id and current_bot and file_type in ("photo", "video"):
+        try:
+            cached = await db.get_bot_file_id(
+                chat_id,
+                message_id,
+                0,
+                current_bot,
+                file_type=file_type,
+            )
+            if cached:
+                return cached
+
+            resolved = await asyncio.wait_for(
+                get_bot_specific_file_id(
+                    context,
+                    chat_id,
+                    message_id,
+                    file_type,
+                    file_index=0,
+                ),
+                timeout=_INLINE_MEDIA_RESOLVE_TIMEOUT,
+            )
+            if resolved:
+                return resolved
+        except asyncio.TimeoutError:
+            logger.info(
+                "Inline media rehydrate timed out for product %s; using article fallback",
+                product.get("id"),
+            )
+        except Exception as exc:
+            logger.warning("Error resolving file_id for inline: %s", exc, exc_info=True)
 
     return None
 
@@ -484,6 +550,7 @@ async def _process_inline_query(update: Update, context: ContextTypes.DEFAULT_TY
                 "Inline answer rejected by Telegram (%s); retrying with safe article results",
                 exc,
             )
+            _remember_inline_media_rejection(results, bot_username)
             if query:
                 fallback_results = await _handle_query_search(
                     query,
@@ -615,6 +682,7 @@ async def _handle_query_search(
                 score_cutoff=60,
                 limit=INLINE_PAGE_SIZE,
                 include_seo_terms=False,
+                rank_by_score=True,
             )
 
     except Exception as exc:

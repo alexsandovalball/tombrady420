@@ -185,7 +185,13 @@ class MediaResolver:
             )
             return MediaResolutionResult(False, None, "metadata", error)
 
-        cached = await self.db.get_bot_file_id(source_chat_id, source_message_id, media_index, current_bot)
+        cached = await self.db.get_bot_file_id(
+            source_chat_id,
+            source_message_id,
+            media_index,
+            current_bot,
+            file_type=file_type,
+        )
         if cached:
             validation = await self._validate_file_id(cached)
             if validation.success:

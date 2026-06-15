@@ -458,7 +458,8 @@ async def get_bot_specific_file_id(
         source_chat_id,
         source_message_id,
         file_index,
-        bot_username
+        bot_username,
+        file_type=file_type,
     )
     
     if cached_file_id:
