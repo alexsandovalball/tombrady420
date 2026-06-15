@@ -270,28 +270,12 @@ async def build_users_bot_selection_menu():
     Returns tuple of (keyboard, message_text, message_text_no_md, has_bots, bot_list)
     where bot_list is a list of (bot_username, count) tuples for single-bot auto-selection
     """
-    # Get active bot usernames from webhook server (already lowercase)
-    from webhook_server import get_bot_usernames
-    active_bots = get_bot_usernames()
-    logger.info(f"Active bots from webhook_server: {len(active_bots)} - {active_bots}")
-    
-    # Get all bot usernames from database (already lowercase)
-    bot_usernames = await db.get_bot_usernames()
-    logger.info(f"All bots from database: {len(bot_usernames)} - {bot_usernames}")
-    
-    if not bot_usernames:
+    active_bots, active_bot_list, untracked_count = await _get_active_bot_user_counts()
+
+    if not active_bots:
         return None, None, None, False, []
-    
-    # Collect active bots only
-    active_bot_list = []
-    
-    for bot_username in bot_usernames:
-        if bot_username in active_bots:
-            count = await db.get_users_count_by_bot(bot_username)
-            active_bot_list.append((bot_username, count))
-    
+
     # Check for untracked users
-    untracked_count = await db.get_users_count_by_bot("_untracked_")
     has_untracked = untracked_count > 0
     
     # Create complete bot list for auto-selection logic (active bots only)
@@ -346,6 +330,32 @@ async def build_users_bot_selection_menu():
     message_no_md += f"\nSelect a bot to manage its users:"
     
     return keyboard, message, message_no_md, True, all_bots
+
+
+async def _get_active_bot_user_counts():
+    """Return current runtime bots and their user counts.
+
+    Runtime bot applications are the source of truth here. The database may
+    contain historical users and identity records from switched/deleted bots,
+    but those must not make old bots reappear in admin menus.
+    """
+    from webhook_server import get_bot_usernames
+
+    active_bots = sorted({bot for bot in get_bot_usernames() if bot})
+    logger.info("Active bots from webhook_server: %d - %s", len(active_bots), active_bots)
+
+    if active_bots:
+        cleanup_stats = await db.forget_inactive_bot_memory(active_bots)
+        if any(value for key, value in cleanup_stats.items() if key != "active_bots"):
+            logger.info("Inactive bot memory cleanup from admin menu: %s", cleanup_stats)
+
+    active_bot_list = []
+    for bot_username in active_bots:
+        count = await db.get_users_count_by_bot(bot_username)
+        active_bot_list.append((bot_username, count))
+
+    untracked_count = await db.get_users_count_by_bot("_untracked_")
+    return active_bots, active_bot_list, untracked_count
 
 
 @command_admin_required
@@ -1354,38 +1364,23 @@ async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /botusers command - view users grouped by bot username (admin only)."""
     try:
-        # Get active bot usernames from webhook server (already lowercase)
-        from webhook_server import get_bot_usernames
-        active_bots = get_bot_usernames()
-        logger.info(f"Active bots from webhook_server: {len(active_bots)} - {active_bots}")
-        
-        # Get all bot usernames from database (already lowercase)
-        bot_usernames = await db.get_bot_usernames()
-        logger.info(f"All bots from database: {len(bot_usernames)} - {bot_usernames}")
-        
-        if not bot_usernames:
+        active_bots, active_bot_list, untracked_count = await _get_active_bot_user_counts()
+
+        if not active_bots:
             try:
                 await update.message.reply_text(
                     "📊 **Bot Users Summary**\n\n"
-                    "No bot usernames found. Users may not have bot_username tracked yet.",
+                    "No active bot instances are loaded right now.",
                     parse_mode="Markdown"
                 )
             except BadRequest as e:
                 logger.warning(f"Markdown parse error in botusers_command (no bots), retrying without parse_mode: {e}")
                 await update.message.reply_text(
                     "📊 Bot Users Summary\n\n"
-                    "No bot usernames found. Users may not have bot_username tracked yet."
+                    "No active bot instances are loaded right now."
                 )
             return
-        
-        # Collect active bots only
-        active_bot_list = []
-        
-        for bot_username in bot_usernames:
-            if bot_username in active_bots:
-                count = await db.get_users_count_by_bot(bot_username)
-                active_bot_list.append((bot_username, count))
-        
+
         # Create keyboard with bot instances
         keyboard_buttons = []
         
@@ -1397,7 +1392,6 @@ async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         
         # Add option to view users without bot_username
-        untracked_count = await db.get_users_count_by_bot("_untracked_")
         if untracked_count > 0:
             keyboard_buttons.append([
                 InlineKeyboardButton(f"Untracked Users ({untracked_count})", callback_data="viewbotusers|_untracked_|1")

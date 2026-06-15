@@ -2347,28 +2347,104 @@ class Database:
     
     async def get_bot_usernames(self) -> List[str]:
         """
-        Get list of unique bot usernames known to the database, normalized to lowercase.
+        Get currently registered bot usernames, normalized to lowercase.
 
-        Returns the union of:
-        - Bots that have at least one user in ``bot_users``.
-        - Bots that have been registered via ``register_bot_instance`` in
-          ``bot_instances`` (i.e. every bot that has ever started up).
-
-        Using the union ensures that newly-configured bots that haven't yet
-        received any users are still visible in the admin interface and that the
-        "active vs DB" count shown in the logs stays consistent.
+        Historical bot usernames are intentionally not sourced from bot_users
+        here. Runtime startup is the authority for active bots; stale user rows
+        should not make deleted or switched bots reappear in admin menus.
         """
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("""
-                SELECT LOWER(bot_username) FROM bot_users
-                WHERE bot_username IS NOT NULL AND bot_username != ''
-                UNION
                 SELECT LOWER(bot_username) FROM bot_instances
                 WHERE bot_username IS NOT NULL AND bot_username != ''
                 ORDER BY 1
             """) as cursor:
                 rows = await cursor.fetchall()
                 return [row[0] for row in rows]
+
+    async def forget_inactive_bot_memory(self, active_bot_usernames: List[str]) -> Dict[str, int]:
+        """
+        Retire bot-specific records for bots that are no longer active.
+
+        This is deliberately conservative: products and users are not deleted.
+        Users attached to an inactive bot are moved to the untracked bucket so
+        the old bot username disappears from admin views, while real customers
+        can still be reassociated when they interact with a current bot.
+        """
+        normalized_active = sorted({
+            self.normalize_bot_username(name)
+            for name in active_bot_usernames
+            if self.normalize_bot_username(name)
+        })
+        stats = {
+            "active_bots": len(normalized_active),
+            "detached_users": 0,
+            "deleted_bot_instances": 0,
+            "inactive_registry_rows": 0,
+            "deleted_file_id_cache": 0,
+            "deleted_broadcast_chats": 0,
+        }
+
+        if not normalized_active:
+            logger.warning("[bot_cleanup] skipped because active bot list is empty")
+            return stats
+
+        placeholders = ",".join("?" * len(normalized_active))
+        now = datetime.now()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+
+            cursor = await db.execute(f"""
+                UPDATE bot_users
+                SET bot_username = NULL
+                WHERE bot_username IS NOT NULL
+                  AND bot_username != ''
+                  AND LOWER(bot_username) NOT IN ({placeholders})
+            """, normalized_active)
+            stats["detached_users"] = max(cursor.rowcount, 0)
+
+            cursor = await db.execute(f"""
+                DELETE FROM bot_instances
+                WHERE bot_username IS NOT NULL
+                  AND bot_username != ''
+                  AND LOWER(bot_username) NOT IN ({placeholders})
+            """, normalized_active)
+            stats["deleted_bot_instances"] = max(cursor.rowcount, 0)
+
+            cursor = await db.execute(f"""
+                UPDATE bot_registry
+                SET status = 'inactive', updated_at = ?
+                WHERE status = 'active'
+                  AND bot_username IS NOT NULL
+                  AND bot_username != ''
+                  AND LOWER(bot_username) NOT IN ({placeholders})
+            """, [now, *normalized_active])
+            stats["inactive_registry_rows"] = max(cursor.rowcount, 0)
+
+            cursor = await db.execute(f"""
+                DELETE FROM bot_file_id_cache
+                WHERE bot_username IS NOT NULL
+                  AND bot_username != ''
+                  AND LOWER(bot_username) NOT IN ({placeholders})
+            """, normalized_active)
+            stats["deleted_file_id_cache"] = max(cursor.rowcount, 0)
+
+            cursor = await db.execute(f"""
+                DELETE FROM broadcast_chats
+                WHERE bot_username IS NOT NULL
+                  AND bot_username != ''
+                  AND LOWER(bot_username) NOT IN ({placeholders})
+            """, normalized_active)
+            stats["deleted_broadcast_chats"] = max(cursor.rowcount, 0)
+
+            await db.commit()
+
+        if any(value for key, value in stats.items() if key != "active_bots"):
+            logger.info("[bot_cleanup] retired inactive bot memory stats=%s", stats)
+        else:
+            logger.debug("[bot_cleanup] no inactive bot memory found active_bots=%d", stats["active_bots"])
+        return stats
     
     async def get_users_count_by_bot(self, bot_username: Optional[str] = None) -> int:
         """
@@ -3165,6 +3241,17 @@ class Database:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 "SELECT * FROM bot_registry WHERE bot_id = ? AND status = 'active'",
+                (bot_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def get_bot_registry_by_id_any_status(self, bot_id: str) -> Optional[Dict[str, Any]]:
+        """Return a bot_registry row regardless of active/inactive status."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM bot_registry WHERE bot_id = ?",
                 (bot_id,),
             ) as cursor:
                 row = await cursor.fetchone()

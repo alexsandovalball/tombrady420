@@ -2031,6 +2031,16 @@ async def lifespan(app: FastAPI):
     app.state.request_deduplicator = RequestDeduplicator()
 
     logger.debug("[bots_config] Secret-token overrides disabled; bot_registry is the only webhook-secret source")
+
+    # Retire stale bot-specific database records after the runtime list is known.
+    # This keeps admin user menus tied to the current 10 loaded bots instead of
+    # old usernames left behind by token switches or removed bot slots.
+    try:
+        cleanup_stats = await _catalog_db.forget_inactive_bot_memory(get_bot_usernames())
+        if any(value for key, value in cleanup_stats.items() if key != "active_bots"):
+            logger.info("[bot_cleanup] startup retired inactive bot memory stats=%s", cleanup_stats)
+    except Exception as exc:
+        logger.warning("[bot_cleanup] startup cleanup skipped: %s", exc, exc_info=True)
     
     # Log bot usernames for debugging
     for idx, bot_app in enumerate(bot_apps):
@@ -5158,6 +5168,17 @@ async def webhook_indexed(request: Request, bot_id: str):
             registry_id = secret_owner_id
         else:
             registry_id = _runtime_index_to_registry_id.get(int(bot_id), "")
+    elif registry_id not in _bot_applications_by_registry_id:
+        client_ip = get_client_ip(request)
+        if is_telegram_ip(client_ip):
+            inactive_row = await _catalog_db.get_bot_registry_by_id_any_status(registry_id)
+            if inactive_row and inactive_row.get("status") != "active":
+                logger_security.warning(
+                    "[WEBHOOK_INACTIVE_DRAINED] bot_id=%s status=%s action=ack_drop",
+                    registry_id,
+                    inactive_row.get("status"),
+                )
+                return Response(status_code=status.HTTP_200_OK)
     if bot_id.isdigit() and registry_id:
         legacy_index = int(bot_id)
         logger.warning(

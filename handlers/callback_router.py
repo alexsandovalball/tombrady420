@@ -1078,7 +1078,11 @@ async def _handle_viewbotusers(update, context, query, user_id, parts):
 @admin_required
 async def _handle_backto_botlist(update, context, query, user_id, parts):
     await query.answer()
-    bot_usernames = await db.get_bot_usernames()
+    from webhook_server import get_bot_usernames
+
+    bot_usernames = sorted({bot for bot in get_bot_usernames() if bot})
+    if bot_usernames:
+        await db.forget_inactive_bot_memory(bot_usernames)
     keyboard_buttons = []
     for bot_username in bot_usernames:
         count = await db.get_users_count_by_bot(bot_username)
@@ -1223,7 +1227,11 @@ async def _handle_confirm_deleteallbot(update, context, query, user_id, parts):
         deleted_count = await db.delete_users_by_bot(bot_username)
         await query.answer(f"✅ Deleted {deleted_count} users", show_alert=True)
         logger.info(f"Admin {user_id} deleted {deleted_count} users from bot {bot_username}")
-        bot_usernames = await db.get_bot_usernames()
+        from webhook_server import get_bot_usernames
+
+        bot_usernames = sorted({bot for bot in get_bot_usernames() if bot})
+        if bot_usernames:
+            await db.forget_inactive_bot_memory(bot_usernames)
         keyboard_buttons = []
         for bot_username_item in bot_usernames:
             count = await db.get_users_count_by_bot(bot_username_item)
