@@ -47,6 +47,7 @@ from utils.seo_terms import (
     get_learn_page,
     get_learn_pages,
     get_terms_for_taxonomy,
+    match_query_mappings,
     normalize_term,
 )
 from utils.seo_autolearn import build_taxonomy_profiles, infer_seo_query_mapping
@@ -379,6 +380,11 @@ _api_result_cache: OrderedDict = OrderedDict()
 _API_RESULT_CACHE_MAX = 100
 _API_RESULT_CACHE_TTL = 30  # seconds
 
+# Short cache for approved SEO mappings used by public search expansion.
+# Auto-learning invalidates it whenever new mappings are approved.
+_seo_query_mapping_cache: Optional[tuple[float, List[Dict[str, Any]]]] = None
+_SEO_QUERY_MAPPING_CACHE_TTL = 300  # seconds
+
 # Browser video playback can trigger several Range requests for the same file.
 # Keep an in-process LRU of media registry mappings we have already written so
 # repeated range requests do not generate identical SQLite writes.
@@ -594,22 +600,54 @@ def _remember_media_registry_write(bot_identifier: str, file_unique_id: str, res
 
 def clear_in_memory_caches() -> int:
     """Clear all in-memory caches. Returns total entries cleared."""
-    global _resolved_file_id_cache, _media_info_cache, _api_result_cache, _media_registry_write_cache
+    global _resolved_file_id_cache, _media_info_cache, _api_result_cache, _media_registry_write_cache, _seo_query_mapping_cache
 
     total = (
         len(_resolved_file_id_cache)
         + len(_media_info_cache)
         + len(_api_result_cache)
         + len(_media_registry_write_cache)
+        + (len(_seo_query_mapping_cache[1]) if _seo_query_mapping_cache else 0)
     )
 
     _resolved_file_id_cache.clear()
     _media_info_cache.clear()
     _api_result_cache.clear()
     _media_registry_write_cache.clear()
+    _seo_query_mapping_cache = None
 
     logger.info(f"Cleared {total} in-memory cache entries")
     return total
+
+
+def _invalidate_seo_query_mapping_cache() -> None:
+    global _seo_query_mapping_cache
+    _seo_query_mapping_cache = None
+
+
+async def _get_cached_approved_seo_query_mappings() -> List[Dict[str, Any]]:
+    """Return approved SEO mappings without hitting SQLite on every search."""
+    global _seo_query_mapping_cache
+    now = _time.monotonic()
+    if (
+        _seo_query_mapping_cache is not None
+        and now - _seo_query_mapping_cache[0] < _SEO_QUERY_MAPPING_CACHE_TTL
+    ):
+        return _seo_query_mapping_cache[1]
+
+    mappings = await _catalog_db.get_approved_seo_query_mappings()
+    _seo_query_mapping_cache = (now, mappings)
+    return mappings
+
+
+async def _record_seo_mapping_hits(mappings: List[Dict[str, Any]]) -> None:
+    terms = [str(item.get("term") or "") for item in mappings or []]
+    if not terms:
+        return
+    try:
+        await _catalog_db.increment_seo_mapping_hits(terms)
+    except Exception as exc:
+        logger.debug("Failed to record SEO mapping hits: %s", exc)
 
 
 def clear_bot_runtime_state() -> None:
@@ -1668,6 +1706,8 @@ async def _promote_approved_external_signals() -> int:
         source="external_signal",
         approved=True,
     )
+    if promoted:
+        _invalidate_seo_query_mapping_cache()
     logger.info("[seo_external] promoted=%d signals=%d", promoted, len(candidates))
     return promoted
 
@@ -1911,6 +1951,8 @@ async def _seo_auto_learn_once() -> int:
         source="auto_learn",
         approved=True,
     )
+    if approved:
+        _invalidate_seo_query_mapping_cache()
     logger.info("[seo_auto_learn] approved=%d candidates=%d skipped=%d", approved, len(candidates), skipped)
     return approved + external_imports + external_promoted
 
@@ -4507,10 +4549,17 @@ async def search_products(
 
     try:
         try:
-            db_mappings = await _catalog_db.get_approved_seo_query_mappings()
+            db_mappings = await _get_cached_approved_seo_query_mappings()
         except Exception as exc:
             logger.debug("SEO query mappings unavailable for search expansion: %s", exc)
             db_mappings = []
+
+        matched_mappings = match_query_mappings(query, db_mappings=db_mappings, limit=5)
+        if matched_mappings:
+            asyncio.create_task(
+                _record_seo_mapping_hits(matched_mappings),
+                name="seo_mapping_hits",
+            )
 
         query_variants = build_query_variants(query, db_mappings=db_mappings, limit=8)
         candidate_limit = min(max(offset + limit, min(100, limit * 3)), 300)

@@ -689,6 +689,7 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_visitor_events_location ON visitor_events(country, region, city, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_query_events_created ON search_query_events(created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_query_events_matched ON search_query_events(matched_count, created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_search_query_events_autolearn ON search_query_events(matched_count, normalized_query, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_query_mappings_approved ON seo_query_mappings(approved, normalized_term)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_query_mappings_taxonomy ON seo_query_mappings(category, subcategory)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_console_query_events_date ON search_console_query_events(source_date DESC)")
@@ -3890,6 +3891,34 @@ class Database:
             )
             await db.commit()
         return len(rows)
+
+    async def increment_seo_mapping_hits(self, terms: List[str]) -> int:
+        """Increment usage counters for approved SEO mappings matched by search."""
+        from utils.seo_terms import normalize_term
+
+        normalized_terms = []
+        seen = set()
+        for term in terms or []:
+            normalized = normalize_term(term)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            normalized_terms.append((normalized[:300],))
+
+        if not normalized_terms:
+            return 0
+
+        async with self.get_connection() as db:
+            await db.executemany(
+                """
+                UPDATE seo_query_mappings
+                SET hits = hits + 1
+                WHERE approved = 1 AND normalized_term = ?
+                """,
+                normalized_terms,
+            )
+            await db.commit()
+        return len(normalized_terms)
 
     async def upsert_search_console_query_events(self, rows: List[Dict[str, Any]]) -> int:
         """Insert/update Search Console query snapshots."""
