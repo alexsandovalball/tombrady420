@@ -25,10 +25,9 @@ from telegram.ext import ContextTypes
 from database import Database
 from configs.config import Config
 from utils.deeplinks import build_bot_product_url, build_webapp_product_url
-from utils.fuzzy_search import rank_products_for_query
-from utils.helpers import get_bot_username, escape_markdown_v1
+from utils.fuzzy_search import fuzzy_search_products
+from utils.helpers import get_bot_username, escape_markdown_v1, get_bot_specific_file_id
 from utils.media_resolver import MediaResolver
-from utils.access_control import is_user_blocked_cached
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -45,9 +44,7 @@ _product_cache_lock = asyncio.Lock()
 # Per-user debouncing and task cancellation
 # Maps user_id -> (task, timestamp) for in-flight inline query tasks
 # ---------------------------------------------------------------------------
-# Keep a tiny debounce so rapid typing cancels stale work, but do not make
-# Telegram's inline picker feel delayed before search even starts.
-_DEBOUNCE_DELAY = 0.15
+_DEBOUNCE_DELAY = 0.5  # 500ms debounce
 _user_query_tasks: Dict[int, asyncio.Task] = {}
 _user_query_tasks_lock = asyncio.Lock()
 
@@ -56,7 +53,6 @@ _user_query_tasks_lock = asyncio.Lock()
 # stay in sync without touching helper builders individually.
 INLINE_PAGE_SIZE = 10
 _INLINE_PAGE_SIZE = INLINE_PAGE_SIZE  # Internal alias kept for backward compat
-_INLINE_MEDIA_RESOLVE_TIMEOUT = 0.75
 
 
 async def _get_cached_products() -> List[Dict[str, Any]]:
@@ -88,14 +84,6 @@ def _build_product_webapp_url(product_id: int) -> Optional[str]:
     return build_webapp_product_url(Config.WEB_APP_URL, product_id)
 
 
-def _product_title(product: Dict[str, Any]) -> str:
-    caption = (product.get("caption") or "").strip()
-    title = caption.splitlines()[0].strip() if caption else ""
-    if not title:
-        title = f"Product #{product.get('id')}"
-    return title[:60] + "..." if len(title) > 60 else title
-
-
 async def _build_product_article(
     product: Dict[str, Any],
     bot_username: str,
@@ -115,10 +103,14 @@ async def _build_product_article(
     For products without media we always return an ``InlineQueryResultArticle``.
     """
     product_id = product.get("id")
+    caption = product.get("caption") or ""
     category = product.get("category") or "Uncategorized"
     file_type = product.get("file_type") or ""
 
-    title = _product_title(product)
+    # Truncate caption for display
+    title = caption[:60] + "…" if len(caption) > 60 else caption
+    if not title:
+        title = f"Product #{product_id}"
 
     # Escape dynamic content for safe Markdown rendering
     title_escaped = escape_markdown_v1(title)
@@ -141,10 +133,6 @@ async def _build_product_article(
     caption_text = (
         f"📦 *{title_escaped}*\n"
         f"📂 {category_escaped}"
-    )
-    message_content = InputTextMessageContent(
-        message_text=caption_text,
-        parse_mode="Markdown",
     )
 
     # --- Attempt rich media result for photo/video products ---
@@ -173,23 +161,21 @@ async def _build_product_article(
                 )
 
     # --- Fallback: article with thumbnail from storefront ---
-    # Use the public media URL so crawlers and Telegram previews do not rely on
-    # API paths that are intentionally disallowed in robots.txt.
+    # Use the storefront /api/catalog URL for the thumbnail so the image loads
+    # quickly for the (up to INLINE_PAGE_SIZE) results shown.
     thumbnail_url: Optional[str] = None
     storefront_domain = Config.STOREFRONT_DOMAIN or (Config.WEBHOOK_URL or "").rstrip('/')
-    if storefront_domain:
-        storefront_base = storefront_domain.rstrip("/")
-        thumbnail_url = (
-            f"{storefront_base}/media/products/{product_id}/0"
-            if file_type in ("photo", "video")
-            else f"{storefront_base}/og-image.png"
-        )
+    if storefront_domain and file_type in ("photo", "video"):
+        thumbnail_url = f"{storefront_domain.rstrip('/')}/api/catalog/{product_id}/media/0"
 
     return InlineQueryResultArticle(
         id=f"product_{product_id}",
         title=title,
         description=description,
-        input_message_content=message_content,
+        input_message_content=InputTextMessageContent(
+            message_text=caption_text,
+            parse_mode="Markdown",
+        ),
         reply_markup=reply_markup,
         thumbnail_url=thumbnail_url,
     )
@@ -201,10 +187,10 @@ async def _resolve_file_id_for_inline(
 ) -> Optional[str]:
     """Return a file_id usable by the current bot for the given product.
 
-    Inline mode has a very short answer deadline, so this path intentionally
-    uses only original/cached media IDs and skips slow rehydration.  The chosen
-    result follow-up may still rehydrate in the background after the user picks
-    a product.
+    Checks the persistent DB cache first; on a cache miss, triggers a
+    message-forward via ``get_bot_specific_file_id`` to populate the cache
+    and returns the resolved file_id.  Returns ``None`` only if forwarding
+    explicitly fails or the product has no media.
     """
     if not product.get("file_id"):
         logger.debug(
@@ -214,56 +200,11 @@ async def _resolve_file_id_for_inline(
         return None
 
     current_bot = (context.bot.username or "").lower()
-    try:
-        result = await asyncio.wait_for(
-            MediaResolver(context.bot, db).resolve_media_for_bot(
-                product,
-                current_bot,
-                0,
-                allow_rehydrate=False,
-            ),
-            timeout=_INLINE_MEDIA_RESOLVE_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        logger.info(
-            "Inline media lookup timed out for product %s; using article fallback",
-            product.get("id"),
-        )
-        return None
-    except Exception as exc:
-        logger.warning(
-            "Inline media lookup failed for product %s: %s",
-            product.get("id"),
-            exc,
-        )
-        return None
-
+    result = await MediaResolver(context.bot, db).resolve_media_for_bot(product, current_bot, 0)
     if result.success:
         return result.file_id
 
     return None
-
-
-async def _build_product_results(
-    products: List[Dict[str, Any]],
-    bot_username: str,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> List[InlineQueryResult]:
-    built = await asyncio.gather(
-        *[_build_product_article(p, bot_username, context) for p in products],
-        return_exceptions=True,
-    )
-    results: List[InlineQueryResult] = []
-    for product, result in zip(products, built):
-        if isinstance(result, Exception):
-            logger.warning(
-                "Skipping inline product %s after result build failure: %s",
-                product.get("id"),
-                result,
-            )
-            continue
-        results.append(result)
-    return results
 
 
 def _build_webapp_article(bot_username: str, web_app_url: str) -> InlineQueryResultArticle:
@@ -292,7 +233,7 @@ async def _build_new_arrivals_articles(
     """Return newest products as inline results."""
     # Products are sorted by created_at DESC in DB, so first items are newest
     newest = products[:limit]
-    return await _build_product_results(newest, bot_username, context)
+    return list(await asyncio.gather(*[_build_product_article(p, bot_username, context) for p in newest]))
 
 
 async def _build_popular_articles(
@@ -304,7 +245,7 @@ async def _build_popular_articles(
     """Return trending / most-recently-added products as inline results."""
     # Simple heuristic: products are already sorted by created_at DESC in the DB query
     popular = products[:limit]
-    return await _build_product_results(popular, bot_username, context)
+    return list(await asyncio.gather(*[_build_product_article(p, bot_username, context) for p in popular]))
 
 
 # ---------------------------------------------------------------------------
@@ -318,11 +259,7 @@ async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     user_id = inline_query.from_user.id
-    if await is_user_blocked_cached(
-        db,
-        user_id,
-        username=getattr(inline_query.from_user, "username", None),
-    ):
+    if await db.is_user_blocked(user_id):
         logger.warning("Blocked user %s attempted inline query access", user_id)
         await inline_query.answer(results=[], cache_time=60, is_personal=True)
         return
@@ -513,12 +450,7 @@ async def _handle_query_search(
 
         # Default: fuzzy search
         else:
-            matched = rank_products_for_query(
-                products,
-                query,
-                score_cutoff=70,
-                limit=INLINE_PAGE_SIZE,
-            )
+            matched = fuzzy_search_products(products, query, score_cutoff=60, limit=None)
 
     except Exception as exc:
         logger.error("Error searching products for inline query: %s", exc)
@@ -542,7 +474,8 @@ async def _handle_query_search(
 
     # Cap before building articles so we don't do unnecessary async work.
     page_items = matched[:INLINE_PAGE_SIZE]
-    return await _build_product_results(page_items, bot_username, context)
+    results = list(await asyncio.gather(*[_build_product_article(p, bot_username, context) for p in page_items]))
+    return results
 
 
 async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -558,11 +491,7 @@ async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFA
         return
 
     user_id = chosen.from_user.id
-    if await is_user_blocked_cached(
-        db,
-        user_id,
-        username=getattr(chosen.from_user, "username", None),
-    ):
+    if await db.is_user_blocked(user_id):
         logger.warning("Blocked user %s attempted chosen inline result access", user_id)
         return
 
@@ -603,7 +532,8 @@ async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFA
         if not product:
             return
 
-        title = _product_title(product)
+        caption = product.get("caption") or ""
+        title = caption[:60] + "…" if len(caption) > 60 else caption
         title_escaped = escape_markdown_v1(title)
         category_escaped = escape_markdown_v1(product.get("category") or "Uncategorized")
         caption_text = f"📦 *{title_escaped}*\n📂 {category_escaped}"
@@ -624,25 +554,30 @@ async def handle_chosen_inline_result(update: Update, context: ContextTypes.DEFA
 
         if file_id and file_type in ("photo", "video"):
             try:
+                # If the product was indexed by a different bot instance, attempt
+                # to resolve a file_id that is valid for the current bot.
+                product_bot = product.get("bot_username")
                 current_bot_username = bot_username or context.bot.username
-                resolved = await MediaResolver(context.bot, db).resolve_media_for_bot(
-                    product,
-                    current_bot_username or "",
-                    0,
-                )
-                if resolved.success and resolved.file_id:
-                    file_id = resolved.file_id
+                if product_bot and current_bot_username and product_bot.lower() != current_bot_username.lower():
                     logger.debug(
-                        "Resolved chosen inline media for product %s using %s",
-                        product_id,
-                        resolved.source,
+                        "Product %s indexed by different bot (%s), resolving for %s",
+                        product_id, product_bot, current_bot_username,
                     )
-                else:
-                    logger.warning(
-                        "Chosen inline media resolution failed for product %s: %s",
-                        product_id,
-                        resolved.error,
+                    bot_specific_id = await get_bot_specific_file_id(
+                        context,
+                        product.get("chat_id"),
+                        product.get("message_id"),
+                        file_type,
+                        file_index=0,
                     )
+                    if bot_specific_id:
+                        file_id = bot_specific_id
+                        logger.debug("Resolved bot-specific file_id for product %s", product_id)
+                    else:
+                        logger.warning(
+                            "Failed to resolve bot-specific file_id for product %s - will attempt with original file_id",
+                            product_id,
+                        )
 
                 # Validate file_id before attempting send.
                 if not file_id:
