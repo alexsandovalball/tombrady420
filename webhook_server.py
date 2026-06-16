@@ -1827,7 +1827,7 @@ async def _import_search_console_signals(
         clicks = int(row.get("clicks") or 0)
         if not _is_useful_auto_seo_term(query):
             continue
-        if clicks <= 0 and impressions < 3:
+        if clicks <= 0 and impressions < 1:
             continue
         inferred = infer_seo_query_mapping(
             query,
@@ -1981,12 +1981,14 @@ async def _seo_auto_learn_loop():
                 async with lock:
                     learned = await _seo_auto_learn_once()
                 duration_ms = (_time.monotonic() - started) * 1000
-                if learned or duration_ms > 1000:
-                    logger.info(
-                        "[seo_auto_learn] run_complete changed=%d duration_ms=%.1f",
-                        learned,
-                        duration_ms,
-                    )
+                logger.info(
+                    "[seo_auto_learn] run_complete changed=%d duration_ms=%.1f lookback_hours=%d score=%d external_score=%d",
+                    learned,
+                    duration_ms,
+                    Config.SEO_AUTO_LEARN_LOOKBACK_HOURS,
+                    Config.SEO_AUTO_LEARN_SCORE,
+                    Config.SEO_EXTERNAL_SIGNAL_SCORE,
+                )
         except Exception as e:
             logger.warning("[seo_auto_learn] loop_error error=%s", e)
         await asyncio.sleep(Config.SEO_AUTO_LEARN_INTERVAL_SECONDS)

@@ -53,6 +53,10 @@ def _format_admin_status_message(snapshot: dict) -> str:
     bot_user_counts = snapshot.get("bot_user_counts", [])
     top_locations = snapshot.get("top_visitor_locations", [])
     indexnow = snapshot.get("indexnow", {})
+    search_console_days = _fmt_count(seo.get("search_console_window_days") or 30)
+    google_queries = seo.get("search_console_queries_window", seo.get("search_console_queries_7d"))
+    google_clicks = seo.get("search_console_clicks_window", seo.get("search_console_clicks_7d"))
+    google_impressions = seo.get("search_console_impressions_window", seo.get("search_console_impressions_7d"))
 
     active_bots = [bot for bot in runtime_bots if bot.get("username")]
     missing_bots = [bot for bot in runtime_bots if not bot.get("username")]
@@ -91,8 +95,8 @@ def _format_admin_status_message(snapshot: dict) -> str:
         f"• WebApp searches 24h: {_fmt_count(summary.get('search_queries_24h'))}",
         f"• No-result searches 24h: {_fmt_count(summary.get('search_no_result_24h'))}",
         f"• SEO mappings: {_fmt_count(summary.get('seo_query_mappings'))}",
-        f"• Google queries 7d: {_fmt_count(seo.get('search_console_queries_7d'))}",
-        f"• Google clicks/impressions 7d: {_fmt_count(seo.get('search_console_clicks_7d'))}/{_fmt_count(seo.get('search_console_impressions_7d'))}",
+        f"• Google queries {search_console_days}d: {_fmt_count(google_queries)}",
+        f"• Google clicks/impressions {search_console_days}d: {_fmt_count(google_clicks)}/{_fmt_count(google_impressions)}",
         f"• IndexNow: {'on' if indexnow.get('enabled', True) else 'off'} "
         f"(pending {_fmt_count(indexnow.get('pending'))}, "
         f"sent {_fmt_count(indexnow.get('submitted'))}, "
@@ -198,6 +202,7 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show SEO/search query intelligence for admin review."""
     try:
         snapshot = await db.get_search_intelligence_snapshot(limit=10)
+        search_console_days = _fmt_count(snapshot.get("search_console_window_days") or 30)
         lines = [
             "🔎 SEO Search Learning",
             "",
@@ -208,8 +213,8 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Searches with no result: {_fmt_count(snapshot.get('no_result_24h'))}",
             f"• Total approved mappings: {_fmt_count(snapshot.get('approved_mappings'))}",
             f"• Made automatically: {_fmt_count(snapshot.get('auto_mappings'))}",
-            f"• Google queries imported (7d): {_fmt_count(snapshot.get('search_console_queries_7d'))}",
-            f"• Google clicks/impressions (7d): {_fmt_count(snapshot.get('search_console_clicks_7d'))}/{_fmt_count(snapshot.get('search_console_impressions_7d'))}",
+            f"• Google queries imported ({search_console_days}d): {_fmt_count(snapshot.get('search_console_queries_window'))}",
+            f"• Google clicks/impressions ({search_console_days}d): {_fmt_count(snapshot.get('search_console_clicks_window'))}/{_fmt_count(snapshot.get('search_console_impressions_window'))}",
             f"• Approved external signals: {_fmt_count(snapshot.get('external_signals'))}",
         ]
 

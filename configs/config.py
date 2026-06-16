@@ -36,11 +36,11 @@ class ConfigClass:
         self.ADMIN_DASHBOARD_TOKEN: Optional[str] = None
         self.SEO_AUTO_LEARN_ENABLED: bool = True
         self.SEO_AUTO_LEARN_INTERVAL_SECONDS: int = 1800
-        self.SEO_AUTO_LEARN_LOOKBACK_HOURS: int = 168
+        self.SEO_AUTO_LEARN_LOOKBACK_HOURS: int = 720
         self.SEO_AUTO_LEARN_MIN_COUNT: int = 1
-        self.SEO_AUTO_LEARN_SCORE: int = 92
-        self.SEO_AUTO_LEARN_MAX_PER_RUN: int = 25
-        self.SEO_EXTERNAL_SIGNAL_SCORE: int = 94
+        self.SEO_AUTO_LEARN_SCORE: int = 88
+        self.SEO_AUTO_LEARN_MAX_PER_RUN: int = 40
+        self.SEO_EXTERNAL_SIGNAL_SCORE: int = 90
         self.SEO_SIDE_NOTE_LIMIT: int = 10
         self.SEARCH_CONSOLE_ENABLED: bool = False
         self.SEARCH_CONSOLE_SITE_URL: Optional[str] = None
@@ -50,7 +50,7 @@ class ConfigClass:
         self.SEARCH_CONSOLE_OAUTH_CLIENT_FILE: Optional[str] = None
         self.SEARCH_CONSOLE_OAUTH_TOKEN_JSON: Optional[str] = None
         self.SEARCH_CONSOLE_OAUTH_TOKEN_FILE: Optional[str] = None
-        self.SEARCH_CONSOLE_LOOKBACK_DAYS: int = 7
+        self.SEARCH_CONSOLE_LOOKBACK_DAYS: int = 30
         self.SEARCH_CONSOLE_ROW_LIMIT: int = 250
         self.EXTERNAL_SEO_SIGNALS_FILE: Optional[str] = None
         self.INDEXNOW_ENABLED: bool = True
@@ -148,7 +148,7 @@ class ConfigClass:
         )
         self.SEO_AUTO_LEARN_LOOKBACK_HOURS = max(
             1,
-            config('SEO_AUTO_LEARN_LOOKBACK_HOURS', default=168, cast=int),
+            config('SEO_AUTO_LEARN_LOOKBACK_HOURS', default=720, cast=int),
         )
         self.SEO_AUTO_LEARN_MIN_COUNT = max(
             1,
@@ -156,15 +156,15 @@ class ConfigClass:
         )
         self.SEO_AUTO_LEARN_SCORE = max(
             70,
-            min(100, config('SEO_AUTO_LEARN_SCORE', default=92, cast=int)),
+            min(100, config('SEO_AUTO_LEARN_SCORE', default=88, cast=int)),
         )
         self.SEO_AUTO_LEARN_MAX_PER_RUN = max(
             1,
-            min(100, config('SEO_AUTO_LEARN_MAX_PER_RUN', default=25, cast=int)),
+            min(100, config('SEO_AUTO_LEARN_MAX_PER_RUN', default=40, cast=int)),
         )
         self.SEO_EXTERNAL_SIGNAL_SCORE = max(
             80,
-            min(100, config('SEO_EXTERNAL_SIGNAL_SCORE', default=94, cast=int)),
+            min(100, config('SEO_EXTERNAL_SIGNAL_SCORE', default=90, cast=int)),
         )
         self.SEO_SIDE_NOTE_LIMIT = max(
             3,
@@ -207,7 +207,7 @@ class ConfigClass:
         self.SEARCH_CONSOLE_SITE_URL = config('SEARCH_CONSOLE_SITE_URL', default=None)
         self.SEARCH_CONSOLE_LOOKBACK_DAYS = max(
             1,
-            min(30, config('SEARCH_CONSOLE_LOOKBACK_DAYS', default=7, cast=int)),
+            min(30, config('SEARCH_CONSOLE_LOOKBACK_DAYS', default=30, cast=int)),
         )
         self.SEARCH_CONSOLE_ROW_LIMIT = max(
             10,

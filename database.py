@@ -4210,7 +4210,7 @@ class Database:
         *,
         limit: int = 25,
         min_count: int = 1,
-        lookback_hours: int = 168,
+        lookback_hours: int = 720,
     ) -> List[Dict[str, Any]]:
         """Return repeated no-result searches that are not already approved mappings."""
         limit = max(1, min(limit, 100))
@@ -4271,6 +4271,8 @@ class Database:
         """Compact snapshot for the /seostatus admin command."""
         limit = max(1, min(limit, 50))
         since_24h = datetime.now() - timedelta(hours=24)
+        search_console_days = 30
+        search_console_since = (datetime.now() - timedelta(days=search_console_days)).date().isoformat()
         async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
 
@@ -4297,17 +4299,18 @@ class Database:
                 "auto_mappings": await scalar(
                     "SELECT COUNT(*) FROM seo_query_mappings WHERE approved = 1 AND source = 'auto_learn'"
                 ),
-                "search_console_queries_7d": await scalar(
+                "search_console_window_days": search_console_days,
+                "search_console_queries_window": await scalar(
                     "SELECT COUNT(DISTINCT normalized_query) FROM search_console_query_events WHERE source_date >= ?",
-                    ((datetime.now() - timedelta(days=7)).date().isoformat(),),
+                    (search_console_since,),
                 ),
-                "search_console_clicks_7d": await scalar(
+                "search_console_clicks_window": await scalar(
                     "SELECT COALESCE(SUM(clicks), 0) FROM search_console_query_events WHERE source_date >= ?",
-                    ((datetime.now() - timedelta(days=7)).date().isoformat(),),
+                    (search_console_since,),
                 ),
-                "search_console_impressions_7d": await scalar(
+                "search_console_impressions_window": await scalar(
                     "SELECT COALESCE(SUM(impressions), 0) FROM search_console_query_events WHERE source_date >= ?",
-                    ((datetime.now() - timedelta(days=7)).date().isoformat(),),
+                    (search_console_since,),
                 ),
                 "external_signals": await scalar("SELECT COUNT(*) FROM external_seo_signals WHERE approved = 1"),
                 "top_queries": await rows(
@@ -4348,7 +4351,7 @@ class Database:
                     ORDER BY clicks DESC, impressions DESC, last_seen DESC
                     LIMIT ?
                     """,
-                    ((datetime.now() - timedelta(days=7)).date().isoformat(), limit),
+                    (search_console_since, limit),
                 ),
             }
 
