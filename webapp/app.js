@@ -203,6 +203,7 @@
         totalProducts: 0,
         orderContact: null,
         orderLink: null,
+        orderLinks: [],
         allProductsCount: 0,
         userLanguage: 'en',
         languageSource: 'default',
@@ -663,9 +664,34 @@
         return contact.startsWith('@') ? contact.slice(1) : contact;
     }
 
+    function normalizeOrderLinks(links) {
+        if (!Array.isArray(links)) return [];
+        return links
+            .map((item) => ({
+                label: String(item?.label || '').trim().slice(0, 40),
+                url: String(item?.url || '').trim()
+            }))
+            .filter((item) => item.label && item.url);
+    }
+
+    function applyContactSettings(data) {
+        if (!data) return;
+        state.orderContact = data.order_contact || null;
+        state.orderLink = data.order_link || null;
+        state.orderLinks = normalizeOrderLinks(data.order_links);
+        if (!state.orderLinks.length && state.orderLink) {
+            state.orderLinks = [{ label: t('btn_contacts'), url: state.orderLink }];
+        }
+    }
+
+    function getPrimaryOrderLink() {
+        if (state.orderLinks.length) return state.orderLinks[0].url;
+        return state.orderLink || null;
+    }
+
     function openContactsLink() {
-        // Try orderLink first, fall back to orderContact if not set
-        let link = state.orderLink;
+        // Try configured named links first, fall back to legacy contact if not set
+        let link = getPrimaryOrderLink();
         
         // If no order_link is set, construct one from order_contact
         if (!link && state.orderContact) {
@@ -691,6 +717,46 @@
             // Fallback: try opening with window.open
             window.open(link, '_blank');
         }
+    }
+
+    function renderHomeContactLinks() {
+        const contactInfo = document.getElementById('order-contact-info');
+        const linksContainer = document.getElementById('order-links');
+
+        if (contactInfo) {
+            contactInfo.replaceChildren();
+            if (state.orderContact) {
+                const username = normalizeContactUsername(state.orderContact);
+                contactInfo.append(document.createTextNode(`${t('order_contact_prefix')} `));
+                const contactLink = document.createElement('a');
+                contactLink.href = `https://t.me/${username}`;
+                contactLink.target = '_blank';
+                contactLink.rel = 'noopener';
+                contactLink.textContent = state.orderContact;
+                contactInfo.appendChild(contactLink);
+            }
+        }
+
+        if (!linksContainer) return;
+        linksContainer.replaceChildren();
+        if (!state.orderLinks.length) {
+            linksContainer.hidden = true;
+            return;
+        }
+
+        state.orderLinks.forEach((item) => {
+            const linkEl = document.createElement('a');
+            linkEl.className = 'order-link-btn';
+            linkEl.href = item.url;
+            linkEl.target = '_blank';
+            linkEl.rel = 'noopener';
+            linkEl.textContent = item.label;
+            linkEl.addEventListener('click', () => {
+                logger.userInteraction('home_contact_link_click', { label: item.label });
+            });
+            linksContainer.appendChild(linkEl);
+        });
+        linksContainer.hidden = false;
     }
 
     // Helper: Deduplicated JSON fetch to prevent duplicate API calls
@@ -796,8 +862,7 @@
             }
 
             const product = await response.json();
-            if (product.order_contact) state.orderContact = product.order_contact;
-            if (product.order_link) state.orderLink = product.order_link;
+            applyContactSettings(product);
             if (product.bot) state.botUsername = product.bot;
 
             logger.apiCall('load_deep_link_product', 'success', {
@@ -952,14 +1017,14 @@
 
                     if (response.ok) {
                         const data = await response.json();
-                        state.orderContact = data.order_contact || null;
-                        state.orderLink = data.order_link || null;
+                        applyContactSettings(data);
                         state.botUsername = data.bot || null;
                         logger.apiCall('load_initial_data', 'success', {
                             endpoint: '/api/products',
                             response_time_ms: responseTime,
                             order_contact: state.orderContact,
                             order_link: state.orderLink,
+                            order_links_count: state.orderLinks.length,
                             bot_username: state.botUsername
                         });
                     } else {
@@ -1636,14 +1701,7 @@
         document.getElementById('welcome-view').style.display = 'block';
         document.getElementById('breadcrumb').style.display = 'none';
         
-        // Load order contact info if available
-        if (state.orderContact) {
-            const contactInfo = document.getElementById('order-contact-info');
-            if (contactInfo) {
-                const username = normalizeContactUsername(state.orderContact);
-                contactInfo.innerHTML = `${t('order_contact_prefix')} <a href="https://t.me/${username}" target="_blank">${state.orderContact}</a>`;
-            }
-        }
+        renderHomeContactLinks();
 
         if (state.adminStatus) {
             renderAdminPanel(state.adminStatus);
@@ -1821,6 +1879,7 @@
                 response_time_ms: responseTime
             });
             
+            applyContactSettings(data);
             state.searchResults = data.items;
             state.totalProducts = data.total;
             
@@ -2099,7 +2158,7 @@
                 });
                 state.products = cached.data.items || [];
                 state.totalProducts = cached.data.total || 0;
-                state.orderContact = cached.data.order_contact || null;
+                applyContactSettings(cached.data);
                 state.botUsername = cached.data.bot || null;
                 showProducts(false);
                 state.loadingInProgress = false;
@@ -2148,7 +2207,7 @@
             
             state.products = data.items || [];
             state.totalProducts = data.total || 0;
-            state.orderContact = data.order_contact || null;
+            applyContactSettings(data);
             state.botUsername = data.bot || null;
 
             showProducts(false);
@@ -2940,27 +2999,26 @@
         actionsContainer.style.marginTop = '20px';
 
         // DM to order button
-        if (state.orderContact) {
-            const dmUrl = getOrderUrl();
-            if (dmUrl) {
-                const dmBtn = document.createElement('a');
-                dmBtn.href = dmUrl;
-                dmBtn.target = '_blank';
-                dmBtn.rel = 'noopener';
-                dmBtn.className = 'btn btn-primary';
-                dmBtn.style.minHeight = '52px';
-                dmBtn.style.fontSize = '16px';
-                dmBtn.style.lineHeight = '52px';
-                dmBtn.style.padding = '0 24px';
-                dmBtn.textContent = t('btn_dm_to_order');
-                dmBtn.addEventListener('click', () => {
-                    logger.userInteraction('dm_to_order_click', {
-                        product_id: product.id,
-                        order_contact: state.orderContact
-                    });
+        const dmUrl = getOrderUrl();
+        if (dmUrl) {
+            const dmBtn = document.createElement('a');
+            dmBtn.href = dmUrl;
+            dmBtn.target = '_blank';
+            dmBtn.rel = 'noopener';
+            dmBtn.className = 'btn btn-primary';
+            dmBtn.style.minHeight = '52px';
+            dmBtn.style.fontSize = '16px';
+            dmBtn.style.lineHeight = '52px';
+            dmBtn.style.padding = '0 24px';
+            dmBtn.textContent = t('btn_dm_to_order');
+            dmBtn.addEventListener('click', () => {
+                logger.userInteraction('dm_to_order_click', {
+                    product_id: product.id,
+                    order_contact: state.orderContact,
+                    order_link: dmUrl
                 });
-                actionsContainer.appendChild(dmBtn);
-            }
+            });
+            actionsContainer.appendChild(dmBtn);
         }
 
         detailContent.appendChild(actionsContainer);
@@ -2981,6 +3039,8 @@
     }
 
     function getOrderUrl() {
+        const primaryLink = getPrimaryOrderLink();
+        if (primaryLink) return primaryLink;
         if (!state.orderContact) return null;
         const username = normalizeContactUsername(state.orderContact);
         return username ? `https://t.me/${username}` : null;

@@ -4021,6 +4021,7 @@ async def get_products(
     order_contact = await _catalog_db.get_order_contact()
     order_contact_username = _normalize_contact(order_contact)
     order_link = await _catalog_db.get_order_link()
+    order_links = await _catalog_db.get_order_links()
 
     # Batch-translate all captions in a single pass to reduce overhead
     captions = [p.get("caption") or "" for p in products]
@@ -4051,7 +4052,8 @@ async def get_products(
         "bot": bot.username if bot and getattr(bot, "username", None) else None,
         "order_contact": order_contact,
         "order_contact_username": order_contact_username,
-        "order_link": order_link
+        "order_link": order_link,
+        "order_links": order_links
     })
 
     _api_result_cache_set(cache_key, payload)
@@ -4099,6 +4101,7 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
     media_info = _collect_media_info(product)
     order_contact = await _catalog_db.get_order_contact()
     order_link = await _catalog_db.get_order_link()
+    order_links = await _catalog_db.get_order_links()
 
     storefront_url = (
         _canonical_product_url(product_id, product.get("caption") or "")
@@ -4119,6 +4122,7 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
         "bot": bot.username if bot and getattr(bot, "username", None) else None,
         "order_contact": order_contact,
         "order_link": order_link,
+        "order_links": order_links,
         "storefront_url": storefront_url,
         "bot_deep_link": bot_deep_link,
     })
@@ -4616,6 +4620,8 @@ async def search_products(
 
         order_contact = await _catalog_db.get_order_contact()
         order_contact_username = _normalize_contact(order_contact)
+        order_link = await _catalog_db.get_order_link()
+        order_links = await _catalog_db.get_order_links()
         
         items = []
         for product in products:
@@ -4637,7 +4643,9 @@ async def search_products(
             "query": q,
             "expanded_query": expanded_query,
             "order_contact": order_contact,
-            "order_contact_username": order_contact_username
+            "order_contact_username": order_contact_username,
+            "order_link": order_link,
+            "order_links": order_links
         }
         
     except Exception as e:

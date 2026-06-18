@@ -1243,81 +1243,231 @@ async def handle_setcontact_input(update: Update, context: ContextTypes.DEFAULT_
 
 @command_admin_required
 async def setlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /setlink command - set the order link URL (admin only)."""
+    """Open the multi-link contacts manager (admin only)."""
     user_id = update.effective_user.id
 
-    # Get current link
-    current_link = await db.get_order_link()
-
-    # Escape the current link for markdown v1
-    escaped_link = escape_markdown_v1(current_link) if current_link else "Not set"
-
-    try:
-        await update.message.reply_text(
-            f"🔗 **Set Order Link**\n\n"
-            f"Current link: {escaped_link}\n\n"
-            f"Please enter the new link URL (e.g., https://t.me/username or any URL):",
-            parse_mode="Markdown"
-        )
-    except BadRequest as e:
-        logger.warning(f"Markdown parse error in setlink_command, retrying without parse_mode: {e}")
-        await update.message.reply_text(
-            f"🔗 Set Order Link\n\n"
-            f"Current link: {current_link if current_link else 'Not set'}\n\n"
-            f"Please enter the new link URL (e.g., https://t.me/username or any URL):"
-        )
-
-    # Store state for next message
-    context.user_data['awaiting_link'] = True
+    context.user_data.pop("setlink_pending_label", None)
+    context.user_data["awaiting_link"] = False
+    context.user_data["setlink_mode"] = "menu"
+    links = await db.get_order_links()
+    await _send_setlink_menu(update.message, links)
     logger.info(f"Admin {user_id} initiated setlink command")
 
 
 @command_admin_required
 async def handle_setlink_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle the link URL input from admin."""
+    """Handle text replies for the multi-link contacts manager."""
     user_id = update.effective_user.id
 
-    if not context.user_data.get('awaiting_link'):
+    mode = context.user_data.get("setlink_mode")
+    if not context.user_data.get('awaiting_link') or mode not in {"label", "url"}:
         return
 
-    link = update.message.text.strip()
+    value = update.message.text.strip()
 
-    # Validate format (must be a URL)
-    if not (link.startswith('http://') or link.startswith('https://') or link.startswith('tg://')):
+    if value.lower() in {"/cancel", "cancel"}:
+        _clear_setlink_state(context)
+        await update.message.reply_text("Cancelled link setup.", reply_markup=_setlink_menu_keyboard(await db.get_order_links()))
+        return
+
+    if mode == "label":
+        label = _clean_order_link_label(value)
+        if not label:
+            await update.message.reply_text(
+                "Please send a short button name, for example:\n"
+                "• Telegram\n"
+                "• Signal\n"
+                "• WhatsApp\n\n"
+                "Send cancel to stop."
+            )
+            return
+        context.user_data["setlink_pending_label"] = label
+        context.user_data["setlink_mode"] = "url"
         await update.message.reply_text(
-            "❌ Invalid format. Link must be a valid URL starting with http://, https://, or tg://\n\n"
+            f"Nice. Now send the URL for \"{label}\".\n\n"
             "Examples:\n"
             "• https://t.me/username\n"
-            "• https://example.com/contact\n\n"
-            "Please try again or use /setlink to restart."
+            "• https://signal.me/#eu/...\n"
+            "• https://wa.me/1234567890\n\n"
+            "Send cancel to stop.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data="setlink|cancel")]])
         )
         return
 
-    # Save to database
-    await db.set_order_link(link)
+    label = context.user_data.get("setlink_pending_label")
+    if not label:
+        context.user_data["setlink_mode"] = "label"
+        await update.message.reply_text("Please send the button name first.")
+        return
+
+    if not _is_valid_order_link_url(value):
+        await update.message.reply_text(
+            "That link does not look valid. It must start with http://, https://, or tg://.\n\n"
+            "Please send the URL again, or send cancel to stop."
+        )
+        return
+
+    links = await db.get_order_links()
+    links.append({"label": label, "url": value})
+    await db.set_order_links(links)
     invalidate_webapp_caches("order link updated")
+    _clear_setlink_state(context)
 
-    # Clear state
-    context.user_data['awaiting_link'] = False
+    await update.message.reply_text(
+        f"Added contact button:\n\n{label}\n{value}",
+        reply_markup=_setlink_menu_keyboard(links),
+        disable_web_page_preview=True,
+    )
+    logger.info("Admin %s added order link label=%r url=%r", user_id, label, value)
 
-    # Escape link for markdown v1
-    escaped_link = escape_markdown_v1(link)
 
+def _clean_order_link_label(label: str) -> str:
+    label = " ".join(str(label or "").strip().split())
+    if not label or len(label) > 40:
+        return ""
+    return label
+
+
+def _is_valid_order_link_url(link: str) -> bool:
+    link = str(link or "").strip()
+    return link.startswith(("http://", "https://", "tg://"))
+
+
+def _clear_setlink_state(context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["awaiting_link"] = False
+    context.user_data.pop("setlink_mode", None)
+    context.user_data.pop("setlink_pending_label", None)
+
+
+def _format_order_links(links: list[dict]) -> str:
+    if not links:
+        return "No contact links are set yet."
+    lines = []
+    for index, item in enumerate(links, start=1):
+        lines.append(f"{index}. {item.get('label') or 'Link'}\n   {item.get('url') or ''}")
+    return "\n".join(lines)
+
+
+def _setlink_menu_keyboard(links: list[dict]) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton("Add link", callback_data="setlink|add")]]
+    if links:
+        rows.append([InlineKeyboardButton("Remove link", callback_data="setlink|remove_menu")])
+        rows.append([InlineKeyboardButton("Clear all", callback_data="setlink|clear_confirm")])
+    rows.append([InlineKeyboardButton("Done", callback_data="setlink|done")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _send_setlink_menu(message, links: list[dict], notice: str = ""):
+    text = (
+        "Set Home Screen Links\n\n"
+        "These buttons appear on the WebApp home screen. The first link is also used by the main OUR CONTACTS button.\n\n"
+        f"{_format_order_links(links)}"
+    )
+    if notice:
+        text = f"{notice}\n\n{text}"
+    await message.reply_text(text, reply_markup=_setlink_menu_keyboard(links), disable_web_page_preview=True)
+
+
+async def _edit_setlink_menu(query, links: list[dict], notice: str = ""):
+    text = (
+        "Set Home Screen Links\n\n"
+        "These buttons appear on the WebApp home screen. The first link is also used by the main OUR CONTACTS button.\n\n"
+        f"{_format_order_links(links)}"
+    )
+    if notice:
+        text = f"{notice}\n\n{text}"
     try:
-        await update.message.reply_text(
-            f"✅ Order link updated successfully!\n\n"
-            f"New link: {escaped_link}\n\n"
-            f"This link will be used in the webapp 'OUR CONTACTS' button.",
-            parse_mode="Markdown"
+        await query.edit_message_text(text, reply_markup=_setlink_menu_keyboard(links), disable_web_page_preview=True)
+    except BadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
+
+
+async def handle_setlink_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, query, user_id: int, parts: list[str]):
+    """Handle /setlink inline button actions."""
+    if not is_admin(user_id):
+        await query.answer("Admins only.", show_alert=True)
+        return
+
+    action = parts[1] if len(parts) > 1 else "menu"
+    links = await db.get_order_links()
+
+    if action == "add":
+        context.user_data["awaiting_link"] = True
+        context.user_data["setlink_mode"] = "label"
+        context.user_data.pop("setlink_pending_label", None)
+        await query.message.reply_text(
+            "Send the button name for this link.\n\n"
+            "Examples:\n"
+            "• Telegram\n"
+            "• Signal\n"
+            "• WhatsApp\n\n"
+            "Send cancel to stop.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Cancel", callback_data="setlink|cancel")]])
         )
-    except BadRequest as e:
-        logger.warning(f"Markdown parse error in handle_setlink_input, retrying without parse_mode: {e}")
-        await update.message.reply_text(
-            f"✅ Order link updated successfully!\n\n"
-            f"New link: {link}\n\n"
-            f"This link will be used in the webapp 'OUR CONTACTS' button."
+        return
+
+    if action == "remove_menu":
+        if not links:
+            await _edit_setlink_menu(query, links, "There are no links to remove.")
+            return
+        rows = [
+            [InlineKeyboardButton(f"Remove {item.get('label') or f'Link {index + 1}'}", callback_data=f"setlink|remove|{index}")]
+            for index, item in enumerate(links)
+        ]
+        rows.append([InlineKeyboardButton("Back", callback_data="setlink|menu")])
+        await query.edit_message_text(
+            "Choose the home screen link to remove:",
+            reply_markup=InlineKeyboardMarkup(rows),
+            disable_web_page_preview=True,
         )
-    logger.info(f"Admin {user_id} updated order link to: {link}")
+        return
+
+    if action == "remove" and len(parts) > 2:
+        try:
+            index = int(parts[2])
+        except ValueError:
+            index = -1
+        if 0 <= index < len(links):
+            removed = links.pop(index)
+            await db.set_order_links(links)
+            invalidate_webapp_caches("order link removed")
+            await _edit_setlink_menu(query, links, f"Removed: {removed.get('label') or 'Link'}")
+            logger.info("Admin %s removed order link label=%r", user_id, removed.get("label"))
+        else:
+            await _edit_setlink_menu(query, links, "That link no longer exists.")
+        return
+
+    if action == "clear_confirm":
+        if not links:
+            await _edit_setlink_menu(query, links, "There are no links to clear.")
+            return
+        await query.edit_message_text(
+            "Clear all home screen contact links?",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Yes, clear all", callback_data="setlink|clear_yes")],
+                [InlineKeyboardButton("Back", callback_data="setlink|menu")],
+            ]),
+        )
+        return
+
+    if action == "clear_yes":
+        await db.set_order_links([])
+        invalidate_webapp_caches("order links cleared")
+        _clear_setlink_state(context)
+        await _edit_setlink_menu(query, [], "All contact links cleared.")
+        logger.info("Admin %s cleared all order links", user_id)
+        return
+
+    if action in {"cancel", "done"}:
+        _clear_setlink_state(context)
+        if action == "done":
+            await _edit_setlink_menu(query, links, "Saved.")
+        else:
+            await query.message.reply_text("Cancelled link setup.", reply_markup=_setlink_menu_keyboard(links))
+        return
+
+    await _edit_setlink_menu(query, links)
 
 
 @command_admin_required

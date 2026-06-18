@@ -30,6 +30,7 @@ DEFAULT_ORDER_LINK = ''
 _user_language_cache: Dict[int, Tuple[str, datetime]] = {}
 _order_contact_cache: Optional[Tuple[str, datetime]] = None
 _order_link_cache: Optional[Tuple[str, datetime]] = None
+_order_links_cache: Optional[Tuple[List[Dict[str, str]], datetime]] = None
 _cache_lock = asyncio.Lock()
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
@@ -2836,21 +2837,102 @@ class Database:
 
         return link
 
+    async def get_order_links(self) -> List[Dict[str, str]]:
+        """Get named order/contact links from settings with backward-compatible fallback."""
+        global _order_links_cache
+
+        async with _cache_lock:
+            if _order_links_cache is not None:
+                links, cached_at = _order_links_cache
+                if datetime.now() - cached_at < timedelta(seconds=CACHE_TTL_SECONDS):
+                    return [dict(item) for item in links]
+
+        links: List[Dict[str, str]] = []
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT value FROM bot_settings WHERE key = 'order_links'
+            """) as cursor:
+                row = await cursor.fetchone()
+                raw_value = row[0] if row else ""
+
+        if raw_value:
+            try:
+                parsed = json.loads(raw_value)
+                if isinstance(parsed, list):
+                    for item in parsed:
+                        if not isinstance(item, dict):
+                            continue
+                        label = str(item.get("label") or "").strip()
+                        url = str(item.get("url") or "").strip()
+                        if label and url:
+                            links.append({"label": label[:40], "url": url[:500]})
+            except (TypeError, json.JSONDecodeError) as exc:
+                logger.warning("Invalid order_links setting; falling back to order_link: %s", exc)
+
+        if not links:
+            fallback = await self.get_order_link()
+            if fallback:
+                links.append({"label": "OUR CONTACTS", "url": fallback})
+
+        async with _cache_lock:
+            _order_links_cache = ([dict(item) for item in links], datetime.now())
+
+        return links
+
     async def set_order_link(self, link: str):
         """Set the order link URL in settings and invalidate cache."""
-        global _order_link_cache
+        global _order_link_cache, _order_links_cache
+
+        clean_links = [{"label": "OUR CONTACTS", "url": link}] if link else []
+        payload = json.dumps(clean_links, ensure_ascii=False)
 
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 INSERT OR REPLACE INTO bot_settings (key, value, updated_at)
                 VALUES ('order_link', ?, ?)
             """, (link, datetime.now()))
+            await db.execute("""
+                INSERT OR REPLACE INTO bot_settings (key, value, updated_at)
+                VALUES ('order_links', ?, ?)
+            """, (payload, datetime.now()))
             await db.commit()
             logger.info(f"Order link updated to: {link}")
 
         # Invalidate cache
         async with _cache_lock:
             _order_link_cache = (link, datetime.now())
+            _order_links_cache = (clean_links, datetime.now())
+
+    async def set_order_links(self, links: List[Dict[str, str]]):
+        """Set named order/contact links and keep the legacy single order_link in sync."""
+        global _order_link_cache, _order_links_cache
+
+        clean_links: List[Dict[str, str]] = []
+        for item in links or []:
+            label = str(item.get("label") or "").strip()
+            url = str(item.get("url") or "").strip()
+            if not label or not url:
+                continue
+            clean_links.append({"label": label[:40], "url": url[:500]})
+
+        first_link = clean_links[0]["url"] if clean_links else DEFAULT_ORDER_LINK
+        payload = json.dumps(clean_links, ensure_ascii=False)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT OR REPLACE INTO bot_settings (key, value, updated_at)
+                VALUES ('order_links', ?, ?)
+            """, (payload, datetime.now()))
+            await db.execute("""
+                INSERT OR REPLACE INTO bot_settings (key, value, updated_at)
+                VALUES ('order_link', ?, ?)
+            """, (first_link, datetime.now()))
+            await db.commit()
+            logger.info("Order links updated: count=%d", len(clean_links))
+
+        async with _cache_lock:
+            _order_links_cache = ([dict(item) for item in clean_links], datetime.now())
+            _order_link_cache = (first_link, datetime.now())
 
     async def get_bot_file_id(
         self,
@@ -5054,12 +5136,13 @@ class Database:
 
 async def clear_database_caches():
     """Clear all in-memory database caches. Useful for testing or after bulk updates."""
-    global _user_language_cache, _order_contact_cache, _order_link_cache
+    global _user_language_cache, _order_contact_cache, _order_link_cache, _order_links_cache
 
     async with _cache_lock:
         _user_language_cache.clear()
         _order_contact_cache = None
         _order_link_cache = None
+        _order_links_cache = None
 
     logger.info("Database caches cleared")
 

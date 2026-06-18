@@ -86,7 +86,7 @@ ADMIN_COMMANDS_FALLBACK = (
     "• /block - Block a user\n"
     "• /unblock - Unblock a user\n"
     "• /setcontact - Set order contact\n"
-    "• /setlink - Set contacts link\n"
+    "• /setlink - Manage home contact links\n"
     "• /recategorize - Recategorize products\n"
     "• /clearcache - Clear file ID cache\n"
     "• /prunebots - Prune inactive bot users\n"

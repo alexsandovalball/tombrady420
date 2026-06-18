@@ -23,6 +23,7 @@ from handlers.admin import (
     show_users_page,
     build_users_bot_selection_menu,
     show_bot_users_page,
+    handle_setlink_callback,
 )
 from handlers.menu import show_catalog_page, show_subcategory_menu, handle_catalog_pagination
 from handlers.product_view import handle_product_callback
@@ -1370,6 +1371,7 @@ _PREFIX_HANDLERS = {
     "toggle_notif": _handle_toggle_notif,
     "confirm_toggle_notif": _handle_confirm_toggle_notif,
     "cancel_toggle_notif": _handle_cancel_toggle_notif,
+    "setlink": handle_setlink_callback,
     "users_page": _handle_users_page,
     "viewusers": _handle_viewusers,
     "block_user": _handle_block_user,

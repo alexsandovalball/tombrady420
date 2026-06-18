@@ -661,7 +661,7 @@ async def setup_bot_commands(bot):
         BotCommand("send", "Send a message to a specific user"),
         BotCommand("broadcast", "Send a message to all users"),
         BotCommand("setcontact", "Set order contact username"),
-        BotCommand("setlink", "Set contacts link URL"),
+        BotCommand("setlink", "Manage home contact links"),
         BotCommand("recategorize", "Categorize uncategorized products"),
         BotCommand("clearcache", "Clear file ID cache"),
         BotCommand("prunebots", "Prune users from inactive bots"),
