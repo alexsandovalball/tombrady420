@@ -203,6 +203,8 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         snapshot = await db.get_search_intelligence_snapshot(limit=10)
         search_console_days = _fmt_count(snapshot.get("search_console_window_days") or 30)
+        low_result_threshold = int(snapshot.get("low_result_threshold") or 0)
+        low_result_label = f"0-{low_result_threshold}" if low_result_threshold > 0 else "0"
         lines = [
             "🔎 SEO Search Learning",
             "",
@@ -211,6 +213,7 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Today",
             f"• Searches typed: {_fmt_count(snapshot.get('queries_24h'))}",
             f"• Searches with no result: {_fmt_count(snapshot.get('no_result_24h'))}",
+            f"• Searches with {low_result_label} result(s): {_fmt_count(snapshot.get('low_result_24h'))}",
             f"• Total approved mappings: {_fmt_count(snapshot.get('approved_mappings'))}",
             f"• Made automatically: {_fmt_count(snapshot.get('auto_mappings'))}",
             f"• Google queries imported ({search_console_days}d): {_fmt_count(snapshot.get('search_console_queries_window'))}",
@@ -238,10 +241,12 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         recent_mappings = snapshot.get("recent_mappings") or []
         if recent_mappings:
-            lines.extend(["", "New/Recent Search Mappings"])
+            lines.extend(["", "New/Recently Used Search Mappings"])
             for item in recent_mappings[:8]:
                 source = "auto" if item.get("source") == "auto_learn" else str(item.get("source") or "manual")
-                lines.append(f"• {item.get('term')} → {_format_seo_target(item)} ({source})")
+                hits = int(item.get("hits") or 0)
+                hit_text = f", {_fmt_count(hits)} hit(s)" if hits else ""
+                lines.append(f"• {item.get('term')} → {_format_seo_target(item)} ({source}{hit_text})")
 
         recent_external = snapshot.get("recent_external_signals") or []
         if recent_external:
@@ -256,7 +261,14 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if unmapped:
             lines.extend(["", "Still Being Studied"])
             for item in unmapped[:8]:
-                lines.append(f"• {item.get('query')} ({_fmt_count(item.get('count'))} no-result search(es))")
+                best_matched = int(item.get("best_matched_count") or 0)
+                if best_matched > 0:
+                    result_text = f"best found {_fmt_count(best_matched)} product(s)"
+                else:
+                    result_text = "no products found"
+                lines.append(
+                    f"• {item.get('query')} ({_fmt_count(item.get('count'))} low/no-result search(es), {result_text})"
+                )
 
         lines.extend([
             "",

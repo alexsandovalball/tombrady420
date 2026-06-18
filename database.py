@@ -3994,7 +3994,9 @@ class Database:
             await db.executemany(
                 """
                 UPDATE seo_query_mappings
-                SET hits = hits + 1
+                SET
+                    hits = COALESCE(hits, 0) + 1,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE approved = 1 AND normalized_term = ?
                 """,
                 normalized_terms,
@@ -4276,7 +4278,7 @@ class Database:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
-                SELECT term, category, subcategory, source, updated_at
+                SELECT term, category, subcategory, source, hits, updated_at
                 FROM seo_query_mappings
                 WHERE approved = 1
                 ORDER BY updated_at DESC, id DESC
@@ -4293,58 +4295,97 @@ class Database:
         limit: int = 25,
         min_count: int = 1,
         lookback_hours: int = 720,
+        max_matched_count: int = 3,
     ) -> List[Dict[str, Any]]:
-        """Return repeated no-result searches that are not already approved mappings."""
+        """Return repeated low/no-result searches that are not already approved mappings."""
         limit = max(1, min(limit, 100))
         min_count = max(1, min_count)
+        max_matched_count = max(0, min(max_matched_count, 25))
         since = datetime.now() - timedelta(hours=max(1, lookback_hours))
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
                 SELECT
-                    e.query,
+                    (
+                        SELECT e2.query
+                        FROM search_query_events e2
+                        WHERE e2.normalized_query = e.normalized_query
+                        ORDER BY e2.created_at DESC, e2.id DESC
+                        LIMIT 1
+                    ) AS query,
                     e.normalized_query,
                     COUNT(*) AS count,
+                    SUM(CASE WHEN e.matched_count = 0 THEN 1 ELSE 0 END) AS no_result_count,
+                    MIN(e.matched_count) AS best_matched_count,
+                    ROUND(AVG(e.matched_count), 1) AS avg_matched_count,
                     MAX(e.created_at) AS last_seen
                 FROM search_query_events e
                 LEFT JOIN seo_query_mappings m
                     ON m.normalized_term = e.normalized_query AND m.approved = 1
-                WHERE e.matched_count = 0
+                WHERE e.matched_count <= ?
                   AND e.created_at >= ?
                   AND m.id IS NULL
                 GROUP BY e.normalized_query
                 HAVING COUNT(*) >= ?
-                ORDER BY count DESC, last_seen DESC
+                ORDER BY no_result_count DESC, count DESC, last_seen DESC
                 LIMIT ?
                 """,
-                (since, min_count, limit),
+                (max_matched_count, since, min_count, limit),
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
 
-    async def get_unmapped_search_queries(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Return frequent no-result queries that are not yet approved mappings."""
+    async def get_unmapped_search_queries(
+        self,
+        limit: int = 20,
+        *,
+        max_matched_count: Optional[int] = None,
+        lookback_hours: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return frequent low/no-result queries that are not yet approved mappings."""
         limit = max(1, min(limit, 100))
+        if max_matched_count is None:
+            max_matched_count = Config.SEO_AUTO_LEARN_MAX_MATCHED_COUNT
+        max_matched_count = max(0, min(max_matched_count, 25))
+        if lookback_hours is None:
+            lookback_hours = Config.SEO_AUTO_LEARN_LOOKBACK_HOURS
+        since = datetime.now() - timedelta(hours=max(1, lookback_hours))
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
                 SELECT
-                    e.query,
+                    (
+                        SELECT e2.query
+                        FROM search_query_events e2
+                        WHERE e2.normalized_query = e.normalized_query
+                        ORDER BY e2.created_at DESC, e2.id DESC
+                        LIMIT 1
+                    ) AS query,
                     e.normalized_query,
                     COUNT(*) AS count,
+                    SUM(CASE WHEN e.matched_count = 0 THEN 1 ELSE 0 END) AS no_result_count,
+                    MIN(e.matched_count) AS best_matched_count,
+                    (
+                        SELECT e2.matched_count
+                        FROM search_query_events e2
+                        WHERE e2.normalized_query = e.normalized_query
+                        ORDER BY e2.created_at DESC, e2.id DESC
+                        LIMIT 1
+                    ) AS last_matched_count,
                     MAX(e.created_at) AS last_seen
                 FROM search_query_events e
                 LEFT JOIN seo_query_mappings m
                     ON m.normalized_term = e.normalized_query AND m.approved = 1
-                WHERE e.matched_count = 0
+                WHERE e.matched_count <= ?
+                  AND e.created_at >= ?
                   AND m.id IS NULL
                 GROUP BY e.normalized_query
-                ORDER BY count DESC, last_seen DESC
+                ORDER BY no_result_count DESC, count DESC, last_seen DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (max_matched_count, since, limit),
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
@@ -4353,8 +4394,9 @@ class Database:
         """Compact snapshot for the /seostatus admin command."""
         limit = max(1, min(limit, 50))
         since_24h = datetime.now() - timedelta(hours=24)
-        search_console_days = 30
+        search_console_days = Config.SEARCH_CONSOLE_LOOKBACK_DAYS
         search_console_since = (datetime.now() - timedelta(days=search_console_days)).date().isoformat()
+        low_result_threshold = Config.SEO_AUTO_LEARN_MAX_MATCHED_COUNT
         async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
 
@@ -4376,6 +4418,11 @@ class Database:
                 "no_result_24h": await scalar(
                     "SELECT COUNT(*) FROM search_query_events WHERE matched_count = 0 AND created_at >= ?",
                     (since_24h,),
+                ),
+                "low_result_threshold": low_result_threshold,
+                "low_result_24h": await scalar(
+                    "SELECT COUNT(*) FROM search_query_events WHERE matched_count <= ? AND created_at >= ?",
+                    (low_result_threshold, since_24h),
                 ),
                 "approved_mappings": await scalar("SELECT COUNT(*) FROM seo_query_mappings WHERE approved = 1"),
                 "auto_mappings": await scalar(
@@ -4416,7 +4463,11 @@ class Database:
                     """,
                     (since_24h, limit),
                 ),
-                "unmapped": await self.get_unmapped_search_queries(limit=limit),
+                "unmapped": await self.get_unmapped_search_queries(
+                    limit=limit,
+                    max_matched_count=low_result_threshold,
+                    lookback_hours=Config.SEO_AUTO_LEARN_LOOKBACK_HOURS,
+                ),
                 "recent_mappings": await self.get_recent_seo_query_mappings(limit=limit),
                 "recent_external_signals": await self.get_recent_external_seo_signals(limit=limit),
                 "top_search_console_queries": await rows(

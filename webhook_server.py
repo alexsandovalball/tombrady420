@@ -1877,7 +1877,7 @@ async def _import_search_console_signals(
 
 
 async def _seo_auto_learn_once() -> int:
-    """Approve high-confidence no-result search mappings."""
+    """Approve high-confidence low/no-result search mappings."""
     if not Config.SEO_AUTO_LEARN_ENABLED:
         return 0
 
@@ -1896,8 +1896,15 @@ async def _seo_auto_learn_once() -> int:
         limit=Config.SEO_AUTO_LEARN_MAX_PER_RUN,
         min_count=Config.SEO_AUTO_LEARN_MIN_COUNT,
         lookback_hours=Config.SEO_AUTO_LEARN_LOOKBACK_HOURS,
+        max_matched_count=Config.SEO_AUTO_LEARN_MAX_MATCHED_COUNT,
     )
     if not candidates:
+        logger.info(
+            "[seo_auto_learn] candidates=0 max_matched=%d external_imports=%d external_promoted=%d",
+            Config.SEO_AUTO_LEARN_MAX_MATCHED_COUNT,
+            external_imports,
+            external_promoted,
+        )
         return external_imports + external_promoted
 
     approvals = []
@@ -1931,7 +1938,7 @@ async def _seo_auto_learn_once() -> int:
                 "subcategory": inferred["subcategory"],
             })
         logger.info(
-            "[seo_auto_learn] approve query=%r variants=%d category=%s subcategory=%s score=%s reason=%s count=%s",
+            "[seo_auto_learn] approve query=%r variants=%d category=%s subcategory=%s score=%s reason=%s count=%s best_matched=%s",
             query,
             len(learned_terms),
             inferred["category"],
@@ -1939,12 +1946,18 @@ async def _seo_auto_learn_once() -> int:
             inferred.get("score"),
             inferred.get("reason"),
             item.get("count"),
+            item.get("best_matched_count"),
         )
 
     if not approvals:
         if skipped:
-            logger.info("[seo_auto_learn] skipped=%d reason=no_confident_mapping", skipped)
-        return 0
+            logger.info(
+                "[seo_auto_learn] skipped=%d reason=no_confident_mapping external_imports=%d external_promoted=%d",
+                skipped,
+                external_imports,
+                external_promoted,
+            )
+        return external_imports + external_promoted
 
     approved = await _catalog_db.upsert_seo_query_mappings(
         approvals,
@@ -1953,7 +1966,15 @@ async def _seo_auto_learn_once() -> int:
     )
     if approved:
         _invalidate_seo_query_mapping_cache()
-    logger.info("[seo_auto_learn] approved=%d candidates=%d skipped=%d", approved, len(candidates), skipped)
+    logger.info(
+        "[seo_auto_learn] approved=%d candidates=%d skipped=%d max_matched=%d external_imports=%d external_promoted=%d",
+        approved,
+        len(candidates),
+        skipped,
+        Config.SEO_AUTO_LEARN_MAX_MATCHED_COUNT,
+        external_imports,
+        external_promoted,
+    )
     return approved + external_imports + external_promoted
 
 
@@ -1965,7 +1986,7 @@ def _get_seo_auto_learn_lock() -> asyncio.Lock:
 
 
 async def _seo_auto_learn_loop():
-    """Background task: learn safe SEO mappings from repeated no-result searches."""
+    """Background task: learn safe SEO mappings from repeated low/no-result searches."""
     if not Config.SEO_AUTO_LEARN_ENABLED:
         logger.info("[seo_auto_learn] disabled")
         return
@@ -1982,11 +2003,12 @@ async def _seo_auto_learn_loop():
                     learned = await _seo_auto_learn_once()
                 duration_ms = (_time.monotonic() - started) * 1000
                 logger.info(
-                    "[seo_auto_learn] run_complete changed=%d duration_ms=%.1f lookback_hours=%d score=%d external_score=%d",
+                    "[seo_auto_learn] run_complete changed=%d duration_ms=%.1f lookback_hours=%d score=%d max_matched=%d external_score=%d",
                     learned,
                     duration_ms,
                     Config.SEO_AUTO_LEARN_LOOKBACK_HOURS,
                     Config.SEO_AUTO_LEARN_SCORE,
+                    Config.SEO_AUTO_LEARN_MAX_MATCHED_COUNT,
                     Config.SEO_EXTERNAL_SIGNAL_SCORE,
                 )
         except Exception as e:
