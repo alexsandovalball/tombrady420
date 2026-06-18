@@ -786,30 +786,18 @@ a.btn {
 }
 
 .order-links {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
-    gap: 8px;
-    margin-top: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
 }
 
 .order-link-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 42px;
-    padding: 10px 12px;
-    border-radius: 10px;
-    background: rgba(0, 0, 0, 0.07);
-    color: var(--tg-theme-text-color);
-    font-size: 14px;
-    font-weight: 700;
-    text-decoration: none;
-    overflow-wrap: anywhere;
+    text-align: left;
 }
 
-.order-link-btn:active {
-    transform: scale(0.98);
-    background: rgba(0, 0, 0, 0.12);
+.order-link-btn .btn-text {
+    flex: 1;
+    overflow-wrap: anywhere;
 }
 
 .action-buttons {

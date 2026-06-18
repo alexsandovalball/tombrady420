@@ -689,32 +689,25 @@
         return state.orderLink || null;
     }
 
-    function openContactsLink() {
-        // Try configured named links first, fall back to legacy contact if not set
-        let link = getPrimaryOrderLink();
-        
-        // If no order_link is set, construct one from order_contact
+    function openContactUrl(link, label = '') {
         if (!link && state.orderContact) {
             const contact = state.orderContact.replace(/^@/, '');
             link = `https://t.me/${contact}`;
             logger.log('contacts', 'using_order_contact', 'info', '', { contact: state.orderContact, constructed_link: link });
         }
-        
+
         if (!link) {
             logger.log('contacts', 'no_link', 'warn', 'No order link or contact configured');
             tg.showAlert('Contact link not configured. Please contact the admin.');
             return;
         }
 
-        logger.log('contacts', 'opening_link', 'info', '', { link: link });
+        logger.log('contacts', 'opening_link', 'info', '', { link: link, label });
 
-        // Open the link in a new window/tab
-        // Telegram WebApp will handle this appropriately based on the platform
         try {
             tg.openLink(link);
         } catch (err) {
             logger.error('contacts_open_link', err.message, { link: link });
-            // Fallback: try opening with window.open
             window.open(link, '_blank');
         }
     }
@@ -745,14 +738,25 @@
         }
 
         state.orderLinks.forEach((item) => {
-            const linkEl = document.createElement('a');
-            linkEl.className = 'order-link-btn';
-            linkEl.href = item.url;
-            linkEl.target = '_blank';
-            linkEl.rel = 'noopener';
-            linkEl.textContent = item.label;
-            linkEl.addEventListener('click', () => {
+            const linkEl = document.createElement('button');
+            linkEl.type = 'button';
+            linkEl.className = 'action-btn order-link-btn';
+            linkEl.dataset.link = item.url;
+
+            const icon = document.createElement('span');
+            icon.className = 'btn-icon';
+            icon.textContent = '📞';
+
+            const text = document.createElement('span');
+            text.className = 'btn-text';
+            text.textContent = item.label;
+
+            linkEl.appendChild(icon);
+            linkEl.appendChild(text);
+            linkEl.addEventListener('click', (event) => {
+                event.preventDefault();
                 logger.userInteraction('home_contact_link_click', { label: item.label });
+                openContactUrl(item.url, item.label);
             });
             linksContainer.appendChild(linkEl);
         });
@@ -1684,9 +1688,6 @@
                 break;
             case 'language':
                 showLanguageSelection();
-                break;
-            case 'contacts':
-                openContactsLink();
                 break;
         }
     }
