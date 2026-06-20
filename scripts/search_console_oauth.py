@@ -17,12 +17,11 @@ import secrets
 import sys
 import threading
 import urllib.parse
+import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
-
-import requests
 
 SEARCH_CONSOLE_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
 
@@ -77,20 +76,34 @@ class _OAuthServer(HTTPServer):
 
 
 def _exchange_code(client: dict[str, Any], code: str, redirect_uri: str) -> dict[str, Any]:
-    response = requests.post(
-        client.get("token_uri") or "https://oauth2.googleapis.com/token",
-        data={
+    data = urllib.parse.urlencode(
+        {
             "code": code,
             "client_id": client["client_id"],
             "client_secret": client["client_secret"],
             "redirect_uri": redirect_uri,
             "grant_type": "authorization_code",
-        },
-        timeout=30,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        client.get("token_uri") or "https://oauth2.googleapis.com/token",
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
     )
-    if response.status_code >= 400:
-        raise SystemExit(f"Token exchange failed: {response.status_code} {response.text}")
-    payload = response.json()
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            body = response.read().decode("utf-8")
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise SystemExit(f"Token exchange failed: {exc.code} {body}") from exc
+    except urllib.error.URLError as exc:
+        raise SystemExit(f"Token exchange failed: {exc}") from exc
+
+    if status >= 400:
+        raise SystemExit(f"Token exchange failed: {status} {body}")
+    payload = json.loads(body)
     if not payload.get("refresh_token"):
         raise SystemExit(
             "Google did not return a refresh_token. Delete old app permissions at "
