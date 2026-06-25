@@ -296,7 +296,7 @@ async def build_users_bot_selection_menu():
     has_untracked = untracked_count > 0
     
     # Create complete bot list for auto-selection logic (active bots only)
-    all_bots = active_bot_list
+    all_bots = [(entry["username"], entry["count"]) for entry in active_bot_list]
     if has_untracked:
         all_bots.append(("_untracked_", untracked_count))
     
@@ -304,8 +304,10 @@ async def build_users_bot_selection_menu():
     keyboard_buttons = []
     
     # Add active bots first
-    for bot_username, count in active_bot_list:
-        display_text = f"✅ @{bot_username} ({count} users)"
+    for entry in active_bot_list:
+        bot_username = entry["username"]
+        count = entry["count"]
+        display_text = f"✅ Bot {entry['index']}: @{bot_username} ({count} users)"
         keyboard_buttons.append([
             InlineKeyboardButton(display_text, callback_data=f"viewusers|{bot_username}|1")
         ])
@@ -358,8 +360,26 @@ async def _get_active_bot_user_counts():
     """
     from webhook_server import get_bot_usernames
 
-    active_bots = sorted({bot for bot in get_bot_usernames() if bot})
-    logger.info("Active bots from webhook_server: %d - %s", len(active_bots), active_bots)
+    active_bot_entries = []
+    seen = set()
+    for bot_index, bot_username in enumerate(get_bot_usernames()):
+        if not bot_username:
+            continue
+        normalized = str(bot_username).lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        active_bot_entries.append({
+            "index": bot_index,
+            "username": bot_username,
+        })
+
+    active_bots = [entry["username"] for entry in active_bot_entries]
+    logger.info(
+        "Active bots from webhook_server: %d - %s",
+        len(active_bots),
+        [f"Bot {entry['index']}: @{entry['username']}" for entry in active_bot_entries],
+    )
 
     if active_bots:
         cleanup_stats = await db.forget_inactive_bot_memory(active_bots)
@@ -367,12 +387,65 @@ async def _get_active_bot_user_counts():
             logger.info("Inactive bot memory cleanup from admin menu: %s", cleanup_stats)
 
     active_bot_list = []
-    for bot_username in active_bots:
+    for entry in active_bot_entries:
+        bot_username = entry["username"]
         count = await db.get_users_count_by_bot(bot_username)
-        active_bot_list.append((bot_username, count))
+        active_bot_list.append({
+            **entry,
+            "count": count,
+        })
 
     untracked_count = await db.get_users_count_by_bot("_untracked_")
     return active_bots, active_bot_list, untracked_count
+
+
+async def build_botusers_selection_menu(notice: str = ""):
+    """Build the /botusers runtime-slot ordered bot selection menu."""
+    active_bots, active_bot_list, untracked_count = await _get_active_bot_user_counts()
+    if not active_bots:
+        return None, None, None, False
+
+    keyboard_buttons = []
+    for entry in active_bot_list:
+        bot_username = entry["username"]
+        count = entry["count"]
+        display_text = f"Bot {entry['index']}: @{bot_username} ({count} users)"
+        keyboard_buttons.append([
+            InlineKeyboardButton(display_text, callback_data=f"viewbotusers|{bot_username}|1")
+        ])
+
+    if untracked_count > 0:
+        keyboard_buttons.append([
+            InlineKeyboardButton(f"Untracked Users ({untracked_count})", callback_data="viewbotusers|_untracked_|1")
+        ])
+
+    keyboard = InlineKeyboardMarkup(keyboard_buttons)
+    total_users = await db.get_users_count_by_bot()
+    active_bots_count = len(active_bots)
+    active_bots_with_users_count = sum(1 for entry in active_bot_list if entry["count"] > 0)
+
+    message = "📊 **Bot Users by Instance**\n\n"
+    message += f"Total Users: {total_users}\n"
+    message += f"Active Bot Instances: {active_bots_count}\n"
+
+    message_no_md = "📊 Bot Users by Instance\n\n"
+    message_no_md += f"Total Users: {total_users}\n"
+    message_no_md += f"Active Bot Instances: {active_bots_count}\n"
+
+    if active_bots_with_users_count < active_bots_count:
+        bots_without_users = active_bots_count - active_bots_with_users_count
+        line = f"ℹ️ {bots_without_users} active bot(s) have no users yet\n"
+        message += line
+        message_no_md += line
+
+    if notice:
+        message += f"\n{notice}\n"
+        message_no_md += f"\n{notice}\n"
+
+    message += "\nSelect a bot to view its users:"
+    message_no_md += "\nSelect a bot to view its users:"
+
+    return keyboard, message, message_no_md, True
 
 
 @command_admin_required
@@ -1531,9 +1604,9 @@ async def clearcache_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /botusers command - view users grouped by bot username (admin only)."""
     try:
-        active_bots, active_bot_list, untracked_count = await _get_active_bot_user_counts()
+        keyboard, message, message_no_md, has_bots = await build_botusers_selection_menu()
 
-        if not active_bots:
+        if not has_bots:
             try:
                 await update.message.reply_text(
                     "📊 **Bot Users Summary**\n\n"
@@ -1548,41 +1621,6 @@ async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             return
 
-        # Create keyboard with bot instances
-        keyboard_buttons = []
-        
-        # Add active bots first
-        for bot_username, count in active_bot_list:
-            display_text = f"✅ @{bot_username} ({count} users)"
-            keyboard_buttons.append([
-                InlineKeyboardButton(display_text, callback_data=f"viewbotusers|{bot_username}|1")
-            ])
-        
-        # Add option to view users without bot_username
-        if untracked_count > 0:
-            keyboard_buttons.append([
-                InlineKeyboardButton(f"Untracked Users ({untracked_count})", callback_data="viewbotusers|_untracked_|1")
-            ])
-        
-        keyboard = InlineKeyboardMarkup(keyboard_buttons)
-        
-        total_users = await db.get_users_count_by_bot()
-        
-        # Count all active bots (not just those with users)
-        active_bots_count = len(active_bots)
-        # Count active bots with users  
-        active_bots_with_users_count = len(active_bot_list)
-        
-        message = f"📊 **Bot Users by Instance**\n\n"
-        message += f"Total Users: {total_users}\n"
-        message += f"Active Bot Instances: {active_bots_count}\n"
-        
-        if active_bots_with_users_count < active_bots_count:
-            bots_without_users = active_bots_count - active_bots_with_users_count
-            message += f"ℹ️ {bots_without_users} active bot(s) have no users yet\n"
-        
-        message += f"\nSelect a bot to view its users:"
-        
         try:
             await update.message.reply_text(
                 message,
@@ -1591,17 +1629,6 @@ async def botusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except BadRequest as e:
             logger.warning(f"Markdown parse error in botusers_command, retrying without parse_mode: {e}")
-            # Remove markdown formatting for fallback
-            message_no_md = f"📊 Bot Users by Instance\n\n"
-            message_no_md += f"Total Users: {total_users}\n"
-            message_no_md += f"Active Bot Instances: {active_bots_count}\n"
-            
-            if active_bots_with_users_count < active_bots_count:
-                bots_without_users = active_bots_count - active_bots_with_users_count
-                message_no_md += f"ℹ️ {bots_without_users} active bot(s) have no users yet\n"
-            
-            message_no_md += f"\nSelect a bot to view its users:"
-            
             await update.message.reply_text(
                 message_no_md,
                 reply_markup=keyboard

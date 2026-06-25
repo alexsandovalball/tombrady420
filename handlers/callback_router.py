@@ -22,6 +22,7 @@ from handlers.admin import (
     delete_product,
     show_users_page,
     build_users_bot_selection_menu,
+    build_botusers_selection_menu,
     show_bot_users_page,
     handle_setlink_callback,
 )
@@ -1079,38 +1080,20 @@ async def _handle_viewbotusers(update, context, query, user_id, parts):
 @admin_required
 async def _handle_backto_botlist(update, context, query, user_id, parts):
     await query.answer()
-    from webhook_server import get_bot_usernames
-
-    bot_usernames = sorted({bot for bot in get_bot_usernames() if bot})
-    if bot_usernames:
-        await db.forget_inactive_bot_memory(bot_usernames)
-    keyboard_buttons = []
-    for bot_username in bot_usernames:
-        count = await db.get_users_count_by_bot(bot_username)
-        display_text = f"@{bot_username} ({count} users)"
-        keyboard_buttons.append([
-            InlineKeyboardButton(display_text, callback_data=f"viewbotusers|{bot_username}|1")
-        ])
-    untracked_count = await db.get_users_count_by_bot("_untracked_")
-    if untracked_count > 0:
-        keyboard_buttons.append([
-            InlineKeyboardButton(
-                f"Untracked Users ({untracked_count})",
-                callback_data="viewbotusers|_untracked_|1",
-            )
-        ])
-    keyboard = InlineKeyboardMarkup(keyboard_buttons)
-    total_users = await db.get_users_count_by_bot()
+    keyboard, message, message_no_md, has_bots = await build_botusers_selection_menu()
+    if not has_bots:
+        await safe_edit_message_text(
+            context.bot,
+            chat_id=query.message.chat_id,
+            message_id=query.message.message_id,
+            text="📊 Bot Users Summary\n\nNo active bot instances are loaded right now.",
+        )
+        return
     await safe_edit_message_text(
         context.bot,
         chat_id=query.message.chat_id,
         message_id=query.message.message_id,
-        text=(
-            f"📊 **Bot Users by Instance**\n\n"
-            f"Total Users: {total_users}\n"
-            f"Bot Instances: {len(bot_usernames)}\n\n"
-            f"Select a bot to view its users:"
-        ),
+        text=message,
         reply_markup=keyboard,
         parse_mode="Markdown",
     )
@@ -1228,41 +1211,18 @@ async def _handle_confirm_deleteallbot(update, context, query, user_id, parts):
         deleted_count = await db.delete_users_by_bot(bot_username)
         await query.answer(f"✅ Deleted {deleted_count} users", show_alert=True)
         logger.info(f"Admin {user_id} deleted {deleted_count} users from bot {bot_username}")
-        from webhook_server import get_bot_usernames
-
-        bot_usernames = sorted({bot for bot in get_bot_usernames() if bot})
-        if bot_usernames:
-            await db.forget_inactive_bot_memory(bot_usernames)
-        keyboard_buttons = []
-        for bot_username_item in bot_usernames:
-            count = await db.get_users_count_by_bot(bot_username_item)
-            display_text = f"@{bot_username_item} ({count} users)"
-            keyboard_buttons.append([
-                InlineKeyboardButton(
-                    display_text, callback_data=f"viewbotusers|{bot_username_item}|1"
-                )
-            ])
-        untracked_count = await db.get_users_count_by_bot("_untracked_")
-        if untracked_count > 0:
-            keyboard_buttons.append([
-                InlineKeyboardButton(
-                    f"Untracked Users ({untracked_count})",
-                    callback_data="viewbotusers|_untracked_|1",
-                )
-            ])
-        keyboard = InlineKeyboardMarkup(keyboard_buttons)
-        total_users = await db.get_users_count_by_bot()
+        keyboard, message, message_no_md, has_bots = await build_botusers_selection_menu(
+            notice=f"✅ Deleted {deleted_count} users successfully."
+        )
+        if not has_bots:
+            message = f"✅ Deleted {deleted_count} users successfully.\n\nNo active bot instances are loaded right now."
+            message_no_md = message
+            keyboard = None
         await safe_edit_message_text(
             context.bot,
             chat_id=query.message.chat_id,
             message_id=query.message.message_id,
-            text=(
-                f"📊 **Bot Users by Instance**\n\n"
-                f"Total Users: {total_users}\n"
-                f"Bot Instances: {len(bot_usernames)}\n\n"
-                f"✅ Deleted {deleted_count} users successfully.\n\n"
-                f"Select a bot to view its users:"
-            ),
+            text=message,
             reply_markup=keyboard,
             parse_mode="Markdown",
         )
