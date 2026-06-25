@@ -45,6 +45,9 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton(display_name, callback_data=f"setlang|{lang_code}")
         ])
 
+    back_text = await get_translated_string_async("button_back_to_categories", current_lang)
+    keyboard_buttons.append([InlineKeyboardButton(back_text, callback_data="categories")])
+
     keyboard = InlineKeyboardMarkup(keyboard_buttons)
 
     # Get translated message

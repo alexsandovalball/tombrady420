@@ -117,6 +117,8 @@ async def _handle_open_language_settings(update, context, query, user_id, parts)
         keyboard_buttons.append([
             InlineKeyboardButton(display_name, callback_data=f"setlang|{lang_code}")
         ])
+    back_text = await get_translated_string_async("button_back_to_categories", current_lang)
+    keyboard_buttons.append([InlineKeyboardButton(back_text, callback_data="categories")])
     keyboard = InlineKeyboardMarkup(keyboard_buttons)
     message_text = await get_translated_string_async("language_settings", current_lang)
     current_lang_name = LANGUAGE_DISPLAY.get(current_lang, LANGUAGE_DISPLAY["en"])
@@ -143,6 +145,20 @@ async def _handle_open_language_settings(update, context, query, user_id, parts)
             parse_mode="Markdown",
         )
     logger.info(f"User {user_id} opened language settings from start page (current: {current_lang})")
+
+
+async def _handle_setcontact_cancel(update, context, query, user_id, parts):
+    if not is_admin(user_id):
+        await query.answer("Admin only.", show_alert=True)
+        return
+    context.user_data["awaiting_contact"] = False
+    await safe_edit_message_text(
+        context.bot,
+        chat_id=query.message.chat_id,
+        message_id=query.message.message_id,
+        text="❌ Contact setup cancelled.",
+    )
+    await query.answer("Cancelled", show_alert=False)
 
 
 async def _handle_setlang_start(update, context, query, user_id, parts):
@@ -1296,6 +1312,7 @@ _EXACT_HANDLERS = {
     "nuke_confirm1": _handle_nuke_confirm1,
     "nuke_confirm2": _handle_nuke_confirm2,
     "open_language_settings": _handle_open_language_settings,
+    "setcontact_cancel": _handle_setcontact_cancel,
     "toggle_notifications": _handle_toggle_notifications,
     "confirm_unsubscribe": _handle_confirm_unsubscribe,
     "cancel_unsubscribe": _handle_cancel_unsubscribe,

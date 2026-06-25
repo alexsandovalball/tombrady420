@@ -16,6 +16,13 @@ logger = logging.getLogger(__name__)
 db = Database()
 
 
+async def _catalog_keyboard(user_lang: str) -> InlineKeyboardMarkup:
+    view_catalog_text = await get_translated_string_async("view_catalog", user_lang)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(view_catalog_text, callback_data="categories")]
+    ])
+
+
 async def _handle_product_deeplink(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -25,14 +32,21 @@ async def _handle_product_deeplink(
     try:
         product_id = int(payload[len("product_"):])
     except (ValueError, IndexError):
-        await update.message.reply_text("❌ Invalid product link.")
+        user_lang = await get_user_lang_async(update.effective_user.id)
+        await update.message.reply_text(
+            "❌ Invalid product link.",
+            reply_markup=await _catalog_keyboard(user_lang),
+        )
         return
 
     product = await db.get_product(product_id)
     if not product:
         user_lang = await get_user_lang_async(update.effective_user.id)
         text = await get_translated_string_async("deeplink_product_not_found", user_lang)
-        await update.message.reply_text(text)
+        await update.message.reply_text(
+            text,
+            reply_markup=await _catalog_keyboard(user_lang),
+        )
         return
 
     # Re-use the existing product view handler
@@ -52,7 +66,11 @@ async def _handle_inline_help(
         user_lang,
         bot_username=bot_username,
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(
+        text,
+        reply_markup=await _catalog_keyboard(user_lang),
+        parse_mode="Markdown",
+    )
 
 
 async def _reply_if_blocked(update: Update, user_id: int) -> bool:
@@ -240,6 +258,7 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         message_text,
+        reply_markup=await _catalog_keyboard(user_lang),
         parse_mode="Markdown"
     )
     logger.info(f"User {user_id} subscribed to notifications")
@@ -264,6 +283,7 @@ async def unsubscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await update.message.reply_text(
         message_text,
+        reply_markup=await _catalog_keyboard(user_lang),
         parse_mode="Markdown"
     )
     logger.info(f"User {user_id} unsubscribed from notifications")

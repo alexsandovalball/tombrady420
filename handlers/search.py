@@ -18,6 +18,13 @@ _BOT_SEARCH_SCORE_CUTOFF = 70
 _BOT_SEARCH_MAX_RESULTS = 100
 
 
+async def _catalog_back_keyboard(user_lang: str) -> InlineKeyboardMarkup:
+    back_text = await get_translated_string_async("button_back_to_categories", user_lang)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(back_text, callback_data="categories")]
+    ])
+
+
 def _rank_bot_search_results(all_products: list, query: str) -> list:
     return rank_products_for_query(
         all_products,
@@ -37,7 +44,10 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not query or len(query) < 2:
         search_min_chars_text = await get_translated_string_async("search_min_chars", user_lang)
-        await update.message.reply_text(search_min_chars_text)
+        await update.message.reply_text(
+            search_min_chars_text,
+            reply_markup=await _catalog_back_keyboard(user_lang),
+        )
         return
 
     try:
@@ -46,7 +56,10 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not all_products:
             catalog_empty_text = await get_translated_string_async("catalog_empty", user_lang)
-            await update.message.reply_text(catalog_empty_text)
+            await update.message.reply_text(
+                catalog_empty_text,
+                reply_markup=await _catalog_back_keyboard(user_lang),
+            )
             return
 
         # Perform ranked fuzzy search using the same closeness-first behavior
@@ -55,7 +68,10 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not matched_products:
             no_products_found_text = await get_translated_string_async("no_products_found", user_lang, query=query)
-            await update.message.reply_text(no_products_found_text)
+            await update.message.reply_text(
+                no_products_found_text,
+                reply_markup=await _catalog_back_keyboard(user_lang),
+            )
             return
 
         # Show first page of results
@@ -93,7 +109,9 @@ async def show_search_results(
             page,
             total_pages,
             "search",
-            query=safe_query
+            query=safe_query,
+            back_button_text=await get_translated_string_async("button_back_to_categories", user_lang),
+            back_callback_data="categories",
         )
 
         # Use translated search results text

@@ -10,7 +10,9 @@ def create_pagination_keyboard(
     page: int,
     total_pages: int,
     callback_prefix: str,
-    query: str = None
+    query: str = None,
+    back_button_text: str = None,
+    back_callback_data: str = None,
 ) -> InlineKeyboardMarkup:
     """
     Create pagination keyboard with product buttons and navigation.
@@ -21,6 +23,8 @@ def create_pagination_keyboard(
         total_pages: Total number of pages
         callback_prefix: Prefix for callback data (e.g., "catalog" or "search")
         query: Optional search query for search pagination
+        back_button_text: Optional label for a final back/navigation button
+        back_callback_data: Callback data for the final back/navigation button
     
     Returns:
         InlineKeyboardMarkup with product buttons and pagination controls
@@ -62,6 +66,9 @@ def create_pagination_keyboard(
             nav_buttons.append(InlineKeyboardButton("Next →", callback_data=next_data))
         
         keyboard.append(nav_buttons)
+
+    if back_button_text and back_callback_data:
+        keyboard.append([InlineKeyboardButton(back_button_text, callback_data=back_callback_data)])
     
     return InlineKeyboardMarkup(keyboard)
 

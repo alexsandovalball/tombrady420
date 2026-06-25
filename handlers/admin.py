@@ -1267,6 +1267,9 @@ async def setcontact_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"📝 **Set Order Contact**\n\n"
             f"Current contact: {escaped_contact}\n\n"
             f"Please enter the new contact username (e.g., @username):",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Cancel", callback_data="setcontact_cancel")]
+            ]),
             parse_mode="Markdown"
         )
     except BadRequest as e:
@@ -1274,7 +1277,10 @@ async def setcontact_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(
             f"📝 Set Order Contact\n\n"
             f"Current contact: {current_contact if current_contact else 'Not set'}\n\n"
-            f"Please enter the new contact username (e.g., @username):"
+            f"Please enter the new contact username (e.g., @username):",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Cancel", callback_data="setcontact_cancel")]
+            ])
         )
     
     # Store state for next message
@@ -1291,6 +1297,11 @@ async def handle_setcontact_input(update: Update, context: ContextTypes.DEFAULT_
         return
     
     contact = update.message.text.strip()
+
+    if contact.lower() in {"/cancel", "cancel"}:
+        context.user_data['awaiting_contact'] = False
+        await update.message.reply_text("Cancelled contact setup.")
+        return
     
     # Validate format
     if not contact.startswith('@'):
