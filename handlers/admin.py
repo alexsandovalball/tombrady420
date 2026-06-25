@@ -307,7 +307,7 @@ async def build_users_bot_selection_menu():
     for entry in active_bot_list:
         bot_username = entry["username"]
         count = entry["count"]
-        display_text = f"✅ Bot {entry['index']}: @{bot_username} ({count} users)"
+        display_text = f"✅ @{bot_username} ({count} users)"
         keyboard_buttons.append([
             InlineKeyboardButton(display_text, callback_data=f"viewusers|{bot_username}|1")
         ])
@@ -1254,6 +1254,7 @@ async def handle_broadcast_workflow(update: Update, context: ContextTypes.DEFAUL
 async def setcontact_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /setcontact command - set the order contact username (admin only)."""
     user_id = update.effective_user.id
+    _clear_setlink_state(context)
     
     # Get current contact
     current_contact = await db.get_order_contact()
@@ -1331,6 +1332,7 @@ async def setlink_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Open the multi-link contacts manager (admin only)."""
     user_id = update.effective_user.id
 
+    context.user_data["awaiting_contact"] = False
     context.user_data.pop("setlink_pending_label", None)
     context.user_data["awaiting_link"] = False
     context.user_data["setlink_mode"] = "menu"
@@ -1399,7 +1401,7 @@ async def handle_setlink_input(update: Update, context: ContextTypes.DEFAULT_TYP
     _clear_setlink_state(context)
 
     await update.message.reply_text(
-        f"Added contact button:\n\n{label}\n{value}",
+        f"Added extra home screen button:\n\n{label}\n{value}",
         reply_markup=_setlink_menu_keyboard(links),
         disable_web_page_preview=True,
     )
@@ -1426,7 +1428,7 @@ def _clear_setlink_state(context: ContextTypes.DEFAULT_TYPE):
 
 def _format_order_links(links: list[dict]) -> str:
     if not links:
-        return "No contact links are set yet."
+        return "No extra home screen links are set yet."
     lines = []
     for index, item in enumerate(links, start=1):
         lines.append(f"{index}. {item.get('label') or 'Link'}\n   {item.get('url') or ''}")
@@ -1444,8 +1446,8 @@ def _setlink_menu_keyboard(links: list[dict]) -> InlineKeyboardMarkup:
 
 async def _send_setlink_menu(message, links: list[dict], notice: str = ""):
     text = (
-        "Set Home Screen Links\n\n"
-        "These buttons appear on the WebApp home screen. The first link is also used by the main OUR CONTACTS button.\n\n"
+        "Set Extra Home Screen Links\n\n"
+        "These buttons appear on the WebApp home screen. They do not change the DM TO ORDER button; /setcontact controls that Telegram contact.\n\n"
         f"{_format_order_links(links)}"
     )
     if notice:
@@ -1455,8 +1457,8 @@ async def _send_setlink_menu(message, links: list[dict], notice: str = ""):
 
 async def _edit_setlink_menu(query, links: list[dict], notice: str = ""):
     text = (
-        "Set Home Screen Links\n\n"
-        "These buttons appear on the WebApp home screen. The first link is also used by the main OUR CONTACTS button.\n\n"
+        "Set Extra Home Screen Links\n\n"
+        "These buttons appear on the WebApp home screen. They do not change the DM TO ORDER button; /setcontact controls that Telegram contact.\n\n"
         f"{_format_order_links(links)}"
     )
     if notice:
@@ -1528,7 +1530,7 @@ async def handle_setlink_callback(update: Update, context: ContextTypes.DEFAULT_
             await _edit_setlink_menu(query, links, "There are no links to clear.")
             return
         await query.edit_message_text(
-            "Clear all home screen contact links?",
+            "Clear all extra home screen links?",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("Yes, clear all", callback_data="setlink|clear_yes")],
                 [InlineKeyboardButton("Back", callback_data="setlink|menu")],

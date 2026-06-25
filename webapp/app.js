@@ -684,11 +684,6 @@
         }
     }
 
-    function getPrimaryOrderLink() {
-        if (state.orderLinks.length) return state.orderLinks[0].url;
-        return state.orderLink || null;
-    }
-
     function openContactUrl(link, label = '') {
         if (!link && state.orderContact) {
             const contact = state.orderContact.replace(/^@/, '');
@@ -3040,11 +3035,11 @@
     }
 
     function getOrderUrl() {
-        const primaryLink = getPrimaryOrderLink();
-        if (primaryLink) return primaryLink;
-        if (!state.orderContact) return null;
-        const username = normalizeContactUsername(state.orderContact);
-        return username ? `https://t.me/${username}` : null;
+        if (state.orderContact) {
+            const username = normalizeContactUsername(state.orderContact);
+            if (username) return `https://t.me/${username}`;
+        }
+        return state.orderLink || null;
     }
 
     function updateBreadcrumb() {
