@@ -158,7 +158,7 @@ class MediaResolver:
         }
 
         if not source_chat_id or not source_message_id or not file_type:
-            if original_file_id:
+            if same_bot and original_file_id:
                 validation = await self._validate_file_id(original_file_id)
                 if validation.success:
                     logger.info(
@@ -212,19 +212,6 @@ class MediaResolver:
         else:
             logger.info("Media resolution cache miss", extra={**log_extra, "cache_hit": False})
 
-        if original_file_id and not same_bot:
-            validation = await self._validate_file_id(original_file_id)
-            if validation.success:
-                logger.info(
-                    "Media resolution succeeded",
-                    extra={**log_extra, "resolution_source": "original_fallback", "fallback_used": True},
-                )
-                return MediaResolutionResult(True, original_file_id, "original_fallback")
-            logger.info(
-                "Cross-bot original file_id unavailable",
-                extra={**log_extra, "reason": validation.error, "fallback_used": True},
-            )
-
         if not allow_rehydrate:
             error = "cache miss; rehydrate skipped"
             logger.info(
@@ -244,14 +231,6 @@ class MediaResolver:
         )
 
         if not resolved:
-            if original_file_id and not same_bot:
-                validation = await self._validate_file_id(original_file_id)
-                if validation.success:
-                    logger.info(
-                        "Media resolution succeeded",
-                        extra={**log_extra, "resolution_source": "original_after_rehydrate_failed", "fallback_used": True},
-                    )
-                    return MediaResolutionResult(True, original_file_id, "original_after_rehydrate_failed")
             error = "forward/rehydrate failed"
             logger.warning(
                 "Bot-specific file_id resolution failed",
