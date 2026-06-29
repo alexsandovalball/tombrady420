@@ -228,7 +228,8 @@
         loadingInProgress: false,  // Prevent duplicate requests
         pendingRequests: new Map(),  // Track pending requests for deduplication
         webappSessionReady: false,
-        initialDataLoadFailed: false  // Track if initial data load failed/timed out
+        initialDataLoadFailed: false,  // Track if initial data load failed/timed out
+        browserRouteRestoring: false
     };
 
     const videoPreviewFrameCache = new Map();
@@ -809,7 +810,152 @@
         return requestPromise;
     }
 
+    function isPublicBrowserRoutingEnabled() {
+        return Boolean(window.history && window.history.pushState && !tg.initData);
+    }
+
+    function taxonomySlug(value) {
+        return String(value || '')
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '') || 'all';
+    }
+
+    function buildCategoryPageUrl(category, subcategory = null) {
+        if (!category) return '/';
+        const base = `/category/${taxonomySlug(category)}`;
+        return subcategory ? `${base}/${taxonomySlug(subcategory)}` : base;
+    }
+
+    function currentBrowserPath() {
+        return `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    }
+
+    function setBrowserRoute(path, routeState = {}, mode = 'push') {
+        if (!isPublicBrowserRoutingEnabled() || state.browserRouteRestoring) return;
+        const nextPath = path || '/';
+        const payload = {
+            bradyRoute: true,
+            historyDepth: state.history.length,
+            ...routeState
+        };
+        const method = mode === 'replace' || currentBrowserPath() === nextPath ? 'replaceState' : 'pushState';
+        window.history[method](payload, '', nextPath);
+    }
+
+    function resolveCategoryBySlug(slug) {
+        const normalized = taxonomySlug(decodeURIComponent(slug || ''));
+        return state.categories.find(category => taxonomySlug(category.name) === normalized) || null;
+    }
+
+    function resolveSubcategoryBySlug(category, slug) {
+        if (!category || !Array.isArray(category.subcategories)) return null;
+        const normalized = taxonomySlug(decodeURIComponent(slug || ''));
+        return category.subcategories.find(subcat => taxonomySlug(subcat.name) === normalized) || null;
+    }
+
+    function getRouteFromLocation() {
+        const params = new URLSearchParams(window.location.search || '');
+        const directId = params.get('product_id') || params.get('product');
+        if (directId && /^\d+$/.test(directId)) {
+            return { appView: 'product-detail', productId: Number(directId) };
+        }
+
+        const pathParts = window.location.pathname.split('/').filter(Boolean);
+
+        if (pathParts[0] === 'product' && /^\d+$/.test(pathParts[1] || '')) {
+            return { appView: 'product-detail', productId: Number(pathParts[1]) };
+        }
+
+        if (pathParts[0] === 'category' && pathParts[1]) {
+            return {
+                appView: 'products',
+                categorySlug: pathParts[1],
+                subcategorySlug: pathParts[2] || ''
+            };
+        }
+
+        const requestedView = params.get('view');
+        if (requestedView === 'search' || requestedView === 'language') {
+            return { appView: requestedView };
+        }
+
+        return { appView: 'welcome' };
+    }
+
+    async function restoreBrowserRoute(routeState = null) {
+        if (!isPublicBrowserRoutingEnabled()) return false;
+        const route = routeState?.bradyRoute ? routeState : getRouteFromLocation();
+
+        if (Number.isInteger(route.historyDepth)) {
+            state.history = state.history.slice(0, Math.max(0, route.historyDepth));
+        }
+
+        state.browserRouteRestoring = true;
+        try {
+            if (route.appView === 'product-detail' && route.productId) {
+                return await openDeepLinkedProduct('replace', { addToHistory: false, productId: route.productId });
+            }
+
+            if (route.appView === 'products' && route.categorySlug) {
+                if (!state.categories.length) {
+                    await loadCategories(false);
+                }
+                const category = resolveCategoryBySlug(route.categorySlug);
+                if (!category) {
+                    showWelcome(false, 'replace');
+                    return false;
+                }
+                const subcategory = route.subcategorySlug ? resolveSubcategoryBySlug(category, route.subcategorySlug) : null;
+                await loadProducts(category.name, subcategory ? subcategory.name : null, true, false, 'replace');
+                return true;
+            }
+
+            if (route.appView === 'subcategories' && route.category) {
+                if (!state.categories.length) {
+                    await loadCategories(false);
+                }
+                const category = state.categories.find(item => item.name === route.category) || resolveCategoryBySlug(route.category);
+                if (category) {
+                    showSubcategories(category, false, null, 'replace');
+                    return true;
+                }
+            }
+
+            if (route.appView === 'categories') {
+                if (!state.categories.length) {
+                    await loadCategories(false);
+                } else {
+                    showCategories(false, 'replace');
+                }
+                return true;
+            }
+
+            if (route.appView === 'search') {
+                showSearch(false, 'replace');
+                return true;
+            }
+
+            if (route.appView === 'language') {
+                showLanguageSelection(false, 'replace');
+                return true;
+            }
+
+            showWelcome(false, 'replace');
+            return true;
+        } finally {
+            state.browserRouteRestoring = false;
+            updateBackButton();
+        }
+    }
+
     function getDeepLinkedProductId() {
+        const route = getRouteFromLocation();
+        if (route.appView === 'product-detail' && route.productId) {
+            return route.productId;
+        }
+
         const params = new URLSearchParams(window.location.search || '');
         const directId = params.get('product_id') || params.get('product');
         if (directId && /^\d+$/.test(directId)) {
@@ -827,8 +973,8 @@
         return match ? Number(match[1]) : null;
     }
 
-    async function openDeepLinkedProduct() {
-        const productId = getDeepLinkedProductId();
+    async function openDeepLinkedProduct(routeMode = 'replace', options = {}) {
+        const productId = options.productId || getDeepLinkedProductId();
         if (!productId) {
             return false;
         }
@@ -868,7 +1014,7 @@
                 product_id: productId,
                 response_time_ms: responseTime
             });
-            showProductDetail(product);
+            showProductDetail(product, options.addToHistory ?? false, routeMode);
             return true;
         } catch (err) {
             logger.error('load_deep_link_product', err.message, {
@@ -979,11 +1125,12 @@
         renderUserInfo();
         queueAdminPanelRefresh();
         
-        // Open product-specific WebApp links directly when inline mode provides one.
-        const openedDeepLink = await openDeepLinkedProduct();
+        // Open product-specific WebApp links or restore an app route when present.
+        const openedRoute = await restoreBrowserRoute(window.history.state);
+        const openedDeepLink = openedRoute ? true : await openDeepLinkedProduct('replace', { addToHistory: false });
         if (!openedDeepLink) {
             // Show welcome screen with loaded data (even if data loading failed)
-            showWelcome();
+            showWelcome(false, 'replace');
         }
     }
 
@@ -1466,6 +1613,14 @@
     }
 
     function setupEventListeners() {
+        if (isPublicBrowserRoutingEnabled()) {
+            window.addEventListener('popstate', (event) => {
+                restoreBrowserRoute(event.state).catch(err => {
+                    logger.error('restore_browser_route', err.message, { stack: err.stack });
+                });
+            });
+        }
+
         // Header buttons
         document.getElementById('home-btn').addEventListener('click', () => showWelcome());
         document.getElementById('search-btn').addEventListener('click', () => showSearch());
@@ -1576,6 +1731,17 @@
             current_view: state.view,
             history_length: state.history.length
         });
+
+        if (
+            isPublicBrowserRoutingEnabled() &&
+            state.history.length > 0 &&
+            !state.browserRouteRestoring &&
+            window.history.state?.bradyRoute &&
+            currentBrowserPath() !== '/'
+        ) {
+            window.history.back();
+            return;
+        }
         
         if (state.history.length > 0) {
             const previous = state.history.pop();
@@ -1639,6 +1805,11 @@
         state.currentSubcategory = previous.subcategory || null;
         state.page = previous.page || 0;
         state.view = 'products';
+        setBrowserRoute(
+            buildCategoryPageUrl(state.currentCategory, state.currentSubcategory),
+            { appView: 'products', category: state.currentCategory, subcategory: state.currentSubcategory },
+            'replace'
+        );
 
         const grid = document.getElementById('products-grid');
         if (!state.products.length || !grid || grid.children.length === 0) {
@@ -1687,12 +1858,13 @@
         }
     }
 
-    function showWelcome(addToHistory = true) {
+    function showWelcome(addToHistory = true, routeMode = null) {
         if (addToHistory && state.view !== 'welcome') {
             pushHistory({ view: state.view, category: state.currentCategory, subcategory: state.currentSubcategory, page: state.page });
         }
         
         state.view = 'welcome';
+        setBrowserRoute('/', { appView: 'welcome' }, routeMode || (addToHistory ? 'push' : 'replace'));
         hideAllViews();
         document.getElementById('welcome-view').style.display = 'block';
         document.getElementById('breadcrumb').style.display = 'none';
@@ -1740,12 +1912,13 @@
         setStatus(t('status_ready'));
     }
 
-    function showLanguageSelection(addToHistory = true) {
+    function showLanguageSelection(addToHistory = true, routeMode = null) {
         if (addToHistory && state.view !== 'language') {
             pushHistory({ view: state.view, category: state.currentCategory, subcategory: state.currentSubcategory, page: state.page });
         }
         
         state.view = 'language';
+        setBrowserRoute('/?view=language', { appView: 'language' }, routeMode || (addToHistory ? 'push' : 'replace'));
         hideAllViews();
         document.getElementById('language-view').style.display = 'block';
         document.getElementById('breadcrumb').style.display = 'none';
@@ -1786,7 +1959,7 @@
         setTimeout(async () => {
             try {
                 // Reload categories with new language
-                await loadCategories();
+                await loadCategories(false, 'replace');
                 
                 // Reload current view content with new language if needed
                 if (state.view === 'products' && (state.currentCategory || state.currentSubcategory)) {
@@ -1803,7 +1976,7 @@
         }, 500);
     }
 
-    function showSearch(addToHistory = true) {
+    function showSearch(addToHistory = true, routeMode = null) {
         if (addToHistory && state.view !== 'search') {
             pushHistory({ view: state.view, category: state.currentCategory, subcategory: state.currentSubcategory, page: state.page });
         }
@@ -1815,6 +1988,7 @@
         });
 
         state.view = 'search';
+        setBrowserRoute('/?view=search', { appView: 'search' }, routeMode || (addToHistory ? 'push' : 'replace'));
         hideAllViews();
         document.getElementById('search-view').style.display = 'block';
         document.getElementById('breadcrumb').style.display = 'none';
@@ -1921,7 +2095,7 @@
         // For now, limit results to first 100 from backend
     }
 
-    async function loadCategories() {
+    async function loadCategories(addToHistory = true, routeMode = null) {
         setStatus(t('status_loading_categories'));
         
         logger.userInteraction('load_categories', {});
@@ -1957,16 +2131,16 @@
                 response_time_ms: responseTime
             });
             
-            showCategories();
+            showCategories(addToHistory, routeMode);
         } catch (err) {
             logger.error('load_categories_failed', err.message, { stack: err.stack });
             setStatus(t('error_load_categories'), true);
             // Still show the categories view even if load fails, just with empty state
-            showCategories();
+            showCategories(addToHistory, routeMode);
         }
     }
 
-    function showCategories(addToHistory = true) {
+    function showCategories(addToHistory = true, routeMode = null) {
         if (addToHistory && state.view !== 'categories') {
             pushHistory({ view: state.view });
         }
@@ -1975,6 +2149,7 @@
         state.currentCategory = null;
         state.currentSubcategory = null;
         state.page = 0;
+        setBrowserRoute('/', { appView: 'categories' }, routeMode || (addToHistory ? 'push' : 'replace'));
 
         hideAllViews();
         document.getElementById('categories-view').style.display = 'block';
@@ -2030,14 +2205,20 @@
         }
     }
 
-    function showSubcategories(category, addToHistory = true, previousCategory = null) {
+    function showSubcategories(category, addToHistory = true, previousCategory = null, routeMode = null) {
         if (addToHistory) {
             // Save the previous state (before we showed subcategories)
             pushHistory({ view: 'categories', category: previousCategory });
         }
 
         state.view = 'categories';  // Reuse categories view for subcategories
+        state.currentCategory = category.name;
         state.currentSubcategory = null;  // Clear subcategory when entering subcategory selection view
+        setBrowserRoute(
+            buildCategoryPageUrl(category.name),
+            { appView: 'subcategories', category: category.name },
+            routeMode || (addToHistory ? 'push' : 'replace')
+        );
 
         hideAllViews();
         document.getElementById('categories-view').style.display = 'block';
@@ -2098,7 +2279,7 @@
      * @param {boolean} resetPage - If true, reset to page 0; if false, keep current page (for pagination)
      * @param {boolean} addToHistory - If true, add current state to history; if false, skip history (for pagination/reload)
      */
-    async function loadProducts(category, subcategory, resetPage = true, addToHistory = true) {
+    async function loadProducts(category, subcategory, resetPage = true, addToHistory = true, routeMode = null) {
         // Prevent duplicate loads
         if (state.loadingInProgress) {
             logger.log('api_call', 'load_products_skipped', 'info', '', { reason: 'already_loading' });
@@ -2117,6 +2298,11 @@
             state.page = 0;
         }
         state.view = 'products';
+        setBrowserRoute(
+            buildCategoryPageUrl(category, subcategory),
+            { appView: 'products', category, subcategory },
+            routeMode || (addToHistory ? 'push' : 'replace')
+        );
         
         hideAllViews();
         document.getElementById('products-view').style.display = 'block';
@@ -2547,7 +2733,7 @@
         return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
     }
 
-    function showProductDetail(product) {
+    function showProductDetail(product, addToHistory = true, routeMode = null) {
         logger.userInteraction('view_product', { 
             product_id: product.id,
             category: product.category,
@@ -2555,16 +2741,28 @@
         });
         
         // Save current state to history for back button
-        pushHistory({
-            view: state.view,
-            category: state.currentCategory,
-            subcategory: state.currentSubcategory,
-            page: state.page
-        });
+        if (addToHistory) {
+            pushHistory({
+                view: state.view,
+                category: state.currentCategory,
+                subcategory: state.currentSubcategory,
+                page: state.page
+            });
+        }
         
         // Update state
         state.view = 'product-detail';
         state.currentProduct = product;
+        setBrowserRoute(
+            buildProductPageUrl(product),
+            {
+                appView: 'product-detail',
+                productId: product.id,
+                category: product.category || null,
+                subcategory: product.subcategory || null
+            },
+            routeMode || (addToHistory ? 'push' : 'replace')
+        );
         
         // Hide all other views
         hideAllViews();
@@ -3071,7 +3269,7 @@
         const breadcrumbEl = document.getElementById('breadcrumb');
         const parts = [];
 
-        parts.push(`<a href="#" class="breadcrumb-link" data-action="home">${t('home')}</a>`);
+        parts.push(`<a href="/" class="breadcrumb-link" data-action="home">${t('home')}</a>`);
 
         if (state.currentCategory) {
             const categoryData = state.categories.find(c => c.name === state.currentCategory);
@@ -3080,7 +3278,7 @@
             if (state.currentSubcategory) {
                 const subcatData = categoryData?.subcategories?.find(s => s.name === state.currentSubcategory);
                 const subcategoryName = subcatData ? subcatData.display_name : state.currentSubcategory;
-                parts.push(`<a href="#" class="breadcrumb-link" data-action="category">${categoryName}</a>`);
+                parts.push(`<a href="${buildCategoryPageUrl(state.currentCategory)}" class="breadcrumb-link" data-action="category">${categoryName}</a>`);
                 parts.push(`<span>${subcategoryName}</span>`);
             } else if (state.view === 'products') {
                 parts.push(`<span>${categoryName}</span>`);
@@ -3102,8 +3300,7 @@
                         state.history = [];
                         showCategories();
                     } else if (action === 'category') {
-                        // Go back to category view
-                        goBack();
+                        loadProducts(state.currentCategory, null);
                     }
                 });
             });
