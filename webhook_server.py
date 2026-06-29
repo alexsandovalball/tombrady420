@@ -4773,6 +4773,8 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
 
     # Determine media type
     media_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+    if media_type_info.get("type") == "photo" and media_type == "application/octet-stream":
+        media_type = "image/jpeg"
     # For videos, ensure correct content type for browser compatibility
     if is_video and media_type == "application/octet-stream":
         media_type = "video/mp4"

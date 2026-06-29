@@ -16,6 +16,7 @@ from telegram import (
     InlineQueryResultArticle,
     InlineQueryResultCachedPhoto,
     InlineQueryResultCachedVideo,
+    InlineQueryResultPhoto,
     InputTextMessageContent,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -56,6 +57,10 @@ _INLINE_PAGE_SIZE = INLINE_PAGE_SIZE  # Internal alias kept for backward compat
 _INLINE_MEDIA_RESOLVE_TIMEOUT = 1.5
 _INLINE_RESULT_REJECTION_MARKERS = (
     "photo_invalid",
+    "photo_url_invalid",
+    "thumbnail_url_invalid",
+    "wrong type of the web page content",
+    "failed to get http url content",
     "video_invalid",
     "document_invalid",
     "wrong file identifier",
@@ -124,6 +129,19 @@ def _inline_article_thumbnail_url(
     return f"{storefront_base}/og-image.png"
 
 
+def _inline_photo_media_url(product_id: Any, media_index: int = 0) -> Optional[str]:
+    """Return an absolute photo URL Telegram can fetch for a cold inline result."""
+    if product_id is None:
+        return None
+
+    storefront_domain = Config.STOREFRONT_DOMAIN or (Config.WEBHOOK_URL or "").rstrip("/")
+    if not storefront_domain:
+        return None
+
+    storefront_base = storefront_domain.rstrip().rstrip("/")
+    return f"{storefront_base}/api/catalog/{product_id}/media/{media_index}"
+
+
 def _inline_media_quarantined(bot_username: str, product_id: Any) -> bool:
     """Return True when Telegram recently rejected this product as rich media."""
     if product_id is None:
@@ -148,7 +166,7 @@ def _remember_inline_media_rejection(
     marked = 0
 
     for result in results:
-        if not isinstance(result, (InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo)):
+        if not isinstance(result, (InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, InlineQueryResultPhoto)):
             continue
         result_id = getattr(result, "id", "")
         if not result_id.startswith("product_"):
@@ -235,6 +253,7 @@ async def _build_product_article(
                     caption=caption_text,
                     parse_mode="Markdown",
                     reply_markup=reply_markup,
+                    show_caption_above_media=False,
                 )
             else:  # video
                 return InlineQueryResultCachedVideo(
@@ -245,7 +264,27 @@ async def _build_product_article(
                     caption=caption_text,
                     parse_mode="Markdown",
                     reply_markup=reply_markup,
+                    show_caption_above_media=False,
                 )
+
+    # Cold-start fallback for photo products: still return a media result.
+    # Telegram will fetch this URL once, which warms the existing media cache,
+    # and the sent inline message remains photo + caption/buttons instead of
+    # degrading to a caption-only article.
+    if not force_article and not media_quarantined and file_type == "photo":
+        photo_url = _inline_photo_media_url(product_id)
+        if photo_url:
+            return InlineQueryResultPhoto(
+                id=f"product_{product_id}",
+                photo_url=photo_url,
+                thumbnail_url=photo_url,
+                title=title,
+                description=description,
+                caption=caption_text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup,
+                show_caption_above_media=False,
+            )
 
     # --- Fallback: article with a Telegram-safe thumbnail from storefront ---
     # Article thumbnails must be images. Photo products can use their public

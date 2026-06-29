@@ -1112,7 +1112,8 @@ class Database:
 
             query = f"""
                 SELECT id, caption, category, subcategory, file_id, file_type,
-                       bot_username, chat_id, message_id, created_at
+                       bot_username, chat_id, message_id, media_group_id,
+                       additional_file_ids, additional_message_ids, created_at
                 FROM products
                 WHERE (category IS NULL OR category = '' OR category NOT IN ({_EXCLUDED_PLACEHOLDERS}))
                 ORDER BY created_at DESC
