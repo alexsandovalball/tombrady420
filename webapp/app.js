@@ -2421,9 +2421,23 @@
 
     function createProductCard(item) {
         // NOTE: All <img> elements created here must include an alt attribute for SEO and accessibility.
-        const card = document.createElement('div');
+        const card = document.createElement('a');
         card.className = 'product-card';
-        card.addEventListener('click', () => showProductDetail(item));
+        card.href = buildProductPageUrl(item);
+        card.addEventListener('click', (event) => {
+            if (
+                event.defaultPrevented ||
+                event.button !== 0 ||
+                event.metaKey ||
+                event.ctrlKey ||
+                event.shiftKey ||
+                event.altKey
+            ) {
+                return;
+            }
+            event.preventDefault();
+            showProductDetail(item);
+        });
         addTouchFeedback(card);
 
         const media = document.createElement('div');
@@ -2508,6 +2522,17 @@
         card.appendChild(body);
 
         return card;
+    }
+
+    function buildProductPageUrl(item) {
+        if (!item || !item.id) return '#';
+        const firstLine = String(item.caption || 'product').split('\n')[0].trim().toLowerCase();
+        const slug = firstLine
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '')
+            .slice(0, 60)
+            .replace(/-+$/g, '') || 'product';
+        return `/product/${item.id}/${slug}`;
     }
 
     function buildMediaUrl(item, mediaIndex) {

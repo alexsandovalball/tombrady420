@@ -120,6 +120,14 @@ _SEO_AUTO_LEARN_STARTUP_DELAY_SECONDS = _bounded_int_env(
     60,
     3600,
 )
+_SEO_ROBOTS_CACHE_SECONDS = _bounded_int_env("SEO_ROBOTS_CACHE_SECONDS", 3600, 60, 86400)
+_SEO_SITEMAP_CACHE_SECONDS = _bounded_int_env("SEO_SITEMAP_CACHE_SECONDS", 300, 60, 3600)
+_SEO_PAGE_CACHE_SECONDS = _bounded_int_env("SEO_PAGE_CACHE_SECONDS", 300, 30, 3600)
+_SEO_PUBLIC_MEDIA_CACHE_SECONDS = _bounded_int_env("SEO_PUBLIC_MEDIA_CACHE_SECONDS", 86400, 300, 604800)
+_SEO_PUBLIC_MEDIA_RATE_LIMIT_REQUESTS = _bounded_int_env("SEO_PUBLIC_MEDIA_RATE_LIMIT_REQUESTS", 120, 10, 2000)
+_SEO_PUBLIC_MEDIA_RATE_LIMIT_WINDOW = _bounded_int_env("SEO_PUBLIC_MEDIA_RATE_LIMIT_WINDOW", 60, 10, 3600)
+_SEO_RESPONSE_CACHE_MAX = _bounded_int_env("SEO_RESPONSE_CACHE_MAX", 256, 16, 2000)
+_seo_response_cache: OrderedDict[str, tuple[float, bytes, str, str, int]] = OrderedDict()
 _seo_auto_learn_lock: Optional[asyncio.Lock] = None
 
 # Per-process counter for webhook 401 rejections (in-memory, not persisted).
@@ -216,6 +224,11 @@ class WebhookIPRateLimiter:
                 return True
             self._buckets[ip] = [tokens, now]
             return False
+
+_seo_public_media_rate_limiter = WebhookIPRateLimiter(
+    max_requests=_SEO_PUBLIC_MEDIA_RATE_LIMIT_REQUESTS,
+    window_seconds=_SEO_PUBLIC_MEDIA_RATE_LIMIT_WINDOW,
+)
 
 class MediaCache:
     """Simple bounded LRU file cache for reusable catalog media."""
@@ -2990,6 +3003,141 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
         "telegram_deep_link": deep_link or f"https://t.me/{_STOREFRONT_BOT_USERNAME}",
     }
 
+
+def _seo_etag(content: bytes) -> str:
+    return f'"{hashlib.sha256(content).hexdigest()[:24]}"'
+
+
+def _seo_etag_from_key(key: str) -> str:
+    return f'"{hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]}"'
+
+
+def _request_matches_etag(request: Request, etag: str) -> bool:
+    raw = request.headers.get("if-none-match") or ""
+    if not raw:
+        return False
+    candidates = {part.strip() for part in raw.split(",") if part.strip()}
+    return "*" in candidates or etag in candidates or f"W/{etag}" in candidates
+
+
+def _seo_headers(etag: str, max_age: int, *, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    headers = {
+        "Cache-Control": f"public, max-age={max_age}",
+        "ETag": etag,
+    }
+    if extra:
+        headers.update(extra)
+    return headers
+
+
+def _seo_content_response(
+    request: Request,
+    content: bytes | str,
+    *,
+    media_type: str,
+    max_age: int,
+    etag: str = "",
+    extra_headers: Optional[Dict[str, str]] = None,
+) -> Response:
+    body = content.encode("utf-8") if isinstance(content, str) else content
+    resolved_etag = etag or _seo_etag(body)
+    headers = _seo_headers(resolved_etag, max_age, extra=extra_headers)
+    if _request_matches_etag(request, resolved_etag):
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    return Response(content=body, media_type=media_type, headers=headers)
+
+
+def _seo_cached_response(request: Request, cache_key: str) -> Optional[Response]:
+    entry = _seo_response_cache.get(cache_key)
+    if not entry:
+        return None
+    expires_at, content, media_type, etag, max_age = entry
+    if expires_at <= _time.time():
+        _seo_response_cache.pop(cache_key, None)
+        return None
+    _seo_response_cache.move_to_end(cache_key)
+    return _seo_content_response(
+        request,
+        content,
+        media_type=media_type,
+        max_age=max_age,
+        etag=etag,
+    )
+
+
+def _seo_store_and_respond(
+    request: Request,
+    cache_key: str,
+    content: bytes | str,
+    *,
+    media_type: str,
+    max_age: int,
+    extra_headers: Optional[Dict[str, str]] = None,
+) -> Response:
+    body = content.encode("utf-8") if isinstance(content, str) else content
+    etag = _seo_etag(body)
+    _seo_response_cache[cache_key] = (_time.time() + max_age, body, media_type, etag, max_age)
+    _seo_response_cache.move_to_end(cache_key)
+    while len(_seo_response_cache) > _SEO_RESPONSE_CACHE_MAX:
+        _seo_response_cache.popitem(last=False)
+    return _seo_content_response(
+        request,
+        body,
+        media_type=media_type,
+        max_age=max_age,
+        etag=etag,
+        extra_headers=extra_headers,
+    )
+
+
+def _render_seo_template(
+    request: Request,
+    template_name: str,
+    context: dict,
+    *,
+    cache_key: str,
+    max_age: int = _SEO_PAGE_CACHE_SECONDS,
+) -> Response:
+    cached = _seo_cached_response(request, cache_key)
+    if cached:
+        return cached
+    ctx = dict(context)
+    ctx["request"] = request
+    content = templates.env.get_template(template_name).render(ctx)
+    return _seo_store_and_respond(
+        request,
+        cache_key,
+        content,
+        media_type="text/html; charset=utf-8",
+        max_age=max_age,
+    )
+
+
+def _is_crawler_user_agent(user_agent: str) -> bool:
+    ua = (user_agent or "").lower()
+    return any(token in ua for token in (
+        "bot", "crawler", "spider", "slurp", "bingpreview", "facebookexternalhit",
+        "whatsapp", "telegrambot", "twitterbot", "linkedinbot", "discordbot",
+    ))
+
+
+def _log_seo_public_request(request: Request, route: str, **fields: Any) -> None:
+    user_agent = request.headers.get("user-agent", "-")
+    if not _is_crawler_user_agent(user_agent) and route not in {"robots", "sitemap"}:
+        return
+    details = " ".join(f"{key}={value}" for key, value in fields.items() if value not in (None, ""))
+    logger.info(
+        "[seo_public] route=%s path=%s ip=%s crawler=%s ua=%r%s%s",
+        route,
+        request.url.path,
+        get_client_ip(request),
+        _is_crawler_user_agent(user_agent),
+        user_agent[:180],
+        " " if details else "",
+        details,
+    )
+
+
 def _read_brand_icon_png() -> bytes:
     image_path = Path(__file__).parent / "webapp" / "og-football.png"
     if not image_path.exists():
@@ -2997,44 +3145,70 @@ def _read_brand_icon_png() -> bytes:
     return image_path.read_bytes()
 
 
-def _png_response(image_bytes: bytes, *, max_age: int = 86400) -> Response:
+def _png_response(image_bytes: bytes, *, max_age: int = 86400, request: Optional[Request] = None) -> Response:
+    etag = _seo_etag(image_bytes)
+    headers = {
+        "Cache-Control": f"public, max-age={max_age}",
+        "Content-Length": str(len(image_bytes)),
+        "ETag": etag,
+    }
+    if request is not None and _request_matches_etag(request, etag):
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
     return Response(
         content=image_bytes,
         media_type="image/png",
-        headers={
-            "Cache-Control": f"public, max-age={max_age}",
-            "Content-Length": str(len(image_bytes)),
-        },
+        headers=headers,
     )
 
 
 @app.get("/og-image.png", response_class=Response)
-async def serve_og_image():
+@app.head("/og-image.png", response_class=Response)
+async def serve_og_image(request: Request):
     """Serve the football emoji OG image for social media link previews.
 
     Returns a static PNG file with football branding. Social media crawlers
     (WhatsApp, iMessage, Twitter/X, Facebook, Discord, Slack, Telegram) require
     a real HTTP/HTTPS URL — data: URIs are never fetched by these crawlers.
     """
-    return _png_response(_read_brand_icon_png())
+    _log_seo_public_request(request, "og_image")
+    cache_key = "og-image"
+    cached = _seo_cached_response(request, cache_key)
+    if cached:
+        return cached
+    return _seo_store_and_respond(
+        request,
+        cache_key,
+        _read_brand_icon_png(),
+        media_type="image/png",
+        max_age=86400,
+        extra_headers={"Content-Type": "image/png"},
+    )
 
 
 @app.get("/favicon.ico", response_class=Response)
-async def serve_favicon():
+@app.head("/favicon.ico", response_class=Response)
+async def serve_favicon(request: Request):
     """Serve a fallback favicon for browsers and crawlers that probe /favicon.ico."""
-    return _png_response(_read_brand_icon_png(), max_age=604800)
+    return _png_response(_read_brand_icon_png(), max_age=604800, request=request)
 
 
 @app.get("/apple-touch-icon.png", response_class=Response)
 @app.get("/apple-touch-icon-precomposed.png", response_class=Response)
-async def serve_apple_touch_icon():
+@app.head("/apple-touch-icon.png", response_class=Response)
+@app.head("/apple-touch-icon-precomposed.png", response_class=Response)
+async def serve_apple_touch_icon(request: Request):
     """Serve an Apple touch icon fallback to avoid crawler/mobile browser 404 noise."""
-    return _png_response(_read_brand_icon_png(), max_age=604800)
+    return _png_response(_read_brand_icon_png(), max_age=604800, request=request)
 
 
 @app.get("/robots.txt", response_class=Response)
-async def serve_robots_txt():
+@app.head("/robots.txt", response_class=Response)
+async def serve_robots_txt(request: Request):
     """Serve robots.txt to guide crawlers."""
+    _log_seo_public_request(request, "robots")
+    cached = _seo_cached_response(request, "robots")
+    if cached:
+        return cached
     content = (
         "User-agent: *\n"
         "Allow: /\n"
@@ -3049,7 +3223,13 @@ async def serve_robots_txt():
         "\n"
         f"Sitemap: {_STOREFRONT_DOMAIN}/sitemap.xml\n"
     )
-    return Response(content=content, media_type="text/plain")
+    return _seo_store_and_respond(
+        request,
+        "robots",
+        content,
+        media_type="text/plain; charset=utf-8",
+        max_age=_SEO_ROBOTS_CACHE_SECONDS,
+    )
 
 
 @app.get("/{indexnow_key}.txt", response_class=Response)
@@ -3068,8 +3248,13 @@ async def serve_indexnow_key(indexnow_key: str):
 
 
 @app.get("/sitemap.xml", response_class=Response)
-async def serve_sitemap_xml():
+@app.head("/sitemap.xml", response_class=Response)
+async def serve_sitemap_xml(request: Request):
     """Dynamically generate a sitemap.xml including homepage, category, and all product pages."""
+    _log_seo_public_request(request, "sitemap")
+    cached = _seo_cached_response(request, "sitemap")
+    if cached:
+        return cached
     from datetime import date
     today = date.today().isoformat()
     products = await _catalog_db.get_all_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
@@ -3154,7 +3339,13 @@ async def serve_sitemap_xml():
         + "\n".join(urls)
         + "\n</urlset>"
     )
-    return Response(content=sitemap, media_type="application/xml")
+    return _seo_store_and_respond(
+        request,
+        "sitemap",
+        sitemap,
+        media_type="application/xml",
+        max_age=_SEO_SITEMAP_CACHE_SECONDS,
+    )
 
 
 def _serve_storefront_index(request: Request) -> HTMLResponse:
@@ -3374,6 +3565,7 @@ async def webapp_admin_status(request: Request):
 
 
 @app.get("/product/{product_id}", response_class=HTMLResponse)
+@app.head("/product/{product_id}", response_class=HTMLResponse)
 async def serve_product_page(product_id: int, request: Request):
     """Redirect short product URLs to their canonical slug URL."""
     product = await _catalog_db.get_product(product_id)
@@ -3386,6 +3578,7 @@ async def serve_product_page(product_id: int, request: Request):
 
 
 @app.get("/product/{product_id}/{slug}", response_class=HTMLResponse)
+@app.head("/product/{product_id}/{slug}", response_class=HTMLResponse)
 async def serve_product_page_with_slug(product_id: int, slug: str, request: Request):
     """Serve an individual product page with crawlable HTML and dynamic SEO metadata."""
     product = await _catalog_db.get_product(product_id)
@@ -3399,6 +3592,7 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
             url=_canonical_product_path(product_id, caption),
             status_code=301,
         )
+    _log_seo_public_request(request, "product", product_id=product_id, slug=slug)
 
     category = product.get("category") or ""
     subcategory = product.get("subcategory") or ""
@@ -3421,7 +3615,11 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
         {
             "index": idx,
             "type": media.get("type") or "document",
-            "url": _product_public_media_path(product_id, idx),
+            "url": (
+                _product_public_media_path(product_id, idx)
+                if media.get("type") == "photo"
+                else f"/api/catalog/{product_id}/media/{idx}"
+            ),
             "label": f"{product_title} media {idx + 1}",
         }
         for idx, media in enumerate(_collect_media_info(product))
@@ -3487,10 +3685,29 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
     ctx["webapp_product_url"] = webapp_link
     ctx["related_products"] = related_products
     ctx["seo_side_notes"] = seo_side_notes
-    return templates.TemplateResponse(request, "product.html", context=ctx)
+    cache_fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "caption": caption,
+                "category": category,
+                "subcategory": subcategory,
+                "media": [m.get("type") for m in _collect_media_info(product)],
+                "updated_at": product.get("updated_at") or product.get("created_at"),
+            },
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    return _render_seo_template(
+        request,
+        "product.html",
+        ctx,
+        cache_key=f"product:{product_id}:{slug}:{cache_fingerprint}",
+    )
 
 
 @app.get("/category/{category_name}", response_class=HTMLResponse)
+@app.head("/category/{category_name}", response_class=HTMLResponse)
 async def serve_category_page(category_name: str, request: Request):
     """Serve a server-rendered category landing page for SEO crawlability."""
     matched_category = _resolve_category_name(category_name)
@@ -3499,6 +3716,7 @@ async def serve_category_page(category_name: str, request: Request):
     canonical_path = _canonical_category_path(matched_category)
     if request.url.path != canonical_path:
         return RedirectResponse(url=canonical_path, status_code=301)
+    _log_seo_public_request(request, "category", category=matched_category)
     _queue_visitor_event(request, source="website", page_type="category", category=matched_category)
 
     display_name = get_category_display_name(matched_category)
@@ -3598,10 +3816,16 @@ async def serve_category_page(category_name: str, request: Request):
     }
     ctx["seo_schema"] = json.dumps({"@context": "https://schema.org", "@graph": [item_list_schema, breadcrumb_schema]})
 
-    return templates.TemplateResponse(request, "category.html", context=ctx)
+    return _render_seo_template(
+        request,
+        "category.html",
+        ctx,
+        cache_key=f"category:{matched_category}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}",
+    )
 
 
 @app.get("/category/{category_name}/{subcategory_name}", response_class=HTMLResponse)
+@app.head("/category/{category_name}/{subcategory_name}", response_class=HTMLResponse)
 async def serve_subcategory_page(category_name: str, subcategory_name: str, request: Request):
     """Serve a server-rendered subcategory page for stronger crawlable category depth."""
     matched_category = _resolve_category_name(category_name)
@@ -3614,6 +3838,12 @@ async def serve_subcategory_page(category_name: str, subcategory_name: str, requ
     canonical_path = _canonical_subcategory_path(matched_category, matched_subcategory)
     if request.url.path != canonical_path:
         return RedirectResponse(url=canonical_path, status_code=301)
+    _log_seo_public_request(
+        request,
+        "subcategory",
+        category=matched_category,
+        subcategory=matched_subcategory,
+    )
     _queue_visitor_event(
         request,
         source="website",
@@ -3694,7 +3924,12 @@ async def serve_subcategory_page(category_name: str, subcategory_name: str, requ
         ],
     }
     ctx["seo_schema"] = json.dumps({"@context": "https://schema.org", "@graph": [item_list_schema, breadcrumb_schema]})
-    return templates.TemplateResponse(request, "category.html", context=ctx)
+    return _render_seo_template(
+        request,
+        "category.html",
+        ctx,
+        cache_key=f"subcategory:{matched_category}:{matched_subcategory}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}",
+    )
 
 
 def _get_primary_bot(request: Request, required: bool = True):
@@ -4158,10 +4393,91 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
     )
 
 
+def _seo_media_fallback_response(request: Request, reason: str) -> Response:
+    return _seo_content_response(
+        request,
+        _read_brand_icon_png(),
+        media_type="image/png",
+        max_age=_SEO_PUBLIC_MEDIA_CACHE_SECONDS,
+        etag=_seo_etag_from_key(f"seo-media-fallback:{reason}:v1"),
+        extra_headers={
+            "X-SEO-Media-Fallback": reason[:80],
+            "Content-Type": "image/png",
+        },
+    )
+
+
 @app.get("/media/products/{product_id}/{media_index}")
+@app.head("/media/products/{product_id}/{media_index}")
 async def stream_public_product_media(request: Request, product_id: int, media_index: int):
-    """Public crawlable media URL used by SSR SEO/social preview pages."""
-    return await stream_catalog_media(request, product_id, media_index)
+    """Public crawlable media URL used by SSR SEO/social preview pages.
+
+    This route is intentionally safer and narrower than the Mini App media API:
+    it only serves photo media. Videos, missing media, Telegram errors, and bursts
+    fall back to the lightweight brand image so crawlers cannot starve normal
+    WebApp media delivery.
+    """
+    _log_seo_public_request(request, "public_media", product_id=product_id, media_index=media_index)
+
+    if not await _seo_public_media_rate_limiter.is_allowed(get_client_ip(request)):
+        logger.info(
+            "[seo_public_media] fallback reason=rate_limited product_id=%s media_index=%s",
+            product_id,
+            media_index,
+        )
+        return _seo_media_fallback_response(request, "rate_limited")
+
+    try:
+        product = await _catalog_db.get_product(product_id)
+        if not product:
+            return _seo_media_fallback_response(request, "product_missing")
+
+        media_info = _collect_media_info(product)
+        if media_index < 0 or media_index >= len(media_info):
+            return _seo_media_fallback_response(request, "media_missing")
+
+        media_type_info = media_info[media_index]
+        if media_type_info.get("type") != "photo":
+            return _seo_media_fallback_response(request, "non_photo")
+
+        file_id = str(media_type_info.get("id") or "")
+        etag = _seo_etag_from_key(f"seo-media:{product_id}:{media_index}:{file_id}")
+        if _request_matches_etag(request, etag):
+            return Response(
+                status_code=status.HTTP_304_NOT_MODIFIED,
+                headers=_seo_headers(etag, _SEO_PUBLIC_MEDIA_CACHE_SECONDS),
+            )
+        if request.method == "HEAD":
+            return Response(
+                status_code=status.HTTP_200_OK,
+                headers=_seo_headers(
+                    etag,
+                    _SEO_PUBLIC_MEDIA_CACHE_SECONDS,
+                    extra={
+                        "Content-Type": "image/jpeg",
+                        "X-Robots-Tag": "index, follow",
+                        "Vary": "Accept",
+                    },
+                ),
+            )
+
+        response = await stream_catalog_media(request, product_id, media_index)
+        if getattr(response, "status_code", 200) >= 400:
+            return _seo_media_fallback_response(request, f"upstream_{getattr(response, 'status_code', 0)}")
+
+        response.headers["Cache-Control"] = f"public, max-age={_SEO_PUBLIC_MEDIA_CACHE_SECONDS}"
+        response.headers["ETag"] = etag
+        response.headers["X-Robots-Tag"] = "index, follow"
+        response.headers["Vary"] = "Accept"
+        return response
+    except Exception as exc:
+        logger.info(
+            "[seo_public_media] fallback reason=error product_id=%s media_index=%s error=%s",
+            product_id,
+            media_index,
+            exc,
+        )
+        return _seo_media_fallback_response(request, "error")
 
 
 @app.get("/api/catalog/{product_id}/media/{media_index}")

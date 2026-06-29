@@ -192,6 +192,12 @@ engines. This is intentionally change-based; page views do not submit URLs.
 Check `/adminstatus` or the admin WebApp monitor for pending, submitted, and
 failed IndexNow counts.
 
+For a quick crawler-facing regression check against a running deployment:
+
+```powershell
+python scripts/seo_smoke_check.py https://your-custom-domain.com --product-id 123
+```
+
 The learner also supports an optional approved taxonomy export file via
 `EXTERNAL_SEO_SIGNALS_FILE`. Use short terms and category mappings only; do not
 paste copied Leafly/Weedmaps page descriptions into the project. See
