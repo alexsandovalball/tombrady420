@@ -76,7 +76,7 @@ from utils.resource_manager import (
 from utils.webhook_identity import BotSlot, build_bot_slot, build_registry_webhook_secret
 from middleware.request_deduplicator import RequestDeduplicator
 from configs.telegram_ip_whitelist import is_telegram_ip
-from utils.deeplinks import build_webapp_product_url
+from utils.deeplinks import build_bot_product_url, build_webapp_product_url
 from utils.access_control import (
     is_user_blocked_cached,
     record_user_ip_debounced,
@@ -2351,6 +2351,7 @@ if _is_admin_dashboard_enabled():
     app.mount("/admin-assets", StaticFiles(directory="admin"), name="admin_assets")
 
 _STOREFRONT_BOT_USERNAME = os.getenv("BOT_USERNAME", "").lstrip("@")
+_PUBLIC_PRODUCT_BOT_INDEX = 1
 _STOREFRONT_DOMAIN = Config.STOREFRONT_DOMAIN or ""
 if _STOREFRONT_DOMAIN:
     _domain_source = (
@@ -2420,6 +2421,32 @@ def _canonical_category_url(category: str) -> str:
 
 def _canonical_subcategory_url(category: str, subcategory: str) -> str:
     return _absolute_storefront_url(_canonical_subcategory_path(category, subcategory))
+
+
+def _configured_bot_username(bot_index: int) -> str:
+    """Return the current runtime username for a configured bot slot."""
+    apps = _bot_applications or getattr(app.state, "bot_apps", []) or []
+    if 0 <= bot_index < len(apps):
+        bot_app = apps[bot_index]
+        bot = getattr(bot_app, "bot", None) if bot_app is not None else None
+        username = getattr(bot, "username", None)
+        if username:
+            return str(username).lstrip("@")
+
+    slot = _bot_slots.get(bot_index)
+    if slot and slot.telegram_username:
+        return str(slot.telegram_username).lstrip("@")
+
+    return ""
+
+
+def _public_product_bot_username() -> str:
+    """Use the second configured bot for public product Telegram deep links."""
+    return _configured_bot_username(_PUBLIC_PRODUCT_BOT_INDEX) or _STOREFRONT_BOT_USERNAME
+
+
+def _public_product_bot_url(product_id: int) -> Optional[str]:
+    return build_bot_product_url(product_id, _public_product_bot_username())
 
 
 def _learn_page_path(slug: str) -> str:
@@ -3600,7 +3627,8 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
     seo_title = _build_product_seo_title(product_title, category, subcategory)
     seo_image = _product_primary_image_url(product)
     product_url = _canonical_product_url(product_id, caption)
-    deep_link = f"https://t.me/{_STOREFRONT_BOT_USERNAME}?start=product_{product_id}"
+    deep_link = _public_product_bot_url(product_id)
+    public_product_bot_username = _public_product_bot_username()
     webapp_link = build_webapp_product_url(Config.WEB_APP_URL, product_id)
     _queue_visitor_event(
         request,
@@ -3692,6 +3720,7 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
                 "category": category,
                 "subcategory": subcategory,
                 "media": [m.get("type") for m in _collect_media_info(product)],
+                "public_product_bot": public_product_bot_username,
                 "updated_at": product.get("updated_at") or product.get("created_at"),
             },
             sort_keys=True,
@@ -4334,8 +4363,9 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
     await _check_user_not_blocked(init_data, get_client_ip(request))
     bot = _get_primary_bot(request, required=False)
     bot_username = _STOREFRONT_BOT_USERNAME or (bot.username if bot else None) or ""
+    public_product_bot_username = _public_product_bot_username()
 
-    cache_key = f"product_detail:{product_id}:{lang}:{bot_username}"
+    cache_key = f"product_detail:{product_id}:{lang}:{bot_username}:{public_product_bot_username}"
     cached_payload = _api_result_cache_get(cache_key)
     if cached_payload is not None:
         return Response(
@@ -4365,7 +4395,7 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
         if _STOREFRONT_DOMAIN
         else None
     )
-    bot_deep_link = f"https://t.me/{bot_username}?start=product_{product_id}" if bot_username else None
+    bot_deep_link = _public_product_bot_url(product_id)
 
     payload = json.dumps({
         "id": product.get("id"),
