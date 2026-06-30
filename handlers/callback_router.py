@@ -47,12 +47,26 @@ except Exception as exc:
         return 0
 from utils.decorators import admin_required
 from utils.helpers import is_admin, get_user_display_name, escape_markdown_v1
+from utils.media_warmer import schedule_product_media_warm
 from utils.notification_manager import get_notification_service
 from utils.safe_send import safe_send_message, safe_edit_message_text
 import emojis
 
 logger = logging.getLogger(__name__)
 db = Database()
+
+
+def _schedule_media_warm_for_current_bots(product_id: int, *, max_bots: int = 10) -> None:
+    """Warm media cache for active bots after catalog changes, without blocking callbacks."""
+    try:
+        from webhook_server import get_bot_applications
+        bot_apps = get_bot_applications()
+    except Exception as exc:
+        logger.debug("Media warm skipped: bot applications unavailable: %s", exc)
+        return
+
+    if bot_apps:
+        schedule_product_media_warm(product_id, bot_apps, db=db, max_bots=max_bots)
 
 # Maximum allowed length for callback_data (Telegram's hard limit is 64 bytes)
 _MAX_CALLBACK_DATA_LEN = 64
@@ -676,6 +690,7 @@ async def _handle_savecat(update, context, query, user_id, parts):
         user_lang = await db.get_user_language(user_id)
         await db.update_product_category(product_id, category, subcategory)
         invalidate_webapp_caches(f"product {product_id} categorized")
+        _schedule_media_warm_for_current_bots(product_id)
         category_key = f"category_{category.lower()}"
         translated_category = await get_translated_string_async(category_key, user_lang)
         if translated_category == category_key:
@@ -776,6 +791,7 @@ async def _handle_send_notif_yes(update, context, query, user_id, parts):
             parse_mode="Markdown",
         )
         svc = get_notification_service()
+        _schedule_media_warm_for_current_bots(product_id)
         asyncio.create_task(svc.notify_users_about_product(context, product_id))
         logger.info(f"Notification service triggered for product {product_id}")
     else:
