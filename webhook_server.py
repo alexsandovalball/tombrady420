@@ -2512,6 +2512,25 @@ def _build_product_seo_title(title: str, category: str = "", subcategory: str = 
     return _fit_branded_seo_title(" ".join(parts))
 
 
+def _build_product_seo_description(title: str, desc: str, category: str = "", subcategory: str = "") -> str:
+    """Create a concise, product-specific meta description without keyword stuffing."""
+    parts: list[str] = []
+    category_display = get_category_display_name(category) if category else ""
+    subcategory_display = get_subcategory_display_name(subcategory) if subcategory else ""
+    taxonomy_label = " ".join(part for part in [subcategory_display, category_display] if part).strip()
+    if taxonomy_label:
+        parts.append(f"{title} in our {taxonomy_label} menu.")
+    else:
+        parts.append(f"{title} on the Top Shelf Cali Plug menu.")
+    if desc and not _title_already_contains(desc, title):
+        parts.append(desc)
+    parts.append("View current product details and related listings.")
+    text = re.sub(r"\s+", " ", " ".join(parts)).strip()
+    if len(text) > 160:
+        text = text[:157].rstrip(" -.,") + "..."
+    return text
+
+
 def _build_category_seo_title(category_display: str) -> str:
     return _fit_branded_seo_title(f"{_clean_seo_title_part(category_display)} Menu")
 
@@ -2572,6 +2591,35 @@ def _product_primary_image_url(product: dict, *, absolute: bool = True) -> str:
         if media.get("type") == "photo":
             return _product_public_media_url(product_id, idx) if absolute else _product_public_media_path(product_id, idx)
     return ""
+
+
+def _product_photo_image_urls(product: dict, *, absolute: bool = True, limit: int = 8) -> list[str]:
+    """Return crawlable photo URLs for product image sitemaps and Product schema."""
+    product_id = product.get("id")
+    if product_id is None:
+        return []
+
+    urls: list[str] = []
+    for idx, media in enumerate(_collect_media_info(product)):
+        if media.get("type") != "photo":
+            continue
+        urls.append(
+            _product_public_media_url(product_id, idx)
+            if absolute else _product_public_media_path(product_id, idx)
+        )
+        if len(urls) >= limit:
+            break
+    return urls
+
+
+def _schema_date(value: Any, fallback: str = "") -> str:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, str) and value:
+        normalized = value.replace("T", " ").split(" ", 1)[0]
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", normalized):
+            return normalized
+    return fallback
 
 
 def _indexnow_enabled() -> bool:
@@ -2932,6 +2980,13 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
     if product:
         product_url = url or _STOREFRONT_DOMAIN
         schema_name = schema_title or title
+        product_category = category or product.get("category", "")
+        product_subcategory = product.get("subcategory") or ""
+        product_images = _product_photo_image_urls(product, absolute=True)
+        if image and image not in product_images:
+            product_images.insert(0, image)
+        date_published = _schema_date(product.get("created_at"))
+        date_modified = _schema_date(product.get("updated_at") or product.get("created_at"), date_published)
         product_schema: dict = {
             "@context": "https://schema.org/",
             "@type": "Product",
@@ -2940,50 +2995,70 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
             "url": product_url,
             "mainEntityOfPage": product_url,
             "sku": str(product.get("id") or product.get("product_id") or ""),
-            "category": category or product.get("category", ""),
+            "category": product_category,
             "brand": {
                 "@type": "Brand",
                 "name": "Top Shelf Cali Plug",
             },
         }
+        if date_published:
+            product_schema["datePublished"] = date_published
+        if date_modified:
+            product_schema["dateModified"] = date_modified
         additional_properties = []
-        if product.get("subcategory"):
+        if product_subcategory:
             additional_properties.append({
                 "@type": "PropertyValue",
                 "name": "Subcategory",
-                "value": product.get("subcategory"),
+                "value": product_subcategory,
+            })
+        media_count = len(_collect_media_info(product))
+        if media_count:
+            additional_properties.append({
+                "@type": "PropertyValue",
+                "name": "Media count",
+                "value": str(media_count),
             })
         if additional_properties:
             product_schema["additionalProperty"] = additional_properties
-        if image:
-            product_schema["image"] = [image]
+        if product_images:
+            product_schema["image"] = product_images
+        breadcrumb_items = [
+            {
+                "@type": "ListItem",
+                "position": 1,
+                "name": "Home",
+                "item": f"{_STOREFRONT_DOMAIN}/",
+            }
+        ]
+        if product_category:
+            breadcrumb_items.append({
+                "@type": "ListItem",
+                "position": len(breadcrumb_items) + 1,
+                "name": get_category_display_name(product_category),
+                "item": _canonical_category_url(product_category),
+            })
+        if product_category and product_subcategory:
+            breadcrumb_items.append({
+                "@type": "ListItem",
+                "position": len(breadcrumb_items) + 1,
+                "name": get_subcategory_display_name(product_subcategory),
+                "item": _canonical_subcategory_url(product_category, product_subcategory),
+            })
+        breadcrumb_items.append({
+            "@type": "ListItem",
+            "position": len(breadcrumb_items) + 1,
+            "name": schema_name,
+            "item": product_url,
+        })
         breadcrumb: dict = {
             "@type": "BreadcrumbList",
-            "itemListElement": [
-                {
-                    "@type": "ListItem",
-                    "position": 1,
-                    "name": "Home",
-                    "item": f"{_STOREFRONT_DOMAIN}/",
-                },
-                {
-                    "@type": "ListItem",
-                    "position": 2,
-                    "name": category or "Products",
-                    "item": _canonical_category_url(category) if category else _absolute_storefront_url("/"),
-                },
-                {
-                    "@type": "ListItem",
-                    "position": 3,
-                    "name": schema_name,
-                    "item": product_url,
-                },
-            ],
+            "itemListElement": breadcrumb_items,
         }
         schema = json.dumps({
             "@context": "https://schema.org/",
             "@graph": [product_schema, breadcrumb],
-        })
+        }, ensure_ascii=False)
     else:
         schema = json.dumps({
             "@context": "https://schema.org",
@@ -3288,6 +3363,20 @@ async def serve_sitemap_xml(request: Request):
     newest_product_lastmod = _newest_lastmod(products, today)
     static_seo_lastmod = _static_seo_lastmod(today)
     home_lastmod = max(newest_product_lastmod, static_seo_lastmod)
+    active_categories = {
+        str(product.get("category") or "").strip()
+        for product in products
+        if str(product.get("category") or "").strip()
+    }
+    active_subcategories = {
+        (
+            str(product.get("category") or "").strip(),
+            str(product.get("subcategory") or "").strip(),
+        )
+        for product in products
+        if str(product.get("category") or "").strip()
+        and str(product.get("subcategory") or "").strip()
+    }
 
     urls = [
         (
@@ -3300,6 +3389,8 @@ async def serve_sitemap_xml(request: Request):
         )
     ]
     for category in get_all_categories():
+        if category not in active_categories:
+            continue
         category_lastmod = _newest_lastmod(products, static_seo_lastmod, category=category)
         urls.append(
             f"  <url>\n"
@@ -3310,6 +3401,8 @@ async def serve_sitemap_xml(request: Request):
             f"  </url>"
         )
         for subcategory in get_subcategories(category):
+            if (category, subcategory) not in active_subcategories:
+                continue
             subcategory_lastmod = _newest_lastmod(
                 products,
                 category_lastmod,
@@ -3340,15 +3433,13 @@ async def serve_sitemap_xml(request: Request):
         lastmod = _product_lastmod(p, today)
         loc = _canonical_product_url(pid, p.get("caption") or "")
         title = _caption_parts(p.get("caption") or "")[0]
-        image_url = _product_primary_image_url(p)
-        image_xml = ""
-        if image_url:
-            image_xml = (
-                f"    <image:image>\n"
-                f"      <image:loc>{html.escape(image_url)}</image:loc>\n"
-                f"      <image:title>{html.escape(title)}</image:title>\n"
-                f"    </image:image>\n"
-            )
+        image_xml = "".join(
+            f"    <image:image>\n"
+            f"      <image:loc>{html.escape(image_url)}</image:loc>\n"
+            f"      <image:title>{html.escape(title)}</image:title>\n"
+            f"    </image:image>\n"
+            for image_url in _product_photo_image_urls(p, absolute=True, limit=4)
+        )
         urls.append(
             f"  <url>\n"
             f"    <loc>{html.escape(loc)}</loc>\n"
@@ -3375,7 +3466,7 @@ async def serve_sitemap_xml(request: Request):
     )
 
 
-def _serve_storefront_index(request: Request) -> HTMLResponse:
+async def _serve_storefront_index(request: Request, *, include_seo_links: bool = False) -> HTMLResponse:
     """Render the main storefront index.html with default SEO metadata."""
     ctx = _build_seo_context(
         title="Top Shelf Cali Plug – Premium Cannabis Storefront",
@@ -3383,10 +3474,78 @@ def _serve_storefront_index(request: Request) -> HTMLResponse:
         url=_absolute_storefront_url("/"),
     )
     ctx["request"] = request
+    category_counts: dict[str, int] = {}
+    recent_products: list[dict[str, Any]] = []
+    if include_seo_links:
+        try:
+            category_counts, _, _ = await _catalog_db.get_category_summary(EXCLUDED_FROM_ALL_PRODUCTS)
+            recent_products = await _catalog_db.get_all_products_excluding_categories(
+                EXCLUDED_FROM_ALL_PRODUCTS,
+                limit=12,
+            )
+        except Exception as exc:
+            logger.debug("Failed to load homepage SEO links: %s", exc)
+
     ctx["seo_categories"] = [
-        {"url": _canonical_category_path(category), "label": get_category_display_name(category)}
+        {
+            "url": _canonical_category_path(category),
+            "label": get_category_display_name(category),
+            "count": category_counts.get(category, 0),
+        }
         for category in get_all_categories()
+        if not include_seo_links or category_counts.get(category, 0) > 0
     ]
+    ctx["seo_recent_products"] = [
+        {
+            "title": _caption_parts(product.get("caption") or "")[0],
+            "url": _canonical_product_path(product.get("id") or product.get("product_id"), product.get("caption") or ""),
+            "category": get_category_display_name(product.get("category")) if product.get("category") else "",
+            "subcategory": get_subcategory_display_name(product.get("subcategory")) if product.get("subcategory") else "",
+            "image_url": _product_primary_image_url(product, absolute=False) or "/og-image.png",
+        }
+        for product in recent_products
+        if product.get("id") or product.get("product_id")
+    ]
+    if include_seo_links:
+        try:
+            schema = json.loads(ctx.get("seo_schema") or "{}")
+            graph = schema.setdefault("@graph", [])
+            if ctx["seo_categories"]:
+                graph.append({
+                    "@type": "ItemList",
+                    "name": "Active menu categories",
+                    "itemListElement": [
+                        {
+                            "@type": "ListItem",
+                            "position": idx + 1,
+                            "name": item["label"],
+                            "url": _absolute_storefront_url(item["url"]),
+                        }
+                        for idx, item in enumerate(ctx["seo_categories"])
+                    ],
+                })
+            if ctx["seo_recent_products"]:
+                graph.append({
+                    "@type": "ItemList",
+                    "name": "Recent products",
+                    "itemListElement": [
+                        {
+                            "@type": "ListItem",
+                            "position": idx + 1,
+                            "item": {
+                                "@type": "Product",
+                                "name": item["title"],
+                                "url": _absolute_storefront_url(item["url"]),
+                                "image": _absolute_storefront_url(item["image_url"]),
+                                "category": item["category"],
+                            },
+                        }
+                        for idx, item in enumerate(ctx["seo_recent_products"])
+                    ],
+                })
+            ctx["seo_schema"] = json.dumps(schema, ensure_ascii=False)
+        except Exception as exc:
+            logger.debug("Failed to build homepage SEO ItemList schema: %s", exc)
     return templates.TemplateResponse(request, "index.html", context=ctx)
 
 
@@ -3421,7 +3580,7 @@ async def serve_homepage(request: Request):
             )
         return await _missing_product_redirect(product_id, permanent_when_known=True)
     _queue_visitor_event(request, source="website", page_type="home")
-    return _serve_storefront_index(request)
+    return await _serve_storefront_index(request, include_seo_links=True)
 
 
 @app.get("/webapp/index.html", response_class=HTMLResponse)
@@ -3436,7 +3595,7 @@ async def serve_webapp(request: Request):
     clearnet storefront is served at /.
     """
     _queue_visitor_event(request, source="webapp", page_type="webapp_shell")
-    return _serve_storefront_index(request)
+    return await _serve_storefront_index(request)
 
 
 @app.get("/learn", response_class=HTMLResponse)
@@ -3623,7 +3782,8 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
 
     category = product.get("category") or ""
     subcategory = product.get("subcategory") or ""
-    product_title, seo_desc, description_lines = _caption_parts(caption)
+    product_title, raw_seo_desc, description_lines = _caption_parts(caption)
+    seo_desc = _build_product_seo_description(product_title, raw_seo_desc, category, subcategory)
     seo_title = _build_product_seo_title(product_title, category, subcategory)
     seo_image = _product_primary_image_url(product)
     product_url = _canonical_product_url(product_id, caption)
@@ -3687,12 +3847,12 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
         og_type="product",
         schema_title=product_title,
         keywords=", ".join(filter(None, [
+            product_title,
             product.get("category", ""),
             product.get("subcategory", ""),
+            ", ".join(seo_side_notes[:8]),
             " ".join(caption.split()[:6]),
             "Top Shelf Cali Plug",
-            "buy online",
-            "Telegram store",
         ])),
         category=category,
     )
@@ -3820,7 +3980,6 @@ async def serve_category_page(category_name: str, request: Request):
 
     # Build ItemList + BreadcrumbList schema
     item_list_schema = {
-        "@context": "https://schema.org",
         "@type": "ItemList",
         "name": display_name,
         "url": category_url,
@@ -3829,21 +3988,35 @@ async def serve_category_page(category_name: str, request: Request):
             {
                 "@type": "ListItem",
                 "position": i + 1,
-                "url": _absolute_storefront_url(p["url"]),
-                "name": p["title"],
+                "item": {
+                    "@type": "Product",
+                    "name": p["title"],
+                    "url": _absolute_storefront_url(p["url"]),
+                    **({"image": _absolute_storefront_url(p["image_url"])} if p.get("image_url") else {}),
+                    "category": matched_category,
+                },
             }
             for i, p in enumerate(ctx["products"])
         ],
     }
     breadcrumb_schema = {
-        "@context": "https://schema.org",
         "@type": "BreadcrumbList",
         "itemListElement": [
             {"@type": "ListItem", "position": 1, "name": "Home", "item": f"{_STOREFRONT_DOMAIN}/"},
             {"@type": "ListItem", "position": 2, "name": display_name, "item": category_url},
         ],
     }
-    ctx["seo_schema"] = json.dumps({"@context": "https://schema.org", "@graph": [item_list_schema, breadcrumb_schema]})
+    collection_schema = {
+        "@type": "CollectionPage",
+        "name": _build_category_seo_title(display_name),
+        "description": ctx["seo_desc"],
+        "url": category_url,
+        "mainEntity": item_list_schema,
+    }
+    ctx["seo_schema"] = json.dumps({
+        "@context": "https://schema.org",
+        "@graph": [collection_schema, item_list_schema, breadcrumb_schema],
+    }, ensure_ascii=False)
 
     return _render_seo_template(
         request,
@@ -3928,7 +4101,6 @@ async def serve_subcategory_page(category_name: str, subcategory_name: str, requ
     ctx["storefront_domain"] = _STOREFRONT_DOMAIN
 
     item_list_schema = {
-        "@context": "https://schema.org",
         "@type": "ItemList",
         "name": f"{subcategory_display} {category_display}",
         "url": page_url,
@@ -3937,14 +4109,18 @@ async def serve_subcategory_page(category_name: str, subcategory_name: str, requ
             {
                 "@type": "ListItem",
                 "position": i + 1,
-                "url": _absolute_storefront_url(p["url"]),
-                "name": p["title"],
+                "item": {
+                    "@type": "Product",
+                    "name": p["title"],
+                    "url": _absolute_storefront_url(p["url"]),
+                    **({"image": _absolute_storefront_url(p["image_url"])} if p.get("image_url") else {}),
+                    "category": matched_category,
+                },
             }
             for i, p in enumerate(ctx["products"])
         ],
     }
     breadcrumb_schema = {
-        "@context": "https://schema.org",
         "@type": "BreadcrumbList",
         "itemListElement": [
             {"@type": "ListItem", "position": 1, "name": "Home", "item": _absolute_storefront_url("/")},
@@ -3952,7 +4128,17 @@ async def serve_subcategory_page(category_name: str, subcategory_name: str, requ
             {"@type": "ListItem", "position": 3, "name": subcategory_display, "item": page_url},
         ],
     }
-    ctx["seo_schema"] = json.dumps({"@context": "https://schema.org", "@graph": [item_list_schema, breadcrumb_schema]})
+    collection_schema = {
+        "@type": "CollectionPage",
+        "name": _build_subcategory_seo_title(category_display, subcategory_display),
+        "description": ctx["seo_desc"],
+        "url": page_url,
+        "mainEntity": item_list_schema,
+    }
+    ctx["seo_schema"] = json.dumps({
+        "@context": "https://schema.org",
+        "@graph": [collection_schema, item_list_schema, breadcrumb_schema],
+    }, ensure_ascii=False)
     return _render_seo_template(
         request,
         "category.html",

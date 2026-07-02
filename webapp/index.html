@@ -182,6 +182,38 @@
         </div>
     </div>
 
+    {% if seo_categories or seo_recent_products %}
+    <section class="seo-home-crawl" aria-labelledby="seo-home-heading">
+        <h2 id="seo-home-heading">Browse current menu</h2>
+        {% if seo_categories %}
+        <nav class="seo-link-cloud" aria-label="Active categories">
+            {% for item in seo_categories %}
+            <a href="{{ item.url }}">{{ item.label }}{% if item.count %} ({{ item.count }}){% endif %}</a>
+            {% endfor %}
+        </nav>
+        {% endif %}
+
+        {% if seo_recent_products %}
+        <h3>Recent products</h3>
+        <ul class="seo-product-links">
+            {% for item in seo_recent_products %}
+            <li>
+                <a href="{{ item.url }}">
+                    <img src="{{ item.image_url }}" alt="{{ item.title }}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
+                    <span>
+                        <strong>{{ item.title }}</strong>
+                        {% if item.category or item.subcategory %}
+                        <small>{{ item.category }}{% if item.subcategory %} / {{ item.subcategory }}{% endif %}</small>
+                        {% endif %}
+                    </span>
+                </a>
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+    </section>
+    {% endif %}
+
     <script src="/assets/app.js"></script>
 </body>
 </html>
