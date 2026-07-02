@@ -96,10 +96,10 @@ def describe_search_console_setup(
     has_service_account = bool(service_account_json or service_account_file_exists)
     has_oauth = bool((oauth_client_json or oauth_client_file_exists) and (oauth_token_json or oauth_token_file_exists))
     configured = bool(enabled and site_url and (has_service_account or has_oauth))
-    if has_oauth:
-        auth_source = "oauth"
-    elif has_service_account:
+    if has_service_account:
         auth_source = "service_account"
+    elif has_oauth:
+        auth_source = "oauth"
     else:
         auth_source = "none"
     return {
@@ -189,12 +189,12 @@ def _load_service_account_credentials(
 
 
 def _search_console_site_candidates(site_url: str) -> list[str]:
-    """Return the configured property plus a matching domain property fallback."""
+    """Return domain property first, with URL-prefix property as a fallback."""
     normalized = str(site_url or "").strip()
     if not normalized:
         return []
 
-    candidates = [normalized]
+    candidates: list[str] = []
     if not normalized.startswith("sc-domain:"):
         parsed = urllib.parse.urlparse(normalized)
         host = parsed.netloc or parsed.path
@@ -203,8 +203,9 @@ def _search_console_site_candidates(site_url: str) -> list[str]:
             host = host[4:]
         if host:
             domain_property = f"sc-domain:{host}"
-            if domain_property not in candidates:
-                candidates.append(domain_property)
+            candidates.append(domain_property)
+    if normalized not in candidates:
+        candidates.append(normalized)
     return candidates
 
 
@@ -226,19 +227,19 @@ def _fetch_search_console_rows_sync(
         logger.warning("[search_console] dependency_missing error=%s", exc)
         return []
 
-    credentials = _load_oauth_credentials(
-        oauth_client_json=oauth_client_json,
-        oauth_client_file=oauth_client_file,
-        oauth_token_json=oauth_token_json,
-        oauth_token_file=oauth_token_file,
+    credentials = _load_service_account_credentials(
+        service_account_json=service_account_json,
+        service_account_file=service_account_file,
     )
-    auth_source = "oauth"
+    auth_source = "service_account"
     if credentials is None:
-        credentials = _load_service_account_credentials(
-            service_account_json=service_account_json,
-            service_account_file=service_account_file,
+        credentials = _load_oauth_credentials(
+            oauth_client_json=oauth_client_json,
+            oauth_client_file=oauth_client_file,
+            oauth_token_json=oauth_token_json,
+            oauth_token_file=oauth_token_file,
         )
-        auth_source = "service_account"
+        auth_source = "oauth"
     if credentials is None:
         return []
 
@@ -300,7 +301,12 @@ def _fetch_search_console_rows_sync(
             })
         if rows:
             if candidate_site_url != site_url:
-                logger.info("[search_console] fallback_property_used site_url=%s rows=%d", candidate_site_url, len(rows))
+                logger.info(
+                    "[search_console] alternate_property_used configured_site_url=%s site_url=%s rows=%d",
+                    site_url,
+                    candidate_site_url,
+                    len(rows),
+                )
             return rows
         last_rows = rows
 

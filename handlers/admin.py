@@ -8,6 +8,7 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
+from configs.config import Config
 from database import Database
 try:
     from utils.cache_invalidation import invalidate_webapp_caches
@@ -19,6 +20,7 @@ except Exception as exc:
         return 0
 from utils.helpers import is_admin, get_channel_id, get_channel_username, escape_markdown_v1, resolve_admin_scope
 from utils.safe_send import safe_send_message, safe_edit_message_text
+from utils.search_console import describe_search_console_setup
 from utils.decorators import command_admin_required
 from middleware.rate_limiter import add_permanent_ip_block, remove_permanent_ip_block
 
@@ -197,6 +199,62 @@ def _format_seo_target(item: dict) -> str:
     return category or "general catalog"
 
 
+def _format_search_console_status(snapshot: dict) -> list[str]:
+    setup = describe_search_console_setup(
+        enabled=Config.SEARCH_CONSOLE_ENABLED,
+        site_url=Config.SEARCH_CONSOLE_SITE_URL,
+        service_account_json=Config.SEARCH_CONSOLE_SERVICE_ACCOUNT_JSON,
+        service_account_file=Config.SEARCH_CONSOLE_SERVICE_ACCOUNT_FILE,
+        oauth_client_json=Config.SEARCH_CONSOLE_OAUTH_CLIENT_JSON,
+        oauth_client_file=Config.SEARCH_CONSOLE_OAUTH_CLIENT_FILE,
+        oauth_token_json=Config.SEARCH_CONSOLE_OAUTH_TOKEN_JSON,
+        oauth_token_file=Config.SEARCH_CONSOLE_OAUTH_TOKEN_FILE,
+    )
+    total_rows = int(snapshot.get("search_console_total_rows") or 0)
+    window_rows = int(snapshot.get("search_console_queries_window") or 0)
+    latest_source_date = snapshot.get("search_console_latest_source_date") or "none yet"
+    latest_imported_at = snapshot.get("search_console_latest_imported_at") or "none yet"
+
+    if not setup.get("enabled"):
+        status = "off"
+        note = "Search Console importing is disabled."
+    elif not setup.get("configured"):
+        status = "not connected"
+        note = "No usable Search Console credential was found."
+    elif total_rows > 0:
+        status = "connected and importing"
+        if window_rows:
+            note = "Google query rows are being stored."
+        else:
+            note = "Connected, but Google has no rows in the current lookback window."
+    else:
+        status = "configured, waiting for rows"
+        note = "Credentials exist, but no Search Console rows have been saved yet."
+
+    auth_source = setup.get("auth_source") or "none"
+    interval_seconds = int(snapshot.get("seo_auto_learn_interval_seconds") or Config.SEO_AUTO_LEARN_INTERVAL_SECONDS)
+    interval_minutes = max(1, round(interval_seconds / 60))
+    max_matched = snapshot.get("seo_auto_learn_max_matched_count", Config.SEO_AUTO_LEARN_MAX_MATCHED_COUNT)
+    max_per_run = snapshot.get("seo_auto_learn_max_per_run", Config.SEO_AUTO_LEARN_MAX_PER_RUN)
+    score = snapshot.get("seo_auto_learn_score", Config.SEO_AUTO_LEARN_SCORE)
+
+    return [
+        "",
+        "Google Search Console",
+        f"• Status: {status}",
+        f"• Auth: {auth_source}",
+        f"• Latest Google data date: {latest_source_date}",
+        f"• Last saved import: {latest_imported_at}",
+        f"• Note: {note}",
+        "",
+        "Auto-Learning Settings",
+        f"• Runs every: {_fmt_count(interval_minutes)} min",
+        f"• Match score: {score}",
+        f"• Learns low-result searches: 0-{max_matched} result(s)",
+        f"• Max new checks per run: {_fmt_count(max_per_run)}",
+    ]
+
+
 @command_admin_required
 async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show SEO/search query intelligence for admin review."""
@@ -220,6 +278,7 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Google clicks/impressions ({search_console_days}d): {_fmt_count(snapshot.get('search_console_clicks_window'))}/{_fmt_count(snapshot.get('search_console_impressions_window'))}",
             f"• Approved external signals: {_fmt_count(snapshot.get('external_signals'))}",
         ]
+        lines.extend(_format_search_console_status(snapshot))
 
         top_queries = snapshot.get("top_queries") or []
         if top_queries:
@@ -273,7 +332,7 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.extend([
             "",
             "Auto-learning runs in the background. No manual SEO import or approval command is needed.",
-            "Google data appears here only after Search Console API credentials are configured on Render.",
+            "Search Console health above is based on saved imports, so it stays fast inside Telegram.",
         ])
         await update.message.reply_text("\n".join(lines)[:3900])
     except Exception as e:

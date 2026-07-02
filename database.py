@@ -4403,6 +4403,11 @@ class Database:
                     row = await cursor.fetchone()
                     return int(row[0] or 0) if row else 0
 
+            async def value(sql: str, params: tuple = ()):
+                async with db.execute(sql, params) as cursor:
+                    row = await cursor.fetchone()
+                    return row[0] if row else None
+
             async def rows(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
                 async with db.execute(sql, params) as cursor:
                     result = await cursor.fetchall()
@@ -4439,6 +4444,17 @@ class Database:
                     "SELECT COALESCE(SUM(impressions), 0) FROM search_console_query_events WHERE source_date >= ?",
                     (search_console_since,),
                 ),
+                "search_console_total_rows": await scalar("SELECT COUNT(*) FROM search_console_query_events"),
+                "search_console_latest_source_date": await value(
+                    "SELECT MAX(source_date) FROM search_console_query_events"
+                ),
+                "search_console_latest_imported_at": await value(
+                    "SELECT MAX(created_at) FROM search_console_query_events"
+                ),
+                "seo_auto_learn_interval_seconds": Config.SEO_AUTO_LEARN_INTERVAL_SECONDS,
+                "seo_auto_learn_score": Config.SEO_AUTO_LEARN_SCORE,
+                "seo_auto_learn_max_matched_count": Config.SEO_AUTO_LEARN_MAX_MATCHED_COUNT,
+                "seo_auto_learn_max_per_run": Config.SEO_AUTO_LEARN_MAX_PER_RUN,
                 "external_signals": await scalar("SELECT COUNT(*) FROM external_seo_signals WHERE approved = 1"),
                 "top_queries": await rows(
                     """

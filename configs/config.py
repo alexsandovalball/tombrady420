@@ -35,13 +35,13 @@ class ConfigClass:
         self.ADMIN_DASHBOARD_ENABLED: bool = False
         self.ADMIN_DASHBOARD_TOKEN: Optional[str] = None
         self.SEO_AUTO_LEARN_ENABLED: bool = True
-        self.SEO_AUTO_LEARN_INTERVAL_SECONDS: int = 1800
+        self.SEO_AUTO_LEARN_INTERVAL_SECONDS: int = 900
         self.SEO_AUTO_LEARN_LOOKBACK_HOURS: int = 720
         self.SEO_AUTO_LEARN_MIN_COUNT: int = 1
-        self.SEO_AUTO_LEARN_SCORE: int = 88
-        self.SEO_AUTO_LEARN_MAX_PER_RUN: int = 40
-        self.SEO_AUTO_LEARN_MAX_MATCHED_COUNT: int = 3
-        self.SEO_EXTERNAL_SIGNAL_SCORE: int = 90
+        self.SEO_AUTO_LEARN_SCORE: int = 84
+        self.SEO_AUTO_LEARN_MAX_PER_RUN: int = 60
+        self.SEO_AUTO_LEARN_MAX_MATCHED_COUNT: int = 5
+        self.SEO_EXTERNAL_SIGNAL_SCORE: int = 86
         self.SEO_SIDE_NOTE_LIMIT: int = 10
         self.SEARCH_CONSOLE_ENABLED: bool = False
         self.SEARCH_CONSOLE_SITE_URL: Optional[str] = None
@@ -145,7 +145,7 @@ class ConfigClass:
         self.SEO_AUTO_LEARN_ENABLED = config('SEO_AUTO_LEARN_ENABLED', default=True, cast=bool)
         self.SEO_AUTO_LEARN_INTERVAL_SECONDS = max(
             300,
-            config('SEO_AUTO_LEARN_INTERVAL_SECONDS', default=1800, cast=int),
+            config('SEO_AUTO_LEARN_INTERVAL_SECONDS', default=900, cast=int),
         )
         self.SEO_AUTO_LEARN_LOOKBACK_HOURS = max(
             1,
@@ -157,19 +157,19 @@ class ConfigClass:
         )
         self.SEO_AUTO_LEARN_SCORE = max(
             70,
-            min(100, config('SEO_AUTO_LEARN_SCORE', default=88, cast=int)),
+            min(100, config('SEO_AUTO_LEARN_SCORE', default=84, cast=int)),
         )
         self.SEO_AUTO_LEARN_MAX_PER_RUN = max(
             1,
-            min(100, config('SEO_AUTO_LEARN_MAX_PER_RUN', default=40, cast=int)),
+            min(100, config('SEO_AUTO_LEARN_MAX_PER_RUN', default=60, cast=int)),
         )
         self.SEO_AUTO_LEARN_MAX_MATCHED_COUNT = max(
             0,
-            min(25, config('SEO_AUTO_LEARN_MAX_MATCHED_COUNT', default=3, cast=int)),
+            min(25, config('SEO_AUTO_LEARN_MAX_MATCHED_COUNT', default=5, cast=int)),
         )
         self.SEO_EXTERNAL_SIGNAL_SCORE = max(
-            80,
-            min(100, config('SEO_EXTERNAL_SIGNAL_SCORE', default=90, cast=int)),
+            75,
+            min(100, config('SEO_EXTERNAL_SIGNAL_SCORE', default=86, cast=int)),
         )
         self.SEO_SIDE_NOTE_LIMIT = max(
             3,
@@ -249,7 +249,14 @@ class ConfigClass:
             self.STOREFRONT_DOMAIN = derived
 
         if not self.SEARCH_CONSOLE_SITE_URL and self.STOREFRONT_DOMAIN:
-            self.SEARCH_CONSOLE_SITE_URL = self.STOREFRONT_DOMAIN.rstrip('/') + '/'
+            try:
+                p = urllib.parse.urlparse(self.STOREFRONT_DOMAIN)
+                host = (p.netloc or p.path).split("@")[-1].split(":")[0].strip().lower()
+                if host.startswith("www."):
+                    host = host[4:]
+                self.SEARCH_CONSOLE_SITE_URL = f"sc-domain:{host}" if host else self.STOREFRONT_DOMAIN.rstrip('/') + '/'
+            except Exception:
+                self.SEARCH_CONSOLE_SITE_URL = self.STOREFRONT_DOMAIN.rstrip('/') + '/'
 
         # Ensure WEB_APP_URL exists (so Telegram MenuButton still works) even
         # when it was not derivable from WEBHOOK_URL above.

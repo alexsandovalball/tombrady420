@@ -167,7 +167,7 @@ def infer_seo_query_mapping(
 
     # Ambiguous near-ties are skipped. Exact approved SEO vocabulary is allowed
     # because it came from the explicit SEO dictionary.
-    if runner_up and best["score"] < 99 and (best["score"] - runner_up["score"]) < 8:
+    if runner_up and best["score"] < 99 and (best["score"] - runner_up["score"]) < 6:
         logger.debug(
             "[seo_auto_learn] ambiguous query=%r best=%s runner_up=%s",
             query,
