@@ -60,9 +60,24 @@
             {% if seo_categories %}
             <nav aria-label="Catalog categories">
                 {% for item in seo_categories %}
-                <a href="{{ item.url }}" style="display:inline-block;margin:0.25rem 0.5rem;">{{ item.label }}</a>
+                <a href="{{ item.url }}" style="display:inline-block;margin:0.25rem 0.5rem;">{{ item.label }}{% if item.count %} ({{ item.count }}){% endif %}</a>
                 {% endfor %}
             </nav>
+            {% endif %}
+            {% if seo_recent_products %}
+            <section aria-label="Recent products" style="max-width:640px;margin:1rem auto 0;text-align:left;">
+                <h2 style="font-size:1.1rem;text-align:center;">Recent products</h2>
+                <ul>
+                    {% for item in seo_recent_products %}
+                    <li>
+                        <a href="{{ item.url }}">{{ item.title }}</a>
+                        {% if item.category or item.subcategory %}
+                        <small> — {{ item.category }}{% if item.subcategory %} / {{ item.subcategory }}{% endif %}</small>
+                        {% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+            </section>
             {% endif %}
             <p><a href="{{ telegram_deep_link }}">Open in Telegram</a></p>
         </div>
@@ -181,38 +196,6 @@
             <button id="back-btn" class="btn btn-secondary" style="display: none;" data-i18n="btn_back">← Back</button>
         </div>
     </div>
-
-    {% if seo_categories or seo_recent_products %}
-    <section class="seo-home-crawl" aria-labelledby="seo-home-heading">
-        <h2 id="seo-home-heading">Browse current menu</h2>
-        {% if seo_categories %}
-        <nav class="seo-link-cloud" aria-label="Active categories">
-            {% for item in seo_categories %}
-            <a href="{{ item.url }}">{{ item.label }}{% if item.count %} ({{ item.count }}){% endif %}</a>
-            {% endfor %}
-        </nav>
-        {% endif %}
-
-        {% if seo_recent_products %}
-        <h3>Recent products</h3>
-        <ul class="seo-product-links">
-            {% for item in seo_recent_products %}
-            <li>
-                <a href="{{ item.url }}">
-                    <img src="{{ item.image_url }}" alt="{{ item.title }}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
-                    <span>
-                        <strong>{{ item.title }}</strong>
-                        {% if item.category or item.subcategory %}
-                        <small>{{ item.category }}{% if item.subcategory %} / {{ item.subcategory }}{% endif %}</small>
-                        {% endif %}
-                    </span>
-                </a>
-            </li>
-            {% endfor %}
-        </ul>
-        {% endif %}
-    </section>
-    {% endif %}
 
     <script src="/assets/app.js"></script>
 </body>
