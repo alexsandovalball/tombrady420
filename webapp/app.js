@@ -676,13 +676,26 @@
             .filter((item) => item.label && item.url);
     }
 
+    function isSignalContactLink(item) {
+        const label = String(item?.label || '').toLowerCase();
+        const url = String(item?.url || '').toLowerCase();
+        return label.includes('signal') || url.includes('signal.me') || url.includes('signal.org');
+    }
+
+    function prioritizeSignalContactLinks(links) {
+        return [...links].sort((first, second) => Number(isSignalContactLink(second)) - Number(isSignalContactLink(first)));
+    }
+
     function applyContactSettings(data) {
         if (!data) return;
         state.orderContact = data.order_contact || null;
         state.orderLink = data.order_link || null;
-        state.orderLinks = normalizeOrderLinks(data.order_links);
+        state.orderLinks = prioritizeSignalContactLinks(normalizeOrderLinks(data.order_links));
         if (!state.orderLinks.length && state.orderLink) {
-            state.orderLinks = [{ label: t('btn_contacts'), url: state.orderLink }];
+            state.orderLinks = [{
+                label: isSignalContactLink({ url: state.orderLink }) ? 'Signal' : t('btn_contacts'),
+                url: state.orderLink
+            }];
         }
     }
 
@@ -742,7 +755,7 @@
 
             const icon = document.createElement('span');
             icon.className = 'btn-icon';
-            icon.textContent = '📞';
+            icon.textContent = isSignalContactLink(item) ? '📡' : '📞';
 
             const text = document.createElement('span');
             text.className = 'btn-text';
@@ -1403,11 +1416,11 @@
         group.className = 'admin-list-group admin-google-pages';
 
         const heading = document.createElement('h4');
-        heading.textContent = `Google Indexed / Seen Pages (${formatAdminCount(totalCount)})`;
+        heading.textContent = `Google Search Performance Pages (${formatAdminCount(totalCount)})`;
 
         const note = document.createElement('p');
         note.className = 'admin-list-note';
-        note.textContent = `Showing ${formatAdminCount(visibleItems.length)} page URL(s) imported from Google Search Console performance data. The Coverage indexed count can include URLs with no recent search impressions.`;
+        note.textContent = `Showing ${formatAdminCount(visibleItems.length)} URL(s) imported from Google Search Console performance data. These are pages with search impressions/clicks, not the full Coverage indexed/crawled URL list.`;
 
         const list = document.createElement('ul');
         visibleItems.forEach(item => {
@@ -1421,6 +1434,41 @@
             const meta = document.createElement('span');
             meta.className = 'admin-page-meta';
             meta.textContent = `${formatAdminCount(item.clicks)} clicks, ${formatAdminCount(item.impressions)} impressions, ${formatAdminCount(item.query_count)} queries, avg pos ${item.avg_position || '-'}, last ${item.last_seen || '-'}`;
+
+            li.append(link, meta);
+            list.appendChild(li);
+        });
+
+        group.append(heading, note, list);
+        section.appendChild(group);
+    }
+
+    function appendAdminCrawlablePages(section, snapshot) {
+        const pages = snapshot?.pages || [];
+        if (!pages.length) return;
+
+        const group = document.createElement('div');
+        group.className = 'admin-list-group admin-crawlable-pages';
+
+        const heading = document.createElement('h4');
+        heading.textContent = `Current Crawlable Site Pages (${formatAdminCount(snapshot.total || pages.length)})`;
+
+        const note = document.createElement('p');
+        note.className = 'admin-list-note';
+        note.textContent = `Showing ${formatAdminCount(snapshot.shown || pages.length)} URL(s) generated from the current catalog/sitemap. Google may index fewer until it recrawls and accepts them.`;
+
+        const list = document.createElement('ul');
+        pages.forEach(item => {
+            const li = document.createElement('li');
+            const link = document.createElement('a');
+            link.href = item.url || item.path || '/';
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.textContent = `${item.type || 'page'}: ${formatAdminPagePath(item.url || item.path)}`;
+
+            const meta = document.createElement('span');
+            meta.className = 'admin-page-meta';
+            meta.textContent = `${item.title || 'Untitled'}${item.lastmod ? `, lastmod ${item.lastmod}` : ''}`;
 
             li.append(link, meta);
             list.appendChild(li);
@@ -1472,7 +1520,7 @@
         appendAdminMetric(grid, 'Inline queries 24h', formatAdminCount(summary.inline_queries_24h));
         appendAdminMetric(grid, 'No-result searches', formatAdminCount(summary.search_no_result_24h));
         appendAdminMetric(grid, `Google queries ${googleWindowDays}d`, formatAdminCount(seo.search_console_queries_window));
-        appendAdminMetric(grid, `Google pages ${googleWindowDays}d`, formatAdminCount(seo.search_console_pages_window));
+        appendAdminMetric(grid, `Google performance pages ${googleWindowDays}d`, formatAdminCount(seo.search_console_pages_window));
         appendAdminMetric(grid, 'Google clicks/impr.', `${formatAdminCount(seo.search_console_clicks_window)}/${formatAdminCount(seo.search_console_impressions_window)}`);
         appendAdminMetric(grid, 'SEO mappings', formatAdminCount(summary.seo_query_mappings));
         appendAdminMetric(grid, 'IndexNow pending', formatAdminCount(indexnow.pending));
@@ -1518,6 +1566,7 @@
             `${item.event_type}/${item.action}: ${formatAdminCount(item.count)}`
         );
         appendAdminGooglePages(panel, seo);
+        appendAdminCrawlablePages(panel, data.crawlable_pages);
     }
 
     async function loadAdminPanel() {

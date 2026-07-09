@@ -98,7 +98,7 @@
             overflow: hidden;
             border-radius: 8px;
             border: 2px solid rgba(0, 0, 0, .12);
-            background: #000;
+            background: rgba(0, 0, 0, .08);
             color: #fff;
             text-decoration: none;
             font-weight: 700;
@@ -108,6 +108,25 @@
         .seo-thumb.active { border-color: var(--accent, #2481cc); }
         .seo-thumb img,
         .seo-thumb video { width: 100%; height: 100%; object-fit: cover; }
+        .seo-thumb-kind-video { background: #000; }
+        .seo-thumb-kind-photo { background: var(--card-bg, #fff); color: var(--text-secondary, #666); }
+        .seo-thumb-kind-photo::before {
+            content: "Photo";
+            position: absolute;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            font-size: .72rem;
+            font-weight: 700;
+            background: rgba(0, 0, 0, .04);
+        }
+        .seo-thumb-kind-photo img {
+            position: relative;
+            z-index: 1;
+            opacity: 0;
+            transition: opacity .18s ease;
+        }
+        .seo-thumb-kind-photo img.loaded { opacity: 1; }
         .seo-thumb button,
         button.seo-thumb { cursor: pointer; font: inherit; }
         .seo-thumb-video {
@@ -203,7 +222,7 @@
                     {% for media in product_media %}
                     <button
                         type="button"
-                        class="seo-thumb{% if loop.first %} active{% endif %}"
+                        class="seo-thumb seo-thumb-kind-{{ media.type }}{% if loop.first %} active{% endif %}"
                         data-media-index="{{ media.index }}"
                         data-media-type="{{ media.type }}"
                         data-media-url="{{ media.url }}"
@@ -211,7 +230,7 @@
                         aria-label="{{ media.label }}"
                     >
                         {% if media.type == "photo" %}
-                        <img src="{{ media.url }}" alt="{{ media.label }}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
+                        <img class="seo-thumb-image" src="{{ media.url }}" alt="{{ media.label }}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
                         {% elif media.type == "video" %}
                         <video class="seo-thumb-preview" muted playsinline preload="metadata" src="{{ media.url }}"></video>
                         <span class="seo-thumb-video">▶</span>
@@ -403,6 +422,13 @@
 
             thumbs.forEach((thumb) => {
                 thumb.addEventListener('click', () => renderMedia(thumb));
+                const image = thumb.querySelector('img.seo-thumb-image');
+                if (image) {
+                    const markLoaded = () => image.classList.add('loaded');
+                    image.addEventListener('load', markLoaded);
+                    image.addEventListener('error', markLoaded, { once: true });
+                    if (image.complete) markLoaded();
+                }
                 const preview = thumb.querySelector('video.seo-thumb-preview');
                 if (preview) captureVideoPreview(preview);
             });

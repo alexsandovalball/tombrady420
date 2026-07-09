@@ -322,20 +322,23 @@ h1 {
     overflow-wrap: anywhere;
 }
 
-.admin-google-pages {
+.admin-google-pages,
+.admin-crawlable-pages {
     border-top: 1px solid rgba(0, 0, 0, 0.08);
     margin-top: 16px;
     padding-top: 12px;
 }
 
-.admin-google-pages li {
+.admin-google-pages li,
+.admin-crawlable-pages li {
     display: flex;
     flex-direction: column;
     gap: 2px;
     margin-bottom: 8px;
 }
 
-.admin-google-pages a {
+.admin-google-pages a,
+.admin-crawlable-pages a {
     color: var(--tg-theme-link-color, #2481cc);
     font-weight: 600;
     text-decoration: none;

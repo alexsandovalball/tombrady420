@@ -3594,6 +3594,98 @@ async def serve_sitemap_xml(request: Request):
     )
 
 
+async def _crawlable_page_snapshot(limit: int = 500) -> Dict[str, Any]:
+    """Return the current sitemap-like URL set for the admin WebApp summary."""
+    from datetime import date
+
+    limit = max(1, min(int(limit or 500), 1000))
+    today = date.today().isoformat()
+    products = await _catalog_db.get_all_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
+    static_seo_lastmod = _static_seo_lastmod(today)
+    newest_product_lastmod = _newest_lastmod(products, today)
+    home_lastmod = max(newest_product_lastmod, static_seo_lastmod)
+    pages: List[Dict[str, Any]] = [{
+        "url": _absolute_storefront_url("/"),
+        "path": "/",
+        "type": "home",
+        "title": "Homepage",
+        "lastmod": home_lastmod,
+    }]
+
+    active_categories = {
+        str(product.get("category") or "").strip()
+        for product in products
+        if str(product.get("category") or "").strip()
+    }
+    active_subcategories = {
+        (
+            str(product.get("category") or "").strip(),
+            str(product.get("subcategory") or "").strip(),
+        )
+        for product in products
+        if str(product.get("category") or "").strip()
+        and str(product.get("subcategory") or "").strip()
+    }
+
+    for category in get_all_categories():
+        if category not in active_categories:
+            continue
+        category_lastmod = _newest_lastmod(products, static_seo_lastmod, category=category)
+        pages.append({
+            "url": _canonical_category_url(category),
+            "path": _canonical_category_path(category),
+            "type": "category",
+            "title": get_category_display_name(category),
+            "lastmod": category_lastmod,
+        })
+        for subcategory in get_subcategories(category):
+            if (category, subcategory) not in active_subcategories:
+                continue
+            subcategory_lastmod = _newest_lastmod(
+                products,
+                category_lastmod,
+                category=category,
+                subcategory=subcategory,
+            )
+            pages.append({
+                "url": _canonical_subcategory_url(category, subcategory),
+                "path": _canonical_subcategory_path(category, subcategory),
+                "type": "subcategory",
+                "title": f"{get_category_display_name(category)} / {get_subcategory_display_name(subcategory)}",
+                "lastmod": subcategory_lastmod,
+            })
+
+    for page in get_learn_pages():
+        slug = page.get("slug", "")
+        pages.append({
+            "url": _learn_page_url(slug),
+            "path": _learn_page_path(slug),
+            "type": "learn",
+            "title": page.get("title") or slug or "Learn",
+            "lastmod": static_seo_lastmod,
+        })
+
+    for product in products:
+        pid = product.get("id") or product.get("product_id")
+        if pid is None:
+            continue
+        caption = product.get("caption") or ""
+        title = _caption_parts(caption)[0] or f"Product {pid}"
+        pages.append({
+            "url": _canonical_product_url(int(pid), caption),
+            "path": _canonical_product_path(int(pid), caption),
+            "type": "product",
+            "title": title,
+            "lastmod": _product_lastmod(product, today),
+        })
+
+    return {
+        "total": len(pages),
+        "shown": min(len(pages), limit),
+        "pages": pages[:limit],
+    }
+
+
 async def _serve_storefront_index(request: Request, *, include_seo_links: bool = False) -> HTMLResponse:
     """Render the main storefront index.html with default SEO metadata."""
     ctx = _build_seo_context(
@@ -3853,6 +3945,7 @@ async def webapp_admin_status(request: Request):
 
     db_snapshot = await _catalog_db.get_admin_dashboard_snapshot(recent_limit=10)
     seo_snapshot = await _catalog_db.get_search_intelligence_snapshot(limit=150)
+    crawlable_snapshot = await _crawlable_page_snapshot(limit=500)
     indexnow_snapshot = dict(db_snapshot.get("indexnow") or {})
     indexnow_snapshot.update({
         "enabled": _indexnow_enabled(),
@@ -3873,6 +3966,7 @@ async def webapp_admin_status(request: Request):
         "metrics": metrics.snapshot(),
         "webhook_monitor": _webhook_monitor.snapshot(),
         "seo": seo_snapshot,
+        "crawlable_pages": crawlable_snapshot,
         **db_snapshot,
         "indexnow": indexnow_snapshot,
     }
@@ -3940,11 +4034,8 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
         {
             "index": idx,
             "type": media.get("type") or "document",
-            "url": (
-                _product_public_media_path(product_id, idx)
-                if media.get("type") == "photo"
-                else f"/api/catalog/{product_id}/media/{idx}"
-            ),
+            "url": f"/api/catalog/{product_id}/media/{idx}",
+            "seo_url": _product_public_media_path(product_id, idx) if media.get("type") == "photo" else "",
             "label": f"{product_title} media {idx + 1}",
         }
         for idx, media in enumerate(_collect_media_info(product))

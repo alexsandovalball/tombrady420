@@ -6,8 +6,6 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, InputMediaAnimation, InputMediaDocument
 from telegram.ext import ContextTypes
 from database import Database
-from configs.config import Config
-from utils.deeplinks import build_webapp_product_url
 from utils.helpers import send_media_message, is_admin, get_user_lang_async
 from utils.safe_send import safe_send_message
 from utils.media_resolver import MediaResolver, collect_product_media
@@ -65,11 +63,6 @@ def _build_navigation_buttons(back_callback: str, back_label: str) -> list[list[
     return [[InlineKeyboardButton(back_label, callback_data=back_callback)]]
 
 
-def _build_product_action_buttons(product_id: int) -> list[list[InlineKeyboardButton]]:
-    webapp_deep_link = build_webapp_product_url(Config.WEB_APP_URL, product_id)
-    return [[InlineKeyboardButton("🛍️ View in WebApp", url=webapp_deep_link)]] if webapp_deep_link else []
-
-
 def _build_media_fallback_keyboard(
     product_id: int,
     bot_username: str,
@@ -77,9 +70,6 @@ def _build_media_fallback_keyboard(
     user_id: int,
 ):
     buttons = []
-    webapp_deep_link = build_webapp_product_url(Config.WEB_APP_URL, product_id)
-    if webapp_deep_link:
-        buttons.append([InlineKeyboardButton("Open in WebApp", url=webapp_deep_link)])
     if bot_username:
         buttons.append([InlineKeyboardButton("Open inline search", switch_inline_query_current_chat=str(product_id))])
     buttons.append([InlineKeyboardButton("Retry media", callback_data=f"product|{product_id}")])
@@ -291,9 +281,6 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         
         # Create keyboard with back button and admin buttons
         keyboard_buttons = []
-        
-        # Keep bot product view consistent with WebApp/open-web product actions.
-        keyboard_buttons.extend(_build_product_action_buttons(product_id))
 
         # Add navigation buttons
         keyboard_buttons.extend(navigation_buttons)
