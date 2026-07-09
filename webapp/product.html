@@ -87,10 +87,36 @@
             color: #fff;
             text-decoration: none;
             font-weight: 700;
+            padding: 0;
+            appearance: none;
         }
         .seo-thumb.active { border-color: var(--accent, #2481cc); }
-        .seo-thumb img { width: 100%; height: 100%; object-fit: cover; }
-        .seo-thumb-video { font-size: 1.35rem; line-height: 1; }
+        .seo-thumb img,
+        .seo-thumb video { width: 100%; height: 100%; object-fit: cover; }
+        .seo-thumb button,
+        button.seo-thumb { cursor: pointer; font: inherit; }
+        .seo-thumb-video {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.35rem;
+            line-height: 1;
+            text-shadow: 0 2px 6px rgba(0, 0, 0, .85);
+            background: rgba(0, 0, 0, .18);
+        }
+        .seo-thumb-preview { opacity: 0; transition: opacity .25s ease; }
+        .seo-thumb-preview.loaded { opacity: 1; }
+        .seo-media-fallback {
+            display: grid;
+            place-items: center;
+            min-height: 260px;
+            width: 100%;
+            color: #fff;
+            text-decoration: none;
+            font-weight: 700;
+        }
         .seo-kicker { color: var(--text-secondary, #666); margin: 0 0 .35rem; }
         .seo-title { font-size: 1.75rem; line-height: 1.15; margin: 0 0 1rem; }
         .seo-description p { margin: 0 0 .8rem; line-height: 1.55; }
@@ -108,10 +134,6 @@
         .seo-btn.secondary { border: 1px solid var(--border, #ddd); color: var(--text-primary, #111); background: var(--card-bg, #fff); }
         .seo-extra-links { display: flex; flex-wrap: wrap; gap: .5rem; }
         .seo-extra-links a { color: var(--accent, #2481cc); text-decoration: none; border: 1px solid var(--border, #ddd); border-radius: 999px; padding: .42rem .7rem; background: var(--card-bg, #fff); font-weight: 600; }
-        .media-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .85rem; margin: 1.25rem 0; }
-        .media-item { margin: 0; background: var(--card-bg, #fff); border: 1px solid var(--border, #ddd); border-radius: 8px; padding: .5rem; box-shadow: 0 4px 12px rgba(0, 0, 0, .06); }
-        .media-item img, .media-item video { display: block; width: 100%; max-height: 420px; object-fit: contain; border-radius: 6px; background: #000; }
-        .media-item figcaption { margin-top: .45rem; color: var(--text-secondary, #666); font-size: .86rem; }
         .term-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: .45rem; margin: .75rem 0 1.25rem; }
         .term-list li { border: 1px solid var(--border, #ddd); border-radius: 999px; padding: .28rem .65rem; color: var(--text-secondary, #666); font-size: .84rem; background: rgba(0, 0, 0, .03); }
         .related-list { list-style: none; padding: 0; margin: .75rem 0 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .85rem; }
@@ -164,13 +186,24 @@
                 {% if product_media|length > 1 %}
                 <div class="seo-thumb-grid" aria-label="All product media">
                     {% for media in product_media %}
-                    <a class="seo-thumb{% if loop.first %} active{% endif %}" href="#media-{{ media.index }}" aria-label="{{ media.label }}">
+                    <button
+                        type="button"
+                        class="seo-thumb{% if loop.first %} active{% endif %}"
+                        data-media-index="{{ media.index }}"
+                        data-media-type="{{ media.type }}"
+                        data-media-url="{{ media.url }}"
+                        data-media-label="{{ media.label }}"
+                        aria-label="{{ media.label }}"
+                    >
                         {% if media.type == "photo" %}
                         <img src="{{ media.url }}" alt="{{ media.label }}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
-                        {% else %}
+                        {% elif media.type == "video" %}
+                        <video class="seo-thumb-preview" muted playsinline preload="metadata" src="{{ media.url }}"></video>
                         <span class="seo-thumb-video">▶</span>
+                        {% else %}
+                        <span class="seo-thumb-video">Open</span>
                         {% endif %}
-                    </a>
+                    </button>
                     {% endfor %}
                 </div>
                 {% endif %}
@@ -206,25 +239,15 @@
             </section>
         </article>
 
-        {% if product_media %}
-        <section aria-labelledby="media-heading">
-            <h2 id="media-heading">Product media</h2>
-            <div class="media-grid">
+        <noscript>
+            {% if product_media %}
+            <section aria-label="Product media links">
                 {% for media in product_media %}
-                <figure class="media-item" id="media-{{ media.index }}">
-                    {% if media.type == "video" %}
-                    <video controls playsinline preload="metadata" src="{{ media.url }}">
-                        <a href="{{ media.url }}">Open video</a>
-                    </video>
-                    {% else %}
-                    <img src="{{ media.url }}" alt="{{ media.label }}" loading="{% if loop.first %}eager{% else %}lazy{% endif %}" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
-                    {% endif %}
-                    <figcaption>{{ media.label }}</figcaption>
-                </figure>
+                <p><a href="{{ media.url }}">{{ media.label }}</a></p>
                 {% endfor %}
-            </div>
-        </section>
-        {% endif %}
+            </section>
+            {% endif %}
+        </noscript>
 
         {% if seo_side_notes %}
         <section aria-labelledby="related-searches-heading">
@@ -253,5 +276,97 @@
         </section>
         {% endif %}
     </main>
+    <script>
+        (() => {
+            const viewer = document.querySelector('.seo-media-viewer');
+            const thumbs = Array.from(document.querySelectorAll('.seo-thumb[data-media-url]'));
+            if (!viewer || !thumbs.length) return;
+
+            const renderMedia = (thumb) => {
+                const url = thumb.dataset.mediaUrl || '';
+                const type = thumb.dataset.mediaType || 'photo';
+                const label = thumb.dataset.mediaLabel || document.title || 'Product media';
+                viewer.replaceChildren();
+
+                let node;
+                if (type === 'video') {
+                    node = document.createElement('video');
+                    node.controls = true;
+                    node.playsInline = true;
+                    node.setAttribute('playsinline', '');
+                    node.muted = true;
+                    node.autoplay = true;
+                    node.preload = 'auto';
+                    node.src = url;
+                    node.play?.().catch(() => {});
+                } else if (type === 'photo') {
+                    node = document.createElement('img');
+                    node.src = url;
+                    node.alt = label;
+                    node.loading = 'eager';
+                    node.decoding = 'async';
+                    node.onerror = () => {
+                        node.onerror = null;
+                        node.src = '/og-image.png';
+                    };
+                } else {
+                    node = document.createElement('a');
+                    node.href = url;
+                    node.className = 'seo-media-fallback';
+                    node.textContent = 'Open media';
+                }
+
+                viewer.appendChild(node);
+                thumbs.forEach(item => item.classList.toggle('active', item === thumb));
+            };
+
+            const captureVideoPreview = (video) => {
+                let captured = false;
+                const showVideo = () => video.classList.add('loaded');
+                const capture = () => {
+                    if (captured || !video.videoWidth || !video.videoHeight) {
+                        showVideo();
+                        return;
+                    }
+                    try {
+                        const canvas = document.createElement('canvas');
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                        const img = document.createElement('img');
+                        img.src = canvas.toDataURL('image/jpeg', 0.82);
+                        img.alt = 'Video preview';
+                        video.replaceWith(img);
+                        captured = true;
+                    } catch (err) {
+                        showVideo();
+                    }
+                };
+
+                video.addEventListener('loadedmetadata', () => {
+                    try {
+                        const duration = Number.isFinite(video.duration) ? video.duration : 0;
+                        video.currentTime = Math.min(Math.max(duration * 0.08, 0.15), 1.5);
+                    } catch (err) {
+                        showVideo();
+                    }
+                }, { once: true });
+                video.addEventListener('seeked', capture, { once: true });
+                video.addEventListener('loadeddata', () => {
+                    if (video.currentTime > 0.05) capture();
+                    showVideo();
+                });
+                video.addEventListener('error', showVideo, { once: true });
+                setTimeout(showVideo, 1200);
+            };
+
+            thumbs.forEach((thumb) => {
+                thumb.addEventListener('click', () => renderMedia(thumb));
+                const preview = thumb.querySelector('video.seo-thumb-preview');
+                if (preview) captureVideoPreview(preview);
+            });
+        })();
+    </script>
 </body>
 </html>

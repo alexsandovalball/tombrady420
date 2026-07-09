@@ -135,7 +135,7 @@
                         {% else %}
                         <span class="product-thumb placeholder" aria-hidden="true"></span>
                         {% endif %}
-                        <div>
+                        <div class="product-card-body">
                             <div class="product-title">{{ p.title }}</div>
                             <div class="product-badge">
                                 {% if p.subcategory %}{{ p.category }} &rsaquo; {{ p.subcategory_display }}{% else %}{{ p.category }}{% endif %}
@@ -147,7 +147,19 @@
             </ul>
         </section>
 
-        <a class="cta-btn" href="{{ telegram_bot_url }}">Browse Full Catalog in Telegram</a>
+        <section class="cat-actions" aria-label="Order and contact actions">
+            <div class="cat-action-row">
+                {% if order_contact_url %}<a class="cta-btn" href="{{ order_contact_url }}">DM to Order{% if order_contact %}: {{ order_contact }}{% endif %}</a>{% endif %}
+                <a class="cta-btn secondary" href="{{ telegram_bot_url }}">Browse Full Catalog in Telegram</a>
+            </div>
+            {% if order_links %}
+            <div class="cat-extra-links" aria-label="More contact links">
+                {% for link in order_links %}
+                <a href="{{ link.url }}">{{ link.label }}</a>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </section>
 
         <footer class="cat-footer">
             <a href="/">&larr; Back to Homepage</a>

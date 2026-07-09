@@ -13,10 +13,27 @@ from utils.safe_send import safe_send_message
 from utils.media_resolver import MediaResolver, collect_product_media
 from utils.pagination import paginate_items
 from utils.categories import format_category_info
-from translations.translator import translate_text_async, get_translated_string_async
+from translations.translator import translate_text_async
 
 logger = logging.getLogger(__name__)
 db = Database()
+
+_DM_TO_ORDER_TEXT = {
+    "en": "👆 DM TO ORDER: {contact}",
+    "en-US": "👆 DM TO ORDER: {contact}",
+    "de": "👆 Per DM bestellen: {contact}",
+    "nl": "👆 DM om te bestellen: {contact}",
+    "it": "👆 Scrivi in DM per ordinare: {contact}",
+    "es": "👆 Envia DM para ordenar: {contact}",
+    "fr": "👆 Envoyez un DM pour commander: {contact}",
+}
+
+
+def _build_dm_to_order_text(user_lang: str, order_contact: str) -> str:
+    """Keep the order contact literal; usernames should never pass through translation."""
+    lang = (user_lang or "en").strip()
+    template = _DM_TO_ORDER_TEXT.get(lang) or _DM_TO_ORDER_TEXT.get(lang.split("-", 1)[0]) or _DM_TO_ORDER_TEXT["en"]
+    return template.format(contact=order_contact or "")
 
 
 def _build_media_unavailable_text(product: dict, caption: str) -> str:
@@ -370,8 +387,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         # Get order contact
         order_contact = await db.get_order_contact()
         
-        # Get translated DM to order message
-        dm_message = await get_translated_string_async("dm_to_order", user_lang, contact=order_contact)
+        dm_message = _build_dm_to_order_text(user_lang, order_contact)
         
         # Send DM message with keyboard separately
         await safe_send_message(
