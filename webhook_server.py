@@ -2486,6 +2486,50 @@ def _caption_parts(caption: str) -> tuple[str, str, list[str]]:
     return title, desc, body_lines
 
 
+def _dedupe_seo_phrases(values: Iterable[str], limit: int = 12) -> list[str]:
+    seen = set()
+    phrases: list[str] = []
+    for value in values:
+        clean = re.sub(r"\s+", " ", str(value or "")).strip(" \t\r\n-_|,.")
+        key = normalize_term(clean)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        phrases.append(clean[:120])
+        if len(phrases) >= limit:
+            break
+    return phrases
+
+
+def _product_search_phrases(
+    *,
+    title: str,
+    caption: str,
+    category: str = "",
+    subcategory: str = "",
+    seo_terms: Optional[Iterable[str]] = None,
+) -> list[str]:
+    """Build visible, product-specific search phrases for crawlable product pages."""
+    lines = [line.strip() for line in (caption or "").splitlines() if line.strip()]
+    first_line = lines[0] if lines else title
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'/-]*", first_line)
+    first_line_short = " ".join(words[:10])
+    category_display = get_category_display_name(category) if category else ""
+    subcategory_display = get_subcategory_display_name(subcategory) if subcategory else ""
+    taxonomy_label = " ".join(part for part in [subcategory_display, category_display] if part).strip()
+
+    candidates = [
+        first_line,
+        first_line_short,
+        title,
+        f"{title} {taxonomy_label}",
+        f"{first_line_short} {taxonomy_label}",
+    ]
+    for term in list(seo_terms or [])[:4]:
+        candidates.append(f"{title} {term}")
+    return _dedupe_seo_phrases(candidates, limit=10)
+
+
 _SEO_BRAND_NAME = "Top Shelf Cali Plug"
 _SEO_TITLE_MAX_LENGTH = 68
 
@@ -2994,7 +3038,7 @@ async def _infer_missing_product_redirect_path(slug: str) -> str:
 def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
                         product: Optional[dict] = None, deep_link: str = "",
                         keywords: str = "", category: str = "", og_type: str = "website",
-                        schema_title: str = "") -> dict:
+                        schema_title: str = "", search_phrases: Optional[Iterable[str]] = None) -> dict:
     """Build template context dict for SSR SEO pages."""
     if product:
         product_url = url or _STOREFRONT_DOMAIN
@@ -3037,6 +3081,13 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
                 "@type": "PropertyValue",
                 "name": "Media count",
                 "value": str(media_count),
+            })
+        phrase_values = _dedupe_seo_phrases(search_phrases or [], limit=8)
+        if phrase_values:
+            additional_properties.append({
+                "@type": "PropertyValue",
+                "name": "Search phrases",
+                "value": ", ".join(phrase_values),
             })
         if additional_properties:
             product_schema["additionalProperty"] = additional_properties
@@ -3818,6 +3869,14 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
         subcategory=subcategory,
     )
     seo_side_notes = await _seo_side_note_terms(category, subcategory) if category else []
+    product_search_phrases = _product_search_phrases(
+        title=product_title,
+        caption=caption,
+        category=category,
+        subcategory=subcategory,
+        seo_terms=seo_side_notes,
+    )
+    visible_search_terms = _dedupe_seo_phrases([*product_search_phrases, *seo_side_notes], limit=18)
     order_context = await _public_order_context()
     product_media = [
         {
@@ -3866,8 +3925,10 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
         deep_link=deep_link,
         og_type="product",
         schema_title=product_title,
+        search_phrases=product_search_phrases,
         keywords=", ".join(filter(None, [
             product_title,
+            ", ".join(product_search_phrases),
             product.get("category", ""),
             product.get("subcategory", ""),
             ", ".join(seo_side_notes[:8]),
@@ -3892,7 +3953,8 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
     ctx["telegram_bot_url"] = deep_link
     ctx["webapp_product_url"] = webapp_link
     ctx["related_products"] = related_products
-    ctx["seo_side_notes"] = seo_side_notes
+    ctx["seo_side_notes"] = visible_search_terms
+    ctx["product_search_phrases"] = product_search_phrases
     ctx.update(order_context)
     cache_fingerprint = hashlib.sha256(
         json.dumps(
@@ -3900,6 +3962,7 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
                 "caption": caption,
                 "category": category,
                 "subcategory": subcategory,
+                "search_phrases": product_search_phrases,
                 "media": [m.get("type") for m in _collect_media_info(product)],
                 "public_product_bot": public_product_bot_username,
                 "order": order_context.get("order_fingerprint"),
