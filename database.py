@@ -4444,6 +4444,10 @@ class Database:
                     "SELECT COALESCE(SUM(impressions), 0) FROM search_console_query_events WHERE source_date >= ?",
                     (search_console_since,),
                 ),
+                "search_console_pages_window": await scalar(
+                    "SELECT COUNT(DISTINCT page) FROM search_console_query_events WHERE source_date >= ? AND page <> ''",
+                    (search_console_since,),
+                ),
                 "search_console_total_rows": await scalar("SELECT COUNT(*) FROM search_console_query_events"),
                 "search_console_latest_source_date": await value(
                     "SELECT MAX(source_date) FROM search_console_query_events"
@@ -4495,6 +4499,23 @@ class Database:
                     FROM search_console_query_events
                     WHERE source_date >= ?
                     GROUP BY normalized_query
+                    ORDER BY clicks DESC, impressions DESC, last_seen DESC
+                    LIMIT ?
+                    """,
+                    (search_console_since, limit),
+                ),
+                "top_search_console_pages": await rows(
+                    """
+                    SELECT
+                        page,
+                        SUM(clicks) AS clicks,
+                        SUM(impressions) AS impressions,
+                        ROUND(AVG(position), 1) AS avg_position,
+                        MAX(source_date) AS last_seen,
+                        COUNT(DISTINCT normalized_query) AS query_count
+                    FROM search_console_query_events
+                    WHERE source_date >= ? AND page <> ''
+                    GROUP BY page
                     ORDER BY clicks DESC, impressions DESC, last_seen DESC
                     LIMIT ?
                     """,

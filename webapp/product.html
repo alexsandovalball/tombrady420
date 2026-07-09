@@ -47,28 +47,70 @@
             --border: rgba(0, 0, 0, .12);
         }
         .seo-page {
-            max-width: 900px;
+            max-width: 760px;
             margin: 0 auto;
-            padding: 1rem;
+            padding: 1rem .75rem 2rem;
             position: relative;
             z-index: 1;
             min-height: 100vh;
             background: var(--tg-theme-bg-color, #fff);
         }
-        .seo-nav { display: flex; gap: .5rem; flex-wrap: wrap; font-size: .92rem; margin-bottom: 1rem; }
+        .seo-nav { display: flex; gap: .5rem; flex-wrap: wrap; font-size: .92rem; margin-bottom: .9rem; }
         .seo-nav a { color: var(--accent, #2481cc); text-decoration: none; }
         .seo-hero { display: grid; gap: 1rem; }
-        .seo-media { display: block; width: 100%; max-height: 520px; object-fit: cover; border-radius: 8px; background: rgba(0, 0, 0, .04); border: 1px solid var(--border, #ddd); }
+        .seo-media-panel { display: grid; gap: .75rem; }
+        .seo-media-viewer {
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 320px;
+            max-height: 520px;
+            border-radius: 12px;
+            overflow: hidden;
+            background: #000;
+        }
+        .seo-media-viewer img,
+        .seo-media-viewer video { display: block; width: 100%; max-height: 520px; object-fit: contain; background: #000; }
+        .seo-thumb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 8px; }
+        .seo-thumb {
+            position: relative;
+            min-height: 76px;
+            aspect-ratio: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            border-radius: 8px;
+            border: 2px solid rgba(0, 0, 0, .12);
+            background: #000;
+            color: #fff;
+            text-decoration: none;
+            font-weight: 700;
+        }
+        .seo-thumb.active { border-color: var(--accent, #2481cc); }
+        .seo-thumb img { width: 100%; height: 100%; object-fit: cover; }
+        .seo-thumb-video { font-size: 1.35rem; line-height: 1; }
         .seo-kicker { color: var(--text-secondary, #666); margin: 0 0 .35rem; }
-        .seo-title { font-size: 1.9rem; line-height: 1.15; margin: 0 0 1rem; }
+        .seo-title { font-size: 1.75rem; line-height: 1.15; margin: 0 0 1rem; }
         .seo-description p { margin: 0 0 .8rem; line-height: 1.55; }
-        .seo-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin: 1.25rem 0; }
-        .seo-btn { display: inline-block; padding: .75rem 1rem; border-radius: 8px; text-decoration: none; font-weight: 700; }
+        .seo-order-panel {
+            display: grid;
+            gap: .75rem;
+            margin: 1.25rem 0;
+            padding: 1rem;
+            border-radius: 12px;
+            background: rgba(0, 0, 0, .04);
+        }
+        .seo-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .75rem; }
+        .seo-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: .75rem 1rem; border-radius: 12px; text-decoration: none; font-weight: 700; text-align: center; }
         .seo-btn.primary { background: #2f9e55; color: #fff; }
-        .seo-btn.secondary { border: 1px solid var(--border, #ddd); color: var(--text-primary, #111); }
-        .media-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: .85rem; margin: 1.25rem 0; }
-        .media-item { margin: 0; background: var(--card-bg, #fff); border: 1px solid var(--border, #ddd); border-radius: 8px; padding: .5rem; box-shadow: 0 8px 18px rgba(0, 0, 0, .08); }
-        .media-item img, .media-item video { display: block; width: 100%; max-height: 520px; object-fit: contain; border-radius: 6px; background: rgba(0, 0, 0, .04); }
+        .seo-btn.secondary { border: 1px solid var(--border, #ddd); color: var(--text-primary, #111); background: var(--card-bg, #fff); }
+        .seo-extra-links { display: flex; flex-wrap: wrap; gap: .5rem; }
+        .seo-extra-links a { color: var(--accent, #2481cc); text-decoration: none; border: 1px solid var(--border, #ddd); border-radius: 999px; padding: .42rem .7rem; background: var(--card-bg, #fff); font-weight: 600; }
+        .media-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .85rem; margin: 1.25rem 0; }
+        .media-item { margin: 0; background: var(--card-bg, #fff); border: 1px solid var(--border, #ddd); border-radius: 8px; padding: .5rem; box-shadow: 0 4px 12px rgba(0, 0, 0, .06); }
+        .media-item img, .media-item video { display: block; width: 100%; max-height: 420px; object-fit: contain; border-radius: 6px; background: #000; }
         .media-item figcaption { margin-top: .45rem; color: var(--text-secondary, #666); font-size: .86rem; }
         .term-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: .45rem; margin: .75rem 0 1.25rem; }
         .term-list li { border: 1px solid var(--border, #ddd); border-radius: 999px; padding: .28rem .65rem; color: var(--text-secondary, #666); font-size: .84rem; background: rgba(0, 0, 0, .03); }
@@ -100,9 +142,39 @@
         </nav>
 
         <article class="seo-hero">
-            {% if product_image %}
-            <img class="seo-media" src="{{ product_image }}" alt="{{ product_title }}" loading="eager" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
-            {% endif %}
+            <section class="seo-media-panel" aria-label="Product media preview">
+                <div class="seo-media-viewer">
+                    {% if product_media %}
+                        {% for media in product_media %}
+                            {% if loop.first and media.type == "video" %}
+                            <video controls playsinline preload="metadata" src="{{ media.url }}">
+                                <a href="{{ media.url }}">Open video</a>
+                            </video>
+                            {% elif loop.first %}
+                            <img src="{{ media.url }}" alt="{{ product_title }}" loading="eager" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
+                            {% endif %}
+                        {% endfor %}
+                    {% elif product_image %}
+                    <img src="{{ product_image }}" alt="{{ product_title }}" loading="eager" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
+                    {% else %}
+                    <img src="/og-image.png" alt="{{ product_title }}" loading="eager" decoding="async">
+                    {% endif %}
+                </div>
+
+                {% if product_media|length > 1 %}
+                <div class="seo-thumb-grid" aria-label="All product media">
+                    {% for media in product_media %}
+                    <a class="seo-thumb{% if loop.first %} active{% endif %}" href="#media-{{ media.index }}" aria-label="{{ media.label }}">
+                        {% if media.type == "photo" %}
+                        <img src="{{ media.url }}" alt="{{ media.label }}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
+                        {% else %}
+                        <span class="seo-thumb-video">▶</span>
+                        {% endif %}
+                    </a>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </section>
 
             <section>
                 {% if category_display %}
@@ -118,8 +190,18 @@
                     {% endfor %}
                 </div>
 
-                <div class="seo-actions">
-                    {% if telegram_bot_url %}<a class="seo-btn primary" href="{{ telegram_bot_url }}">Get Product in Bot Chat</a>{% endif %}
+                <div class="seo-order-panel">
+                    <div class="seo-actions">
+                        {% if order_contact_url %}<a class="seo-btn primary" href="{{ order_contact_url }}">DM to Order{% if order_contact %}: {{ order_contact }}{% endif %}</a>{% endif %}
+                        {% if telegram_bot_url %}<a class="seo-btn secondary" href="{{ telegram_bot_url }}">Open Product in Bot</a>{% endif %}
+                    </div>
+                    {% if order_links %}
+                    <div class="seo-extra-links" aria-label="More contact links">
+                        {% for link in order_links %}
+                        <a href="{{ link.url }}">{{ link.label }}</a>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
                 </div>
             </section>
         </article>
@@ -129,7 +211,7 @@
             <h2 id="media-heading">Product media</h2>
             <div class="media-grid">
                 {% for media in product_media %}
-                <figure class="media-item">
+                <figure class="media-item" id="media-{{ media.index }}">
                     {% if media.type == "video" %}
                     <video controls playsinline preload="metadata" src="{{ media.url }}">
                         <a href="{{ media.url }}">Open video</a>

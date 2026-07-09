@@ -1345,6 +1345,17 @@
         return `${Math.round(number)}ms`;
     }
 
+    function formatAdminPagePath(page) {
+        const value = String(page || '').trim();
+        if (!value) return '/';
+        try {
+            const url = new URL(value, window.location.origin);
+            return `${url.pathname}${url.search || ''}` || '/';
+        } catch (err) {
+            return value.replace(/^https?:\/\/[^/]+/i, '') || value;
+        }
+    }
+
     function appendAdminMetric(grid, label, value) {
         const item = document.createElement('div');
         item.className = 'admin-metric';
@@ -1360,7 +1371,7 @@
         grid.appendChild(item);
     }
 
-    function appendAdminList(section, title, items, formatter) {
+    function appendAdminList(section, title, items, formatter, limit = 5) {
         if (!items || !items.length) return;
 
         const group = document.createElement('div');
@@ -1371,7 +1382,7 @@
         group.appendChild(heading);
 
         const list = document.createElement('ul');
-        items.slice(0, 5).forEach(item => {
+        items.slice(0, limit).forEach(item => {
             const li = document.createElement('li');
             li.textContent = formatter(item);
             list.appendChild(li);
@@ -1391,6 +1402,7 @@
         const indexnow = data.indexnow || {};
         const metrics = data.metrics?.endpoints || {};
         const activeBots = (data.runtime_bots || []).filter(bot => bot.username);
+        const googleWindowDays = seo.search_console_window_days || 30;
 
         panel.replaceChildren();
         panel.hidden = false;
@@ -1421,8 +1433,9 @@
         appendAdminMetric(grid, 'WebApp events 24h', formatAdminCount(summary.webapp_events_24h));
         appendAdminMetric(grid, 'Inline queries 24h', formatAdminCount(summary.inline_queries_24h));
         appendAdminMetric(grid, 'No-result searches', formatAdminCount(summary.search_no_result_24h));
-        appendAdminMetric(grid, 'Google queries 7d', formatAdminCount(seo.search_console_queries_7d));
-        appendAdminMetric(grid, 'Google clicks/impr.', `${formatAdminCount(seo.search_console_clicks_7d)}/${formatAdminCount(seo.search_console_impressions_7d)}`);
+        appendAdminMetric(grid, `Google queries ${googleWindowDays}d`, formatAdminCount(seo.search_console_queries_window));
+        appendAdminMetric(grid, `Google pages ${googleWindowDays}d`, formatAdminCount(seo.search_console_pages_window));
+        appendAdminMetric(grid, 'Google clicks/impr.', `${formatAdminCount(seo.search_console_clicks_window)}/${formatAdminCount(seo.search_console_impressions_window)}`);
         appendAdminMetric(grid, 'SEO mappings', formatAdminCount(summary.seo_query_mappings));
         appendAdminMetric(grid, 'IndexNow pending', formatAdminCount(indexnow.pending));
         appendAdminMetric(grid, 'IndexNow sent', formatAdminCount(indexnow.submitted));
@@ -1446,6 +1459,10 @@
 
         appendAdminList(panel, 'Top Google Searches', seo.top_search_console_queries || [], item =>
             `${item.query}: ${formatAdminCount(item.clicks)} clicks, ${formatAdminCount(item.impressions)} impressions, avg pos ${item.avg_position || '-'}`
+        );
+        appendAdminList(panel, 'Google Indexed/Seen Pages', seo.top_search_console_pages || [], item =>
+            `${formatAdminPagePath(item.page)}: ${formatAdminCount(item.clicks)} clicks, ${formatAdminCount(item.impressions)} impressions, ${formatAdminCount(item.query_count)} queries, avg pos ${item.avg_position || '-'}`,
+            12
         );
         appendAdminList(panel, 'Top Visitor Locations', data.top_visitor_locations || [], item => {
             const place = [item.city, item.region, item.country].filter(part => part && part !== 'Unknown').join(', ') || 'Unknown';
@@ -1487,7 +1504,7 @@
             renderAdminPanel(data);
             logger.log('admin_monitor', 'loaded', 'success', '', {
                 products: data.summary?.products,
-                google_queries_7d: data.seo?.search_console_queries_7d
+                google_queries_window: data.seo?.search_console_queries_window
             });
         } catch (err) {
             logger.error('admin_monitor', err.message);

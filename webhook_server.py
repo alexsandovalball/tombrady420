@@ -136,9 +136,11 @@ _seo_auto_learn_lock: Optional[asyncio.Lock] = None
 _webhook_401_counter: int = 0
 _orphan_legacy_secret_cache: OrderedDict[tuple[str, str], float] = OrderedDict()
 _orphan_legacy_log_last_seen: Dict[tuple[str, str], float] = {}
+_inactive_webhook_log_last_seen: Dict[str, float] = {}
 _ORPHAN_LEGACY_CACHE_MAX = 2048
 _ORPHAN_LEGACY_CACHE_TTL_SECONDS = 10 * 60
 _ORPHAN_LEGACY_LOG_INTERVAL_SECONDS = 15 * 60
+_INACTIVE_WEBHOOK_LOG_INTERVAL_SECONDS = 15 * 60
 
 WEBAPP_SESSION_COOKIE = "brady_webapp_session"
 WEBAPP_SESSION_TTL_SECONDS = _bounded_int_env("WEBAPP_SESSION_TTL_SECONDS", 3600, 300, 24 * 3600)
@@ -1036,6 +1038,19 @@ def _should_log_orphan_legacy_secret(legacy_index: str, incoming_fp: str, now: O
     if last_seen is not None and now - last_seen < _ORPHAN_LEGACY_LOG_INTERVAL_SECONDS:
         return False
     _orphan_legacy_log_last_seen[key] = now
+    return True
+
+
+def _should_log_inactive_webhook_drain(registry_id: str, now: Optional[float] = None) -> bool:
+    """Throttle inactive bot webhook drain logs without changing the ack/drop behavior."""
+    now = now if now is not None else _time.monotonic()
+    last_seen = _inactive_webhook_log_last_seen.get(registry_id)
+    if last_seen is not None and now - last_seen < _INACTIVE_WEBHOOK_LOG_INTERVAL_SECONDS:
+        return False
+    _inactive_webhook_log_last_seen[registry_id] = now
+    for key, seen_at in list(_inactive_webhook_log_last_seen.items()):
+        if now - seen_at > _INACTIVE_WEBHOOK_LOG_INTERVAL_SECONDS * 4:
+            _inactive_webhook_log_last_seen.pop(key, None)
     return True
 
 
@@ -3799,6 +3814,7 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
         subcategory=subcategory,
     )
     seo_side_notes = await _seo_side_note_terms(category, subcategory) if category else []
+    order_context = await _public_order_context()
     product_media = [
         {
             "index": idx,
@@ -3873,6 +3889,7 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
     ctx["webapp_product_url"] = webapp_link
     ctx["related_products"] = related_products
     ctx["seo_side_notes"] = seo_side_notes
+    ctx.update(order_context)
     cache_fingerprint = hashlib.sha256(
         json.dumps(
             {
@@ -3881,6 +3898,7 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
                 "subcategory": subcategory,
                 "media": [m.get("type") for m in _collect_media_info(product)],
                 "public_product_bot": public_product_bot_username,
+                "order": order_context.get("order_fingerprint"),
                 "updated_at": product.get("updated_at") or product.get("created_at"),
             },
             sort_keys=True,
@@ -3927,6 +3945,7 @@ async def serve_category_page(category_name: str, request: Request):
     # Build keyword list from category + subcategory names
     subcat_names = ", ".join(subcategories) if subcategories else ""
     seo_terms = await _seo_side_note_terms(matched_category)
+    order_context = await _public_order_context()
     keywords = ", ".join(filter(None, [
         display_name,
         subcat_names,
@@ -3977,6 +3996,7 @@ async def serve_category_page(category_name: str, request: Request):
     ctx["seo_terms"] = seo_terms
     ctx["telegram_bot_url"] = f"https://t.me/{_STOREFRONT_BOT_USERNAME}"
     ctx["storefront_domain"] = _STOREFRONT_DOMAIN
+    ctx.update(order_context)
 
     # Build ItemList + BreadcrumbList schema
     item_list_schema = {
@@ -4022,7 +4042,7 @@ async def serve_category_page(category_name: str, request: Request):
         request,
         "category.html",
         ctx,
-        cache_key=f"category:{matched_category}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}",
+        cache_key=f"category:{matched_category}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{order_context.get('order_fingerprint')}",
     )
 
 
@@ -4060,6 +4080,7 @@ async def serve_subcategory_page(category_name: str, subcategory_name: str, requ
     total = await _catalog_db.count_products_by_category_and_subcategory(matched_category, matched_subcategory)
     page_url = _canonical_subcategory_url(matched_category, matched_subcategory)
     seo_terms = await _seo_side_note_terms(matched_category, matched_subcategory)
+    order_context = await _public_order_context()
 
     ctx = _build_seo_context(
         title=_build_subcategory_seo_title(category_display, subcategory_display),
@@ -4099,6 +4120,7 @@ async def serve_subcategory_page(category_name: str, subcategory_name: str, requ
     ctx["seo_terms"] = seo_terms
     ctx["telegram_bot_url"] = f"https://t.me/{_STOREFRONT_BOT_USERNAME}"
     ctx["storefront_domain"] = _STOREFRONT_DOMAIN
+    ctx.update(order_context)
 
     item_list_schema = {
         "@type": "ItemList",
@@ -4143,7 +4165,7 @@ async def serve_subcategory_page(category_name: str, subcategory_name: str, requ
         request,
         "category.html",
         ctx,
-        cache_key=f"subcategory:{matched_category}:{matched_subcategory}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}",
+        cache_key=f"subcategory:{matched_category}:{matched_subcategory}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{order_context.get('order_fingerprint')}",
     )
 
 
@@ -4371,6 +4393,39 @@ def _normalize_contact(contact: str) -> str:
         return ""
     contact = contact.strip()
     return contact[1:] if contact.startswith("@") else contact
+
+
+async def _public_order_context() -> Dict[str, Any]:
+    """Return public order/contact links while keeping /setcontact separate from /setlink."""
+    order_contact = await _catalog_db.get_order_contact()
+    order_links = await _catalog_db.get_order_links()
+    order_contact_username = _normalize_contact(order_contact)
+    order_contact_url = f"https://t.me/{order_contact_username}" if order_contact_username else ""
+    clean_links = [
+        {
+            "label": str(item.get("label") or "Contact")[:40],
+            "url": str(item.get("url") or "")[:500],
+        }
+        for item in order_links or []
+        if item.get("url")
+    ]
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "order_contact": order_contact,
+                "order_links": clean_links,
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()[:12]
+    return {
+        "order_contact": order_contact,
+        "order_contact_username": order_contact_username,
+        "order_contact_url": order_contact_url,
+        "order_links": clean_links,
+        "order_fingerprint": fingerprint,
+    }
 
 
 @app.get("/api/categories")
@@ -5788,11 +5843,12 @@ async def webhook_indexed(request: Request, bot_id: str):
         if is_telegram_ip(client_ip):
             inactive_row = await _catalog_db.get_bot_registry_by_id_any_status(registry_id)
             if inactive_row and inactive_row.get("status") != "active":
-                logger_security.warning(
-                    "[WEBHOOK_INACTIVE_DRAINED] bot_id=%s status=%s action=ack_drop",
-                    registry_id,
-                    inactive_row.get("status"),
-                )
+                if _should_log_inactive_webhook_drain(registry_id):
+                    logger_security.warning(
+                        "[WEBHOOK_INACTIVE_DRAINED] bot_id=%s status=%s action=ack_drop",
+                        registry_id,
+                        inactive_row.get("status"),
+                    )
                 return Response(status_code=status.HTTP_200_OK)
     if bot_id.isdigit() and registry_id:
         legacy_index = int(bot_id)

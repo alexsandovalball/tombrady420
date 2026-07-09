@@ -60,7 +60,7 @@ class ConfigClass:
         self.INDEXNOW_INTERVAL_SECONDS: int = 900
         self.INDEXNOW_BATCH_SIZE: int = 100
         self.INDEXNOW_BOOTSTRAP_ON_STARTUP: bool = True
-        self.INDEXNOW_BOOTSTRAP_LIMIT: int = 50
+        self.INDEXNOW_BOOTSTRAP_LIMIT: int = 500
         self.INDEXNOW_CHANGE_LOOKBACK_HOURS: int = 48
         self._load_config()
     
@@ -293,7 +293,7 @@ class ConfigClass:
         )
         self.INDEXNOW_BOOTSTRAP_LIMIT = max(
             0,
-            min(250, config('INDEXNOW_BOOTSTRAP_LIMIT', default=50, cast=int)),
+            min(1000, config('INDEXNOW_BOOTSTRAP_LIMIT', default=500, cast=int)),
         )
         self.INDEXNOW_CHANGE_LOOKBACK_HOURS = max(
             1,

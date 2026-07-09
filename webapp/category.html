@@ -57,9 +57,9 @@
             --border: rgba(0, 0, 0, .12);
         }
         .cat-page {
-            max-width: 800px;
+            max-width: 760px;
             margin: 0 auto;
-            padding: 1rem;
+            padding: 1rem .75rem 2rem;
             position: relative;
             z-index: 1;
             min-height: 100vh;
@@ -72,17 +72,23 @@
         .cat-intro { color: var(--text-secondary, #666); line-height: 1.5; margin: -0.75rem 0 1.25rem; }
         .term-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.45rem; margin: 0 0 1.5rem; }
         .term-list li { border: 1px solid var(--border, #ddd); border-radius: 999px; padding: 0.28rem 0.65rem; color: var(--text-secondary, #666); font-size: 0.84rem; background: rgba(0, 0, 0, .03); }
-        .subcat-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.5rem; }
-        .subcat-list li a { display: block; background: var(--card-bg, #fff); border: 1px solid var(--border, #ddd); border-radius: 8px; padding: 0.4rem 0.8rem; font-size: 0.9rem; color: var(--text-primary, #111); text-decoration: none; }
-        .product-list { list-style: none; padding: 0; }
-        .product-list li { border-bottom: 1px solid var(--border, #ddd); padding: 0.75rem 0; }
-        .product-list li a { text-decoration: none; color: var(--text-primary, #111); display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: .75rem; align-items: center; }
+        .subcat-list { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.5rem; margin-bottom: 1.5rem; }
+        .subcat-list li a { display: block; background: rgba(0, 0, 0, .04); border: 1px solid var(--border, #ddd); border-radius: 12px; padding: 0.75rem 0.9rem; font-size: 0.95rem; font-weight: 600; color: var(--text-primary, #111); text-decoration: none; }
+        .product-list { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+        .product-list li { padding: 0; min-width: 0; }
+        .product-list li a { text-decoration: none; color: var(--text-primary, #111); display: flex; flex-direction: column; height: 100%; overflow: hidden; background: rgba(0, 0, 0, .04); border-radius: 12px; }
         .product-list li a:hover { color: var(--accent, #2481cc); }
-        .cat-page img.product-thumb, .product-thumb { display: block; width: 72px; height: 72px; border-radius: 8px; object-fit: cover; background: rgba(0, 0, 0, .04); border: 1px solid var(--border, #ddd); opacity: 1; }
+        .cat-page img.product-thumb, .product-thumb { display: block; width: 100%; aspect-ratio: 4 / 3; border-radius: 0; object-fit: cover; background: rgba(0, 0, 0, .04); border: 0; opacity: 1; }
         .product-thumb.placeholder { display: block; }
+        .product-card-body { padding: 12px; display: flex; flex-direction: column; gap: 6px; }
         .product-title { font-weight: 600; }
         .product-badge { font-size: 0.8rem; color: var(--text-secondary, #666); margin-top: 0.2rem; }
-        .cta-btn { display: inline-block; margin: 1.5rem 0; padding: 0.75rem 1.5rem; background: #2f9e55; color: #fff; border-radius: 8px; text-decoration: none; font-weight: 600; }
+        .cat-actions { display: grid; gap: .75rem; margin: 1.5rem 0; padding: 1rem; border-radius: 12px; background: rgba(0, 0, 0, .04); }
+        .cat-action-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .75rem; }
+        .cta-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: 0.75rem 1rem; background: #2f9e55; color: #fff; border-radius: 12px; text-decoration: none; font-weight: 700; text-align: center; }
+        .cta-btn.secondary { background: var(--card-bg, #fff); color: var(--text-primary, #111); border: 1px solid var(--border, #ddd); }
+        .cat-extra-links { display: flex; flex-wrap: wrap; gap: .5rem; }
+        .cat-extra-links a { color: var(--accent, #2481cc); text-decoration: none; border: 1px solid var(--border, #ddd); border-radius: 999px; padding: .42rem .7rem; background: var(--card-bg, #fff); font-weight: 600; }
         .cat-footer { margin-top: 2rem; border-top: 1px solid var(--border, #ddd); padding-top: 1rem; font-size: 0.9rem; }
         .cat-footer a { color: var(--accent, #2481cc); text-decoration: none; }
     </style>
