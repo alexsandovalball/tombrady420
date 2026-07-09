@@ -1577,7 +1577,7 @@ async def _validate_or_repair_webhook(
     slot_id = slot.slot_id if slot else _slot_id_for_bot_index(bot_index)
     slot_name = slot.slot_name if slot else f"bot_token_{slot_id}"
     lock_owner = f"{os.getenv('RENDER_INSTANCE_ID') or os.getenv('HOSTNAME') or os.getpid()}:{slot_name}"
-    expected_url = f"{webhook_url}{webhook_path}"
+    expected_url = f"{webhook_url.rstrip('/')}{webhook_path}"
     try:
         info = await bot.get_webhook_info()
         current_url = getattr(info, "url", "") or ""
@@ -2158,6 +2158,8 @@ async def lifespan(app: FastAPI):
                 logger.info(f"File ID cache contains {cache_size} entries")
         except Exception as exc:
             logger.warning("Could not read file ID cache size during startup: %s", exc)
+
+    await _log_setup_check()
 
     # Start background maintenance tasks
     _visitor_event_queue = asyncio.Queue(maxsize=_VISITOR_EVENT_QUEUE_MAX)
@@ -5986,6 +5988,107 @@ async def webhook_indexed(request: Request, bot_id: str):
         return Response(status_code=status.HTTP_404_NOT_FOUND)
     logger.info("Received webhook request for registry bot %s", registry_id)
     return await process_webhook_request(request, registry_id)
+
+
+async def _build_setup_check() -> Dict[str, Any]:
+    """Return a safe, token-free deployment readiness report for reused installs."""
+    warnings: List[str] = []
+    notes: List[str] = []
+    running_bots = get_bot_usernames()
+    product_count = 0
+    public_product_count = 0
+    active_categories = 0
+    order_contact = ""
+
+    try:
+        product_count = await _catalog_db.count_products()
+        public_product_count = await _catalog_db.count_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
+        category_counts, _, _ = await _catalog_db.get_category_summary(EXCLUDED_FROM_ALL_PRODUCTS)
+        active_categories = sum(1 for count in category_counts.values() if count > 0)
+        order_contact = await _catalog_db.get_order_contact()
+    except Exception as exc:
+        warnings.append(f"Database check failed: {exc}")
+
+    webhook_url = (Config.WEBHOOK_URL or "").rstrip("/")
+    parsed_webhook = urllib.parse.urlparse(webhook_url)
+    if not running_bots:
+        warnings.append("No bot applications are running. Check BOT_TOKEN/BOT_TOKENS.")
+    if Config.USE_WEBHOOK and not webhook_url:
+        warnings.append("USE_WEBHOOK is true but WEBHOOK_URL is missing.")
+    if webhook_url and parsed_webhook.scheme != "https":
+        warnings.append("WEBHOOK_URL should be an HTTPS public Render URL.")
+    if webhook_url and parsed_webhook.path not in {"", "/"}:
+        warnings.append("WEBHOOK_URL should be only the origin, not a path. Example: https://your-app.onrender.com")
+    if Config.ADMIN_IDS:
+        notes.append("Each admin must open the bot and press Start before Telegram accepts admin command setup.")
+    else:
+        warnings.append("ADMIN_IDS is empty; no Telegram admin account is configured.")
+    if not Config.CHANNEL_ID and not Config.CHANNEL_USERNAME:
+        warnings.append("No channel is configured, so automatic product ingestion cannot monitor a source channel.")
+    if product_count == 0:
+        warnings.append("Catalog database has zero products. The WebApp will open, but there is nothing to display yet.")
+    if not order_contact:
+        warnings.append("Order contact is not set. Use /setcontact from the admin bot.")
+    if Path("/data").exists() and not str(Config.DB_PATH).startswith("/data/"):
+        warnings.append("Render persistent disk exists, but DB_PATH is not under /data; data may reset on deploy.")
+
+    return {
+        "status": "ok" if running_bots and Config.WEB_APP_URL and not warnings else "check_warnings",
+        "bots": {
+            "configured_count": len(Config.BOT_TOKENS),
+            "running_count": len(running_bots),
+            "running_usernames": running_bots,
+        },
+        "admin": {
+            "configured_count": len(Config.ADMIN_IDS),
+            "must_start_bot_first": True,
+        },
+        "catalog": {
+            "total_products": product_count,
+            "public_products": public_product_count,
+            "active_categories": active_categories,
+            "order_contact_configured": bool(order_contact),
+        },
+        "urls": {
+            "webhook_url": webhook_url or None,
+            "web_app_url": Config.WEB_APP_URL,
+            "storefront_domain": _STOREFRONT_DOMAIN or Config.STOREFRONT_DOMAIN,
+        },
+        "render": {
+            "persistent_disk_available": Path("/data").exists(),
+            "database_on_persistent_disk": str(Config.DB_PATH).startswith("/data/"),
+        },
+        "warnings": warnings,
+        "notes": notes,
+    }
+
+
+async def _log_setup_check() -> None:
+    try:
+        report = await _build_setup_check()
+    except Exception as exc:
+        logger.warning("[setup_check] failed: %s", exc, exc_info=True)
+        return
+    logger.info(
+        "[setup_check] bots=%s/%s products=%s public_products=%s active_categories=%s warnings=%s notes=%s",
+        report["bots"]["running_count"],
+        report["bots"]["configured_count"],
+        report["catalog"]["total_products"],
+        report["catalog"]["public_products"],
+        report["catalog"]["active_categories"],
+        len(report["warnings"]),
+        len(report["notes"]),
+    )
+    for warning in report["warnings"]:
+        logger.warning("[setup_check] %s", warning)
+    for note in report["notes"]:
+        logger.info("[setup_check] %s", note)
+
+
+@app.get("/setup-check")
+async def setup_check():
+    """Token-free deployment readiness report for first-time Render installs."""
+    return await _build_setup_check()
 
 
 @app.get("/health")

@@ -276,6 +276,7 @@
             all_in_category: 'All in {0}',
             items_count: '{0} items',
             no_products: 'No products available in this category',
+            catalog_empty: 'No products have been added yet. Ask the admin to add products from the Telegram channel, then refresh.',
             showing_range: 'Showing {0}-{1} of {2}',
             page_info: 'Page {0} / {1}',
             btn_prev: '◀ Prev',
@@ -2214,6 +2215,18 @@
 
         // Use DocumentFragment for batch DOM operations - improves rendering performance
         const fragment = document.createDocumentFragment();
+
+        if (state.allProductsCount <= 0) {
+            const emptyState = document.createElement('div');
+            emptyState.className = 'empty-state';
+            emptyState.innerHTML = `
+                <h3>${t('search_no_results')}</h3>
+                <p>${t('catalog_empty')}</p>
+            `;
+            grid.appendChild(emptyState);
+            setStatus(t('catalog_empty'));
+            return;
+        }
 
         // Add "All Products" button
         if (state.allProductsCount > 0) {

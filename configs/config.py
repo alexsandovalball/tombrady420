@@ -2,6 +2,7 @@
 Configuration management using python-decouple for secure environment variable handling.
 """
 import logging
+import os
 import urllib.parse
 from pathlib import Path
 from typing import List, Optional
@@ -63,6 +64,16 @@ class ConfigClass:
         self.INDEXNOW_BOOTSTRAP_LIMIT: int = 500
         self.INDEXNOW_CHANGE_LOOKBACK_HOURS: int = 48
         self._load_config()
+
+    @staticmethod
+    def _clean_url(value: Optional[str], *, strip_trailing_slash: bool = True) -> Optional[str]:
+        """Trim deployment URLs so reused Render configs do not create // paths."""
+        if not value:
+            return None
+        cleaned = str(value).strip()
+        if not cleaned:
+            return None
+        return cleaned.rstrip('/') if strip_trailing_slash else cleaned
     
     def _load_config(self):
         """Load configuration from environment variables."""
@@ -136,9 +147,12 @@ class ConfigClass:
         
         # Load optional configurations
         self.CHANNEL_USERNAME = config('CHANNEL_USERNAME', default=None)
-        self.DB_PATH = config('DB_PATH', default='catalog.db')
+        default_db_path = '/data/catalog.db' if Path('/data').exists() else 'catalog.db'
+        self.DB_PATH = config('DB_PATH', default=default_db_path)
         self.USE_WEBHOOK = config('USE_WEBHOOK', default=False, cast=bool)
-        self.WEBHOOK_URL = config('WEBHOOK_URL', default=None)
+        self.WEBHOOK_URL = self._clean_url(
+            config('WEBHOOK_URL', default=None) or os.getenv('RENDER_EXTERNAL_URL')
+        )
         self.ORDER_CONTACT = config('ORDER_CONTACT', default=None)
         self.ADMIN_DASHBOARD_ENABLED = config('ADMIN_DASHBOARD_ENABLED', default=False, cast=bool)
         self.ADMIN_DASHBOARD_TOKEN = config('ADMIN_DASHBOARD_TOKEN', default=None)
@@ -221,15 +235,15 @@ class ConfigClass:
         self.EXTERNAL_SEO_SIGNALS_FILE = config('EXTERNAL_SEO_SIGNALS_FILE', default=None)
         
         # Load WEB_APP_URL - if not set, derive from WEBHOOK_URL (existing behaviour)
-        self.WEB_APP_URL = config('WEB_APP_URL', default=None)
+        self.WEB_APP_URL = self._clean_url(config('WEB_APP_URL', default=None), strip_trailing_slash=False)
         if not self.WEB_APP_URL and self.WEBHOOK_URL:
-            self.WEB_APP_URL = self.WEBHOOK_URL.rstrip('/') + '/webapp/index.html'
+            self.WEB_APP_URL = self.WEBHOOK_URL + '/webapp/index.html'
 
         # Load STOREFRONT_DOMAIN - canonical public origin for product deep links.
         # Falls back to CUSTOM_DOMAIN (legacy alias), then derives the origin
         # (scheme://host) from WEB_APP_URL or WEBHOOK_URL so that deployments
         # where only WEBHOOK_URL is set still get a correct storefront origin.
-        self.STOREFRONT_DOMAIN = (
+        self.STOREFRONT_DOMAIN = self._clean_url(
             config('STOREFRONT_DOMAIN', default=None)
             or config('CUSTOM_DOMAIN', default=None)
         )
@@ -317,16 +331,27 @@ class ConfigClass:
         if not self.ADMIN_IDS:
             errors.append("ADMIN_IDS is required. Add at least one admin user ID. Get your ID from @userinfobot.")
         
-        # Validate channel configuration
+        # Channel monitoring is optional: without it the bot still starts, but
+        # product ingestion from a source channel is disabled.
         if not self.CHANNEL_ID and not self.CHANNEL_USERNAME:
-            errors.append(
-                "Either CHANNEL_ID or CHANNEL_USERNAME must be set. "
-                "Get your channel ID by forwarding a message from your channel to @userinfobot."
+            logger.warning(
+                "No CHANNEL_ID or CHANNEL_USERNAME set. The bot will start, "
+                "but automatic product ingestion from a channel is disabled."
             )
         
         # Validate webhook configuration
         if self.USE_WEBHOOK and not self.WEBHOOK_URL:
-            errors.append("WEBHOOK_URL is required when USE_WEBHOOK is true.")
+            errors.append(
+                "WEBHOOK_URL is required when USE_WEBHOOK is true. "
+                "On Render, set it to your service origin, e.g. https://your-app.onrender.com"
+            )
+        if self.WEBHOOK_URL:
+            parsed_webhook = urllib.parse.urlparse(self.WEBHOOK_URL)
+            if parsed_webhook.path not in {"", "/"}:
+                logger.warning(
+                    "WEBHOOK_URL should be the site origin only, not a webhook path: %s",
+                    self.WEBHOOK_URL,
+                )
         
         # If there are any errors, raise a comprehensive error message
         if errors:
@@ -347,6 +372,9 @@ class ConfigClass:
         logger.info(f"  - Channel: {self.CHANNEL_ID or self.CHANNEL_USERNAME}")
         logger.info(f"  - Database: {self.DB_PATH}")
         logger.info(f"  - Webhook mode: {self.USE_WEBHOOK}")
+        logger.info(f"  - Webhook URL: {self.WEBHOOK_URL or 'not configured'}")
+        logger.info(f"  - WebApp URL: {self.WEB_APP_URL or 'not configured'}")
+        logger.info(f"  - Storefront domain: {self.STOREFRONT_DOMAIN or 'not configured'}")
 
 
 # Create a singleton instance

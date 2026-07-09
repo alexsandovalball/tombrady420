@@ -25,21 +25,40 @@ Use polling mode only for local single-bot development:
 python main.py
 ```
 
-## Required Environment
+## Minimum Environment
 
 ```text
-BOT_TOKENS=token1,token2,token3
+BOT_TOKEN=primary-token
 ADMIN_IDS=8589411468
-CHANNEL_ID=-100...
 USE_WEBHOOK=true
 WEBHOOK_URL=https://your-render-service.onrender.com
-STOREFRONT_DOMAIN=https://your-custom-domain.com
 DB_PATH=/data/catalog.db
 ```
+
+`STOREFRONT_DOMAIN` is only required when you have a custom domain. If it is
+missing, the app derives public URLs from `WEBHOOK_URL`. On Render, `DB_PATH`
+defaults to `/data/catalog.db` automatically when a persistent disk is mounted.
 
 `BOT_TOKENS` is exclusive when set. Do not also rely on stale `BOT_TOKEN_N`
 values. If `BOT_TOKENS` is absent, individual `BOT_TOKEN`, `BOT_TOKEN_`, and
 `BOT_TOKEN_1..10` values are loaded.
+
+## Reuse Checklist
+
+For a fresh Render project:
+
+1. Set `BOT_TOKEN`, `ADMIN_IDS`, `USE_WEBHOOK=true`, and `WEBHOOK_URL`.
+2. Add either `CHANNEL_ID` or `CHANNEL_USERNAME` if the bot should ingest
+   products from a channel.
+3. Mount a persistent disk at `/data`.
+4. Deploy, then open `https://your-render-url/setup-check`.
+5. Open the new Telegram bot as each admin and press Start. Until that happens,
+   Telegram may log `Chat not found` while setting admin commands.
+6. Add products through the configured channel/admin flow. A brand-new database
+   has zero products, so the WebApp opens but cannot show a catalog yet.
+
+The app repairs Telegram webhooks automatically on startup. You normally do not
+need to run a webhook setup script manually.
 
 The browser admin dashboard is disabled by default so scanners cannot discover
 the dashboard shell at `/admin`. Prefer Telegram `/adminstatus`. To expose the
