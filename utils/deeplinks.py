@@ -9,6 +9,11 @@ def build_bot_product_url(product_id: int, bot_username: str) -> Optional[str]:
     return f"https://t.me/{bot_username}?start=product_{product_id}" if bot_username else None
 
 
+def build_bot_start_url(bot_username: str, payload: str = "start") -> Optional[str]:
+    """Return a Telegram bot start deep link with a stable payload."""
+    return f"https://t.me/{bot_username}?start={payload}" if bot_username else None
+
+
 def build_webapp_product_url(web_app_url: str, product_id: int) -> Optional[str]:
     """Return a WebApp URL that opens directly to a product detail view."""
     if not web_app_url or product_id is None:

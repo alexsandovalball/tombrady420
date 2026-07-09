@@ -136,6 +136,8 @@
         .seo-extra-links a { color: var(--accent, #2481cc); text-decoration: none; border: 1px solid var(--border, #ddd); border-radius: 999px; padding: .42rem .7rem; background: var(--card-bg, #fff); font-weight: 600; }
         .term-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: .45rem; margin: .75rem 0 1.25rem; }
         .term-list li { border: 1px solid var(--border, #ddd); border-radius: 999px; padding: .28rem .65rem; color: var(--text-secondary, #666); font-size: .84rem; background: rgba(0, 0, 0, .03); }
+        .seo-search-footer { margin-top: 1.75rem; border-top: 1px solid var(--border, #ddd); padding-top: 1rem; }
+        .seo-search-footer h2 { font-size: 1rem; margin: 0 0 .75rem; color: var(--text-secondary, #666); }
         .related-list { list-style: none; padding: 0; margin: .75rem 0 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .85rem; }
         .related-card { min-width: 0; }
         .related-card a {
@@ -249,17 +251,6 @@
             {% endif %}
         </noscript>
 
-        {% if seo_side_notes %}
-        <section aria-labelledby="related-searches-heading">
-            <h2 id="related-searches-heading">Related searches</h2>
-            <ul class="term-list">
-                {% for term in seo_side_notes %}
-                <li>{{ term }}</li>
-                {% endfor %}
-            </ul>
-        </section>
-        {% endif %}
-
         {% if related_products %}
         <section aria-labelledby="related-heading">
             <h2 id="related-heading">Related products</h2>
@@ -271,6 +262,17 @@
                         <span class="related-title">{{ item.title }}</span>
                     </a>
                 </li>
+                {% endfor %}
+            </ul>
+        </section>
+        {% endif %}
+
+        {% if seo_side_notes %}
+        <section class="seo-search-footer" aria-labelledby="related-searches-heading">
+            <h2 id="related-searches-heading">Related searches</h2>
+            <ul class="term-list">
+                {% for term in seo_side_notes %}
+                <li>{{ term }}</li>
                 {% endfor %}
             </ul>
         </section>

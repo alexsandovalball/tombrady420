@@ -12,7 +12,7 @@ from utils.helpers import send_media_message, is_admin, get_user_lang_async
 from utils.safe_send import safe_send_message
 from utils.media_resolver import MediaResolver, collect_product_media
 from utils.pagination import paginate_items
-from utils.categories import format_category_info
+from utils.categories import format_category_info, get_catalog_ui_text
 from translations.translator import translate_text_async
 
 logger = logging.getLogger(__name__)
@@ -65,6 +65,11 @@ def _build_navigation_buttons(back_callback: str, back_label: str) -> list[list[
     return [[InlineKeyboardButton(back_label, callback_data=back_callback)]]
 
 
+def _build_product_action_buttons(product_id: int) -> list[list[InlineKeyboardButton]]:
+    webapp_deep_link = build_webapp_product_url(Config.WEB_APP_URL, product_id)
+    return [[InlineKeyboardButton("🛍️ View in WebApp", url=webapp_deep_link)]] if webapp_deep_link else []
+
+
 def _build_media_fallback_keyboard(
     product_id: int,
     bot_username: str,
@@ -102,9 +107,14 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         # Get the most recent pagination state to determine where user was browsing
         latest_state = await db.get_latest_pagination_state(user_id)
         
+        # Get user's language preference
+        user_lang = await get_user_lang_async(user_id)
+        back_to_catalog_label = get_catalog_ui_text("button_back_to_categories", user_lang)
+        back_to_subcategory_label = get_catalog_ui_text("button_back_to_subcategories", user_lang)
+
         # Determine appropriate back button based on context
         back_callback = "menu|1"  # Default fallback
-        back_label = "🔙 Back to catalog"
+        back_label = back_to_catalog_label
         
         if latest_state and "state_type" in latest_state and "page" in latest_state:
             state_type = latest_state["state_type"]
@@ -120,11 +130,11 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     category = parts[1]
                     subcategory = parts[2]
                     back_callback = f"subcategory|{category}|{subcategory}|{page}"
-                    back_label = "🔙 Back to subcategory"
+                    back_label = back_to_subcategory_label
                 else:
                     # Fallback if format is unexpected
                     back_callback = "menu|1"
-                    back_label = "🔙 Back to catalog"
+                    back_label = back_to_catalog_label
             # Check if user was browsing a category
             elif state_type.startswith("category_"):
                 # Extract category from state_type: category_{categoryname}
@@ -132,11 +142,11 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 if len(parts) >= 2:
                     category = parts[1]
                     back_callback = f"category|{category}|{page}"
-                    back_label = "🔙 Back to category"
+                    back_label = back_to_catalog_label
                 else:
                     # Fallback
                     back_callback = "menu|1"
-                    back_label = "🔙 Back to catalog"
+                    back_label = back_to_catalog_label
             elif state_type == "search":
                 # User was searching - use the query from the state
                 if query:
@@ -150,15 +160,15 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     back_label = "🔙 Back to search results"
                 else:
                     back_callback = "menu|1"
-                    back_label = "🔙 Back to catalog"
+                    back_label = back_to_catalog_label
             elif state_type == "catalog":
                 # User was browsing all products
                 back_callback = f"menu|{page}"
-                back_label = "🔙 Back to catalog"
+                back_label = back_to_catalog_label
             else:
                 # Default fallback
                 back_callback = "menu|1"
-                back_label = "🔙 Back to catalog"
+                back_label = back_to_catalog_label
         else:
             # No pagination state found - user likely came from notification
             # Use product's category/subcategory to determine back button
@@ -168,17 +178,14 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
             if product_category and product_subcategory:
                 # Product has both category and subcategory - go to subcategory view
                 back_callback = f"subcategory|{product_category}|{product_subcategory}|1"
-                back_label = "🔙 Back to subcategory"
+                back_label = back_to_subcategory_label
             elif product_category:
                 # Product has only category - go to category view
                 back_callback = f"category|{product_category}|1"
-                back_label = "🔙 Back to category"
+                back_label = back_to_catalog_label
             # else: keep default "menu|1"
 
         navigation_buttons = _build_navigation_buttons(back_callback, back_label)
-        
-        # Get user's language preference
-        user_lang = await get_user_lang_async(user_id)
         
         # Get caption and translate it
         caption = product.get("caption") or "No description"
@@ -285,6 +292,9 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         # Create keyboard with back button and admin buttons
         keyboard_buttons = []
         
+        # Keep bot product view consistent with WebApp/open-web product actions.
+        keyboard_buttons.extend(_build_product_action_buttons(product_id))
+
         # Add navigation buttons
         keyboard_buttons.extend(navigation_buttons)
         

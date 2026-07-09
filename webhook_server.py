@@ -76,7 +76,7 @@ from utils.resource_manager import (
 from utils.webhook_identity import BotSlot, build_bot_slot, build_registry_webhook_secret
 from middleware.request_deduplicator import RequestDeduplicator
 from configs.telegram_ip_whitelist import is_telegram_ip
-from utils.deeplinks import build_bot_product_url, build_webapp_product_url
+from utils.deeplinks import build_bot_product_url, build_bot_start_url, build_webapp_product_url
 from utils.access_control import (
     is_user_blocked_cached,
     record_user_ip_debounced,
@@ -2464,6 +2464,10 @@ def _public_product_bot_url(product_id: int) -> Optional[str]:
     return build_bot_product_url(product_id, _public_product_bot_username())
 
 
+def _public_catalog_bot_url() -> str:
+    return build_bot_start_url(_public_product_bot_username(), "start") or f"https://t.me/{_STOREFRONT_BOT_USERNAME}"
+
+
 def _learn_page_path(slug: str) -> str:
     return f"/learn/{_generate_slug(slug)}"
 
@@ -3994,7 +3998,8 @@ async def serve_category_page(category_name: str, request: Request):
     ctx["parent_category_url"] = ""
     ctx["seo_intro"] = build_taxonomy_intro(matched_category, total=total)
     ctx["seo_terms"] = seo_terms
-    ctx["telegram_bot_url"] = f"https://t.me/{_STOREFRONT_BOT_USERNAME}"
+    public_catalog_bot_url = _public_catalog_bot_url()
+    ctx["telegram_bot_url"] = public_catalog_bot_url
     ctx["storefront_domain"] = _STOREFRONT_DOMAIN
     ctx.update(order_context)
 
@@ -4042,7 +4047,7 @@ async def serve_category_page(category_name: str, request: Request):
         request,
         "category.html",
         ctx,
-        cache_key=f"category:{matched_category}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{order_context.get('order_fingerprint')}",
+        cache_key=f"category:{matched_category}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{public_catalog_bot_url}:{order_context.get('order_fingerprint')}",
     )
 
 
@@ -4118,7 +4123,8 @@ async def serve_subcategory_page(category_name: str, subcategory_name: str, requ
     ctx["parent_category_url"] = _canonical_category_path(matched_category)
     ctx["seo_intro"] = build_taxonomy_intro(matched_category, matched_subcategory, total=total)
     ctx["seo_terms"] = seo_terms
-    ctx["telegram_bot_url"] = f"https://t.me/{_STOREFRONT_BOT_USERNAME}"
+    public_catalog_bot_url = _public_catalog_bot_url()
+    ctx["telegram_bot_url"] = public_catalog_bot_url
     ctx["storefront_domain"] = _STOREFRONT_DOMAIN
     ctx.update(order_context)
 
@@ -4165,7 +4171,7 @@ async def serve_subcategory_page(category_name: str, subcategory_name: str, requ
         request,
         "category.html",
         ctx,
-        cache_key=f"subcategory:{matched_category}:{matched_subcategory}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{order_context.get('order_fingerprint')}",
+        cache_key=f"subcategory:{matched_category}:{matched_subcategory}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{public_catalog_bot_url}:{order_context.get('order_fingerprint')}",
     )
 
 

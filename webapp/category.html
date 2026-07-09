@@ -72,6 +72,8 @@
         .cat-intro { color: var(--text-secondary, #666); line-height: 1.5; margin: -0.75rem 0 1.25rem; }
         .term-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 0.45rem; margin: 0 0 1.5rem; }
         .term-list li { border: 1px solid var(--border, #ddd); border-radius: 999px; padding: 0.28rem 0.65rem; color: var(--text-secondary, #666); font-size: 0.84rem; background: rgba(0, 0, 0, .03); }
+        .cat-search-footer { margin-top: 1.5rem; border-top: 1px solid var(--border, #ddd); padding-top: 1rem; }
+        .cat-search-footer h2 { font-size: 1rem; margin: 0 0 .75rem; color: var(--text-secondary, #666); }
         .subcat-list { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.5rem; margin-bottom: 1.5rem; }
         .subcat-list li a { display: block; background: rgba(0, 0, 0, .04); border: 1px solid var(--border, #ddd); border-radius: 12px; padding: 0.75rem 0.9rem; font-size: 0.95rem; font-weight: 600; color: var(--text-primary, #111); text-decoration: none; }
         .product-list { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
@@ -104,16 +106,6 @@
             <p class="cat-subtitle">{{ total }} product{% if total != 1 %}s{% endif %} available &mdash; Order via Telegram</p>
             {% if seo_intro %}<p class="cat-intro">{{ seo_intro }}</p>{% endif %}
         </header>
-
-        {% if seo_terms %}
-        <section aria-label="Related search terms">
-            <ul class="term-list">
-                {% for term in seo_terms[:10] %}
-                <li>{{ term }}</li>
-                {% endfor %}
-            </ul>
-        </section>
-        {% endif %}
 
         {% if subcategories %}
         <section>
@@ -160,6 +152,17 @@
             </div>
             {% endif %}
         </section>
+
+        {% if seo_terms %}
+        <section class="cat-search-footer" aria-label="Related search terms">
+            <h2>Related searches</h2>
+            <ul class="term-list">
+                {% for term in seo_terms[:10] %}
+                <li>{{ term }}</li>
+                {% endfor %}
+            </ul>
+        </section>
+        {% endif %}
 
         <footer class="cat-footer">
             <a href="/">&larr; Back to Homepage</a>
