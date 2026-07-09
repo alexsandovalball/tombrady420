@@ -55,8 +55,23 @@
             min-height: 100vh;
             background: var(--tg-theme-bg-color, #fff);
         }
-        .seo-nav { display: flex; gap: .5rem; flex-wrap: wrap; font-size: .92rem; margin-bottom: .9rem; }
-        .seo-nav a { color: var(--accent, #2481cc); text-decoration: none; }
+        .seo-nav { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
+        .seo-nav span { color: var(--text-secondary, #666); }
+        .seo-nav a {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 42px;
+            padding: .62rem .9rem;
+            border: 1px solid var(--border, #ddd);
+            border-radius: 12px;
+            background: var(--card-bg, #fff);
+            color: var(--text-primary, #111);
+            text-decoration: none;
+            font-size: .95rem;
+            font-weight: 700;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, .06);
+        }
         .seo-hero { display: grid; gap: 1rem; }
         .seo-media-panel { display: grid; gap: .75rem; }
         .seo-media-viewer {
@@ -132,8 +147,6 @@
         .seo-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: .75rem 1rem; border-radius: 12px; text-decoration: none; font-weight: 700; text-align: center; }
         .seo-btn.primary { background: #2f9e55; color: #fff; }
         .seo-btn.secondary { border: 1px solid var(--border, #ddd); color: var(--text-primary, #111); background: var(--card-bg, #fff); }
-        .seo-extra-links { display: flex; flex-wrap: wrap; gap: .5rem; }
-        .seo-extra-links a { color: var(--accent, #2481cc); text-decoration: none; border: 1px solid var(--border, #ddd); border-radius: 999px; padding: .42rem .7rem; background: var(--card-bg, #fff); font-weight: 600; }
         .term-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: .45rem; margin: .75rem 0 1.25rem; }
         .term-list li { border: 1px solid var(--border, #ddd); border-radius: 999px; padding: .28rem .65rem; color: var(--text-secondary, #666); font-size: .84rem; background: rgba(0, 0, 0, .03); }
         .seo-search-footer { margin-top: 1.75rem; border-top: 1px solid var(--border, #ddd); padding-top: 1rem; }
@@ -230,13 +243,6 @@
                         {% if order_contact_url %}<a class="seo-btn primary" href="{{ order_contact_url }}">DM to Order{% if order_contact %}: {{ order_contact }}{% endif %}</a>{% endif %}
                         {% if telegram_bot_url %}<a class="seo-btn secondary" href="{{ telegram_bot_url }}">Open Product in Bot</a>{% endif %}
                     </div>
-                    {% if product_order_links %}
-                    <div class="seo-extra-links" aria-label="More contact links">
-                        {% for link in product_order_links %}
-                        <a href="{{ link.url }}">{{ link.label }}</a>
-                        {% endfor %}
-                    </div>
-                    {% endif %}
                 </div>
             </section>
         </article>

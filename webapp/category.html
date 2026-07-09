@@ -66,7 +66,29 @@
             background: var(--tg-theme-bg-color, #fff);
         }
         .cat-page header { margin-bottom: 1.5rem; }
-        .cat-page header a { text-decoration: none; color: inherit; }
+        .cat-page header nav {
+            display: flex;
+            flex-wrap: wrap;
+            gap: .6rem;
+            align-items: center;
+            margin-bottom: .85rem;
+        }
+        .cat-page header nav span { color: var(--text-secondary, #666); }
+        .cat-nav-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 42px;
+            padding: .62rem .9rem;
+            border: 1px solid var(--border, #ddd);
+            border-radius: 12px;
+            background: var(--card-bg, #fff);
+            color: var(--text-primary, #111);
+            text-decoration: none;
+            font-size: .95rem;
+            font-weight: 700;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, .06);
+        }
         .cat-page h1 { font-size: 1.8rem; margin: 0.5rem 0; }
         .cat-subtitle { color: var(--text-secondary, #666); margin: 0 0 1.5rem; }
         .cat-intro { color: var(--text-secondary, #666); line-height: 1.5; margin: -0.75rem 0 1.25rem; }
@@ -89,8 +111,6 @@
         .cat-action-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .75rem; }
         .cta-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: 0.75rem 1rem; background: #2f9e55; color: #fff; border-radius: 12px; text-decoration: none; font-weight: 700; text-align: center; }
         .cta-btn.secondary { background: var(--card-bg, #fff); color: var(--text-primary, #111); border: 1px solid var(--border, #ddd); }
-        .cat-extra-links { display: flex; flex-wrap: wrap; gap: .5rem; }
-        .cat-extra-links a { color: var(--accent, #2481cc); text-decoration: none; border: 1px solid var(--border, #ddd); border-radius: 999px; padding: .42rem .7rem; background: var(--card-bg, #fff); font-weight: 600; }
         .cat-footer { margin-top: 2rem; border-top: 1px solid var(--border, #ddd); padding-top: 1rem; font-size: 0.9rem; }
         .cat-footer a { color: var(--accent, #2481cc); text-decoration: none; }
     </style>
@@ -98,10 +118,12 @@
 <body>
     <div class="cat-page">
         <header>
-            <a href="/">🏈 Tom Brady Menu</a>
-            {% if current_subcategory and parent_category_url %}
-            <span> / </span><a href="{{ parent_category_url }}">{{ category_display }}</a>
-            {% endif %}
+            <nav aria-label="Breadcrumb">
+                <a class="cat-nav-btn" href="/">🏈 Tom Brady Menu</a>
+                {% if current_subcategory and parent_category_url %}
+                <span>/</span><a class="cat-nav-btn" href="{{ parent_category_url }}">{{ category_display }}</a>
+                {% endif %}
+            </nav>
             <h1>{% if current_subcategory %}{{ current_subcategory_display }} {{ category_display }}{% else %}{{ category_display }}{% endif %}</h1>
             <p class="cat-subtitle">{{ total }} product{% if total != 1 %}s{% endif %} available &mdash; Order via Telegram</p>
             {% if seo_intro %}<p class="cat-intro">{{ seo_intro }}</p>{% endif %}
@@ -144,13 +166,6 @@
                 {% if order_contact_url %}<a class="cta-btn" href="{{ order_contact_url }}">DM to Order{% if order_contact %}: {{ order_contact }}{% endif %}</a>{% endif %}
                 <a class="cta-btn secondary" href="{{ telegram_bot_url }}">Browse Full Catalog in Telegram</a>
             </div>
-            {% if order_links %}
-            <div class="cat-extra-links" aria-label="More contact links">
-                {% for link in order_links %}
-                <a href="{{ link.url }}">{{ link.label }}</a>
-                {% endfor %}
-            </div>
-            {% endif %}
         </section>
 
         {% if seo_terms %}

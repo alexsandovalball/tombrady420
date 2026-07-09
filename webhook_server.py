@@ -4520,13 +4520,6 @@ def _normalize_contact(contact: str) -> str:
     return contact[1:] if contact.startswith("@") else contact
 
 
-def _is_signal_contact_link(link: Dict[str, Any]) -> bool:
-    """Return True for Signal contact links worth showing on public product pages."""
-    label = str(link.get("label") or "").lower()
-    url = str(link.get("url") or "").lower()
-    return "signal" in label or "signal.me" in url or "signal.org" in url
-
-
 async def _public_order_context() -> Dict[str, Any]:
     """Return public order/contact links while keeping /setcontact separate from /setlink."""
     order_contact = await _catalog_db.get_order_contact()
@@ -4556,7 +4549,6 @@ async def _public_order_context() -> Dict[str, Any]:
         "order_contact_username": order_contact_username,
         "order_contact_url": order_contact_url,
         "order_links": clean_links,
-        "product_order_links": [item for item in clean_links if _is_signal_contact_link(item)],
         "order_fingerprint": fingerprint,
     }
 
