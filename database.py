@@ -4390,7 +4390,7 @@ class Database:
 
     async def get_search_intelligence_snapshot(self, limit: int = 10) -> Dict[str, Any]:
         """Compact snapshot for the /seostatus admin command."""
-        limit = max(1, min(limit, 50))
+        limit = max(1, min(limit, 250))
         since_24h = datetime.now() - timedelta(hours=24)
         search_console_days = Config.SEARCH_CONSOLE_LOOKBACK_DAYS
         search_console_since = (datetime.now() - timedelta(days=search_console_days)).date().isoformat()

@@ -228,9 +228,9 @@
                         {% if order_contact_url %}<a class="seo-btn primary" href="{{ order_contact_url }}">DM to Order{% if order_contact %}: {{ order_contact }}{% endif %}</a>{% endif %}
                         {% if telegram_bot_url %}<a class="seo-btn secondary" href="{{ telegram_bot_url }}">Open Product in Bot</a>{% endif %}
                     </div>
-                    {% if order_links %}
+                    {% if product_order_links %}
                     <div class="seo-extra-links" aria-label="More contact links">
-                        {% for link in order_links %}
+                        {% for link in product_order_links %}
                         <a href="{{ link.url }}">{{ link.label }}</a>
                         {% endfor %}
                     </div>

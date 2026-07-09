@@ -1392,6 +1392,43 @@
         section.appendChild(group);
     }
 
+    function appendAdminGooglePages(section, seo) {
+        const items = seo.top_search_console_pages || [];
+        if (!items.length) return;
+
+        const totalCount = Number(seo.search_console_pages_window || items.length);
+        const visibleItems = items.slice(0, 150);
+        const group = document.createElement('div');
+        group.className = 'admin-list-group admin-google-pages';
+
+        const heading = document.createElement('h4');
+        heading.textContent = `Google Indexed / Seen Pages (${formatAdminCount(totalCount)})`;
+
+        const note = document.createElement('p');
+        note.className = 'admin-list-note';
+        note.textContent = `Showing ${formatAdminCount(visibleItems.length)} page URL(s) imported from Google Search Console performance data. The Coverage indexed count can include URLs with no recent search impressions.`;
+
+        const list = document.createElement('ul');
+        visibleItems.forEach(item => {
+            const li = document.createElement('li');
+            const link = document.createElement('a');
+            link.href = item.page || '/';
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.textContent = formatAdminPagePath(item.page);
+
+            const meta = document.createElement('span');
+            meta.className = 'admin-page-meta';
+            meta.textContent = `${formatAdminCount(item.clicks)} clicks, ${formatAdminCount(item.impressions)} impressions, ${formatAdminCount(item.query_count)} queries, avg pos ${item.avg_position || '-'}, last ${item.last_seen || '-'}`;
+
+            li.append(link, meta);
+            list.appendChild(li);
+        });
+
+        group.append(heading, note, list);
+        section.appendChild(group);
+    }
+
     function renderAdminPanel(data) {
         const panel = document.getElementById('admin-panel');
         if (!panel || !data) return;
@@ -1460,10 +1497,6 @@
         appendAdminList(panel, 'Top Google Searches', seo.top_search_console_queries || [], item =>
             `${item.query}: ${formatAdminCount(item.clicks)} clicks, ${formatAdminCount(item.impressions)} impressions, avg pos ${item.avg_position || '-'}`
         );
-        appendAdminList(panel, 'Google Indexed/Seen Pages', seo.top_search_console_pages || [], item =>
-            `${formatAdminPagePath(item.page)}: ${formatAdminCount(item.clicks)} clicks, ${formatAdminCount(item.impressions)} impressions, ${formatAdminCount(item.query_count)} queries, avg pos ${item.avg_position || '-'}`,
-            12
-        );
         appendAdminList(panel, 'Top Visitor Locations', data.top_visitor_locations || [], item => {
             const place = [item.city, item.region, item.country].filter(part => part && part !== 'Unknown').join(', ') || 'Unknown';
             return `${place}: ${formatAdminCount(item.visitors)} visitors, ${formatAdminCount(item.visits)} visits`;
@@ -1483,6 +1516,7 @@
         appendAdminList(panel, 'Top WebApp Events', data.webapp_event_counts || [], item =>
             `${item.event_type}/${item.action}: ${formatAdminCount(item.count)}`
         );
+        appendAdminGooglePages(panel, seo);
     }
 
     async function loadAdminPanel() {

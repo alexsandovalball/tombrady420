@@ -263,6 +263,13 @@ h1 {
     margin-bottom: 5px;
 }
 
+.admin-list-note {
+    color: var(--tg-theme-hint-color);
+    font-size: 11px;
+    line-height: 1.35;
+    margin: 0 0 8px;
+}
+
 .admin-list-group ul {
     margin: 0;
     padding-left: 16px;
@@ -274,6 +281,30 @@ h1 {
     line-height: 1.35;
     margin-bottom: 4px;
     overflow-wrap: anywhere;
+}
+
+.admin-google-pages {
+    border-top: 1px solid rgba(0, 0, 0, 0.08);
+    margin-top: 16px;
+    padding-top: 12px;
+}
+
+.admin-google-pages li {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-bottom: 8px;
+}
+
+.admin-google-pages a {
+    color: var(--tg-theme-link-color, #2481cc);
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.admin-page-meta {
+    color: var(--tg-theme-hint-color);
+    font-size: 11px;
 }
 
 /* Content Grid - flexible for both categories and products */
