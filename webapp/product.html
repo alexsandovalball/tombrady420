@@ -171,7 +171,7 @@
                     {% if product_media %}
                         {% for media in product_media %}
                             {% if loop.first and media.type == "video" %}
-                            <video controls playsinline preload="metadata" src="{{ media.url }}">
+                            <video class="seo-main-video" controls playsinline preload="metadata" src="{{ media.url }}">
                                 <a href="{{ media.url }}">Open video</a>
                             </video>
                             {% elif loop.first %}
@@ -282,7 +282,7 @@
         (() => {
             const viewer = document.querySelector('.seo-media-viewer');
             const thumbs = Array.from(document.querySelectorAll('.seo-thumb[data-media-url]'));
-            if (!viewer || !thumbs.length) return;
+            if (!viewer) return;
 
             const renderMedia = (thumb) => {
                 const url = thumb.dataset.mediaUrl || '';
@@ -300,6 +300,7 @@
                     node.autoplay = true;
                     node.preload = 'auto';
                     node.src = url;
+                    captureMainVideoPoster(node);
                     node.play?.().catch(() => {});
                 } else if (type === 'photo') {
                     node = document.createElement('img');
@@ -363,11 +364,45 @@
                 setTimeout(showVideo, 1200);
             };
 
+            const captureMainVideoPoster = (video) => {
+                let captured = false;
+                const capture = () => {
+                    if (captured || !video.videoWidth || !video.videoHeight) return;
+                    try {
+                        const canvas = document.createElement('canvas');
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                        video.poster = canvas.toDataURL('image/jpeg', 0.84);
+                        captured = true;
+                    } catch (err) {
+                        // Some browsers block canvas extraction for streamed videos; playback still works.
+                    }
+                };
+
+                video.addEventListener('loadedmetadata', () => {
+                    try {
+                        const duration = Number.isFinite(video.duration) ? video.duration : 0;
+                        video.currentTime = Math.min(Math.max(duration * 0.08, 0.15), 1.5);
+                    } catch (err) {
+                        // Leave native video rendering alone if seeking is not available.
+                    }
+                }, { once: true });
+                video.addEventListener('seeked', capture, { once: true });
+                video.addEventListener('loadeddata', () => {
+                    if (video.currentTime > 0.05) capture();
+                });
+            };
+
             thumbs.forEach((thumb) => {
                 thumb.addEventListener('click', () => renderMedia(thumb));
                 const preview = thumb.querySelector('video.seo-thumb-preview');
                 if (preview) captureVideoPreview(preview);
             });
+
+            const initialMainVideo = viewer.querySelector('video.seo-main-video');
+            if (initialMainVideo) captureMainVideoPoster(initialMainVideo);
         })();
     </script>
 </body>

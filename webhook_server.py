@@ -19,7 +19,7 @@ from collections import OrderedDict
 from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -2675,6 +2675,28 @@ def _product_photo_image_urls(product: dict, *, absolute: bool = True, limit: in
     return urls
 
 
+def _product_video_urls(product: dict, *, absolute: bool = True, limit: int = 8) -> list[tuple[int, str]]:
+    """Return crawlable video media URLs for video sitemaps and VideoObject schema."""
+    product_id = product.get("id")
+    if product_id is None:
+        return []
+
+    urls: list[tuple[int, str]] = []
+    for idx, media in enumerate(_collect_media_info(product)):
+        if media.get("type") != "video":
+            continue
+        path = f"/api/catalog/{product_id}/media/{idx}"
+        urls.append((idx, _absolute_storefront_url(path) if absolute else path))
+        if len(urls) >= limit:
+            break
+    return urls
+
+
+def _product_video_thumbnail_url(product: dict) -> str:
+    """Return the best crawlable thumbnail URL for a product video."""
+    return _product_primary_image_url(product, absolute=True) or _DEFAULT_OG_IMAGE
+
+
 def _schema_date(value: Any, fallback: str = "") -> str:
     if isinstance(value, datetime):
         return value.date().isoformat()
@@ -3048,6 +3070,7 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
         product_images = _product_photo_image_urls(product, absolute=True)
         if image and image not in product_images:
             product_images.insert(0, image)
+        product_videos = _product_video_urls(product, absolute=True, limit=6)
         date_published = _schema_date(product.get("created_at"))
         date_modified = _schema_date(product.get("updated_at") or product.get("created_at"), date_published)
         product_schema: dict = {
@@ -3093,6 +3116,24 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
             product_schema["additionalProperty"] = additional_properties
         if product_images:
             product_schema["image"] = product_images
+        video_nodes = []
+        if product_videos:
+            thumbnail_url = _product_video_thumbnail_url(product)
+            for idx, video_url in product_videos:
+                video_node: dict = {
+                    "@type": "VideoObject",
+                    "name": f"{schema_name} video {idx + 1}",
+                    "description": desc,
+                    "thumbnailUrl": [thumbnail_url],
+                    "contentUrl": video_url,
+                    "embedUrl": product_url,
+                    "url": product_url,
+                    "isPartOf": {"@id": product_url},
+                }
+                if date_published:
+                    video_node["uploadDate"] = date_published
+                video_nodes.append(video_node)
+            product_schema["subjectOf"] = video_nodes
         breadcrumb_items = [
             {
                 "@type": "ListItem",
@@ -3127,7 +3168,7 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
         }
         schema = json.dumps({
             "@context": "https://schema.org/",
-            "@graph": [product_schema, breadcrumb],
+            "@graph": [product_schema, *video_nodes, breadcrumb],
         }, ensure_ascii=False)
     else:
         schema = json.dumps({
@@ -3385,6 +3426,7 @@ async def serve_robots_txt(request: Request):
         "User-agent: *\n"
         "Allow: /\n"
         "Allow: /media/products/\n"
+        "Allow: /api/catalog/\n"
         "Disallow: /api/\n"
         "Disallow: /admin\n"
         "Disallow: /admin/\n"
@@ -3510,11 +3552,24 @@ async def serve_sitemap_xml(request: Request):
             f"    </image:image>\n"
             for image_url in _product_photo_image_urls(p, absolute=True, limit=4)
         )
+        thumbnail_url = _product_video_thumbnail_url(p)
+        video_xml = "".join(
+            f"    <video:video>\n"
+            f"      <video:thumbnail_loc>{html.escape(thumbnail_url)}</video:thumbnail_loc>\n"
+            f"      <video:title>{html.escape(title[:100])}</video:title>\n"
+            f"      <video:description>{html.escape((_caption_parts(p.get('caption') or '')[1] or title)[:2048])}</video:description>\n"
+            f"      <video:content_loc>{html.escape(video_url)}</video:content_loc>\n"
+            f"      <video:player_loc>{html.escape(loc)}</video:player_loc>\n"
+            f"      <video:publication_date>{html.escape(_product_lastmod(p, today))}</video:publication_date>\n"
+            f"    </video:video>\n"
+            for _idx, video_url in _product_video_urls(p, absolute=True, limit=4)
+        )
         urls.append(
             f"  <url>\n"
             f"    <loc>{html.escape(loc)}</loc>\n"
             f"    <lastmod>{lastmod}</lastmod>\n"
             f"{image_xml}"
+            f"{video_xml}"
             f"    <changefreq>monthly</changefreq>\n"
             f"    <priority>0.8</priority>\n"
             f"  </url>"
@@ -3523,7 +3578,8 @@ async def serve_sitemap_xml(request: Request):
     sitemap = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" '
-        'xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">\n'
+        'xmlns:image="http://www.google.com/schemas/sitemap-image/1.1" '
+        'xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">\n'
         + "\n".join(urls)
         + "\n</urlset>"
     )
