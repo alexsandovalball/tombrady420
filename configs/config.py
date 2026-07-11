@@ -54,6 +54,10 @@ class ConfigClass:
         self.SEARCH_CONSOLE_OAUTH_TOKEN_FILE: Optional[str] = None
         self.SEARCH_CONSOLE_LOOKBACK_DAYS: int = 30
         self.SEARCH_CONSOLE_ROW_LIMIT: int = 250
+        self.SEARCH_CONSOLE_SITEMAP_SUBMIT_ENABLED: bool = False
+        self.SEARCH_CONSOLE_SITEMAP_URL: Optional[str] = None
+        self.SEARCH_CONSOLE_SITEMAP_INTERVAL_SECONDS: int = 21600
+        self.SEARCH_CONSOLE_SITEMAP_SUBMIT_ON_STARTUP: bool = True
         self.EXTERNAL_SEO_SIGNALS_FILE: Optional[str] = None
         self.INDEXNOW_ENABLED: bool = True
         self.INDEXNOW_ENDPOINT: str = "https://api.indexnow.org/indexnow"
@@ -276,6 +280,29 @@ class ConfigClass:
         # when it was not derivable from WEBHOOK_URL above.
         if not self.WEB_APP_URL and self.STOREFRONT_DOMAIN:
             self.WEB_APP_URL = self.STOREFRONT_DOMAIN.rstrip('/') + '/webapp/index.html'
+
+        configured_sitemap_url = config('SEARCH_CONSOLE_SITEMAP_URL', default=None)
+        self.SEARCH_CONSOLE_SITEMAP_URL = (
+            self._clean_url(configured_sitemap_url, strip_trailing_slash=False)
+            if configured_sitemap_url
+            else None
+        )
+        if not self.SEARCH_CONSOLE_SITEMAP_URL and self.STOREFRONT_DOMAIN:
+            self.SEARCH_CONSOLE_SITEMAP_URL = self.STOREFRONT_DOMAIN.rstrip('/') + '/sitemap.xml'
+        self.SEARCH_CONSOLE_SITEMAP_SUBMIT_ENABLED = config(
+            'SEARCH_CONSOLE_SITEMAP_SUBMIT_ENABLED',
+            default=bool(self.SEARCH_CONSOLE_ENABLED and self.SEARCH_CONSOLE_SITEMAP_URL),
+            cast=bool,
+        )
+        self.SEARCH_CONSOLE_SITEMAP_INTERVAL_SECONDS = max(
+            900,
+            min(24 * 3600, config('SEARCH_CONSOLE_SITEMAP_INTERVAL_SECONDS', default=21600, cast=int)),
+        )
+        self.SEARCH_CONSOLE_SITEMAP_SUBMIT_ON_STARTUP = config(
+            'SEARCH_CONSOLE_SITEMAP_SUBMIT_ON_STARTUP',
+            default=True,
+            cast=bool,
+        )
 
         default_indexnow_key_file = (
             '/data/indexnow.key'

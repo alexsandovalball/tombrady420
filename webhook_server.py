@@ -52,7 +52,7 @@ from utils.seo_terms import (
 )
 from utils.seo_autolearn import build_taxonomy_profiles, infer_seo_query_mapping
 from utils.external_seo_signals import load_external_seo_signal_file
-from utils.search_console import describe_search_console_setup, fetch_search_console_rows
+from utils.search_console import describe_search_console_setup, fetch_search_console_rows, submit_sitemap
 from translations.language_config import SUPPORTED_LANGUAGES
 from translations.translator import translation_service
 from utils.metrics import metrics
@@ -2169,6 +2169,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_wal_checkpoint_loop(), name="wal_checkpoint"),
         asyncio.create_task(_seo_auto_learn_loop(), name="seo_auto_learn"),
         asyncio.create_task(_indexnow_loop(), name="indexnow"),
+        asyncio.create_task(_search_console_sitemap_loop(), name="search_console_sitemap"),
     ]
 
     # Load permanently blocked IPs from the database into the in-memory registry
@@ -2953,6 +2954,109 @@ async def _indexnow_loop():
         except Exception as exc:
             logger.warning("[indexnow] loop_error error=%s", exc)
         await asyncio.sleep(Config.INDEXNOW_INTERVAL_SECONDS)
+
+
+def _search_console_sitemap_enabled() -> bool:
+    return bool(
+        Config.SEARCH_CONSOLE_ENABLED
+        and Config.SEARCH_CONSOLE_SITEMAP_SUBMIT_ENABLED
+        and Config.SEARCH_CONSOLE_SITE_URL
+        and Config.SEARCH_CONSOLE_SITEMAP_URL
+    )
+
+
+async def _record_search_console_sitemap_result(result: dict[str, Any], *, attempted_at: datetime) -> None:
+    status_value = "submitted" if result.get("ok") else ("skipped" if result.get("skipped") else "failed")
+    await _catalog_db.set_bot_setting(
+        "search_console_sitemap_last_attempt_at",
+        attempted_at.isoformat(sep=" ", timespec="seconds"),
+    )
+    await _catalog_db.set_bot_setting("search_console_sitemap_last_status", status_value)
+    await _catalog_db.set_bot_setting("search_console_sitemap_last_url", str(result.get("sitemap_url") or Config.SEARCH_CONSOLE_SITEMAP_URL or ""))
+    await _catalog_db.set_bot_setting("search_console_sitemap_last_site_url", str(result.get("site_url") or Config.SEARCH_CONSOLE_SITE_URL or ""))
+    await _catalog_db.set_bot_setting("search_console_sitemap_last_auth_source", str(result.get("auth_source") or ""))
+    await _catalog_db.set_bot_setting("search_console_sitemap_last_http_status", str(result.get("status") or ""))
+    await _catalog_db.set_bot_setting("search_console_sitemap_last_error", str(result.get("error") or "")[:500])
+    if result.get("ok"):
+        await _catalog_db.set_bot_setting(
+            "search_console_sitemap_last_submitted_at",
+            attempted_at.isoformat(sep=" ", timespec="seconds"),
+        )
+
+
+async def _search_console_submit_sitemap_once(*, reason: str = "scheduled", force: bool = False) -> bool:
+    if not _search_console_sitemap_enabled():
+        return False
+
+    attempted_at = datetime.now()
+    if not force:
+        raw_last_attempt = await _catalog_db.get_bot_setting("search_console_sitemap_last_attempt_at")
+        if raw_last_attempt:
+            try:
+                last_attempt = datetime.fromisoformat(str(raw_last_attempt))
+                elapsed = (attempted_at - last_attempt).total_seconds()
+                if elapsed < Config.SEARCH_CONSOLE_SITEMAP_INTERVAL_SECONDS:
+                    logger.debug(
+                        "[search_console] sitemap_submit_skipped reason=interval elapsed=%.0f interval=%d",
+                        elapsed,
+                        Config.SEARCH_CONSOLE_SITEMAP_INTERVAL_SECONDS,
+                    )
+                    return False
+            except ValueError:
+                pass
+
+    result = await submit_sitemap(
+        enabled=Config.SEARCH_CONSOLE_ENABLED,
+        site_url=Config.SEARCH_CONSOLE_SITE_URL,
+        sitemap_url=Config.SEARCH_CONSOLE_SITEMAP_URL,
+        service_account_json=Config.SEARCH_CONSOLE_SERVICE_ACCOUNT_JSON,
+        service_account_file=Config.SEARCH_CONSOLE_SERVICE_ACCOUNT_FILE,
+        oauth_client_json=Config.SEARCH_CONSOLE_OAUTH_CLIENT_JSON,
+        oauth_client_file=Config.SEARCH_CONSOLE_OAUTH_CLIENT_FILE,
+        oauth_token_json=Config.SEARCH_CONSOLE_OAUTH_TOKEN_JSON,
+        oauth_token_file=Config.SEARCH_CONSOLE_OAUTH_TOKEN_FILE,
+    )
+    await _record_search_console_sitemap_result(result, attempted_at=attempted_at)
+
+    if result.get("ok"):
+        logger.info(
+            "[search_console] sitemap_submitted reason=%s site_url=%s sitemap=%s status=%s auth=%s",
+            reason,
+            result.get("site_url"),
+            result.get("sitemap_url"),
+            result.get("status"),
+            result.get("auth_source"),
+        )
+        return True
+
+    logger.warning(
+        "[search_console] sitemap_submit_not_completed reason=%s skipped=%s error=%s",
+        reason,
+        result.get("skipped", False),
+        result.get("error"),
+    )
+    return False
+
+
+async def _search_console_sitemap_loop():
+    """Background task: safely tell Google where the current sitemap is."""
+    if not _search_console_sitemap_enabled():
+        logger.info("[search_console] sitemap_submit disabled")
+        return
+
+    await asyncio.sleep(120)
+    if Config.SEARCH_CONSOLE_SITEMAP_SUBMIT_ON_STARTUP:
+        try:
+            await _search_console_submit_sitemap_once(reason="startup", force=True)
+        except Exception as exc:
+            logger.warning("[search_console] sitemap_startup_error error=%s", exc)
+
+    while True:
+        try:
+            await _search_console_submit_sitemap_once(reason="scheduled", force=False)
+        except Exception as exc:
+            logger.warning("[search_console] sitemap_loop_error error=%s", exc)
+        await asyncio.sleep(Config.SEARCH_CONSOLE_SITEMAP_INTERVAL_SECONDS)
 
 
 async def _seo_side_note_terms(category: str, subcategory: str = "") -> list[str]:

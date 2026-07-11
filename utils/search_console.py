@@ -17,7 +17,9 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-SEARCH_CONSOLE_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
+SEARCH_CONSOLE_READ_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
+SEARCH_CONSOLE_WRITE_SCOPE = "https://www.googleapis.com/auth/webmasters"
+SEARCH_CONSOLE_SCOPE = SEARCH_CONSOLE_READ_SCOPE
 
 
 def _load_json_secret(
@@ -121,6 +123,7 @@ def _load_oauth_credentials(
     oauth_client_file: Optional[str],
     oauth_token_json: Optional[str],
     oauth_token_file: Optional[str],
+    scopes: Optional[list[str]] = None,
 ):
     try:
         from google.oauth2.credentials import Credentials
@@ -146,7 +149,7 @@ def _load_oauth_credentials(
         token_uri=token_payload.get("token_uri") or client_info.get("token_uri") or "https://oauth2.googleapis.com/token",
         client_id=token_payload.get("client_id") or client_info.get("client_id"),
         client_secret=token_payload.get("client_secret") or client_info.get("client_secret"),
-        scopes=[SEARCH_CONSOLE_SCOPE],
+        scopes=scopes or [SEARCH_CONSOLE_READ_SCOPE],
     )
 
     try:
@@ -163,6 +166,7 @@ def _load_service_account_credentials(
     *,
     service_account_json: Optional[str],
     service_account_file: Optional[str],
+    scopes: Optional[list[str]] = None,
 ):
     try:
         from google.auth.transport.requests import Request as GoogleAuthRequest
@@ -178,7 +182,7 @@ def _load_service_account_credentials(
     try:
         credentials = service_account.Credentials.from_service_account_info(
             info,
-            scopes=[SEARCH_CONSOLE_SCOPE],
+            scopes=scopes or [SEARCH_CONSOLE_READ_SCOPE],
         )
         credentials.refresh(GoogleAuthRequest())
     except Exception as exc:
@@ -186,6 +190,35 @@ def _load_service_account_credentials(
         return None
 
     return credentials
+
+
+def _load_search_console_credentials(
+    *,
+    service_account_json: Optional[str],
+    service_account_file: Optional[str],
+    oauth_client_json: Optional[str],
+    oauth_client_file: Optional[str],
+    oauth_token_json: Optional[str],
+    oauth_token_file: Optional[str],
+    scopes: list[str],
+):
+    """Load Search Console credentials, preferring service account over OAuth."""
+    credentials = _load_service_account_credentials(
+        service_account_json=service_account_json,
+        service_account_file=service_account_file,
+        scopes=scopes,
+    )
+    auth_source = "service_account"
+    if credentials is None:
+        credentials = _load_oauth_credentials(
+            oauth_client_json=oauth_client_json,
+            oauth_client_file=oauth_client_file,
+            oauth_token_json=oauth_token_json,
+            oauth_token_file=oauth_token_file,
+            scopes=scopes,
+        )
+        auth_source = "oauth"
+    return credentials, auth_source
 
 
 def _search_console_site_candidates(site_url: str) -> list[str]:
@@ -227,19 +260,15 @@ def _fetch_search_console_rows_sync(
         logger.warning("[search_console] dependency_missing error=%s", exc)
         return []
 
-    credentials = _load_service_account_credentials(
+    credentials, auth_source = _load_search_console_credentials(
         service_account_json=service_account_json,
         service_account_file=service_account_file,
+        oauth_client_json=oauth_client_json,
+        oauth_client_file=oauth_client_file,
+        oauth_token_json=oauth_token_json,
+        oauth_token_file=oauth_token_file,
+        scopes=[SEARCH_CONSOLE_READ_SCOPE],
     )
-    auth_source = "service_account"
-    if credentials is None:
-        credentials = _load_oauth_credentials(
-            oauth_client_json=oauth_client_json,
-            oauth_client_file=oauth_client_file,
-            oauth_token_json=oauth_token_json,
-            oauth_token_file=oauth_token_file,
-        )
-        auth_source = "oauth"
     if credentials is None:
         return []
 
@@ -350,4 +379,135 @@ async def fetch_search_console_rows(
         oauth_token_file=oauth_token_file,
         lookback_days=lookback_days,
         row_limit=row_limit,
+    )
+
+
+def submit_sitemap_sync(
+    *,
+    site_url: str,
+    sitemap_url: str,
+    service_account_json: Optional[str],
+    service_account_file: Optional[str],
+    oauth_client_json: Optional[str] = None,
+    oauth_client_file: Optional[str] = None,
+    oauth_token_json: Optional[str] = None,
+    oauth_token_file: Optional[str] = None,
+) -> dict[str, Any]:
+    """Submit a sitemap URL to Search Console using the official Sitemaps API."""
+    try:
+        import requests
+    except ImportError as exc:  # pragma: no cover - depends on Render install state
+        logger.warning("[search_console] dependency_missing error=%s", exc)
+        return {"ok": False, "error": f"dependency missing: {exc}", "auth_source": "none"}
+
+    credentials, auth_source = _load_search_console_credentials(
+        service_account_json=service_account_json,
+        service_account_file=service_account_file,
+        oauth_client_json=oauth_client_json,
+        oauth_client_file=oauth_client_file,
+        oauth_token_json=oauth_token_json,
+        oauth_token_file=oauth_token_file,
+        scopes=[SEARCH_CONSOLE_WRITE_SCOPE],
+    )
+    if credentials is None:
+        return {"ok": False, "error": "credentials unavailable", "auth_source": "none"}
+
+    clean_sitemap_url = str(sitemap_url or "").strip()
+    if not clean_sitemap_url.startswith(("https://", "http://")):
+        return {"ok": False, "error": "invalid sitemap URL", "auth_source": auth_source}
+
+    last_error = ""
+    for candidate_site_url in _search_console_site_candidates(site_url):
+        encoded_site = urllib.parse.quote(candidate_site_url, safe="")
+        encoded_sitemap = urllib.parse.quote(clean_sitemap_url, safe="")
+        endpoint = f"https://www.googleapis.com/webmasters/v3/sites/{encoded_site}/sitemaps/{encoded_sitemap}"
+        try:
+            response = requests.put(
+                endpoint,
+                headers={"Authorization": f"Bearer {credentials.token}"},
+                timeout=20,
+            )
+        except requests.RequestException as exc:
+            last_error = str(exc)
+            logger.warning("[search_console] sitemap_submit_request_failed site_url=%s error=%s", candidate_site_url, exc)
+            continue
+
+        status_code = int(response.status_code or 0)
+        if 200 <= status_code < 300:
+            if candidate_site_url != site_url:
+                logger.info(
+                    "[search_console] sitemap_submit_alternate_property configured_site_url=%s site_url=%s sitemap=%s",
+                    site_url,
+                    candidate_site_url,
+                    clean_sitemap_url,
+                )
+            return {
+                "ok": True,
+                "status": status_code,
+                "site_url": candidate_site_url,
+                "sitemap_url": clean_sitemap_url,
+                "auth_source": auth_source,
+            }
+
+        last_error = response.text[:500] or f"HTTP {status_code}"
+        logger.warning(
+            "[search_console] sitemap_submit_api_error auth=%s site_url=%s sitemap=%s status=%s body=%s",
+            auth_source,
+            candidate_site_url,
+            clean_sitemap_url,
+            status_code,
+            last_error,
+        )
+
+    return {
+        "ok": False,
+        "status": None,
+        "site_url": site_url,
+        "sitemap_url": clean_sitemap_url,
+        "auth_source": auth_source,
+        "error": last_error or "all Search Console properties failed",
+    }
+
+
+async def submit_sitemap(
+    *,
+    enabled: bool,
+    site_url: Optional[str],
+    sitemap_url: Optional[str],
+    service_account_json: Optional[str],
+    service_account_file: Optional[str],
+    oauth_client_json: Optional[str] = None,
+    oauth_client_file: Optional[str] = None,
+    oauth_token_json: Optional[str] = None,
+    oauth_token_file: Optional[str] = None,
+) -> dict[str, Any]:
+    """Submit the sitemap when Search Console is connected; otherwise explain why not."""
+    if not enabled:
+        return {"ok": False, "skipped": True, "error": "disabled"}
+    if not site_url:
+        return {"ok": False, "skipped": True, "error": "site URL missing"}
+    if not sitemap_url:
+        return {"ok": False, "skipped": True, "error": "sitemap URL missing"}
+    if not is_search_console_configured(
+        enabled=enabled,
+        site_url=site_url,
+        service_account_json=service_account_json,
+        service_account_file=service_account_file,
+        oauth_client_json=oauth_client_json,
+        oauth_client_file=oauth_client_file,
+        oauth_token_json=oauth_token_json,
+        oauth_token_file=oauth_token_file,
+    ):
+        return {"ok": False, "skipped": True, "error": "not configured"}
+
+    return await asyncio.to_thread(
+        submit_sitemap_sync,
+        site_url=str(site_url),
+        sitemap_url=str(sitemap_url),
+        service_account_json=service_account_json,
+        service_account_file=service_account_file,
+        oauth_client_json=oauth_client_json,
+        oauth_client_file=oauth_client_file,
+        oauth_token_json=oauth_token_json,
+        oauth_token_file=oauth_token_file,
     )

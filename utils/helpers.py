@@ -1,6 +1,7 @@
 """
 Helper utilities for the bot.
 """
+import asyncio
 import logging
 import json
 import inspect
@@ -71,6 +72,37 @@ async def _call_db_optional(method_name: str, *args, **kwargs):
     if method is None or not inspect.iscoroutinefunction(method):
         return None
     return await method(*args, **kwargs)
+
+
+def is_invalid_telegram_file_id_error(exc: object) -> bool:
+    """Return True only for Telegram responses that prove a cached file_id is bad."""
+    message = str(exc or "").lower()
+    return (
+        "file_id is invalid" in message
+        or "wrong file identifier" in message
+        or "file identifier" in message
+        or "wrong file_id" in message
+    )
+
+
+def is_transient_telegram_error(exc: object) -> bool:
+    """Return True for network/timeout errors that should not poison media caches."""
+    message = str(exc or "").lower()
+    class_name = exc.__class__.__name__.lower() if exc is not None else ""
+    return (
+        isinstance(exc, asyncio.TimeoutError)
+        or "timedout" in class_name
+        or "networkerror" in class_name
+        or "timed out" in message
+        or "timeout" in message
+        or "network" in message
+        or "connection" in message
+        or "server disconnected" in message
+        or "pool timeout" in message
+        or "read timeout" in message
+        or "write timeout" in message
+        or "connect timeout" in message
+    )
 
 # Admin commands fallback text constant (hardcoded for consistency across deploys)
 ADMIN_COMMANDS_FALLBACK = (
@@ -450,7 +482,15 @@ async def get_bot_specific_file_id(
                 await bot.get_file(mapped_file_id)
                 logger.debug("[media_registry] using_bot_media_mapping bot=%s msg=%s", bot_identifier, source_message_id)
                 return mapped_file_id
-            except TelegramError as e:
+            except (TelegramError, asyncio.TimeoutError) as e:
+                if is_transient_telegram_error(e):
+                    logger.warning(
+                        "[media_registry] bot_media_mapping_validation_deferred bot=%s msg=%s error=%s",
+                        bot_identifier,
+                        source_message_id,
+                        e,
+                    )
+                    return mapped_file_id
                 await _db.invalidate_bot_media_file_id(bot_identifier, canonical["file_unique_id"])
                 logger.warning("[media_registry] stale_mapping_invalidated bot=%s msg=%s error=%s", bot_identifier, source_message_id, e)
 
@@ -480,7 +520,16 @@ async def get_bot_specific_file_id(
                 await _call_db_optional("upsert_bot_media_file_id", bot_identifier, file_unique_id, cached_file_id)
             logger.debug(f"Using cached file ID for bot {bot_username}, message {source_message_id}, index {file_index}")
             return cached_file_id
-        except TelegramError as e:
+        except (TelegramError, asyncio.TimeoutError) as e:
+            if is_transient_telegram_error(e):
+                logger.warning(
+                    "[media_registry] cached_file_id_validation_deferred bot=%s msg=%s idx=%s error=%s",
+                    bot_username,
+                    source_message_id,
+                    file_index,
+                    e,
+                )
+                return cached_file_id
             logger.warning(
                 f"Cached file ID invalid for bot {bot_username}, msg {source_message_id}: {e}. "
                 f"Clearing cache and refetching..."

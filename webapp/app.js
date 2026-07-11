@@ -1486,6 +1486,7 @@
         const cache = data.cache_state || {};
         const seo = data.seo || {};
         const indexnow = data.indexnow || {};
+        const googleSitemap = seo.search_console_sitemap || {};
         const metrics = data.metrics?.endpoints || {};
         const activeBots = (data.runtime_bots || []).filter(bot => bot.username);
         const googleWindowDays = seo.search_console_window_days || 30;
@@ -1522,6 +1523,7 @@
         appendAdminMetric(grid, `Google queries ${googleWindowDays}d`, formatAdminCount(seo.search_console_queries_window));
         appendAdminMetric(grid, `Google performance pages ${googleWindowDays}d`, formatAdminCount(seo.search_console_pages_window));
         appendAdminMetric(grid, 'Google clicks/impr.', `${formatAdminCount(seo.search_console_clicks_window)}/${formatAdminCount(seo.search_console_impressions_window)}`);
+        appendAdminMetric(grid, 'Google sitemap', googleSitemap.status || 'never');
         appendAdminMetric(grid, 'SEO mappings', formatAdminCount(summary.seo_query_mappings));
         appendAdminMetric(grid, 'IndexNow pending', formatAdminCount(indexnow.pending));
         appendAdminMetric(grid, 'IndexNow sent', formatAdminCount(indexnow.submitted));
@@ -1546,6 +1548,14 @@
         appendAdminList(panel, 'Top Google Searches', seo.top_search_console_queries || [], item =>
             `${item.query}: ${formatAdminCount(item.clicks)} clicks, ${formatAdminCount(item.impressions)} impressions, avg pos ${item.avg_position || '-'}`
         );
+        if (googleSitemap.status) {
+            appendAdminList(panel, 'Google Sitemap Submission', [googleSitemap], item => {
+                const submitted = item.last_submitted_at ? `accepted ${item.last_submitted_at}` : `attempt ${item.last_attempt_at || 'none yet'}`;
+                const target = item.sitemap_url || 'sitemap not set';
+                const note = item.last_error ? `, ${item.last_error}` : '';
+                return `${item.status}: ${submitted}, ${target}${note}`;
+            });
+        }
         appendAdminList(panel, 'Top Visitor Locations', data.top_visitor_locations || [], item => {
             const place = [item.city, item.region, item.country].filter(part => part && part !== 'Unknown').join(', ') || 'Unknown';
             return `${place}: ${formatAdminCount(item.visitors)} visitors, ${formatAdminCount(item.visits)} visits`;

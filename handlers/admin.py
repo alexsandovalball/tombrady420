@@ -55,6 +55,7 @@ def _format_admin_status_message(snapshot: dict) -> str:
     bot_user_counts = snapshot.get("bot_user_counts", [])
     top_locations = snapshot.get("top_visitor_locations", [])
     indexnow = snapshot.get("indexnow", {})
+    google_sitemap = seo.get("search_console_sitemap") or {}
     search_console_days = _fmt_count(seo.get("search_console_window_days") or 30)
     google_queries = seo.get("search_console_queries_window", seo.get("search_console_queries_7d"))
     google_clicks = seo.get("search_console_clicks_window", seo.get("search_console_clicks_7d"))
@@ -103,6 +104,8 @@ def _format_admin_status_message(snapshot: dict) -> str:
         f"(pending {_fmt_count(indexnow.get('pending'))}, "
         f"sent {_fmt_count(indexnow.get('submitted'))}, "
         f"failed {_fmt_count(indexnow.get('failed'))})",
+        f"• Google sitemap: {google_sitemap.get('status') or 'never'}"
+        + (f" at {google_sitemap.get('last_submitted_at')}" if google_sitemap.get("last_submitted_at") else ""),
         "",
         "⚙️ Caches",
         f"• File ID DB: {_fmt_count(summary.get('file_id_cache_entries'))}",
@@ -214,6 +217,11 @@ def _format_search_console_status(snapshot: dict) -> list[str]:
     window_rows = int(snapshot.get("search_console_queries_window") or 0)
     latest_source_date = snapshot.get("search_console_latest_source_date") or "none yet"
     latest_imported_at = snapshot.get("search_console_latest_imported_at") or "none yet"
+    sitemap = snapshot.get("search_console_sitemap") or {}
+    sitemap_status = sitemap.get("status") or "never"
+    sitemap_attempt = sitemap.get("last_attempt_at") or "none yet"
+    sitemap_submitted = sitemap.get("last_submitted_at") or "none yet"
+    sitemap_error = sitemap.get("last_error") or ""
 
     if not setup.get("enabled"):
         status = "off"
@@ -245,7 +253,12 @@ def _format_search_console_status(snapshot: dict) -> list[str]:
         f"• Auth: {auth_source}",
         f"• Latest Google data date: {latest_source_date}",
         f"• Last saved import: {latest_imported_at}",
+        f"• Sitemap submit: {sitemap_status}",
+        f"• Last sitemap attempt: {sitemap_attempt}",
+        f"• Last sitemap accepted: {sitemap_submitted}",
+        f"• Sitemap URL: {sitemap.get('sitemap_url') or Config.SEARCH_CONSOLE_SITEMAP_URL or 'not set'}",
         f"• Note: {note}",
+        *( [f"• Sitemap note: {sitemap_error[:120]}"] if sitemap_error else [] ),
         "",
         "Auto-Learning Settings",
         f"• Runs every: {_fmt_count(interval_minutes)} min",

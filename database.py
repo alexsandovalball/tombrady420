@@ -4455,6 +4455,7 @@ class Database:
                 "search_console_latest_imported_at": await value(
                     "SELECT MAX(created_at) FROM search_console_query_events"
                 ),
+                "search_console_sitemap": await self.get_search_console_sitemap_snapshot(),
                 "seo_auto_learn_interval_seconds": Config.SEO_AUTO_LEARN_INTERVAL_SECONDS,
                 "seo_auto_learn_score": Config.SEO_AUTO_LEARN_SCORE,
                 "seo_auto_learn_max_matched_count": Config.SEO_AUTO_LEARN_MAX_MATCHED_COUNT,
@@ -4788,6 +4789,38 @@ class Database:
                 (key, str(value or "")),
             )
             await db.commit()
+
+    async def get_search_console_sitemap_snapshot(self) -> Dict[str, Any]:
+        """Return the latest Google Search Console sitemap submission status."""
+        keys = [
+            "search_console_sitemap_last_attempt_at",
+            "search_console_sitemap_last_submitted_at",
+            "search_console_sitemap_last_status",
+            "search_console_sitemap_last_http_status",
+            "search_console_sitemap_last_error",
+            "search_console_sitemap_last_url",
+            "search_console_sitemap_last_site_url",
+            "search_console_sitemap_last_auth_source",
+        ]
+        placeholders = ",".join("?" * len(keys))
+        async with self.get_connection() as db:
+            async with db.execute(
+                f"SELECT key, value, updated_at FROM bot_settings WHERE key IN ({placeholders})",
+                tuple(keys),
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+        values = {row[0]: row[1] for row in rows}
+        return {
+            "last_attempt_at": values.get("search_console_sitemap_last_attempt_at"),
+            "last_submitted_at": values.get("search_console_sitemap_last_submitted_at"),
+            "status": values.get("search_console_sitemap_last_status") or "never",
+            "http_status": values.get("search_console_sitemap_last_http_status"),
+            "last_error": values.get("search_console_sitemap_last_error") or "",
+            "sitemap_url": values.get("search_console_sitemap_last_url") or "",
+            "site_url": values.get("search_console_sitemap_last_site_url") or "",
+            "auth_source": values.get("search_console_sitemap_last_auth_source") or "",
+        }
 
     async def enqueue_indexnow_urls(
         self,

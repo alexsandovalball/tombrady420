@@ -13,7 +13,11 @@ from telegram import Bot
 from telegram.error import BadRequest, RetryAfter, TelegramError
 
 from database import Database
-from utils.helpers import get_bot_specific_file_id
+from utils.helpers import (
+    get_bot_specific_file_id,
+    is_invalid_telegram_file_id_error,
+    is_transient_telegram_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,12 +122,11 @@ class MediaResolutionResult:
 
 
 def _invalid_file_id_error(exc: Exception) -> bool:
-    message = str(exc).lower()
-    return (
-        "file_id is invalid" in message
-        or "wrong file identifier" in message
-        or "file identifier" in message
-    )
+    return is_invalid_telegram_file_id_error(exc)
+
+
+def _transient_validation_error(error: Optional[str]) -> bool:
+    return is_transient_telegram_error(error or "")
 
 
 class MediaResolver:
@@ -181,6 +184,12 @@ class MediaResolver:
                     extra={**log_extra, "resolution_source": "original", "fallback_used": False},
                 )
                 return MediaResolutionResult(True, original_file_id, "original")
+            if _transient_validation_error(validation.error):
+                logger.warning(
+                    "Original file_id validation timed out; using original file_id optimistically",
+                    extra={**log_extra, "reason": validation.error, "fallback_used": False},
+                )
+                return MediaResolutionResult(True, original_file_id, "original_transient_validation")
             logger.warning(
                 "Original bot file_id validation failed",
                 extra={**log_extra, "reason": validation.error},
@@ -201,6 +210,13 @@ class MediaResolver:
                     extra={**log_extra, "resolution_source": "cache", "cache_hit": True},
                 )
                 return MediaResolutionResult(True, cached, "cache")
+
+            if _transient_validation_error(validation.error):
+                logger.warning(
+                    "Cached file_id validation timed out; using cached file_id optimistically",
+                    extra={**log_extra, "reason": validation.error, "cache_hit": True},
+                )
+                return MediaResolutionResult(True, cached, "cache_transient_validation")
 
             await self.db.delete_bot_file_id_cache_entry(
                 source_chat_id, source_message_id, media_index, current_bot
@@ -276,6 +292,12 @@ class MediaResolver:
                     logger.info(
                         "Media resolution cache hit after wait",
                         extra={**log_extra, "resolution_source": "cache_after_wait", "cache_hit": True},
+                    )
+                    return cached
+                if _transient_validation_error(validation.error):
+                    logger.warning(
+                        "Cached file_id validation timed out after wait; using cached file_id optimistically",
+                        extra={**log_extra, "reason": validation.error, "cache_hit": True},
                     )
                     return cached
 
