@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 db = Database()
 
 _MEDIA_CAPTION_SAFE_LIMIT = 900
-_MESSAGE_TEXT_SAFE_LIMIT = 3900
 
 _DM_TO_ORDER_TEXT = {
     "en": "👆 DM TO ORDER: {contact}",
@@ -52,13 +51,6 @@ def _fit_telegram_text(text: str, limit: int) -> tuple[str, bool]:
     if len(value) <= limit:
         return value, False
     return value[: max(0, limit - 1)].rstrip() + "…", True
-
-
-def _build_details_message(full_caption: str, dm_message: str, include_full_caption: bool) -> str:
-    if not include_full_caption:
-        return dm_message
-    details = f"{full_caption}\n\n{dm_message}"
-    return _fit_telegram_text(details, _MESSAGE_TEXT_SAFE_LIMIT)[0]
 
 
 def _build_admin_action_buttons(product_id: int, user_id: int) -> list[list[InlineKeyboardButton]]:
@@ -327,7 +319,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 f"\n\n⚠️ {len(resolution_failures)} of {total_media} media file(s) "
                 "could not be delivered by this bot."
             )
-        media_caption, media_caption_shortened = _fit_telegram_text(full_caption, _MEDIA_CAPTION_SAFE_LIMIT)
+        media_caption, _media_caption_shortened = _fit_telegram_text(full_caption, _MEDIA_CAPTION_SAFE_LIMIT)
         
         # Create keyboard with back button and admin buttons
         keyboard_buttons = []
@@ -467,13 +459,12 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         order_contact = await db.get_order_contact()
         
         dm_message = _build_dm_to_order_text(user_lang, order_contact)
-        details_message = _build_details_message(full_caption, dm_message, media_caption_shortened)
         
         # Send DM message with keyboard separately
         await safe_send_message(
             context.bot,
             update.effective_chat.id,
-            text=details_message,
+            text=dm_message,
             parse_mode=None,
             reply_markup=keyboard
         )
