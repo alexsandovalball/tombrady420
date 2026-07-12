@@ -59,6 +59,7 @@ async def _update_menu_message(update: Update, context: ContextTypes.DEFAULT_TYP
     chat_id = getattr(update.effective_chat, "id", None)
     callback_data = None
     message_id = None
+    message_has_media = False
     operation = "send_command_reply"
     should_send_fresh = False
 
@@ -67,11 +68,9 @@ async def _update_menu_message(update: Update, context: ContextTypes.DEFAULT_TYP
         callback_data = query.data
         message_id = getattr(query.message, "message_id", None)
         message_has_media = is_media_message(query.message)
-        should_send_fresh = message_has_media or not is_admin(user_id)
+        should_send_fresh = message_has_media
         if message_has_media:
             operation = "send_after_media_callback"
-        elif should_send_fresh:
-            operation = "send_fresh_user_callback"
         else:
             operation = "edit_callback_message"
 
@@ -84,10 +83,6 @@ async def _update_menu_message(update: Update, context: ContextTypes.DEFAULT_TYP
             reply_markup=keyboard,
             parse_mode=None,
         )
-        if result is not None and message_id and operation == "send_fresh_user_callback":
-            asyncio.create_task(
-                _delete_old_menu_message(context.bot, update.callback_query.message.chat_id, message_id)
-            )
     else:
         result = await safe_update_message(update, context, text, reply_markup=keyboard, parse_mode=None)
     api_ms = (time.monotonic() - started) * 1000
@@ -130,6 +125,10 @@ async def _update_menu_message(update: Update, context: ContextTypes.DEFAULT_TYP
             "ok" if fallback_result is not None else "none",
             getattr(fallback_result, "message_id", None),
         )
+        if fallback_result is not None and message_id and not message_has_media:
+            asyncio.create_task(
+                _delete_old_menu_message(context.bot, update.callback_query.message.chat_id, message_id)
+            )
         return fallback_result
 
     return result
