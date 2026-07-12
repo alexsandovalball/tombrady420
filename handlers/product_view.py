@@ -306,6 +306,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
             # Multiple media - send as media group
             try:
                 media_group = []
+                media_group_entries = []
                 unsupported_media = []  # Track media that can't be in groups
                 caption_used = False  # Track if caption has been added to any media
                 
@@ -320,13 +321,17 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 for idx, (file_id, file_type) in enumerate(media_list):
                     if file_type == "photo":
                         media_group.append(InputMediaPhoto(media=file_id, caption=get_caption()))
+                        media_group_entries.append((file_id, file_type))
                     elif file_type == "video":
                         media_group.append(InputMediaVideo(media=file_id, caption=get_caption()))
+                        media_group_entries.append((file_id, file_type))
                     elif file_type == "animation":
                         media_group.append(InputMediaAnimation(media=file_id, caption=get_caption()))
+                        media_group_entries.append((file_id, file_type))
                     elif file_type == "document":
                         # Documents can be in media groups (unlike audio/voice/video_note)
                         media_group.append(InputMediaDocument(media=file_id, caption=get_caption()))
+                        media_group_entries.append((file_id, file_type))
                     elif file_type in ["audio", "voice", "video_note"]:
                         # These types cannot be in media groups - send separately
                         # Caption will be added to first media item encountered
@@ -345,8 +350,26 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         chat_id=update.effective_chat.id,
                         media=media_group
                     )
-                    if not sent:
-                        raise RuntimeError("send_media_group returned no messages")
+                    sent_count = len(sent or [])
+                    if sent_count == 0:
+                        raise RuntimeError(
+                            f"send_media_group returned {sent_count}/{len(media_group)} messages"
+                        )
+                    if sent_count < len(media_group):
+                        logger.warning(
+                            "send_media_group delivered only %s/%s items; sending missing media individually",
+                            sent_count,
+                            len(media_group),
+                        )
+                        for file_id, file_type in media_group_entries[sent_count:]:
+                            await send_media_message(
+                                context,
+                                update.effective_chat.id,
+                                file_id,
+                                file_type,
+                                caption=None,
+                                reply_markup=None,
+                            )
                 
                 # Send unsupported media types individually
                 for file_id, file_type, item_caption in unsupported_media:

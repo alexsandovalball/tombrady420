@@ -186,14 +186,14 @@ class MediaResolver:
                 return MediaResolutionResult(True, original_file_id, "original")
             if _transient_validation_error(validation.error):
                 logger.warning(
-                    "Original file_id validation timed out; using original file_id optimistically",
-                    extra={**log_extra, "reason": validation.error, "fallback_used": False},
+                    "Original file_id validation timed out; rehydrating before delivery",
+                    extra={**log_extra, "reason": validation.error, "fallback_used": True},
                 )
-                return MediaResolutionResult(True, original_file_id, "original_transient_validation")
-            logger.warning(
-                "Original bot file_id validation failed",
-                extra={**log_extra, "reason": validation.error},
-            )
+            else:
+                logger.warning(
+                    "Original bot file_id validation failed",
+                    extra={**log_extra, "reason": validation.error},
+                )
 
         cached = await self.db.get_bot_file_id(
             source_chat_id,
@@ -213,18 +213,17 @@ class MediaResolver:
 
             if _transient_validation_error(validation.error):
                 logger.warning(
-                    "Cached file_id validation timed out; using cached file_id optimistically",
+                    "Cached file_id validation timed out; rehydrating without evicting cache",
                     extra={**log_extra, "reason": validation.error, "cache_hit": True},
                 )
-                return MediaResolutionResult(True, cached, "cache_transient_validation")
-
-            await self.db.delete_bot_file_id_cache_entry(
-                source_chat_id, source_message_id, media_index, current_bot
-            )
-            logger.warning(
-                "Invalid cached file_id evicted",
-                extra={**log_extra, "reason": validation.error, "cache_hit": True},
-            )
+            else:
+                await self.db.delete_bot_file_id_cache_entry(
+                    source_chat_id, source_message_id, media_index, current_bot
+                )
+                logger.warning(
+                    "Invalid cached file_id evicted",
+                    extra={**log_extra, "reason": validation.error, "cache_hit": True},
+                )
         else:
             logger.info("Media resolution cache miss", extra={**log_extra, "cache_hit": False})
 
@@ -296,10 +295,9 @@ class MediaResolver:
                     return cached
                 if _transient_validation_error(validation.error):
                     logger.warning(
-                        "Cached file_id validation timed out after wait; using cached file_id optimistically",
+                        "Cached file_id validation timed out after wait; rehydrating without evicting cache",
                         extra={**log_extra, "reason": validation.error, "cache_hit": True},
                     )
-                    return cached
 
             async with _resolve_semaphore:
                 return await self._rehydrate_with_retry(

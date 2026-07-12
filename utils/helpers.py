@@ -485,14 +485,14 @@ async def get_bot_specific_file_id(
             except (TelegramError, asyncio.TimeoutError) as e:
                 if is_transient_telegram_error(e):
                     logger.warning(
-                        "[media_registry] bot_media_mapping_validation_deferred bot=%s msg=%s error=%s",
+                        "[media_registry] bot_media_mapping_validation_deferred_refreshing bot=%s msg=%s error=%s",
                         bot_identifier,
                         source_message_id,
                         e,
                     )
-                    return mapped_file_id
-                await _db.invalidate_bot_media_file_id(bot_identifier, canonical["file_unique_id"])
-                logger.warning("[media_registry] stale_mapping_invalidated bot=%s msg=%s error=%s", bot_identifier, source_message_id, e)
+                else:
+                    await _db.invalidate_bot_media_file_id(bot_identifier, canonical["file_unique_id"])
+                    logger.warning("[media_registry] stale_mapping_invalidated bot=%s msg=%s error=%s", bot_identifier, source_message_id, e)
 
     cached_file_id = await _db.get_bot_file_id(
         source_chat_id,
@@ -523,25 +523,25 @@ async def get_bot_specific_file_id(
         except (TelegramError, asyncio.TimeoutError) as e:
             if is_transient_telegram_error(e):
                 logger.warning(
-                    "[media_registry] cached_file_id_validation_deferred bot=%s msg=%s idx=%s error=%s",
+                    "[media_registry] cached_file_id_validation_deferred_refreshing bot=%s msg=%s idx=%s error=%s",
                     bot_username,
                     source_message_id,
                     file_index,
                     e,
                 )
-                return cached_file_id
-            logger.warning(
-                f"Cached file ID invalid for bot {bot_username}, msg {source_message_id}: {e}. "
-                f"Clearing cache and refetching..."
-            )
-            if canonical:
-                await _db.invalidate_bot_media_file_id(bot_identifier, canonical["file_unique_id"])
-            await _db.delete_bot_file_id_cache_entry(
-                source_chat_id,
-                source_message_id,
-                file_index,
-                bot_username
-            )
+            else:
+                logger.warning(
+                    f"Cached file ID invalid for bot {bot_username}, msg {source_message_id}: {e}. "
+                    f"Clearing cache and refetching..."
+                )
+                if canonical:
+                    await _db.invalidate_bot_media_file_id(bot_identifier, canonical["file_unique_id"])
+                await _db.delete_bot_file_id_cache_entry(
+                    source_chat_id,
+                    source_message_id,
+                    file_index,
+                    bot_username
+                )
             # Fall through to re-fetch the file ID
     
     # Cache miss - need to get bot-specific file ID by forwarding
