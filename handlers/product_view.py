@@ -16,6 +16,9 @@ from translations.translator import translate_text_async
 logger = logging.getLogger(__name__)
 db = Database()
 
+_MEDIA_CAPTION_SAFE_LIMIT = 900
+_MESSAGE_TEXT_SAFE_LIMIT = 3900
+
 _DM_TO_ORDER_TEXT = {
     "en": "👆 DM TO ORDER: {contact}",
     "en-US": "👆 DM TO ORDER: {contact}",
@@ -42,6 +45,20 @@ def _build_media_unavailable_text(product: dict, caption: str) -> str:
         f"Product: {snippet}\n"
         "You can still open this item from the shop or try again."
     )
+
+
+def _fit_telegram_text(text: str, limit: int) -> tuple[str, bool]:
+    value = text or ""
+    if len(value) <= limit:
+        return value, False
+    return value[: max(0, limit - 1)].rstrip() + "…", True
+
+
+def _build_details_message(full_caption: str, dm_message: str, include_full_caption: bool) -> str:
+    if not include_full_caption:
+        return dm_message
+    details = f"{full_caption}\n\n{dm_message}"
+    return _fit_telegram_text(details, _MESSAGE_TEXT_SAFE_LIMIT)[0]
 
 
 def _build_admin_action_buttons(product_id: int, user_id: int) -> list[list[InlineKeyboardButton]]:
@@ -310,6 +327,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 f"\n\n⚠️ {len(resolution_failures)} of {total_media} media file(s) "
                 "could not be delivered by this bot."
             )
+        media_caption, media_caption_shortened = _fit_telegram_text(full_caption, _MEDIA_CAPTION_SAFE_LIMIT)
         
         # Create keyboard with back button and admin buttons
         keyboard_buttons = []
@@ -328,7 +346,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 f"sending {len(media_list)} media item(s) individually reason={reason}"
             )
             for idx, (file_id, file_type) in enumerate(media_list):
-                item_caption = full_caption if idx == 0 else None
+                item_caption = media_caption if idx == 0 else None
                 try:
                     await send_media_message(
                         context,
@@ -350,7 +368,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 update.effective_chat.id,
                 file_id,
                 file_type,
-                caption=full_caption,
+                caption=media_caption,
                 reply_markup=None
             )
         else:
@@ -366,22 +384,22 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     nonlocal caption_used
                     if not caption_used:
                         caption_used = True
-                        return full_caption
+                        return media_caption
                     return None
                 
                 for idx, (file_id, file_type) in enumerate(media_list):
                     if file_type == "photo":
-                        media_group.append(InputMediaPhoto(media=file_id, caption=get_caption()))
+                        media_group.append(InputMediaPhoto(media=file_id, caption=get_caption(), parse_mode=None))
                         media_group_entries.append((file_id, file_type))
                     elif file_type == "video":
-                        media_group.append(InputMediaVideo(media=file_id, caption=get_caption()))
+                        media_group.append(InputMediaVideo(media=file_id, caption=get_caption(), parse_mode=None))
                         media_group_entries.append((file_id, file_type))
                     elif file_type == "animation":
-                        media_group.append(InputMediaAnimation(media=file_id, caption=get_caption()))
+                        media_group.append(InputMediaAnimation(media=file_id, caption=get_caption(), parse_mode=None))
                         media_group_entries.append((file_id, file_type))
                     elif file_type == "document":
                         # Documents can be in media groups (unlike audio/voice/video_note)
-                        media_group.append(InputMediaDocument(media=file_id, caption=get_caption()))
+                        media_group.append(InputMediaDocument(media=file_id, caption=get_caption(), parse_mode=None))
                         media_group_entries.append((file_id, file_type))
                     elif file_type in ["audio", "voice", "video_note"]:
                         # These types cannot be in media groups - send separately
@@ -449,12 +467,13 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         order_contact = await db.get_order_contact()
         
         dm_message = _build_dm_to_order_text(user_lang, order_contact)
+        details_message = _build_details_message(full_caption, dm_message, media_caption_shortened)
         
         # Send DM message with keyboard separately
         await safe_send_message(
             context.bot,
             update.effective_chat.id,
-            text=dm_message,
+            text=details_message,
             parse_mode=None,
             reply_markup=keyboard
         )
