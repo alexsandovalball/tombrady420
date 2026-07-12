@@ -25,7 +25,7 @@ _resolve_semaphore = asyncio.Semaphore(4)
 _VALIDATED_FILE_ID_TTL_SECONDS = 60 * 60
 _VALIDATED_FILE_ID_MAX = 5000
 _VALIDATION_TIMEOUT_SECONDS = 3.0
-_validated_file_ids: OrderedDict[tuple[str, str], float] = OrderedDict()
+_validated_file_ids: OrderedDict[tuple[str, str], tuple[float, Optional[str]]] = OrderedDict()
 _resolve_locks: dict[tuple[str, int, int, int, str], asyncio.Lock] = {}
 
 
@@ -119,6 +119,7 @@ class MediaResolutionResult:
     file_id: Optional[str]
     source: str
     error: Optional[str] = None
+    file_unique_id: Optional[str] = None
 
 
 def _invalid_file_id_error(exc: Exception) -> bool:
@@ -142,6 +143,7 @@ class MediaResolver:
         current_bot_username: str,
         media_index: int = 0,
         allow_rehydrate: bool = True,
+        force_rehydrate: bool = False,
     ) -> MediaResolutionResult:
         product_id = product.get("id")
         original_bot = (product.get("bot_username") or "").lower()
@@ -176,7 +178,7 @@ class MediaResolver:
             )
             return MediaResolutionResult(False, None, "metadata", error)
 
-        if same_bot and original_file_id:
+        if same_bot and original_file_id and not force_rehydrate:
             validation = await self._validate_file_id(original_file_id)
             if validation.success:
                 logger.info(
@@ -195,16 +197,26 @@ class MediaResolver:
                     extra={**log_extra, "reason": validation.error},
                 )
 
-        cached = await self.db.get_bot_file_id(
-            source_chat_id,
-            source_message_id,
-            media_index,
-            current_bot,
-            file_type=file_type,
-        )
+        cached = None
+        if not force_rehydrate:
+            cached = await self.db.get_bot_file_id(
+                source_chat_id,
+                source_message_id,
+                media_index,
+                current_bot,
+                file_type=file_type,
+            )
         if cached:
             validation = await self._validate_file_id(cached)
-            if validation.success:
+            if validation.success and await self._validated_file_matches_origin(
+                validation,
+                source_chat_id,
+                source_message_id,
+                media_index,
+                current_bot,
+                file_type,
+                log_extra,
+            ):
                 logger.info(
                     "Media resolution cache hit",
                     extra={**log_extra, "resolution_source": "cache", "cache_hit": True},
@@ -243,6 +255,7 @@ class MediaResolver:
             media_index,
             current_bot,
             log_extra,
+            force_rehydrate=force_rehydrate,
         )
 
         if not resolved:
@@ -270,6 +283,7 @@ class MediaResolver:
         media_index: int,
         current_bot: str,
         log_extra: dict[str, Any],
+        force_rehydrate: bool = False,
     ) -> Optional[str]:
         lock_key = (current_bot, int(source_chat_id), int(source_message_id), int(media_index), file_type)
         lock = _resolve_locks.get(lock_key)
@@ -278,16 +292,26 @@ class MediaResolver:
             _resolve_locks[lock_key] = lock
 
         async with lock:
-            cached = await self.db.get_bot_file_id(
-                source_chat_id,
-                source_message_id,
-                media_index,
-                current_bot,
-                file_type=file_type,
-            )
+            cached = None
+            if not force_rehydrate:
+                cached = await self.db.get_bot_file_id(
+                    source_chat_id,
+                    source_message_id,
+                    media_index,
+                    current_bot,
+                    file_type=file_type,
+                )
             if cached:
                 validation = await self._validate_file_id(cached)
-                if validation.success:
+                if validation.success and await self._validated_file_matches_origin(
+                    validation,
+                    source_chat_id,
+                    source_message_id,
+                    media_index,
+                    current_bot,
+                    file_type,
+                    log_extra,
+                ):
                     logger.info(
                         "Media resolution cache hit after wait",
                         extra={**log_extra, "resolution_source": "cache_after_wait", "cache_hit": True},
@@ -308,6 +332,7 @@ class MediaResolver:
                     media_index,
                     current_bot,
                     log_extra,
+                    force_refresh=force_rehydrate,
                 )
 
     async def _validate_file_id(self, file_id: str) -> MediaResolutionResult:
@@ -315,17 +340,29 @@ class MediaResolver:
         cache_key = (bot_username, file_id)
         now = _time.monotonic()
         cached_at = _validated_file_ids.get(cache_key)
+        cached_unique_id = None
+        if cached_at is not None:
+            if isinstance(cached_at, tuple):
+                cached_at, cached_unique_id = cached_at
+            else:
+                cached_unique_id = None
         if cached_at is not None and now - cached_at < _VALIDATED_FILE_ID_TTL_SECONDS:
             _validated_file_ids.move_to_end(cache_key)
-            return MediaResolutionResult(True, file_id, "validated_cache")
+            return MediaResolutionResult(True, file_id, "validated_cache", file_unique_id=cached_unique_id)
 
         try:
-            await asyncio.wait_for(
+            tg_file = await asyncio.wait_for(
                 self.bot.get_file(file_id),
                 timeout=_VALIDATION_TIMEOUT_SECONDS,
             )
-            self._remember_validated_file_id(file_id)
-            return MediaResolutionResult(True, file_id, "validated")
+            file_unique_id = getattr(tg_file, "file_unique_id", None)
+            self._remember_validated_file_id(file_id, file_unique_id)
+            return MediaResolutionResult(
+                True,
+                file_id,
+                "validated",
+                file_unique_id=file_unique_id,
+            )
         except asyncio.TimeoutError:
             _validated_file_ids.pop(cache_key, None)
             return MediaResolutionResult(False, None, "validation", "validation timeout")
@@ -333,13 +370,48 @@ class MediaResolver:
             _validated_file_ids.pop(cache_key, None)
             return MediaResolutionResult(False, None, "validation", str(exc))
 
-    def _remember_validated_file_id(self, file_id: str) -> None:
+    def _remember_validated_file_id(self, file_id: str, file_unique_id: Optional[str] = None) -> None:
         bot_username = (getattr(self.bot, "username", None) or "").lower()
         cache_key = (bot_username, file_id)
-        _validated_file_ids[cache_key] = _time.monotonic()
+        _validated_file_ids[cache_key] = (_time.monotonic(), file_unique_id)
         _validated_file_ids.move_to_end(cache_key)
         while len(_validated_file_ids) > _VALIDATED_FILE_ID_MAX:
             _validated_file_ids.popitem(last=False)
+
+    async def _validated_file_matches_origin(
+        self,
+        validation: MediaResolutionResult,
+        source_chat_id: int,
+        source_message_id: int,
+        media_index: int,
+        current_bot: str,
+        file_type: str,
+        log_extra: dict[str, Any],
+    ) -> bool:
+        if not validation.file_unique_id:
+            return True
+        get_canonical = getattr(self.db, "get_canonical_media_by_origin", None)
+        if get_canonical is None:
+            return True
+        canonical = await get_canonical(source_chat_id, source_message_id, file_type)
+        if not canonical:
+            return True
+        expected_unique_id = canonical.get("file_unique_id")
+        if not expected_unique_id or expected_unique_id == validation.file_unique_id:
+            return True
+        await self.db.delete_bot_file_id_cache_entry(
+            source_chat_id, source_message_id, media_index, current_bot
+        )
+        logger.warning(
+            "Cached file_id unique_id mismatch; evicting stale media cache",
+            extra={
+                **log_extra,
+                "expected_file_unique_id": expected_unique_id,
+                "actual_file_unique_id": validation.file_unique_id,
+                "cache_hit": True,
+            },
+        )
+        return False
 
     async def _rehydrate_with_retry(
         self,
@@ -350,6 +422,7 @@ class MediaResolver:
         media_index: int,
         current_bot: str,
         log_extra: dict[str, Any],
+        force_refresh: bool = False,
     ) -> Optional[str]:
         for attempt in range(3):
             try:
@@ -359,6 +432,7 @@ class MediaResolver:
                     source_message_id,
                     file_type,
                     file_index=media_index,
+                    force_refresh=force_refresh,
                 )
             except RetryAfter as exc:
                 delay = min(max(float(exc.retry_after), 1.0) * (2 ** attempt), 30.0)

@@ -403,7 +403,8 @@ async def get_bot_specific_file_id(
     source_chat_id: int,
     source_message_id: int,
     file_type: str,
-    file_index: int = 0
+    file_index: int = 0,
+    force_refresh: bool = False,
 ) -> Optional[str]:
     """
     Get bot-specific file ID by forwarding a message from the source chat.
@@ -475,13 +476,25 @@ async def get_bot_specific_file_id(
     get_canonical = getattr(_db, "get_canonical_media_by_origin", None)
     if get_canonical and inspect.iscoroutinefunction(get_canonical):
         canonical = await get_canonical(source_chat_id, source_message_id, file_type)
-    if canonical:
+    if canonical and not force_refresh:
         mapped_file_id = await _db.get_bot_media_file_id(bot_identifier, canonical["file_unique_id"])
         if mapped_file_id:
             try:
-                await bot.get_file(mapped_file_id)
-                logger.debug("[media_registry] using_bot_media_mapping bot=%s msg=%s", bot_identifier, source_message_id)
-                return mapped_file_id
+                tg_file = await bot.get_file(mapped_file_id)
+                mapped_unique_id = getattr(tg_file, "file_unique_id", None)
+                expected_unique_id = canonical.get("file_unique_id")
+                if expected_unique_id and mapped_unique_id and mapped_unique_id != expected_unique_id:
+                    await _db.invalidate_bot_media_file_id(bot_identifier, expected_unique_id)
+                    logger.warning(
+                        "[media_registry] stale_mapping_unique_mismatch bot=%s msg=%s expected=%s actual=%s",
+                        bot_identifier,
+                        source_message_id,
+                        expected_unique_id,
+                        mapped_unique_id,
+                    )
+                else:
+                    logger.debug("[media_registry] using_bot_media_mapping bot=%s msg=%s", bot_identifier, source_message_id)
+                    return mapped_file_id
             except (TelegramError, asyncio.TimeoutError) as e:
                 if is_transient_telegram_error(e):
                     logger.warning(
@@ -494,19 +507,39 @@ async def get_bot_specific_file_id(
                     await _db.invalidate_bot_media_file_id(bot_identifier, canonical["file_unique_id"])
                     logger.warning("[media_registry] stale_mapping_invalidated bot=%s msg=%s error=%s", bot_identifier, source_message_id, e)
 
-    cached_file_id = await _db.get_bot_file_id(
-        source_chat_id,
-        source_message_id,
-        file_index,
-        bot_username,
-        file_type=file_type,
-    )
+    cached_file_id = None
+    if not force_refresh:
+        cached_file_id = await _db.get_bot_file_id(
+            source_chat_id,
+            source_message_id,
+            file_index,
+            bot_username,
+            file_type=file_type,
+        )
     
     if cached_file_id:
         try:
             tg_file = await bot.get_file(cached_file_id)
             file_unique_id = getattr(tg_file, "file_unique_id", None)
-            if file_unique_id:
+            expected_unique_id = canonical.get("file_unique_id") if canonical else None
+            if expected_unique_id and file_unique_id and file_unique_id != expected_unique_id:
+                if canonical:
+                    await _db.invalidate_bot_media_file_id(bot_identifier, expected_unique_id)
+                await _db.delete_bot_file_id_cache_entry(
+                    source_chat_id,
+                    source_message_id,
+                    file_index,
+                    bot_username
+                )
+                logger.warning(
+                    "[media_registry] cached_file_id_unique_mismatch bot=%s msg=%s idx=%s expected=%s actual=%s",
+                    bot_username,
+                    source_message_id,
+                    file_index,
+                    expected_unique_id,
+                    file_unique_id,
+                )
+            elif file_unique_id:
                 await _call_db_optional(
                     "upsert_canonical_media",
                     product_id=str(source_message_id),
@@ -518,8 +551,11 @@ async def get_bot_specific_file_id(
                     file_size=getattr(tg_file, "file_size", None),
                 )
                 await _call_db_optional("upsert_bot_media_file_id", bot_identifier, file_unique_id, cached_file_id)
-            logger.debug(f"Using cached file ID for bot {bot_username}, message {source_message_id}, index {file_index}")
-            return cached_file_id
+                logger.debug(f"Using cached file ID for bot {bot_username}, message {source_message_id}, index {file_index}")
+                return cached_file_id
+            elif not expected_unique_id:
+                logger.debug(f"Using cached file ID for bot {bot_username}, message {source_message_id}, index {file_index}")
+                return cached_file_id
         except (TelegramError, asyncio.TimeoutError) as e:
             if is_transient_telegram_error(e):
                 logger.warning(

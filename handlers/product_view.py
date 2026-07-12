@@ -63,6 +63,15 @@ def _build_navigation_buttons(back_callback: str, back_label: str) -> list[list[
     return [[InlineKeyboardButton(back_label, callback_data=back_callback)]]
 
 
+def _is_multi_video_album(media_list: list[tuple[str, str]]) -> bool:
+    return sum(1 for _file_id, file_type in media_list if file_type == "video") > 1
+
+
+def _has_duplicate_file_ids(media_list: list[tuple[str, str]]) -> bool:
+    file_ids = [file_id for file_id, _file_type in media_list if file_id]
+    return len(file_ids) != len(set(file_ids))
+
+
 def _build_media_fallback_keyboard(
     product_id: int,
     bot_username: str,
@@ -220,20 +229,40 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         product_bot = (product.get("bot_username") or "").lower()
         current_bot = (context.bot.username or "").lower()
         resolver = MediaResolver(context.bot, db)
+        force_media_refresh = _is_multi_video_album(media_list) and bool(product_bot and current_bot and product_bot != current_bot)
         resolution_results = await asyncio.gather(*[
-            resolver.resolve_media_for_bot(product, current_bot, idx)
+            resolver.resolve_media_for_bot(product, current_bot, idx, force_rehydrate=force_media_refresh)
             for idx, _media in enumerate(media_list)
         ], return_exceptions=True)
 
-        resolved_media_list = []
-        resolution_failures = []
-        for result, (_file_id, file_type) in zip(resolution_results, media_list):
-            if isinstance(result, Exception):
-                resolution_failures.append(result)
-            elif result.success and result.file_id:
-                resolved_media_list.append((result.file_id, file_type))
-            else:
-                resolution_failures.append(result)
+        def unpack_resolution_results(results):
+            resolved = []
+            failures = []
+            for result, (_file_id, file_type) in zip(results, media_list):
+                if isinstance(result, Exception):
+                    failures.append(result)
+                elif result.success and result.file_id:
+                    resolved.append((result.file_id, file_type))
+                else:
+                    failures.append(result)
+            return resolved, failures
+
+        resolved_media_list, resolution_failures = unpack_resolution_results(resolution_results)
+
+        if (
+            len(resolved_media_list) == len(media_list)
+            and len(media_list) > 1
+            and _has_duplicate_file_ids(resolved_media_list)
+        ):
+            logger.warning(
+                "Duplicate resolved media file_ids detected; forcing media refresh before album send",
+                extra={"product_id": product_id, "media_count": len(media_list)},
+            )
+            resolution_results = await asyncio.gather(*[
+                resolver.resolve_media_for_bot(product, current_bot, idx, force_rehydrate=True)
+                for idx, _media in enumerate(media_list)
+            ], return_exceptions=True)
+            resolved_media_list, resolution_failures = unpack_resolution_results(resolution_results)
 
         using_copy_path = bool(product_bot and current_bot and product_bot != current_bot)
         if resolution_failures:
@@ -264,11 +293,14 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 return
 
         media_list = resolved_media_list
+        resolved_unique_count = len({file_id for file_id, _file_type in media_list if file_id})
         
-        logger.debug(
+        logger.info(
             f"show_product_media: product_id={product_id}, "
             f"deduped_media_count={len(media_list)}, "
-            f"copy_path={using_copy_path}"
+            f"unique_media_count={resolved_unique_count}, "
+            f"copy_path={using_copy_path}, "
+            f"forced_refresh={force_media_refresh}"
         )
         
         # Build full caption
@@ -290,7 +322,26 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         
         keyboard = InlineKeyboardMarkup(keyboard_buttons)
         
-        # Send all media at once
+        async def send_media_items_individually(reason: str) -> None:
+            logger.info(
+                f"show_product_media: product_id={product_id}, "
+                f"sending {len(media_list)} media item(s) individually reason={reason}"
+            )
+            for idx, (file_id, file_type) in enumerate(media_list):
+                item_caption = full_caption if idx == 0 else None
+                try:
+                    await send_media_message(
+                        context,
+                        update.effective_chat.id,
+                        file_id,
+                        file_type,
+                        caption=item_caption,
+                        reply_markup=None
+                    )
+                except Exception as send_error:
+                    logger.error(f"Failed to send media {idx + 1}/{total_media}: {send_error}", exc_info=True)
+
+        # Send all media at once.
         if len(media_list) == 1:
             # Single media - send with caption
             file_id, file_type = media_list[0]
@@ -351,6 +402,10 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         media=media_group
                     )
                     sent_count = len(sent or [])
+                    logger.info(
+                        f"show_product_media: product_id={product_id}, "
+                        f"media_group_sent requested={len(media_group)} returned={sent_count}"
+                    )
                     if sent_count == 0:
                         raise RuntimeError(
                             f"send_media_group returned {sent_count}/{len(media_group)} messages"
@@ -388,21 +443,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     f"show_product_media: product_id={product_id}, "
                     f"using album fallback (individual send) for {len(media_list)} items"
                 )
-                # Fallback: send all media individually
-                for idx, (file_id, file_type) in enumerate(media_list):
-                    # Add caption only to first media
-                    item_caption = full_caption if idx == 0 else None
-                    try:
-                        await send_media_message(
-                            context,
-                            update.effective_chat.id,
-                            file_id,
-                            file_type,
-                            caption=item_caption,
-                            reply_markup=None
-                        )
-                    except Exception as send_error:
-                        logger.error(f"Failed to send media {idx + 1}/{total_media}: {send_error}", exc_info=True)
+                await send_media_items_individually("album_exception")
         
         # Get order contact
         order_contact = await db.get_order_contact()
