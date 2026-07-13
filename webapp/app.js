@@ -22,7 +22,7 @@
         WEBAPP_CLOSE_DELAY_MS: 1500,  // Delay before closing webapp after successful product send
         ERROR_DISPLAY_MS: 4000,  // Duration to show error messages on buttons
         INITIAL_DATA_TIMEOUT_MS: 10000,  // Timeout for initial data load to prevent infinite loading
-        MAX_VIDEO_PREVIEW_CACHE_SIZE: 80,  // Captured video preview frames kept in memory
+        MAX_VIDEO_PREVIEW_CACHE_SIZE: 24,  // Captured video preview frames kept in memory
         MAX_CACHE_SIZE: 20  // Maximum number of cached API responses to prevent memory leaks
     };
 
@@ -2663,6 +2663,20 @@
         }
     }
 
+    function teardownMediaViewer(container) {
+        if (!container) return;
+        container.querySelectorAll('video').forEach((video) => {
+            try {
+                video.pause();
+                video.removeAttribute('src');
+                video.load();
+            } catch (err) {
+                // Ignore teardown failures; the element is being replaced.
+            }
+        });
+        container.replaceChildren();
+    }
+
     function createVideoPreview(mediaUrl, fallbackContainer, cacheKey = '') {
         const cachedPreview = getVideoPreviewFrame(cacheKey);
         if (cachedPreview) {
@@ -2948,7 +2962,7 @@
         // Function to render media at index in main viewer
         const renderMedia = (index) => {
             const renderToken = ++mediaRenderToken;
-            mediaViewer.replaceChildren();
+            teardownMediaViewer(mediaViewer);
             const mediaUrl = buildMediaUrl(product, index);
             const mediaType = mediaInfo[index]?.type || 'photo';
             

@@ -53,6 +53,9 @@ class Database:
         await conn.execute("PRAGMA busy_timeout = 30000")
         # Increase cache size for better performance (10MB)
         await conn.execute("PRAGMA cache_size = -10000")
+        await conn.execute("PRAGMA synchronous = NORMAL")
+        await conn.execute("PRAGMA temp_store = MEMORY")
+        await conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
     def get_connection(self):
@@ -91,7 +94,7 @@ class Database:
         Uses TRUNCATE mode to reset the WAL file after checkpointing.
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self.get_connection() as db:
                 await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 logger.debug("WAL checkpoint completed successfully")
         except Exception as e:
@@ -104,7 +107,7 @@ class Database:
     
     async def init_db(self):
         """Initialize database with schema and apply performance optimizations."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             # Enable WAL mode for better concurrent read/write performance
             await db.execute("PRAGMA journal_mode=WAL")
             logger.info("Enabled WAL mode for database")
@@ -897,7 +900,7 @@ class Database:
         bot_username: Optional[str] = None
     ) -> int:
         """Add a new product and let SQLite allocate a stable product ID."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             try:
                 cursor = await db.execute("""
                     INSERT INTO products (file_id, file_type, caption, message_id, chat_id,
@@ -916,7 +919,7 @@ class Database:
     
     async def get_product(self, product_id: int) -> Optional[Dict[str, Any]]:
         """Get a product by ID."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("""
                 SELECT * FROM products WHERE id = ?
@@ -928,7 +931,7 @@ class Database:
 
     async def get_deleted_product_redirect(self, product_id: int) -> Optional[Dict[str, Any]]:
         """Get redirect metadata for a product that has been deleted."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("""
                 SELECT * FROM deleted_product_redirects WHERE product_id = ?
@@ -938,7 +941,7 @@ class Database:
     
     async def get_all_products(self, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
         """Get all products with pagination."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             query = "SELECT * FROM products ORDER BY created_at DESC"
             if limit:
@@ -949,7 +952,7 @@ class Database:
     
     async def count_products(self) -> int:
         """Get total number of products."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("SELECT COUNT(*) FROM products") as cursor:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
@@ -965,7 +968,7 @@ class Database:
         Returns:
             Count of products excluding specified categories
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             if not excluded_categories:
                 # If no categories to exclude, count all products
                 async with db.execute("SELECT COUNT(*) FROM products") as cursor:
@@ -987,7 +990,7 @@ class Database:
         """Search products by caption (for fuzzy search filtering).
         Excludes products from Dated Proofs, Client Touchdowns, and Announcements categories.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             sql_query = f"""
                 SELECT * FROM products 
@@ -1113,7 +1116,7 @@ class Database:
         Excludes products from Dated Proofs, Client Touchdowns, and Announcements categories.
         Only fetches columns needed for search and inline result building.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
 
             query = f"""
@@ -1142,7 +1145,7 @@ class Database:
         Returns:
             List of product dictionaries excluding products from specified categories
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             
             if not excluded_categories:
@@ -1225,7 +1228,7 @@ class Database:
     
     async def get_product_by_message(self, message_id: int, chat_id: int) -> Optional[Dict[str, Any]]:
         """Get product by message_id and chat_id."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("""
                 SELECT * FROM products WHERE message_id = ? AND chat_id = ?
@@ -1243,7 +1246,7 @@ class Database:
         page: int
     ):
         """Save pagination state for a user."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 INSERT OR REPLACE INTO pagination_state (user_id, state_type, query, page, created_at)
                 VALUES (?, ?, ?, ?, ?)
@@ -1257,7 +1260,7 @@ class Database:
         query: Optional[str]
     ) -> Optional[int]:
         """Get pagination state for a user."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT page FROM pagination_state 
                 WHERE user_id = ? AND state_type = ? AND query = ?
@@ -1271,7 +1274,7 @@ class Database:
         Returns:
             A dict with state_type, query, and page, or None if no state exists.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("""
                 SELECT state_type, query, page FROM pagination_state
@@ -1290,7 +1293,7 @@ class Database:
     
     async def cleanup_old_pagination_states(self, minutes: int = 10):
         """Clean up pagination states older than specified minutes."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 DELETE FROM pagination_state 
                 WHERE datetime(created_at) < datetime('now', '-' || ? || ' minutes')
@@ -1299,7 +1302,7 @@ class Database:
     
     async def save_last_search(self, user_id: int, query: str, page: int):
         """Save user's last search query and page."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 INSERT OR REPLACE INTO user_last_search (user_id, query, page, updated_at)
                 VALUES (?, ?, ?, ?)
@@ -1308,7 +1311,7 @@ class Database:
     
     async def get_last_search(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get user's last search query and page."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("""
                 SELECT query, page FROM user_last_search WHERE user_id = ?
@@ -1320,7 +1323,7 @@ class Database:
     
     async def add_ignored_message(self, message_id: int, chat_id: int):
         """Add a message to the ignore list (for deleted products)."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             try:
                 await db.execute("""
                     INSERT OR IGNORE INTO ignored_messages (message_id, chat_id, created_at)
@@ -1333,7 +1336,7 @@ class Database:
     
     async def is_message_ignored(self, message_id: int, chat_id: int) -> bool:
         """Check if a message is in the ignore list."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT 1 FROM ignored_messages 
                 WHERE message_id = ? AND chat_id = ?
@@ -1343,7 +1346,7 @@ class Database:
     
     async def get_or_create_media_group_product(self, media_group_id: str, chat_id: int) -> Optional[int]:
         """Get existing product_id for a media group or return None if it doesn't exist."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT product_id FROM media_groups 
                 WHERE media_group_id = ? AND chat_id = ?
@@ -1353,7 +1356,7 @@ class Database:
     
     async def register_media_group(self, media_group_id: str, chat_id: int, product_id: int):
         """Register a media group with its product."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 INSERT OR REPLACE INTO media_groups (media_group_id, chat_id, product_id, created_at)
                 VALUES (?, ?, ?, ?)
@@ -1362,7 +1365,7 @@ class Database:
     
     async def update_product_media(self, product_id: int, additional_file_ids: str, additional_message_ids: str = None):
         """Update a product's additional file IDs and message IDs for media groups."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 UPDATE products SET additional_file_ids = ?, additional_message_ids = ? WHERE id = ?
             """, (additional_file_ids, additional_message_ids, product_id))
@@ -1376,7 +1379,7 @@ class Database:
             product_id: Product ID
             compressed_file_id: Telegram file_id of the compressed video
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 UPDATE products SET compressed_file_id = ? WHERE id = ?
             """, (compressed_file_id, product_id))
@@ -1394,7 +1397,7 @@ class Database:
             Compressed file_id or None if not available
         """
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self.get_connection() as db:
                 async with db.execute("""
                     SELECT compressed_file_id FROM products WHERE id = ?
                 """, (product_id,)) as cursor:
@@ -1408,7 +1411,7 @@ class Database:
     
     async def get_products_by_category(self, category: str, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
         """Get products filtered by category."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             query = "SELECT * FROM products WHERE category = ? ORDER BY created_at DESC"
             if limit:
@@ -1428,7 +1431,7 @@ class Database:
         if not category:
             return []
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             params: list[Any] = [category, product_id]
             same_subcategory_order = "1"
@@ -1450,7 +1453,7 @@ class Database:
     
     async def count_products_by_category(self, category: str) -> int:
         """Count products in a category."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("SELECT COUNT(*) FROM products WHERE category = ?", (category,)) as cursor:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
@@ -1482,7 +1485,7 @@ class Database:
     
     async def get_all_category_counts(self) -> Dict[str, int]:
         """Get product counts for all categories in a single query (optimized)."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT category, COUNT(*) as count 
                 FROM products 
@@ -1494,7 +1497,7 @@ class Database:
     
     async def get_all_categories(self) -> List[str]:
         """Get list of all unique categories."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT DISTINCT category FROM products 
                 WHERE category IS NOT NULL 
@@ -1507,7 +1510,7 @@ class Database:
         self, category: str, subcategory: str, limit: int = None, offset: int = 0
     ) -> List[Dict[str, Any]]:
         """Get products filtered by category and subcategory."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             query = "SELECT * FROM products WHERE category = ? AND subcategory = ? ORDER BY created_at DESC"
             if limit:
@@ -1518,7 +1521,7 @@ class Database:
     
     async def count_products_by_category_and_subcategory(self, category: str, subcategory: str) -> int:
         """Count products in a category and subcategory."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute(
                 "SELECT COUNT(*) FROM products WHERE category = ? AND subcategory = ?",
                 (category, subcategory)
@@ -1528,7 +1531,7 @@ class Database:
     
     async def get_subcategories_with_counts(self, category: str) -> List[Dict[str, Any]]:
         """Get subcategories for a category with product counts."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT subcategory, COUNT(*) as count
                 FROM products
@@ -1541,7 +1544,7 @@ class Database:
     
     async def get_all_subcategories_with_counts(self) -> Dict[str, List[Dict[str, Any]]]:
         """Get all subcategories for all categories with product counts in a single query."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT category, subcategory, COUNT(*) as count
                 FROM products
@@ -1609,7 +1612,7 @@ class Database:
         Updates created_at to current time so recategorized products move up in lists,
         indicating fresh or restocked inventory.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 UPDATE products SET category = ?, subcategory = ?, created_at = ? WHERE id = ?
             """, (category, subcategory, datetime.now(), product_id))
@@ -1623,7 +1626,7 @@ class Database:
     
     async def add_pending_categorization(self, product_id: int):
         """Mark a product as needing categorization."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 INSERT OR IGNORE INTO pending_categorization (product_id, notified_at)
                 VALUES (?, ?)
@@ -1632,7 +1635,7 @@ class Database:
     
     async def remove_pending_categorization(self, product_id: int):
         """Remove a product from pending categorization."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 DELETE FROM pending_categorization WHERE product_id = ?
             """, (product_id,))
@@ -1640,7 +1643,7 @@ class Database:
     
     async def get_pending_categorizations(self) -> List[int]:
         """Get list of product IDs that need categorization."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT product_id FROM pending_categorization ORDER BY notified_at
             """) as cursor:
@@ -1661,7 +1664,7 @@ class Database:
         if await self.is_entity_blocked(telegram_user_id=user_id, username=username):
             logger.info("[block] denied_registration user_id=%s username=%s", user_id, username or "")
             return
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             # Check if user exists
             async with db.execute("SELECT user_id FROM bot_users WHERE user_id = ?", (user_id,)) as cursor:
                 exists = await cursor.fetchone()
@@ -1686,7 +1689,7 @@ class Database:
     
     async def get_all_users(self) -> List[Dict[str, Any]]:
         """Get all bot users."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("""
                 SELECT * FROM bot_users ORDER BY last_seen DESC
@@ -1705,7 +1708,7 @@ class Database:
         Returns:
             Tuple of (total_count, users_list)
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             # Get total count
             async with db.execute("SELECT COUNT(*) FROM bot_users") as cursor:
                 total = (await cursor.fetchone())[0]
@@ -1720,14 +1723,14 @@ class Database:
     
     async def count_users(self) -> int:
         """Get total number of users."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("SELECT COUNT(*) FROM bot_users") as cursor:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
     
     async def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get user details by user ID."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("""
                 SELECT * FROM bot_users WHERE user_id = ?
@@ -1740,7 +1743,7 @@ class Database:
         Get the bot_username for a specific user.
         Returns None if user not found or bot_username is NULL.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT bot_username FROM bot_users WHERE user_id = ?
             """, (user_id,)) as cursor:
@@ -1755,7 +1758,7 @@ class Database:
         if not user_ids:
             return {}
         placeholders = ','.join('?' * len(user_ids))
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute(f"""
                 SELECT user_id, LOWER(bot_username) FROM bot_users WHERE user_id IN ({placeholders})
             """, tuple(user_ids)) as cursor:
@@ -1767,7 +1770,7 @@ class Database:
     
     async def user_exists(self, user_id: int) -> bool:
         """Check if a user exists in the database."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT user_id FROM bot_users WHERE user_id = ?
             """, (user_id,)) as cursor:
@@ -1776,7 +1779,7 @@ class Database:
     
     async def set_user_notifications(self, user_id: int, enabled: bool):
         """Enable or disable notifications for a user."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 UPDATE bot_users SET notifications_enabled = ? WHERE user_id = ?
             """, (1 if enabled else 0, user_id))
@@ -1784,7 +1787,7 @@ class Database:
     
     async def is_user_subscribed(self, user_id: int) -> bool:
         """Check if user has notifications enabled."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT notifications_enabled FROM bot_users WHERE user_id = ?
             """, (user_id,)) as cursor:
@@ -1799,7 +1802,7 @@ class Database:
         
         if not admin_ids:
             # No admins to filter, simple query
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self.get_connection() as db:
                 async with db.execute("""
                     SELECT user_id FROM bot_users WHERE notifications_enabled = 1
                 """) as cursor:
@@ -1815,7 +1818,7 @@ class Database:
             WHERE notifications_enabled = 1 
             AND user_id NOT IN ({placeholders})
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute(query, admin_ids) as cursor:
                 rows = await cursor.fetchall()
                 return [row[0] for row in rows]
@@ -1834,7 +1837,7 @@ class Database:
         
         if not admin_ids:
             # No admins to filter, simple query
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self.get_connection() as db:
                 db.row_factory = aiosqlite.Row
                 async with db.execute("""
                     SELECT user_id, bot_username FROM bot_users 
@@ -1853,7 +1856,7 @@ class Database:
             WHERE notifications_enabled = 1 
             AND user_id NOT IN ({placeholders})
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(query, admin_ids) as cursor:
                 rows = await cursor.fetchall()
@@ -1868,7 +1871,7 @@ class Database:
         Users without a bot_username are included under None key.
         """
         result = defaultdict(list)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("""
                 SELECT * FROM bot_users ORDER BY last_seen DESC
@@ -1947,7 +1950,7 @@ class Database:
     
     async def get_pending_notifications(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Get pending notifications from queue."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("""
                 SELECT * FROM notification_queue 
@@ -1960,7 +1963,7 @@ class Database:
     
     async def get_recent_notifications_count(self, user_id: int, minutes: int = 60) -> int:
         """Count notifications sent to user in the last N minutes."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT COUNT(*) FROM notification_queue
                 WHERE user_id = ? AND sent_at IS NOT NULL
@@ -1978,7 +1981,7 @@ class Database:
             return {}
         cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat()
         placeholders = ','.join('?' * len(user_ids))
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute(f"""
                 SELECT user_id, COUNT(*) as cnt
                 FROM notification_queue
@@ -2145,7 +2148,7 @@ class Database:
         Returns the list of IP addresses that were added to blocked_ips so the
         caller can update any in-memory IP-block registry.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute(
                 "SELECT username, first_name, last_name FROM bot_users WHERE user_id = ?",
                 (user_id,),
@@ -2200,7 +2203,7 @@ class Database:
         Returns the list of IP addresses that were removed from blocked_ips so the
         caller can update any in-memory IP-block registry.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 UPDATE bot_users SET is_blocked = 0 WHERE user_id = ?
             """, (user_id,))
@@ -2232,7 +2235,7 @@ class Database:
         """Check if a user is blocked."""
         if await self.is_entity_blocked(telegram_user_id=user_id):
             return True
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT is_blocked FROM bot_users WHERE user_id = ?
             """, (user_id,)) as cursor:
@@ -2263,7 +2266,7 @@ class Database:
             params.append(device_fingerprint)
         if not clauses:
             return False
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute(
                 f"SELECT 1 FROM blocked_entities WHERE is_permanent = 1 AND ({' OR '.join(clauses)}) LIMIT 1",
                 params,
@@ -2279,7 +2282,7 @@ class Database:
         if await self.is_entity_blocked(telegram_user_id=user_id, ip_address=ip_address):
             logger.info("[block] denied_ip_refresh user_id=%s ip=%s", user_id, ip_address)
             return
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 INSERT INTO user_ips (user_id, ip_address)
                 VALUES (?, ?)
@@ -2290,7 +2293,7 @@ class Database:
 
     async def get_user_ips(self, user_id: int) -> list:
         """Return all IP addresses ever seen for a user."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute(
                 "SELECT ip_address FROM user_ips WHERE user_id = ?", (user_id,)
             ) as cursor:
@@ -2299,7 +2302,7 @@ class Database:
 
     async def get_all_blocked_ips(self) -> list:
         """Return all currently blocked IP addresses."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("SELECT ip_address FROM blocked_ips") as cursor:
                 rows = await cursor.fetchall()
         return [row[0] for row in rows]
@@ -2310,7 +2313,7 @@ class Database:
         This is different from blocking - the user can restart the bot and be re-added.
         Deletes user record and all associated data (notifications, etc.).
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             # Delete from bot_users (cascade will handle related records)
             await db.execute("DELETE FROM bot_users WHERE user_id = ?", (user_id,))
             # Also delete any pending notifications for this user
@@ -2325,7 +2328,7 @@ class Database:
         This allows bulk cleanup of users from a particular bot instance.
         Use bot_username="_untracked_" to delete all users without bot_username.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             # First get the user IDs to delete their related data
             if bot_username == "_untracked_":
                 async with db.execute("""
@@ -2362,7 +2365,7 @@ class Database:
         here. Runtime startup is the authority for active bots; stale user rows
         should not make deleted or switched bots reappear in admin menus.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT LOWER(bot_username) FROM bot_instances
                 WHERE bot_username IS NOT NULL AND bot_username != ''
@@ -2401,7 +2404,7 @@ class Database:
         placeholders = ",".join("?" * len(normalized_active))
         now = datetime.now()
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("BEGIN IMMEDIATE")
 
             cursor = await db.execute(f"""
@@ -2460,7 +2463,7 @@ class Database:
         Get count of users for a specific bot or all users if bot_username is None.
         Use bot_username="_untracked_" to get count of users without bot_username.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             if bot_username == "_untracked_":
                 async with db.execute("""
                     SELECT COUNT(*) FROM bot_users 
@@ -2492,7 +2495,7 @@ class Database:
             tuple: (total_count, users_list) where total_count is the total number of users
                    and users_list is a list of user dictionaries for the current page
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             
             if bot_username == "_untracked_":
@@ -2534,7 +2537,7 @@ class Database:
     
     async def queue_custom_message(self, user_id: int, message_text: str):
         """Queue a custom message for a user."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 INSERT INTO custom_message_queue (user_id, message_text, created_at)
                 VALUES (?, ?, ?)
@@ -2543,7 +2546,7 @@ class Database:
     
     async def get_pending_custom_messages(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Get pending custom messages from queue."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("""
                 SELECT * FROM custom_message_queue 
@@ -2556,7 +2559,7 @@ class Database:
     
     async def mark_custom_message_sent(self, message_id: int):
         """Mark a custom message as sent."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 UPDATE custom_message_queue SET sent_at = ? WHERE id = ?
             """, (datetime.now(), message_id))
@@ -2564,7 +2567,7 @@ class Database:
     
     async def count_pending_custom_messages(self) -> int:
         """Count remaining unsent messages in the custom message queue."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute(
                 "SELECT COUNT(*) FROM custom_message_queue WHERE sent_at IS NULL"
             ) as cursor:
@@ -2573,7 +2576,7 @@ class Database:
 
     async def count_pending_notifications(self) -> int:
         """Count remaining unsent notifications in the notification queue."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute(
                 "SELECT COUNT(*) FROM notification_queue WHERE sent_at IS NULL"
             ) as cursor:
@@ -2590,7 +2593,7 @@ class Database:
         Returns:
             List of dicts with keys 'bot_username' and 'pending'.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("""
                 SELECT bu.bot_username, COUNT(*) AS pending
@@ -2614,7 +2617,7 @@ class Database:
         Returns:
             List of dicts with keys 'bot_username' and 'pending'.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("""
                 SELECT bu.bot_username, COUNT(*) AS pending
@@ -2630,7 +2633,7 @@ class Database:
     
     async def get_recent_custom_messages_count(self, user_id: int, minutes: int = 60) -> int:
         """Count custom messages sent to user in the last N minutes."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT COUNT(*) FROM custom_message_queue 
                 WHERE user_id = ? AND sent_at IS NOT NULL
@@ -2652,7 +2655,7 @@ class Database:
                     return lang
         
         # Cache miss or expired - query database
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT language FROM bot_users WHERE user_id = ?
             """, (user_id,)) as cursor:
@@ -2669,7 +2672,7 @@ class Database:
         """Set user's preferred language and invalidate cache."""
         global _user_language_cache
         
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             # Check if user exists
             async with db.execute("SELECT user_id FROM bot_users WHERE user_id = ?", (user_id,)) as cursor:
                 exists = await cursor.fetchone()
@@ -2709,7 +2712,7 @@ class Database:
         Returns:
             Translated text if found in cache, None otherwise
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT translated_text FROM translation_cache
                 WHERE source_text = ? AND source_lang = ? AND target_lang = ?
@@ -2745,7 +2748,7 @@ class Database:
             target_lang: Target language code
             translated_text: Translated text
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             try:
                 await db.execute("""
                     INSERT INTO translation_cache (source_text, source_lang, target_lang, translated_text)
@@ -2767,7 +2770,7 @@ class Database:
         Args:
             days_old: Remove translations older than this many days that haven't been used
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 DELETE FROM translation_cache
                 WHERE last_used < datetime('now', '-' || ? || ' days')
@@ -2789,7 +2792,7 @@ class Database:
                     return contact
         
         # Cache miss or expired - query database
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT value FROM bot_settings WHERE key = 'order_contact'
             """) as cursor:
@@ -2806,7 +2809,7 @@ class Database:
         """Set the order contact username in settings and invalidate cache."""
         global _order_contact_cache
         
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 INSERT OR REPLACE INTO bot_settings (key, value, updated_at)
                 VALUES ('order_contact', ?, ?)
@@ -2831,7 +2834,7 @@ class Database:
                     return link
 
         # Cache miss or expired - query database
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT value FROM bot_settings WHERE key = 'order_link'
             """) as cursor:
@@ -2856,7 +2859,7 @@ class Database:
 
         links: List[Dict[str, str]] = []
         has_explicit_order_links = False
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT value FROM bot_settings WHERE key = 'order_links'
             """) as cursor:
@@ -2896,7 +2899,7 @@ class Database:
         clean_links = [{"label": "OUR CONTACTS", "url": link}] if link else []
         payload = json.dumps(clean_links, ensure_ascii=False)
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 INSERT OR REPLACE INTO bot_settings (key, value, updated_at)
                 VALUES ('order_link', ?, ?)
@@ -2927,7 +2930,7 @@ class Database:
 
         payload = json.dumps(clean_links, ensure_ascii=False)
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 INSERT OR REPLACE INTO bot_settings (key, value, updated_at)
                 VALUES ('order_links', ?, ?)
@@ -3054,7 +3057,7 @@ class Database:
         identity_hash: Optional[str] = None,
     ):
         """Cache a bot-specific file ID in database."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 INSERT OR REPLACE INTO bot_file_id_cache 
                 (source_chat_id, source_message_id, file_index, file_type, bot_username, file_id, created_at, last_used, use_count, slot_id, identity_hash)
@@ -3066,7 +3069,7 @@ class Database:
     
     async def clear_bot_file_id_cache(self):
         """Clear all bot-specific file ID caches (for admin /clearcache command)."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             cursor = await db.execute("DELETE FROM bot_file_id_cache")
             deleted = cursor.rowcount
             await db.commit()
@@ -3087,7 +3090,7 @@ class Database:
         """Create or refresh canonical media metadata without touching products."""
         if not file_unique_id:
             return
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 INSERT INTO canonical_media
                 (product_id, media_type, file_unique_id, origin_chat_id, origin_message_id,
@@ -3113,7 +3116,7 @@ class Database:
         origin_message_id: int,
         media_type: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             if media_type:
                 sql = """
@@ -3134,7 +3137,7 @@ class Database:
                 return dict(row) if row else None
 
     async def get_bot_media_file_id(self, bot_identifier: str, file_unique_id: str) -> Optional[str]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute("""
                 SELECT resolved_file_id FROM bot_media_file_ids
                 WHERE bot_identifier = ? AND file_unique_id = ? AND is_valid = 1
@@ -3160,7 +3163,7 @@ class Database:
     ) -> None:
         if not bot_identifier or not file_unique_id or not resolved_file_id:
             return
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 INSERT INTO bot_media_file_ids
                 (bot_identifier, file_unique_id, resolved_file_id, last_verified_at, is_valid, created_at, updated_at, slot_id, identity_hash)
@@ -3177,7 +3180,7 @@ class Database:
             logger.info("[media_registry] bot_media_mapping_upsert bot=%s", bot_identifier)
 
     async def invalidate_bot_media_file_id(self, bot_identifier: str, file_unique_id: str) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 UPDATE bot_media_file_ids
                 SET is_valid = 0, updated_at = CURRENT_TIMESTAMP
@@ -3196,7 +3199,7 @@ class Database:
         identity_hash: Optional[str] = None,
     ):
         """Delete a specific bot file ID cache entry (used when cached ID is invalid)."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             if slot_id is not None:
                 await db.execute("""
                     DELETE FROM bot_file_id_cache
@@ -3215,7 +3218,7 @@ class Database:
 
     async def clear_bot_file_id_cache_for_bot(self, bot_username: str) -> int:
         """Clear all cached file IDs for a specific bot username."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             cursor = await db.execute(
                 "DELETE FROM bot_file_id_cache WHERE bot_username = ?",
                 (self.normalize_bot_username(bot_username),)
@@ -3227,7 +3230,7 @@ class Database:
 
     async def clear_bot_file_id_cache_for_slot(self, slot_id: int) -> int:
         """Clear cached file IDs for one permanent bot slot only."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             cursor = await db.execute(
                 """
                 DELETE FROM bot_file_id_cache
@@ -3248,7 +3251,7 @@ class Database:
 
     async def clear_bot_media_file_ids_for_slot(self, slot_id: int) -> int:
         """Invalidate resolver/media mappings for one permanent bot slot only."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             cursor = await db.execute(
                 """
                 UPDATE bot_media_file_ids
@@ -3273,7 +3276,7 @@ class Database:
     async def register_bot_instance(self, bot_username: str, bot_id: int, token_hash: str):
         """Register or update a bot instance record."""
         now = datetime.now()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 INSERT INTO bot_instances (bot_username, bot_id, token_hash, first_seen, last_seen)
                 VALUES (?, ?, ?, ?, ?)
@@ -3296,7 +3299,7 @@ class Database:
         """Resolve the immutable bot_registry row for a Telegram bot ID."""
         now = datetime.now()
         normalized_username = self.normalize_bot_username(bot_username)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
@@ -3345,7 +3348,7 @@ class Database:
             }
 
     async def get_bot_registry_by_id(self, bot_id: str) -> Optional[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 "SELECT * FROM bot_registry WHERE bot_id = ? AND status = 'active'",
@@ -3356,7 +3359,7 @@ class Database:
 
     async def get_bot_registry_by_id_any_status(self, bot_id: str) -> Optional[Dict[str, Any]]:
         """Return a bot_registry row regardless of active/inactive status."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 "SELECT * FROM bot_registry WHERE bot_id = ?",
@@ -3366,7 +3369,7 @@ class Database:
                 return dict(row) if row else None
 
     async def get_bot_registry_by_telegram_id(self, telegram_bot_id: int) -> Optional[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 "SELECT * FROM bot_registry WHERE telegram_bot_id = ? AND status = 'active'",
@@ -3376,7 +3379,7 @@ class Database:
                 return dict(row) if row else None
 
     async def get_bot_registry_by_webhook_secret(self, webhook_secret: str) -> Optional[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 "SELECT * FROM bot_registry WHERE webhook_secret = ? AND status = 'active'",
@@ -3395,7 +3398,7 @@ class Database:
         product_id: Optional[str] = None,
         ttl_expiry: Optional[datetime] = None,
     ) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 INSERT INTO media_objects (
                     media_id, media_owner_id, storage_path, file_unique_id,
@@ -3414,7 +3417,7 @@ class Database:
 
     async def list_expired_media_objects(self, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
         now = now or datetime.now()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("""
                 SELECT * FROM media_objects
@@ -3475,7 +3478,7 @@ class Database:
             return products, total
 
     async def mark_media_object_deleted(self, media_id: str) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute(
                 "UPDATE media_objects SET deleted_at = CURRENT_TIMESTAMP WHERE media_id = ?",
                 (media_id,),
@@ -3483,7 +3486,7 @@ class Database:
             await db.commit()
 
     async def get_bot_slot_identity(self, slot_id: int) -> Optional[Dict[str, Any]]:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 "SELECT * FROM bot_instances WHERE slot_id = ?",
@@ -3506,7 +3509,7 @@ class Database:
         """Register/update permanent slot identity while preserving username APIs."""
         now = datetime.now()
         normalized_username = self.normalize_bot_username(telegram_username)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("""
                 INSERT INTO bot_instances (
                     bot_username, bot_id, token_hash, first_seen, last_seen,
@@ -3535,7 +3538,7 @@ class Database:
         """Acquire a lightweight SQLite lock for one bot slot."""
         expires = datetime.now() + timedelta(seconds=ttl_seconds)
         now = datetime.now()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
                 "SELECT lock_until FROM bot_slot_locks WHERE slot_id = ?",
@@ -3553,7 +3556,7 @@ class Database:
             return True
 
     async def release_bot_slot_lock(self, slot_id: int, owner: str) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute(
                 "DELETE FROM bot_slot_locks WHERE slot_id = ? AND owner = ?",
                 (slot_id, owner)
@@ -3562,7 +3565,7 @@ class Database:
 
     async def has_bot_token_changed(self, bot_username: str, token_hash: str) -> bool:
         """Check if the bot token has changed since last run. Returns True if changed."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute(
                 "SELECT token_hash FROM bot_instances WHERE bot_username = ?",
                 (self.normalize_bot_username(bot_username),)
@@ -3585,7 +3588,7 @@ class Database:
         """
         if not active_bot_usernames:
             # If no active bots, return all users with bot_username set
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self.get_connection() as db:
                 db.row_factory = aiosqlite.Row
                 async with db.execute("""
                     SELECT * FROM bot_users 
@@ -3598,7 +3601,7 @@ class Database:
         # Normalize active bot usernames for comparison
         normalized_active = [self.normalize_bot_username(name) for name in active_bot_usernames]
         
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             # Build a query that excludes active bots
             placeholders = ','.join('?' * len(normalized_active))
@@ -3628,7 +3631,7 @@ class Database:
         """
         if not active_bot_usernames:
             # If no active bots, return all products with bot_username set
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self.get_connection() as db:
                 db.row_factory = aiosqlite.Row
                 async with db.execute("""
                     SELECT * FROM products 
@@ -3641,7 +3644,7 @@ class Database:
         # Normalize active bot usernames for comparison
         normalized_active = [self.normalize_bot_username(name) for name in active_bot_usernames]
         
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             # Build a query that excludes active bots
             placeholders = ','.join('?' * len(normalized_active))
@@ -3691,7 +3694,7 @@ class Database:
         
         if dry_run:
             # Count what would be deleted
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self.get_connection() as db:
                 # Count notifications
                 placeholders = ','.join('?' * len(user_ids))
                 async with db.execute(f"SELECT COUNT(*) FROM notification_queue WHERE user_id IN ({placeholders})", user_ids) as cursor:
@@ -3712,7 +3715,7 @@ class Database:
                        f"{stats['notifications']} notifications, {stats['custom_messages']} custom messages")
         else:
             # Actually delete
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self.get_connection() as db:
                 # Delete notifications for these users
                 placeholders = ','.join('?' * len(user_ids))
                 cursor = await db.execute(f"DELETE FROM notification_queue WHERE user_id IN ({placeholders})", user_ids)
@@ -3768,7 +3771,7 @@ class Database:
     ) -> None:
         """Log an inline query event for analytics."""
         query_length = len(query) if query else 0
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute(
                 """
                 INSERT INTO inline_queries
@@ -3787,7 +3790,7 @@ class Database:
         bot_username: str,
     ) -> None:
         """Log a chosen inline result event for analytics."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute(
                 """
                 INSERT INTO inline_chosen_results (user_id, result_id, query, bot_username)
@@ -3822,7 +3825,7 @@ class Database:
                 str(entry.get("timestamp") or ""),
             ))
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.executemany(
                 """
                 INSERT INTO webapp_events
@@ -3860,7 +3863,7 @@ class Database:
         if not visitor_hash:
             return
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute(
                 """
                 INSERT INTO visitor_events (
@@ -3910,7 +3913,7 @@ class Database:
         if not normalized_query:
             return
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute(
                 """
                 INSERT INTO search_query_events
@@ -3961,7 +3964,7 @@ class Database:
         if not rows:
             return 0
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.executemany(
                 """
                 INSERT INTO seo_query_mappings (
@@ -4272,7 +4275,7 @@ class Database:
     async def get_approved_seo_query_mappings(self, limit: int = 2000) -> List[Dict[str, Any]]:
         """Return admin-approved SEO query mappings."""
         limit = max(1, min(limit, 5000))
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
@@ -4290,7 +4293,7 @@ class Database:
     async def get_recent_seo_query_mappings(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Return recently approved SEO mappings for admin visibility."""
         limit = max(1, min(limit, 50))
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
@@ -4307,7 +4310,7 @@ class Database:
 
     async def get_latest_seo_mapping_updated_at(self) -> Optional[str]:
         """Return the newest approved mapping timestamp for sitemap freshness."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             async with db.execute(
                 "SELECT MAX(updated_at) FROM seo_query_mappings WHERE approved = 1"
             ) as cursor:
@@ -4316,7 +4319,7 @@ class Database:
 
     async def get_seo_mapping_lastmods(self) -> List[Dict[str, Any]]:
         """Return mapping freshness grouped by its affected taxonomy."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
@@ -4347,7 +4350,7 @@ class Database:
         min_count = max(1, min_count)
         max_matched_count = max(0, min(max_matched_count, 25))
         since = datetime.now() - timedelta(hours=max(1, lookback_hours))
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
@@ -4403,7 +4406,7 @@ class Database:
         if lookback_hours is None:
             lookback_hours = Config.SEO_AUTO_LEARN_LOOKBACK_HOURS
         since = datetime.now() - timedelta(hours=max(1, lookback_hours))
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
@@ -5139,7 +5142,7 @@ class Database:
         """
         bot_username = self.normalize_bot_username(bot_username)
         now = datetime.now()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute(
                 """
                 INSERT INTO broadcast_chats
@@ -5161,7 +5164,7 @@ class Database:
     async def delete_broadcast_chat(self, bot_username: str, chat_id: int) -> int:
         """Remove a broadcast destination permanently. Returns number of rows deleted."""
         bot_username = self.normalize_bot_username(bot_username)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             cursor = await db.execute(
                 "DELETE FROM broadcast_chats WHERE bot_username = ? AND chat_id = ?",
                 (bot_username, chat_id),
@@ -5184,7 +5187,7 @@ class Database:
         """
         bot_username = self.normalize_bot_username(bot_username)
         now = datetime.now()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             cursor = await db.execute(
                 """
                 UPDATE broadcast_chats
@@ -5208,7 +5211,7 @@ class Database:
         """Reset delivery failure state after a successful broadcast send."""
         bot_username = self.normalize_bot_username(bot_username)
         now = datetime.now()
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute(
                 """
                 UPDATE broadcast_chats
@@ -5237,7 +5240,7 @@ class Database:
         bot_username = self.normalize_bot_username(bot_username)
         now = datetime.now()
         error = (error or "delivery failed")[:500]
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             await db.execute(
                 """
@@ -5276,7 +5279,7 @@ class Database:
     async def get_broadcast_chats(self, bot_username: str) -> List[Dict[str, Any]]:
         """Return all broadcast destinations for a bot (both enabled and disabled)."""
         bot_username = self.normalize_bot_username(bot_username)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
@@ -5295,7 +5298,7 @@ class Database:
     async def get_enabled_broadcast_chats(self, bot_username: str) -> List[Dict[str, Any]]:
         """Return only enabled broadcast destinations for a bot."""
         bot_username = self.normalize_bot_username(bot_username)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
@@ -5325,7 +5328,7 @@ class Database:
 
         Safe to skip entirely if free-page reuse via WAL mode is sufficient.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.get_connection() as db:
             await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             await db.execute("VACUUM")
             logger.info("Database maintenance complete (WAL checkpoint + VACUUM)")

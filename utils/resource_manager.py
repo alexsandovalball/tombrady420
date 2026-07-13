@@ -4,7 +4,6 @@ import os
 import shutil
 import tempfile
 import time
-from collections import OrderedDict
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -16,7 +15,8 @@ MB = 1024 * 1024
 MEMORY_CACHE_MAX_BYTES = 64 * MB
 DEFAULT_TTL_SECONDS = 10 * 60
 DISK_CACHE_MAX_BYTES = int(os.getenv("DISK_CACHE_MAX_MB", "700")) * MB
-DISK_CACHE_TTL_SECONDS = DEFAULT_TTL_SECONDS
+# Keep the persistent cache warm for much longer than temp cache files.
+DISK_CACHE_TTL_SECONDS = int(os.getenv("DISK_CACHE_TTL_SECONDS", str(12 * 3600)))
 TMP_WARNING_BYTES = 1200 * MB
 TMP_EMERGENCY_BYTES = 1500 * MB
 PERSISTENT_WARNING_BYTES = 700 * MB
@@ -32,52 +32,6 @@ _DEFAULT_APP_CACHE_DIR = Path("/data/brady_app_cache") if Path("/data").exists()
 APP_CACHE_DIR = Path(os.getenv("APP_CACHE_DIR", _DEFAULT_APP_CACHE_DIR))
 BOT_TMP_ROOT = Path(os.getenv("BOT_TMP_ROOT", Path(tempfile.gettempdir()) / "bradycadia"))
 _last_emergency_cleanup = 0.0
-
-
-class MemoryLRUCache:
-    """Small byte-counted LRU cache with TTL."""
-
-    def __init__(self, max_bytes: int = MEMORY_CACHE_MAX_BYTES, ttl_seconds: int = DEFAULT_TTL_SECONDS):
-        self.max_bytes = max_bytes
-        self.ttl_seconds = ttl_seconds
-        self._items: OrderedDict[str, tuple[bytes, float]] = OrderedDict()
-        self._size = 0
-
-    def get(self, key: str) -> Optional[bytes]:
-        item = self._items.get(key)
-        if item is None:
-            return None
-        value, ts = item
-        if time.time() - ts > self.ttl_seconds:
-            self._delete(key)
-            return None
-        self._items.move_to_end(key)
-        return value
-
-    def set(self, key: str, value: bytes) -> None:
-        if len(value) > self.max_bytes:
-            return
-        self._delete(key)
-        self._items[key] = (value, time.time())
-        self._size += len(value)
-        while self._size > self.max_bytes and self._items:
-            old_key, _ = self._items.popitem(last=False)
-            logger.info("[resource] memory_cache_evicted key=%s", old_key)
-            self._recount()
-
-    def clear(self) -> int:
-        count = len(self._items)
-        self._items.clear()
-        self._size = 0
-        return count
-
-    def _delete(self, key: str) -> None:
-        item = self._items.pop(key, None)
-        if item is not None:
-            self._size -= len(item[0])
-
-    def _recount(self) -> None:
-        self._size = sum(len(value) for value, _ in self._items.values())
 
 
 def ensure_resource_dirs() -> None:
@@ -206,6 +160,14 @@ def cleanup_owned_dir(
     return removed, freed
 
 
+def _cache_entry_age_seconds(path: Path) -> float:
+    """Return file age using epoch time so TTL checks are stable."""
+    try:
+        return time.time() - path.stat().st_mtime
+    except (OSError, FileNotFoundError):
+        return float("inf")
+
+
 def emergency_cleanup(
     extra_cleanup: Optional[Callable[[], None]] = None,
     *,
@@ -243,7 +205,11 @@ def emergency_cleanup(
         max_bytes=low_watermark_bytes,
         skip_file=skip_file,
     )
-    cache_removed, cache_freed = cleanup_owned_dir(APP_CACHE_DIR, ttl_seconds=DISK_CACHE_TTL_SECONDS, max_bytes=DISK_CACHE_MAX_BYTES)
+    cache_removed, cache_freed = cleanup_owned_dir(
+        APP_CACHE_DIR,
+        ttl_seconds=DISK_CACHE_TTL_SECONDS,
+        max_bytes=DISK_CACHE_MAX_BYTES,
+    )
     if extra_cleanup:
         try:
             extra_cleanup()

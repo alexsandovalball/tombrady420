@@ -10,7 +10,6 @@ This module provides robust wrappers that:
 import logging
 import asyncio
 import random
-from dataclasses import dataclass
 from typing import Optional, Any, Callable, Dict, Tuple
 from html import escape as escape_html
 from telegram import Bot, Message, Update
@@ -19,14 +18,6 @@ from telegram.helpers import escape_markdown as escape_markdown_v2
 from database import Database
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class SafeSendResult:
-    success: bool
-    message: Optional[Message] = None
-    error: Optional[str] = None
-    retries: int = 0
 
 # Module-level database singleton — avoids creating a new connection object per user-cleanup call.
 _db = Database()

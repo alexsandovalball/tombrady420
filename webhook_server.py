@@ -132,6 +132,9 @@ _SEO_PUBLIC_MEDIA_RATE_LIMIT_WINDOW = _bounded_int_env("SEO_PUBLIC_MEDIA_RATE_LI
 _SEO_RESPONSE_CACHE_MAX = _bounded_int_env("SEO_RESPONSE_CACHE_MAX", 256, 16, 2000)
 _seo_response_cache: OrderedDict[str, tuple[float, bytes, str, str, int]] = OrderedDict()
 _seo_auto_learn_lock: Optional[asyncio.Lock] = None
+_webapp_search_cache: OrderedDict[str, tuple[float, dict]] = OrderedDict()
+_WEBAPP_SEARCH_CACHE_TTL_SECONDS = _bounded_int_env("WEBAPP_SEARCH_CACHE_TTL_SECONDS", 90, 15, 600)
+_WEBAPP_SEARCH_CACHE_MAX = _bounded_int_env("WEBAPP_SEARCH_CACHE_MAX", 256, 32, 2000)
 
 # Per-process counter for webhook 401 rejections (in-memory, not persisted).
 # Useful for setting alerts: check logs for [WEBHOOK_401] or watch this counter
@@ -235,6 +238,9 @@ _seo_public_media_rate_limiter = WebhookIPRateLimiter(
     window_seconds=_SEO_PUBLIC_MEDIA_RATE_LIMIT_WINDOW,
 )
 
+_database_init_lock: Optional[asyncio.Lock] = None
+_database_initialized = False
+
 class MediaCache:
     """Simple bounded LRU file cache for reusable catalog media."""
 
@@ -259,7 +265,7 @@ class MediaCache:
 
         # Check if file is still within TTL
         try:
-            file_age = asyncio.get_event_loop().time() - cache_path.stat().st_mtime
+            file_age = time.time() - cache_path.stat().st_mtime
             if file_age > self.ttl_seconds:
                 # File is expired, delete it
                 cache_path.unlink()
@@ -1406,7 +1412,7 @@ async def setup_application(bot_token: str, bot_index: int = 0):
 
         from database import Database
         _db = Database()
-        await _db.init_db()
+        await _ensure_database_initialized()
         registry_row = await _db.resolve_bot_id_from_registry(
             int(bot_id or 0),
             bot_username or "",
@@ -1667,6 +1673,20 @@ async def _wal_checkpoint_loop():
             await _catalog_db.checkpoint_wal()
         except Exception as e:
             logger.warning(f"WAL checkpoint loop error: {e}")
+
+
+async def _ensure_database_initialized() -> None:
+    """Initialize the database schema only once per process."""
+    global _database_initialized, _database_init_lock
+    if _database_initialized:
+        return
+    if _database_init_lock is None:
+        _database_init_lock = asyncio.Lock()
+    async with _database_init_lock:
+        if _database_initialized:
+            return
+        await _catalog_db.init_db()
+        _database_initialized = True
 
 
 def _is_useful_auto_seo_term(term: str) -> bool:
@@ -2692,6 +2712,30 @@ def _seo_page_number(request: Request) -> int:
         return max(1, min(int(request.query_params.get("page") or 1), 10000))
     except (TypeError, ValueError):
         return 1
+
+
+def _webapp_search_cache_key(query: str, language: str, limit: int, offset: int) -> str:
+    return f"{_normalize_seo_language(language)}|{limit}|{offset}|{normalize_text(query)}"
+
+
+def _get_webapp_search_cache(key: str) -> Optional[dict]:
+    now = time.monotonic()
+    cached = _webapp_search_cache.get(key)
+    if not cached:
+        return None
+    cached_at, payload = cached
+    if now - cached_at > _WEBAPP_SEARCH_CACHE_TTL_SECONDS:
+        _webapp_search_cache.pop(key, None)
+        return None
+    _webapp_search_cache.move_to_end(key)
+    return dict(payload)
+
+
+def _set_webapp_search_cache(key: str, payload: dict) -> None:
+    _webapp_search_cache[key] = (time.monotonic(), dict(payload))
+    _webapp_search_cache.move_to_end(key)
+    while len(_webapp_search_cache) > _WEBAPP_SEARCH_CACHE_MAX:
+        _webapp_search_cache.popitem(last=False)
 
 
 def _seo_alternate_links(path: str) -> List[Dict[str, str]]:
@@ -6111,6 +6155,11 @@ async def search_products(
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
 
+    cache_key = _webapp_search_cache_key(query, lang, limit, offset)
+    cached_response = _get_webapp_search_cache(cache_key)
+    if cached_response is not None:
+        return cached_response
+
     try:
         try:
             db_mappings = await _get_cached_approved_seo_query_mappings()
@@ -6165,14 +6214,17 @@ async def search_products(
         except Exception:
             user_id = None
         try:
-            await _catalog_db.log_search_query(
-                query=query,
-                expanded_query=expanded_query,
-                matched_count=total,
-                source="webapp",
-                language=lang if lang in SUPPORTED_LANGUAGES else "en",
-                user_id=user_id,
-                ip_address=get_client_ip(request),
+            asyncio.create_task(
+                _catalog_db.log_search_query(
+                    query=query,
+                    expanded_query=expanded_query,
+                    matched_count=total,
+                    source="webapp",
+                    language=lang if lang in SUPPORTED_LANGUAGES else "en",
+                    user_id=user_id,
+                    ip_address=get_client_ip(request),
+                ),
+                name="webapp_search_log",
             )
         except Exception as exc:
             logger.debug("Failed to log search query: %s", exc)
@@ -6196,7 +6248,7 @@ async def search_products(
                 "media_info": media_info,
             })
         
-        return {
+        payload = {
             "items": items,
             "total": total,
             "query": q,
@@ -6206,6 +6258,8 @@ async def search_products(
             "order_link": order_link,
             "order_links": order_links
         }
+        _set_webapp_search_cache(cache_key, payload)
+        return payload
         
     except Exception as e:
         logger.exception(f"Search failed for query '{q}': {e}")
