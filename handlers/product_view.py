@@ -16,8 +16,6 @@ from translations.translator import translate_text_async
 logger = logging.getLogger(__name__)
 db = Database()
 
-_MEDIA_CAPTION_SAFE_LIMIT = 900
-
 _DM_TO_ORDER_TEXT = {
     "en": "👆 DM TO ORDER: {contact}",
     "en-US": "👆 DM TO ORDER: {contact}",
@@ -44,13 +42,6 @@ def _build_media_unavailable_text(product: dict, caption: str) -> str:
         f"Product: {snippet}\n"
         "You can still open this item from the shop or try again."
     )
-
-
-def _fit_telegram_text(text: str, limit: int) -> tuple[str, bool]:
-    value = text or ""
-    if len(value) <= limit:
-        return value, False
-    return value[: max(0, limit - 1)].rstrip() + "…", True
 
 
 def _build_admin_action_buttons(product_id: int, user_id: int) -> list[list[InlineKeyboardButton]]:
@@ -319,7 +310,6 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 f"\n\n⚠️ {len(resolution_failures)} of {total_media} media file(s) "
                 "could not be delivered by this bot."
             )
-        media_caption, _media_caption_shortened = _fit_telegram_text(full_caption, _MEDIA_CAPTION_SAFE_LIMIT)
         
         # Create keyboard with back button and admin buttons
         keyboard_buttons = []
@@ -338,7 +328,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 f"sending {len(media_list)} media item(s) individually reason={reason}"
             )
             for idx, (file_id, file_type) in enumerate(media_list):
-                item_caption = media_caption if idx == 0 else None
+                item_caption = full_caption if idx == 0 else None
                 try:
                     await send_media_message(
                         context,
@@ -360,7 +350,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 update.effective_chat.id,
                 file_id,
                 file_type,
-                caption=media_caption,
+                caption=full_caption,
                 reply_markup=None
             )
         else:
@@ -376,7 +366,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     nonlocal caption_used
                     if not caption_used:
                         caption_used = True
-                        return media_caption
+                        return full_caption
                     return None
                 
                 for idx, (file_id, file_type) in enumerate(media_list):
