@@ -265,7 +265,7 @@ class MediaCache:
 
         # Check if file is still within TTL
         try:
-            file_age = time.time() - cache_path.stat().st_mtime
+            file_age = _time.time() - cache_path.stat().st_mtime
             if file_age > self.ttl_seconds:
                 # File is expired, delete it
                 cache_path.unlink()
