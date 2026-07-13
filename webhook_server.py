@@ -2719,7 +2719,7 @@ def _webapp_search_cache_key(query: str, language: str, limit: int, offset: int)
 
 
 def _get_webapp_search_cache(key: str) -> Optional[dict]:
-    now = time.monotonic()
+    now = _time.monotonic()
     cached = _webapp_search_cache.get(key)
     if not cached:
         return None
@@ -2732,7 +2732,7 @@ def _get_webapp_search_cache(key: str) -> Optional[dict]:
 
 
 def _set_webapp_search_cache(key: str, payload: dict) -> None:
-    _webapp_search_cache[key] = (time.monotonic(), dict(payload))
+    _webapp_search_cache[key] = (_time.monotonic(), dict(payload))
     _webapp_search_cache.move_to_end(key)
     while len(_webapp_search_cache) > _WEBAPP_SEARCH_CACHE_MAX:
         _webapp_search_cache.popitem(last=False)
