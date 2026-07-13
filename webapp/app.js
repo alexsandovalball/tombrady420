@@ -1567,7 +1567,13 @@
             `${item.device_type}: ${formatAdminCount(item.visitors)} visitors, ${formatAdminCount(item.visits)} visits`
         );
         appendAdminList(panel, 'Recent Search Mappings', seo.recent_mappings || [], item =>
-            `${item.term} -> ${item.category || 'catalog'}${item.subcategory ? ` / ${item.subcategory}` : ''}`
+            `[${String(item.language || 'en').toUpperCase()}] ${item.term} -> ${item.category || 'catalog'}${item.subcategory ? ` / ${item.subcategory}` : ''}`
+        );
+        appendAdminList(panel, 'SEO Mapping Languages', seo.mapping_languages || [], item =>
+            `${String(item.language || 'en').toUpperCase()}: ${formatAdminCount(item.count)} mappings`
+        );
+        appendAdminList(panel, 'Search Languages (30 days)', seo.search_languages_30d || [], item =>
+            `${String(item.language || 'en').toUpperCase()}: ${formatAdminCount(item.count)} searches`
         );
         appendAdminList(panel, 'Top Bots By Users', data.bot_user_counts || [], item =>
             `@${item.bot_username}: ${formatAdminCount(item.users)} users, ${formatAdminCount(item.active_24h)} active`

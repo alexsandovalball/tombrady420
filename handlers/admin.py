@@ -318,7 +318,25 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 source = "auto" if item.get("source") == "auto_learn" else str(item.get("source") or "manual")
                 hits = int(item.get("hits") or 0)
                 hit_text = f", {_fmt_count(hits)} hit(s)" if hits else ""
-                lines.append(f"• {item.get('term')} → {_format_seo_target(item)} ({source}{hit_text})")
+                language = str(item.get("language") or "en").upper()
+                lines.append(f"• [{language}] {item.get('term')} → {_format_seo_target(item)} ({source}{hit_text})")
+
+        mapping_languages = snapshot.get("mapping_languages") or []
+        search_languages = snapshot.get("search_languages_30d") or []
+        if mapping_languages or search_languages:
+            lines.extend(["", "Language Coverage"])
+            if mapping_languages:
+                mapping_summary = ", ".join(
+                    f"{str(item.get('language') or 'en').upper()} {_fmt_count(item.get('count'))}"
+                    for item in mapping_languages
+                )
+                lines.append(f"• Search mappings: {mapping_summary}")
+            if search_languages:
+                search_summary = ", ".join(
+                    f"{str(item.get('language') or 'en').upper()} {_fmt_count(item.get('count'))}"
+                    for item in search_languages
+                )
+                lines.append(f"• Searches in 30 days: {search_summary}")
 
         recent_external = snapshot.get("recent_external_signals") or []
         if recent_external:

@@ -87,7 +87,16 @@ def main() -> int:
     require("<urlset" in sitemap.text and "</urlset>" in sitemap.text, "sitemap.xml is not a sitemap")
     require("/product/" in sitemap.text, "sitemap.xml has no product URLs")
     require("/media/products/" in sitemap.text, "sitemap.xml has no public image URLs")
+    require('xmlns:xhtml="http://www.w3.org/1999/xhtml"' in sitemap.text, "sitemap.xml missing hreflang namespace")
+    require('hreflang="de"' in sitemap.text, "sitemap.xml missing German alternates")
+    require(f"{base}/de" in sitemap.text, "sitemap.xml missing localized URLs")
     check_etag(f"{base}/sitemap.xml", "sitemap.xml")
+
+    localized_home = fetch(f"{base}/de")
+    require(localized_home.status == 200, f"German homepage status {localized_home.status}")
+    require('<html lang="de">' in localized_home.text, "German homepage has wrong html lang")
+    require('hreflang="en"' in localized_home.text, "German homepage missing English alternate")
+    require('hreflang="x-default"' in localized_home.text, "German homepage missing x-default alternate")
 
     if args.product_id:
         product_url = f"{base}/product/{args.product_id}"
@@ -109,6 +118,7 @@ def main() -> int:
         require("<h1" in html, "product page missing h1")
         require('rel="canonical"' in html, "product page missing canonical")
         require('property="og:image"' in html, "product page missing og:image")
+        require('hreflang="de"' in html, "product page missing localized alternates")
         require("/media/products/" in html, "product page missing public photo media URL")
         media_match = re.search(r"/media/products/\d+/\d+", html)
         if media_match:

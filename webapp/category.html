@@ -1,11 +1,13 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ seo_lang or 'en' }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ seo_title }}</title>
     <meta name="description" content="{{ seo_desc }}">
     <link rel="canonical" href="{{ seo_url }}">
+    {% for alternate in seo_alternates or [] %}<link rel="alternate" hreflang="{{ alternate.language }}" href="{{ alternate.href }}">
+    {% endfor %}
 
     <meta name="robots" content="index, follow">
     <meta name="googlebot" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
@@ -24,7 +26,7 @@
     {% if seo_image_width %}<meta property="og:image:type" content="image/png">{% endif %}
     <meta property="og:url" content="{{ seo_url }}">
     <meta property="og:site_name" content="Top Shelf Cali Plug">
-    <meta property="og:locale" content="en_US">
+    <meta property="og:locale" content="{{ seo_locale or 'en_US' }}">
 
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image">
@@ -113,19 +115,26 @@
         .cta-btn.secondary { background: var(--card-bg, #fff); color: var(--text-primary, #111); border: 1px solid var(--border, #ddd); }
         .cat-footer { margin-top: 2rem; border-top: 1px solid var(--border, #ddd); padding-top: 1rem; font-size: 0.9rem; }
         .cat-footer a { color: var(--accent, #2481cc); text-decoration: none; }
+        .language-switch { display: flex; flex-wrap: wrap; gap: .45rem; margin-bottom: 1rem; }
+        .language-switch a { color: var(--text-secondary, #666); text-decoration: none; font-size: .82rem; padding: .3rem .5rem; border: 1px solid var(--border, #ddd); border-radius: 6px; background: var(--card-bg, #fff); }
+        .language-switch a[aria-current="page"] { color: var(--accent, #2481cc); border-color: var(--accent, #2481cc); }
+        .pagination { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: .75rem; margin: 1.5rem 0; }
     </style>
 </head>
 <body>
     <div class="cat-page">
+        <nav class="language-switch" aria-label="Language">
+            {% for alternate in language_switch or [] %}<a href="{{ alternate.href }}"{% if alternate.language == seo_lang %} aria-current="page"{% endif %}>{{ alternate.language|upper }}</a>{% endfor %}
+        </nav>
         <header>
             <nav aria-label="Breadcrumb">
-                <a class="cat-nav-btn" href="/">🏈 Tom Brady Menu</a>
+                <a class="cat-nav-btn" href="{{ localized_home_url }}">🏈 {{ ui.menu }}</a>
                 {% if current_subcategory and parent_category_url %}
                 <span>/</span><a class="cat-nav-btn" href="{{ parent_category_url }}">{{ category_display }}</a>
                 {% endif %}
             </nav>
             <h1>{% if current_subcategory %}{{ current_subcategory_display }} {{ category_display }}{% else %}{{ category_display }}{% endif %}</h1>
-            <p class="cat-subtitle">{{ total }} product{% if total != 1 %}s{% endif %} available &mdash; Order via Telegram</p>
+            <p class="cat-subtitle">{{ total }} {{ ui.products_available }} &mdash; {{ ui.order_via }}</p>
             {% if seo_intro %}<p class="cat-intro">{{ seo_intro }}</p>{% endif %}
         </header>
 
@@ -137,6 +146,7 @@
                 {% endfor %}
             </ul>
         </section>
+
         {% endif %}
 
         <section>
@@ -161,16 +171,24 @@
             </ul>
         </section>
 
+        {% if total_pages > 1 %}
+        <nav class="pagination" aria-label="Pagination">
+            {% if previous_url %}<a class="cat-nav-btn" rel="prev" href="{{ previous_url }}">&larr; {{ ui.previous }}</a>{% endif %}
+            <span>{{ ui.page }} {{ current_page }} / {{ total_pages }}</span>
+            {% if next_url %}<a class="cat-nav-btn" rel="next" href="{{ next_url }}">{{ ui.next }} &rarr;</a>{% endif %}
+        </nav>
+        {% endif %}
+
         <section class="cat-actions" aria-label="Order and contact actions">
             <div class="cat-action-row">
-                {% if order_contact_url %}<a class="cta-btn" href="{{ order_contact_url }}">DM to Order{% if order_contact %}: {{ order_contact }}{% endif %}</a>{% endif %}
-                <a class="cta-btn secondary" href="{{ telegram_bot_url }}">Browse Full Catalog in Telegram</a>
+                {% if order_contact_url %}<a class="cta-btn" href="{{ order_contact_url }}">{{ ui.dm_order }}{% if order_contact %}: {{ order_contact }}{% endif %}</a>{% endif %}
+                <a class="cta-btn secondary" href="{{ telegram_bot_url }}">{{ ui.browse_bot }}</a>
             </div>
         </section>
 
         {% if seo_terms %}
         <section class="cat-search-footer" aria-label="Related search terms">
-            <h2>Related searches</h2>
+            <h2>{{ ui.related_searches }}</h2>
             <ul class="term-list">
                 {% for term in seo_terms[:10] %}
                 <li>{{ term }}</li>
@@ -180,7 +198,7 @@
         {% endif %}
 
         <footer class="cat-footer">
-            <a href="/">&larr; Back to Homepage</a>
+            <a href="{{ localized_home_url }}">&larr; {{ ui.back_home }}</a>
         </footer>
     </div>
 </body>

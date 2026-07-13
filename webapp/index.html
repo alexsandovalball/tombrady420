@@ -1,11 +1,13 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ seo_lang or 'en' }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>{{ seo_title }}</title>
     <meta name="description" content="{{ seo_desc }}">
     <link rel="canonical" href="{{ seo_url }}">
+    {% for alternate in seo_alternates or [] %}<link rel="alternate" hreflang="{{ alternate.language }}" href="{{ alternate.href }}">
+    {% endfor %}
 
     <!-- Additional SEO meta tags -->
     <meta name="robots" content="index, follow">
@@ -25,7 +27,7 @@
     {% if seo_image_width %}<meta property="og:image:type" content="image/png">{% endif %}
     <meta property="og:url" content="{{ seo_url }}">
     <meta property="og:site_name" content="Top Shelf Cali Plug">
-    <meta property="og:locale" content="en_US">
+    <meta property="og:locale" content="{{ seo_locale or 'en_US' }}">
 
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image">

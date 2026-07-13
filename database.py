@@ -348,6 +348,7 @@ class Database:
                     expanded_query TEXT,
                     matched_count INTEGER NOT NULL DEFAULT 0,
                     source TEXT NOT NULL DEFAULT 'webapp',
+                    language TEXT NOT NULL DEFAULT '',
                     user_id TEXT,
                     ip_address TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -362,6 +363,7 @@ class Database:
                     category TEXT,
                     subcategory TEXT,
                     source TEXT NOT NULL DEFAULT 'admin',
+                    language TEXT NOT NULL DEFAULT '',
                     approved INTEGER NOT NULL DEFAULT 1,
                     hits INTEGER NOT NULL DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -583,6 +585,8 @@ class Database:
                 ("broadcast_chats", "delivery_failure_count", "INTEGER NOT NULL DEFAULT 0", True),
                 ("broadcast_chats", "last_delivery_failure", "TIMESTAMP", True),
                 ("broadcast_chats", "last_delivery_error", "TEXT", True),
+                ("search_query_events", "language", "TEXT NOT NULL DEFAULT ''", True),
+                ("seo_query_mappings", "language", "TEXT NOT NULL DEFAULT ''", True),
             ]
 
             for table, column, definition, log_on_add in migrations:
@@ -693,6 +697,8 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_query_events_autolearn ON search_query_events(matched_count, normalized_query, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_query_mappings_approved ON seo_query_mappings(approved, normalized_term)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_query_mappings_taxonomy ON seo_query_mappings(category, subcategory)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_query_mappings_language ON seo_query_mappings(language, category, subcategory, approved)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_search_query_events_language ON search_query_events(language, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_console_query_events_date ON search_console_query_events(source_date DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_console_query_events_query ON search_console_query_events(normalized_query, source_date DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_external_seo_signals_approved ON external_seo_signals(approved, confidence DESC, last_seen DESC)")
@@ -3893,6 +3899,7 @@ class Database:
         expanded_query: str = "",
         matched_count: int = 0,
         source: str = "webapp",
+        language: str = "",
         user_id: Optional[str] = None,
         ip_address: Optional[str] = None,
     ) -> None:
@@ -3907,8 +3914,8 @@ class Database:
             await db.execute(
                 """
                 INSERT INTO search_query_events
-                    (query, normalized_query, expanded_query, matched_count, source, user_id, ip_address)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (query, normalized_query, expanded_query, matched_count, source, language, user_id, ip_address)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     query[:300],
@@ -3916,6 +3923,7 @@ class Database:
                     expanded_query[:1000],
                     max(0, int(matched_count or 0)),
                     source[:40],
+                    str(language or "")[:12].lower(),
                     str(user_id)[:80] if user_id is not None else None,
                     str(ip_address)[:80] if ip_address is not None else None,
                 ),
@@ -3946,6 +3954,7 @@ class Database:
                 str(mapping.get("category") or "").strip()[:80],
                 str(mapping.get("subcategory") or "").strip()[:120],
                 source[:80],
+                str(mapping.get("language") or "")[:12].lower(),
                 int(bool(approved)),
             ))
 
@@ -3956,14 +3965,15 @@ class Database:
             await db.executemany(
                 """
                 INSERT INTO seo_query_mappings (
-                    term, normalized_term, category, subcategory, source, approved, updated_at
+                    term, normalized_term, category, subcategory, source, language, approved, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(normalized_term) DO UPDATE SET
                     term = excluded.term,
                     category = excluded.category,
                     subcategory = excluded.subcategory,
                     source = excluded.source,
+                    language = seo_query_mappings.language,
                     approved = excluded.approved,
                     updated_at = CURRENT_TIMESTAMP
                 """,
@@ -4182,6 +4192,7 @@ class Database:
         category: str,
         subcategory: str = "",
         *,
+        language: str = "en",
         limit: int = 10,
     ) -> List[Dict[str, Any]]:
         """Return approved, visible SEO side-note terms for a category page."""
@@ -4193,12 +4204,18 @@ class Database:
         limit = max(1, min(limit, 25))
         async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
+            clean_language = str(language or "en").lower()[:12]
             params: list[Any] = [category]
             subcategory_filter = ""
             if subcategory:
                 subcategory_filter = "AND LOWER(TRIM(COALESCE(subcategory, ''))) = LOWER(TRIM(?))"
                 params.append(subcategory)
 
+            if clean_language == "en":
+                language_filter = "AND (language = 'en' OR language = '')"
+            else:
+                language_filter = "AND language = ?"
+                params.append(clean_language)
             params.append(limit)
             async with db.execute(
                 f"""
@@ -4207,6 +4224,7 @@ class Database:
                 WHERE approved = 1
                   AND LOWER(TRIM(COALESCE(category, ''))) = LOWER(TRIM(?))
                   {subcategory_filter}
+                  {language_filter}
                 ORDER BY hits DESC, updated_at DESC
                 LIMIT ?
                 """,
@@ -4216,7 +4234,7 @@ class Database:
 
             remaining = max(0, limit - len(mapping_rows))
             signal_rows: List[Dict[str, Any]] = []
-            if remaining:
+            if remaining and clean_language == "en":
                 params = [category]
                 subcategory_filter = ""
                 if subcategory:
@@ -4258,7 +4276,7 @@ class Database:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
-                SELECT term, category, subcategory, source, hits
+                SELECT term, category, subcategory, source, language, hits
                 FROM seo_query_mappings
                 WHERE approved = 1
                 ORDER BY hits DESC, updated_at DESC
@@ -4276,7 +4294,7 @@ class Database:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
-                SELECT term, category, subcategory, source, hits, updated_at
+                SELECT term, category, subcategory, source, language, hits, updated_at
                 FROM seo_query_mappings
                 WHERE approved = 1
                 ORDER BY updated_at DESC, id DESC
@@ -4286,6 +4304,35 @@ class Database:
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
+
+    async def get_latest_seo_mapping_updated_at(self) -> Optional[str]:
+        """Return the newest approved mapping timestamp for sitemap freshness."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT MAX(updated_at) FROM seo_query_mappings WHERE approved = 1"
+            ) as cursor:
+                row = await cursor.fetchone()
+                return str(row[0]) if row and row[0] else None
+
+    async def get_seo_mapping_lastmods(self) -> List[Dict[str, Any]]:
+        """Return mapping freshness grouped by its affected taxonomy."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT
+                    TRIM(COALESCE(category, '')) AS category,
+                    TRIM(COALESCE(subcategory, '')) AS subcategory,
+                    MAX(updated_at) AS updated_at
+                FROM seo_query_mappings
+                WHERE approved = 1
+                  AND TRIM(COALESCE(category, '')) <> ''
+                GROUP BY
+                    TRIM(COALESCE(category, '')),
+                    TRIM(COALESCE(subcategory, ''))
+                """
+            ) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
 
     async def get_seo_auto_learning_candidates(
         self,
@@ -4312,6 +4359,13 @@ class Database:
                         ORDER BY e2.created_at DESC, e2.id DESC
                         LIMIT 1
                     ) AS query,
+                    (
+                        SELECT COALESCE(NULLIF(e2.language, ''), 'en')
+                        FROM search_query_events e2
+                        WHERE e2.normalized_query = e.normalized_query
+                        ORDER BY e2.created_at DESC, e2.id DESC
+                        LIMIT 1
+                    ) AS language,
                     e.normalized_query,
                     COUNT(*) AS count,
                     SUM(CASE WHEN e.matched_count = 0 THEN 1 ELSE 0 END) AS no_result_count,
@@ -4488,6 +4542,29 @@ class Database:
                     lookback_hours=Config.SEO_AUTO_LEARN_LOOKBACK_HOURS,
                 ),
                 "recent_mappings": await self.get_recent_seo_query_mappings(limit=limit),
+                "mapping_languages": await rows(
+                    """
+                    SELECT
+                        CASE WHEN TRIM(COALESCE(language, '')) = '' THEN 'en' ELSE language END AS language,
+                        COUNT(*) AS count
+                    FROM seo_query_mappings
+                    WHERE approved = 1
+                    GROUP BY CASE WHEN TRIM(COALESCE(language, '')) = '' THEN 'en' ELSE language END
+                    ORDER BY count DESC, language ASC
+                    """
+                ),
+                "search_languages_30d": await rows(
+                    """
+                    SELECT
+                        CASE WHEN TRIM(COALESCE(language, '')) = '' THEN 'en' ELSE language END AS language,
+                        COUNT(*) AS count
+                    FROM search_query_events
+                    WHERE created_at >= ?
+                    GROUP BY CASE WHEN TRIM(COALESCE(language, '')) = '' THEN 'en' ELSE language END
+                    ORDER BY count DESC, language ASC
+                    """,
+                    (datetime.now() - timedelta(days=30),),
+                ),
                 "recent_external_signals": await self.get_recent_external_seo_signals(limit=limit),
                 "top_search_console_queries": await rows(
                     """
@@ -4855,6 +4932,7 @@ class Database:
                 ON CONFLICT(url) DO UPDATE SET
                     reason = excluded.reason,
                     status = 'pending',
+                    attempts = 0,
                     http_status = NULL,
                     last_error = NULL,
                     updated_at = CURRENT_TIMESTAMP

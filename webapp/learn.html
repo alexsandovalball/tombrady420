@@ -1,11 +1,13 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ seo_lang or 'en' }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ seo_title }}</title>
     <meta name="description" content="{{ seo_desc }}">
     <link rel="canonical" href="{{ seo_url }}">
+    {% for alternate in seo_alternates or [] %}<link rel="alternate" hreflang="{{ alternate.language }}" href="{{ alternate.href }}">
+    {% endfor %}
     <meta name="robots" content="index, follow">
     <meta name="googlebot" content="index, follow, max-snippet:-1, max-image-preview:large">
     <meta property="og:type" content="{{ og_type }}">
@@ -51,12 +53,16 @@
         .term-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: .45rem; margin: 1rem 0; }
         .term-list li { border: 1px solid var(--border, #ddd); border-radius: 999px; padding: .28rem .65rem; color: var(--text-secondary, #666); font-size: .86rem; background: rgba(0, 0, 0, .03); }
         .learn-cta { display: inline-block; margin-top: 1rem; padding: .7rem 1rem; border-radius: 8px; background: #2f9e55; color: #fff; text-decoration: none; font-weight: 700; }
+        .language-switch { display: flex; flex-wrap: wrap; gap: .45rem; margin-bottom: 1rem; }
+        .language-switch a { padding: .3rem .5rem; border: 1px solid var(--border, #ddd); border-radius: 6px; color: var(--text-secondary, #666); text-decoration: none; }
+        .language-switch a[aria-current="page"] { color: var(--accent, #2481cc); border-color: var(--accent, #2481cc); }
     </style>
 </head>
 <body>
     <main class="learn-article">
+        <nav class="language-switch" aria-label="Language">{% for alternate in language_switch or [] %}<a href="{{ alternate.href }}"{% if alternate.language == seo_lang %} aria-current="page"{% endif %}>{{ alternate.language|upper }}</a>{% endfor %}</nav>
         <nav class="learn-nav" aria-label="Breadcrumb">
-            <a href="/">Home</a><span>/</span><a href="/learn">Guides</a>
+            <a href="{{ localized_home_url }}">{{ ui.home }}</a><span>/</span><a href="{{ localized_learn_url }}">{{ ui.guides }}</a>
             {% if category_url %}<span>/</span><a href="{{ category_url }}">{{ category_display }}</a>{% endif %}
             {% if subcategory_url %}<span>/</span><a href="{{ subcategory_url }}">{{ subcategory_display }}</a>{% endif %}
         </nav>
@@ -74,7 +80,7 @@
             <p>{{ section }}</p>
             {% endfor %}
             {% if subcategory_url or category_url %}
-            <a class="learn-cta" href="{{ subcategory_url or category_url }}">Browse Related Products</a>
+            <a class="learn-cta" href="{{ subcategory_url or category_url }}">{{ ui.browse_related }}</a>
             {% endif %}
         </article>
     </main>

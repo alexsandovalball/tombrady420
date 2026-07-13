@@ -1,11 +1,13 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ seo_lang or 'en' }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ seo_title }}</title>
     <meta name="description" content="{{ seo_desc }}">
     <link rel="canonical" href="{{ seo_url }}">
+    {% for alternate in seo_alternates or [] %}<link rel="alternate" hreflang="{{ alternate.language }}" href="{{ alternate.href }}">
+    {% endfor %}
     <meta name="robots" content="index, follow">
     <meta name="googlebot" content="index, follow, max-snippet:-1, max-image-preview:large">
     <meta property="og:type" content="{{ og_type }}">
@@ -51,13 +53,17 @@
         .learn-card a:hover { color: var(--accent, #2481cc); }
         .learn-card p { color: var(--text-secondary, #666); line-height: 1.45; }
         .learn-taxonomy { font-size: .86rem; color: var(--text-secondary, #666); }
+        .language-switch { display: flex; flex-wrap: wrap; gap: .45rem; margin-bottom: 1rem; }
+        .language-switch a { padding: .3rem .5rem; border: 1px solid var(--border, #ddd); border-radius: 6px; color: var(--text-secondary, #666); text-decoration: none; }
+        .language-switch a[aria-current="page"] { color: var(--accent, #2481cc); border-color: var(--accent, #2481cc); }
     </style>
 </head>
 <body>
     <main class="learn-page">
-        <nav class="learn-nav"><a href="/">Home</a></nav>
-        <h1>Product Guides</h1>
-        <p>Common search terms connected to current product categories and menu navigation.</p>
+        <nav class="language-switch" aria-label="Language">{% for alternate in language_switch or [] %}<a href="{{ alternate.href }}"{% if alternate.language == seo_lang %} aria-current="page"{% endif %}>{{ alternate.language|upper }}</a>{% endfor %}</nav>
+        <nav class="learn-nav"><a href="{{ localized_home_url }}">{{ ui.home }}</a></nav>
+        <h1>{{ ui.guides }}</h1>
+        <p>{{ ui.guides_desc }}</p>
         <ul class="learn-grid">
             {% for page in learn_pages %}
             <li class="learn-card">
@@ -65,7 +71,7 @@
                 <p>{{ page.summary }}</p>
                 {% if page.category_display %}
                 <div class="learn-taxonomy">
-                    Related: <a href="{{ page.subcategory_url or page.category_url }}">{{ page.subcategory_display or page.category_display }}</a>
+                    {{ ui.related }}: <a href="{{ page.subcategory_url or page.category_url }}">{{ page.subcategory_display or page.category_display }}</a>
                 </div>
                 {% endif %}
             </li>

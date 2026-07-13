@@ -88,6 +88,16 @@ from the domain root, and submits changed product/category URLs in batches. Use
 `/adminstatus` to check whether URLs are pending, submitted, or failing. You do
 not need to manually submit every page after normal catalog updates.
 
+Public SEO pages are published in English, German, Dutch, Italian, Spanish, and
+French. English keeps the original URLs; translated pages use `/de`, `/nl`,
+`/it`, `/es`, and `/fr` prefixes. Every version has a self-canonical URL and
+reciprocal `hreflang` links. The sitemap and IndexNow worker include every
+language. Product descriptions are translated gradually in the background and
+stored in the existing persistent translation cache.
+
+For Bing reporting, import the already-verified Google Search Console property
+into Bing Webmaster Tools. IndexNow submission itself requires no Bing API key.
+
 ## Cache Operations
 
 `/clearcache` deletes persistent bot-specific Telegram `file_id` mappings.

@@ -1,11 +1,13 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ seo_lang or 'en' }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ seo_title }}</title>
     <meta name="description" content="{{ seo_desc }}">
     <link rel="canonical" href="{{ seo_url }}">
+    {% for alternate in seo_alternates or [] %}<link rel="alternate" hreflang="{{ alternate.language }}" href="{{ alternate.href }}">
+    {% endfor %}
 
     <meta name="robots" content="index, follow">
     <meta name="googlebot" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
@@ -20,7 +22,7 @@
     <meta property="og:image:alt" content="{{ seo_title }}">
     <meta property="og:url" content="{{ seo_url }}">
     <meta property="og:site_name" content="Top Shelf Cali Plug">
-    <meta property="og:locale" content="en_US">
+    <meta property="og:locale" content="{{ seo_locale or 'en_US' }}">
 
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="{{ seo_title }}">
@@ -187,24 +189,30 @@
         .seo-page img.related-thumb { display: block; width: 100%; min-height: 112px; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 6px; background: rgba(0, 0, 0, .04); border: 1px solid var(--border, #ddd); opacity: 1; }
         .related-title { display: block; margin-top: .55rem; font-size: .94rem; line-height: 1.25; color: var(--text-primary, #111); }
         .related-card a:hover .related-title { color: var(--accent, #2481cc); }
+        .language-switch { display: flex; flex-wrap: wrap; gap: .45rem; margin: 0 0 1rem; }
+        .language-switch a { color: var(--text-secondary, #666); text-decoration: none; font-size: .82rem; padding: .3rem .5rem; border: 1px solid var(--border, #ddd); border-radius: 6px; background: var(--card-bg, #fff); }
+        .language-switch a[aria-current="page"] { color: var(--accent, #2481cc); border-color: var(--accent, #2481cc); }
     </style>
 </head>
 <body>
     <main class="seo-page">
+        <nav class="language-switch" aria-label="Language">
+            {% for alternate in language_switch or [] %}<a href="{{ alternate.href }}"{% if alternate.language == seo_lang %} aria-current="page"{% endif %}>{{ alternate.language|upper }}</a>{% endfor %}
+        </nav>
         <nav class="seo-nav" aria-label="Breadcrumb">
-            <a href="/">Home</a>
+            <a href="{{ localized_home_url }}">{{ ui.home }}</a>
             {% if category_url %}<span>/</span><a href="{{ category_url }}">{{ category_display }}</a>{% endif %}
             {% if subcategory_url %}<span>/</span><a href="{{ subcategory_url }}">{{ subcategory_display }}</a>{% endif %}
         </nav>
 
         <article class="seo-hero">
-            <section class="seo-media-panel" aria-label="Product media preview">
+            <section class="seo-media-panel" aria-label="{{ ui.media_preview }}">
                 <div class="seo-media-viewer">
                     {% if product_media %}
                         {% for media in product_media %}
                             {% if loop.first and media.type == "video" %}
                             <video class="seo-main-video" controls playsinline preload="metadata" src="{{ media.url }}">
-                                <a href="{{ media.url }}">Open video</a>
+                                <a href="{{ media.url }}">{{ ui.open_video }}</a>
                             </video>
                             {% elif loop.first %}
                             <img src="{{ media.url }}" alt="{{ product_title }}" loading="eager" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
@@ -218,7 +226,7 @@
                 </div>
 
                 {% if product_media|length > 1 %}
-                <div class="seo-thumb-grid" aria-label="All product media">
+                <div class="seo-thumb-grid" aria-label="{{ ui.all_media }}">
                     {% for media in product_media %}
                     <button
                         type="button"
@@ -235,7 +243,7 @@
                         <video class="seo-thumb-preview" muted playsinline preload="metadata" src="{{ media.url }}"></video>
                         <span class="seo-thumb-video">▶</span>
                         {% else %}
-                        <span class="seo-thumb-video">Open</span>
+                        <span class="seo-thumb-video">{{ ui.open_media }}</span>
                         {% endif %}
                     </button>
                     {% endfor %}
@@ -259,8 +267,8 @@
 
                 <div class="seo-order-panel">
                     <div class="seo-actions">
-                        {% if order_contact_url %}<a class="seo-btn primary" href="{{ order_contact_url }}">DM to Order{% if order_contact %}: {{ order_contact }}{% endif %}</a>{% endif %}
-                        {% if telegram_bot_url %}<a class="seo-btn secondary" href="{{ telegram_bot_url }}">Open Product in Bot</a>{% endif %}
+                        {% if order_contact_url %}<a class="seo-btn primary" href="{{ order_contact_url }}">{{ ui.dm_order }}{% if order_contact %}: {{ order_contact }}{% endif %}</a>{% endif %}
+                        {% if telegram_bot_url %}<a class="seo-btn secondary" href="{{ telegram_bot_url }}">{{ ui.open_bot }}</a>{% endif %}
                     </div>
                 </div>
             </section>
@@ -278,7 +286,7 @@
 
         {% if related_products %}
         <section aria-labelledby="related-heading">
-            <h2 id="related-heading">Related products</h2>
+            <h2 id="related-heading">{{ ui.related_products }}</h2>
             <ul class="related-list">
                 {% for item in related_products %}
                 <li class="related-card">
@@ -294,7 +302,7 @@
 
         {% if seo_side_notes %}
         <section class="seo-search-footer" aria-labelledby="related-searches-heading">
-            <h2 id="related-searches-heading">Related searches</h2>
+            <h2 id="related-searches-heading">{{ ui.related_searches }}</h2>
             <ul class="term-list">
                 {% for term in seo_side_notes %}
                 <li>{{ term }}</li>
@@ -312,7 +320,7 @@
             const renderMedia = (thumb) => {
                 const url = thumb.dataset.mediaUrl || '';
                 const type = thumb.dataset.mediaType || 'photo';
-                const label = thumb.dataset.mediaLabel || document.title || 'Product media';
+                const label = thumb.dataset.mediaLabel || document.title || {{ ui.media_preview|tojson }};
                 viewer.replaceChildren();
 
                 let node;
@@ -341,7 +349,7 @@
                     node = document.createElement('a');
                     node.href = url;
                     node.className = 'seo-media-fallback';
-                    node.textContent = 'Open media';
+                    node.textContent = {{ ui.open_media|tojson }};
                 }
 
                 viewer.appendChild(node);
