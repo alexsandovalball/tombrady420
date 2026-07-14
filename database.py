@@ -4569,6 +4569,12 @@ class Database:
                     (datetime.now() - timedelta(days=30),),
                 ),
                 "recent_external_signals": await self.get_recent_external_seo_signals(limit=limit),
+                "google_trends_signals": await scalar(
+                    "SELECT COUNT(*) FROM external_seo_signals WHERE approved = 1 AND provider = 'google_trends'"
+                ),
+                "google_trends_latest_seen": await value(
+                    "SELECT MAX(last_seen) FROM external_seo_signals WHERE approved = 1 AND provider = 'google_trends'"
+                ),
                 "top_search_console_queries": await rows(
                     """
                     SELECT

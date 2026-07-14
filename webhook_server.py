@@ -51,6 +51,7 @@ from utils.seo_terms import (
     normalize_term,
 )
 from utils.seo_autolearn import build_taxonomy_profiles, infer_seo_query_mapping
+from utils.google_trends import fetch_trending_queries_for_supported_locales
 from utils.external_seo_signals import load_external_seo_signal_file
 from utils.search_console import describe_search_console_setup, fetch_search_console_rows, submit_sitemap
 from translations.language_config import SUPPORTED_LANGUAGES
@@ -132,6 +133,7 @@ _SEO_PUBLIC_MEDIA_RATE_LIMIT_WINDOW = _bounded_int_env("SEO_PUBLIC_MEDIA_RATE_LI
 _SEO_RESPONSE_CACHE_MAX = _bounded_int_env("SEO_RESPONSE_CACHE_MAX", 256, 16, 2000)
 _seo_response_cache: OrderedDict[str, tuple[float, bytes, str, str, int]] = OrderedDict()
 _seo_auto_learn_lock: Optional[asyncio.Lock] = None
+_seo_trends_lock: Optional[asyncio.Lock] = None
 _webapp_search_cache: OrderedDict[str, tuple[float, dict]] = OrderedDict()
 _WEBAPP_SEARCH_CACHE_TTL_SECONDS = _bounded_int_env("WEBAPP_SEARCH_CACHE_TTL_SECONDS", 90, 15, 600)
 _WEBAPP_SEARCH_CACHE_MAX = _bounded_int_env("WEBAPP_SEARCH_CACHE_MAX", 256, 32, 2000)
@@ -1778,6 +1780,74 @@ def _external_signal_file_path() -> str:
     return Config.EXTERNAL_SEO_SIGNALS_FILE or str(Path(__file__).parent / "configs" / "external_seo_signals.json")
 
 
+def _get_seo_trends_lock() -> asyncio.Lock:
+    global _seo_trends_lock
+    if _seo_trends_lock is None:
+        _seo_trends_lock = asyncio.Lock()
+    return _seo_trends_lock
+
+
+async def _import_google_trends_signals(
+    products: list[dict[str, Any]],
+    profiles: dict[tuple[str, str], dict[str, Any]],
+) -> int:
+    """Import a bounded set of public Google Trends queries into external signals."""
+    if not Config.SEO_TRENDS_ENABLED:
+        return 0
+
+    trend_rows = fetch_trending_queries_for_supported_locales(
+        limit_per_geo=Config.SEO_TRENDS_LIMIT_PER_GEO,
+        max_terms=Config.SEO_TRENDS_MAX_TERMS_PER_RUN,
+    )
+    if not trend_rows:
+        logger.info("[seo_trends] rows=0 imported=0 promoted=0")
+        return 0
+
+    signals = []
+    for row in trend_rows:
+        term = str(row.get("term") or "").strip()
+        if not _is_useful_auto_seo_term(term):
+            continue
+        inferred = infer_seo_query_mapping(
+            term,
+            products,
+            min_score=Config.SEO_EXTERNAL_SIGNAL_SCORE,
+            profiles=profiles,
+        )
+        if not inferred:
+            continue
+        signals.append({
+            "term": term,
+            "term_type": str(row.get("term_type") or "google_trends_trending"),
+            "provider": "google_trends",
+            "source": str(row.get("source") or "")[:120],
+            "category": inferred["category"],
+            "subcategory": inferred["subcategory"],
+            "confidence": min(100, max(int(row.get("confidence") or 0), int(float(inferred.get("score") or 0)))),
+            "approved": True,
+            "evidence_count": max(1, int(row.get("evidence_count") or 1)),
+            "notes": {
+                "geo": (row.get("notes") or {}).get("geo"),
+                "hl": (row.get("notes") or {}).get("hl"),
+                "rank": (row.get("notes") or {}).get("rank"),
+                "related_queries": (row.get("notes") or {}).get("related_queries") or [],
+            },
+        })
+
+    if not signals:
+        logger.info("[seo_trends] rows=%d imported=0 promoted=0", len(trend_rows))
+        return 0
+
+    imported = await _catalog_db.upsert_external_seo_signals(
+        signals,
+        provider="google_trends",
+        source="google_trends",
+        approved=True,
+    )
+    logger.info("[seo_trends] rows=%d imported=%d", len(trend_rows), imported)
+    return imported
+
+
 async def _promote_approved_external_signals() -> int:
     """Promote approved external signals into normal SEO mappings."""
     candidates = await _catalog_db.get_approved_external_seo_signals_without_mapping(
@@ -2120,6 +2190,39 @@ async def _seo_auto_learn_loop():
         await asyncio.sleep(Config.SEO_AUTO_LEARN_INTERVAL_SECONDS)
 
 
+async def _seo_trends_loop():
+    """Background task: ingest a small batch of Google Trends signals."""
+    if not Config.SEO_TRENDS_ENABLED:
+        logger.info("[seo_trends] disabled")
+        return
+
+    await asyncio.sleep(30)
+    while True:
+        try:
+            lock = _get_seo_trends_lock()
+            if lock.locked():
+                logger.info("[seo_trends] skipped reason=previous_run_active")
+            else:
+                started = _time.monotonic()
+                async with lock:
+                    products = await _catalog_db.get_all_products_for_search()
+                    profiles = build_taxonomy_profiles(products)
+                    imported = await _import_google_trends_signals(products, profiles)
+                    promoted = await _promote_approved_external_signals()
+                duration_ms = (_time.monotonic() - started) * 1000
+                logger.info(
+                    "[seo_trends] run_complete imported=%d promoted=%d duration_ms=%.1f limit_per_geo=%d max_terms=%d",
+                    imported,
+                    promoted,
+                    duration_ms,
+                    Config.SEO_TRENDS_LIMIT_PER_GEO,
+                    Config.SEO_TRENDS_MAX_TERMS_PER_RUN,
+                )
+        except Exception as exc:
+            logger.warning("[seo_trends] loop_error error=%s", exc)
+        await asyncio.sleep(Config.SEO_TRENDS_INTERVAL_SECONDS)
+
+
 async def _seo_translation_warmup_once() -> int:
     """Warm a small rotating batch of persistent product-page translations."""
     raw_offset = await _catalog_db.get_bot_setting("seo_translation_warmup_offset")
@@ -2301,6 +2404,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_media_cache_prune_loop(), name="media_cache_prune"),
         asyncio.create_task(_wal_checkpoint_loop(), name="wal_checkpoint"),
         asyncio.create_task(_seo_auto_learn_loop(), name="seo_auto_learn"),
+        asyncio.create_task(_seo_trends_loop(), name="seo_trends"),
         asyncio.create_task(_seo_translation_warmup_loop(), name="seo_translation_warmup"),
         asyncio.create_task(_indexnow_loop(), name="indexnow"),
         asyncio.create_task(_search_console_sitemap_loop(), name="search_console_sitemap"),

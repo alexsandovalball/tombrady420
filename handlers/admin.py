@@ -60,6 +60,8 @@ def _format_admin_status_message(snapshot: dict) -> str:
     google_queries = seo.get("search_console_queries_window", seo.get("search_console_queries_7d"))
     google_clicks = seo.get("search_console_clicks_window", seo.get("search_console_clicks_7d"))
     google_impressions = seo.get("search_console_impressions_window", seo.get("search_console_impressions_7d"))
+    google_trends_signals = seo.get("google_trends_signals", 0)
+    google_trends_latest_seen = seo.get("google_trends_latest_seen") or "none yet"
 
     active_bots = [bot for bot in runtime_bots if bot.get("username")]
     missing_bots = [bot for bot in runtime_bots if not bot.get("username")]
@@ -276,6 +278,8 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         search_console_days = _fmt_count(snapshot.get("search_console_window_days") or 30)
         low_result_threshold = int(snapshot.get("low_result_threshold") or 0)
         low_result_label = f"0-{low_result_threshold}" if low_result_threshold > 0 else "0"
+        google_trends_signals = snapshot.get("google_trends_signals")
+        google_trends_latest_seen = snapshot.get("google_trends_latest_seen") or "none yet"
         lines = [
             "🔎 SEO Search Learning",
             "",
@@ -289,6 +293,8 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Made automatically: {_fmt_count(snapshot.get('auto_mappings'))}",
             f"• Google queries imported ({search_console_days}d): {_fmt_count(snapshot.get('search_console_queries_window'))}",
             f"• Google clicks/impressions ({search_console_days}d): {_fmt_count(snapshot.get('search_console_clicks_window'))}/{_fmt_count(snapshot.get('search_console_impressions_window'))}",
+            f"• Google Trends signals: {_fmt_count(google_trends_signals)}",
+            f"• Google Trends latest seen: {google_trends_latest_seen}",
             f"• Approved external signals: {_fmt_count(snapshot.get('external_signals'))}",
         ]
         lines.extend(_format_search_console_status(snapshot))
@@ -364,6 +370,7 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "",
             "Auto-learning runs in the background. No manual SEO import or approval command is needed.",
             "Search Console health above is based on saved imports, so it stays fast inside Telegram.",
+            "Google Trends is ingested as a separate low-risk signal source and only promotes clear catalog matches.",
         ])
         await update.message.reply_text("\n".join(lines)[:3900])
     except Exception as e:

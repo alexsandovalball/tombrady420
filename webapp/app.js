@@ -1523,6 +1523,7 @@
         appendAdminMetric(grid, `Google queries ${googleWindowDays}d`, formatAdminCount(seo.search_console_queries_window));
         appendAdminMetric(grid, `Google performance pages ${googleWindowDays}d`, formatAdminCount(seo.search_console_pages_window));
         appendAdminMetric(grid, 'Google clicks/impr.', `${formatAdminCount(seo.search_console_clicks_window)}/${formatAdminCount(seo.search_console_impressions_window)}`);
+        appendAdminMetric(grid, 'Google Trends signals', formatAdminCount(seo.google_trends_signals));
         appendAdminMetric(grid, 'Google sitemap', googleSitemap.status || 'never');
         appendAdminMetric(grid, 'SEO mappings', formatAdminCount(summary.seo_query_mappings));
         appendAdminMetric(grid, 'IndexNow pending', formatAdminCount(indexnow.pending));
@@ -1568,6 +1569,9 @@
         );
         appendAdminList(panel, 'Recent Search Mappings', seo.recent_mappings || [], item =>
             `[${String(item.language || 'en').toUpperCase()}] ${item.term} -> ${item.category || 'catalog'}${item.subcategory ? ` / ${item.subcategory}` : ''}`
+        );
+        appendAdminList(panel, 'Recent External Signals', seo.recent_external_signals || [], item =>
+            `${item.provider || 'signal'}: ${item.term} -> ${item.category || 'catalog'}${item.subcategory ? ` / ${item.subcategory}` : ''}`
         );
         appendAdminList(panel, 'SEO Mapping Languages', seo.mapping_languages || [], item =>
             `${String(item.language || 'en').toUpperCase()}: ${formatAdminCount(item.count)} mappings`
