@@ -357,7 +357,6 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
             # Multiple media - send as media group
             try:
                 media_group = []
-                media_group_entries = []
                 unsupported_media = []  # Track media that can't be in groups
                 caption_used = False  # Track if caption has been added to any media
                 
@@ -372,17 +371,13 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 for idx, (file_id, file_type) in enumerate(media_list):
                     if file_type == "photo":
                         media_group.append(InputMediaPhoto(media=file_id, caption=get_caption(), parse_mode=None))
-                        media_group_entries.append((file_id, file_type))
                     elif file_type == "video":
                         media_group.append(InputMediaVideo(media=file_id, caption=get_caption(), parse_mode=None))
-                        media_group_entries.append((file_id, file_type))
                     elif file_type == "animation":
                         media_group.append(InputMediaAnimation(media=file_id, caption=get_caption(), parse_mode=None))
-                        media_group_entries.append((file_id, file_type))
                     elif file_type == "document":
                         # Documents can be in media groups (unlike audio/voice/video_note)
                         media_group.append(InputMediaDocument(media=file_id, caption=get_caption(), parse_mode=None))
-                        media_group_entries.append((file_id, file_type))
                     elif file_type in ["audio", "voice", "video_note"]:
                         # These types cannot be in media groups - send separately
                         # Caption will be added to first media item encountered
@@ -416,15 +411,14 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                             sent_count,
                             len(media_group),
                         )
-                        for file_id, file_type in media_group_entries[sent_count:]:
-                            await send_media_message(
-                                context,
-                                update.effective_chat.id,
-                                file_id,
-                                file_type,
-                                caption=None,
-                                reply_markup=None,
-                            )
+                        # Keep the product presentation coherent. If Telegram only
+                        # accepts part of the album, do not dribble the remainder
+                        # out as separate messages, because that breaks the album
+                        # experience users expect. We log the short send and stop
+                        # here so the delivered album stays visually grouped.
+                        #
+                        # The full individual fallback is still available if the
+                        # album send raises and we never get a usable group at all.
                 
                 # Send unsupported media types individually
                 for file_id, file_type, item_caption in unsupported_media:

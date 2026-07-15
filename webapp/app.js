@@ -172,6 +172,7 @@
     // Cleanup on page unload
     window.addEventListener('beforeunload', () => {
         logger.cleanup();
+        stopAdminPanelAutoRefresh();
     });
 
     // Debounce utility: delays invoking func until after wait ms have elapsed
@@ -216,6 +217,7 @@
         adminStatus: null,
         adminStatusLoaded: false,
         adminStatusLoading: false,
+        adminStatusRefreshTimer: null,
         languages: [
             { code: 'en', name: 'English (USA)', flag: '🇺🇸' },
             { code: 'de', name: 'German', flag: '🇩🇪' },
@@ -1138,6 +1140,7 @@
         // This ensures we show updated status if user ID was fetched from backend
         renderUserInfo();
         queueAdminPanelRefresh();
+        startAdminPanelAutoRefresh();
         
         // Open product-specific WebApp links or restore an app route when present.
         const openedRoute = await restoreBrowserRoute(window.history.state);
@@ -1589,8 +1592,8 @@
         appendAdminCrawlablePages(panel, data.crawlable_pages);
     }
 
-    async function loadAdminPanel() {
-        if (!tg.initData || state.adminStatusLoading || state.adminStatusLoaded) return;
+    async function loadAdminPanel(force = false) {
+        if (!tg.initData || state.adminStatusLoading || (!force && state.adminStatusLoaded)) return;
         state.adminStatusLoading = true;
 
         try {
@@ -1620,8 +1623,24 @@
     function queueAdminPanelRefresh() {
         if (!tg.initData || !state.userId) return;
         setTimeout(() => {
-            loadAdminPanel().catch(err => logger.error('admin_monitor', err.message));
+            loadAdminPanel(true).catch(err => logger.error('admin_monitor', err.message));
         }, 0);
+    }
+
+    function startAdminPanelAutoRefresh() {
+        if (!tg.initData || state.adminStatusRefreshTimer) return;
+        state.adminStatusRefreshTimer = setInterval(() => {
+            if (!document.hidden) {
+                loadAdminPanel(true).catch(err => logger.error('admin_monitor', err.message));
+            }
+        }, 60000);
+    }
+
+    function stopAdminPanelAutoRefresh() {
+        if (state.adminStatusRefreshTimer) {
+            clearInterval(state.adminStatusRefreshTimer);
+            state.adminStatusRefreshTimer = null;
+        }
     }
 
     function applyThemeColors() {
