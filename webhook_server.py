@@ -3181,6 +3181,27 @@ def _product_video_thumbnail_url(product: dict) -> str:
     return _product_primary_image_url(product, absolute=True) or _DEFAULT_OG_IMAGE
 
 
+def _seo_preferred_fallback_media_index(product: dict, media_index: int) -> Optional[int]:
+    """Pick an alternate media index for public SEO fallbacks.
+
+    Prefer a photo first, then any other available media on the product.
+    """
+    media_info = _collect_media_info(product)
+    if not media_info:
+        return None
+
+    preferred_types = ("photo",)
+    for media_type in preferred_types:
+        typed_indices = [idx for idx, media in enumerate(media_info) if media.get("type") == media_type and idx != media_index]
+        if typed_indices:
+            return typed_indices[0]
+
+    for idx, _media in enumerate(media_info):
+        if idx != media_index:
+            return idx
+    return None
+
+
 def _schema_date(value: Any, fallback: str = "") -> str:
     if isinstance(value, datetime):
         return value.date().isoformat()
@@ -5781,16 +5802,20 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
     )
 
 
-def _seo_media_fallback_response(request: Request, reason: str) -> Response:
+def _seo_media_fallback_response(request: Request, reason: str, *, image_url: str = "") -> Response:
+    fallback_body = _read_brand_icon_png()
+    fallback_type = "image/png"
+    fallback_etag_key = f"seo-media-fallback:{reason}:v1"
+    if image_url:
+        fallback_etag_key = f"seo-media-fallback:{reason}:{hashlib.sha256(image_url.encode('utf-8')).hexdigest()[:12]}"
     return _seo_content_response(
         request,
-        _read_brand_icon_png(),
-        media_type="image/png",
+        fallback_body,
+        media_type=fallback_type,
         max_age=_SEO_PUBLIC_MEDIA_CACHE_SECONDS,
-        etag=_seo_etag_from_key(f"seo-media-fallback:{reason}:v1"),
+        etag=_seo_etag_from_key(fallback_etag_key),
         extra_headers={
             "X-SEO-Media-Fallback": reason[:80],
-            "Content-Type": "image/png",
         },
     )
 
@@ -5821,12 +5846,21 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
             return _seo_media_fallback_response(request, "product_missing")
 
         media_info = _collect_media_info(product)
+        product_fallback_image = _product_primary_image_url(product, absolute=True)
         if media_index < 0 or media_index >= len(media_info):
-            return _seo_media_fallback_response(request, "media_missing")
+            return _seo_media_fallback_response(request, "media_missing", image_url=product_fallback_image)
 
         media_type_info = media_info[media_index]
         if media_type_info.get("type") != "photo":
-            return _seo_media_fallback_response(request, "non_photo")
+            fallback_index = _seo_preferred_fallback_media_index(product, media_index)
+            if fallback_index is not None and fallback_index != media_index:
+                fallback_response = await stream_catalog_media(request, product_id, fallback_index)
+                if getattr(fallback_response, "status_code", 200) < 400:
+                    fallback_response.headers["Cache-Control"] = f"public, max-age={_SEO_PUBLIC_MEDIA_CACHE_SECONDS}"
+                    fallback_response.headers["X-Robots-Tag"] = "index, follow"
+                    fallback_response.headers["Vary"] = "Accept"
+                    return fallback_response
+            return _seo_media_fallback_response(request, "non_photo", image_url=product_fallback_image)
 
         file_id = str(media_type_info.get("id") or "")
         etag = _seo_etag_from_key(f"seo-media:{product_id}:{media_index}:{file_id}")
@@ -5851,7 +5885,20 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
 
         response = await stream_catalog_media(request, product_id, media_index)
         if getattr(response, "status_code", 200) >= 400:
-            return _seo_media_fallback_response(request, f"upstream_{getattr(response, 'status_code', 0)}")
+            fallback_index = _seo_preferred_fallback_media_index(product, media_index)
+            if fallback_index is not None and fallback_index != media_index:
+                fallback_response = await stream_catalog_media(request, product_id, fallback_index)
+                if getattr(fallback_response, "status_code", 200) < 400:
+                    fallback_response.headers["Cache-Control"] = f"public, max-age={_SEO_PUBLIC_MEDIA_CACHE_SECONDS}"
+                    fallback_response.headers["ETag"] = _seo_etag_from_key(f"seo-media:{product_id}:{fallback_index}")
+                    fallback_response.headers["X-Robots-Tag"] = "index, follow"
+                    fallback_response.headers["Vary"] = "Accept"
+                    return fallback_response
+            return _seo_media_fallback_response(
+                request,
+                f"upstream_{getattr(response, 'status_code', 0)}",
+                image_url=product_fallback_image,
+            )
 
         response.headers["Cache-Control"] = f"public, max-age={_SEO_PUBLIC_MEDIA_CACHE_SECONDS}"
         response.headers["ETag"] = etag
@@ -5865,7 +5912,7 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
             media_index,
             exc,
         )
-        return _seo_media_fallback_response(request, "error")
+        return _seo_media_fallback_response(request, "error", image_url=product_fallback_image if 'product_fallback_image' in locals() else "")
 
 
 @app.get("/api/catalog/{product_id}/media/{media_index}")
