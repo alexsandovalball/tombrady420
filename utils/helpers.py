@@ -663,23 +663,51 @@ async def get_bot_specific_file_id(
             return None
     
     except BadRequest as e:
-        error_msg = str(e)
-        if "message to forward not found" in error_msg.lower():
+        error_msg = str(e).lower()
+        if "message to forward not found" in error_msg:
             logger.error(
                 f"[get_bot_specific_file_id] Source message not found: chat={source_chat_id}, "
                 f"msg={source_message_id}. The message may have been deleted from the channel, "
                 f"or the bot doesn't have access to it. Error: {e}"
             )
-        elif "message can't be forwarded" in error_msg.lower():
+            if canonical:
+                await _db.invalidate_bot_media_file_id(bot_identifier, canonical["file_unique_id"])
+            await _db.delete_bot_file_id_cache_entry(
+                source_chat_id,
+                source_message_id,
+                file_index,
+                bot_username,
+            )
+            clear_origin = getattr(_db, "clear_bot_file_id_cache_for_origin", None)
+            if clear_origin is not None and inspect.iscoroutinefunction(clear_origin):
+                try:
+                    await clear_origin(source_chat_id, source_message_id)
+                except Exception as purge_exc:
+                    logger.debug(
+                        "[get_bot_specific_file_id] Failed to purge origin cache after missing source message: %s",
+                        purge_exc,
+                    )
+        elif "message can't be forwarded" in error_msg:
             logger.error(
                 f"[get_bot_specific_file_id] Message cannot be forwarded: chat={source_chat_id}, "
                 f"msg={source_message_id}. The message may have forwarding restrictions. Error: {e}"
             )
-        elif "chat not found" in error_msg.lower():
+        elif "chat not found" in error_msg:
             logger.error(
                 f"[get_bot_specific_file_id] Source chat not found: chat={source_chat_id}. "
                 f"The bot may have lost access to the channel. Error: {e}"
             )
+            if canonical:
+                await _db.invalidate_bot_media_file_id(bot_identifier, canonical["file_unique_id"])
+            clear_origin = getattr(_db, "clear_bot_file_id_cache_for_origin", None)
+            if clear_origin is not None and inspect.iscoroutinefunction(clear_origin):
+                try:
+                    await clear_origin(source_chat_id, source_message_id)
+                except Exception as purge_exc:
+                    logger.debug(
+                        "[get_bot_specific_file_id] Failed to purge origin cache after chat not found: %s",
+                        purge_exc,
+                    )
         else:
             logger.error(
                 f"[get_bot_specific_file_id] BadRequest error forwarding message: "

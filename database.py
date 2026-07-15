@@ -3215,6 +3215,26 @@ class Database:
                 """, (source_chat_id, source_message_id, file_index, self.normalize_bot_username(bot_username)))
             await db.commit()
             logger.debug(f"Deleted invalid cache entry: bot={bot_username}, msg={source_message_id}, idx={file_index}")
+    async def clear_bot_file_id_cache_for_origin(self, source_chat_id: int, source_message_id: int) -> int:
+        """Delete all bot file ID cache entries for one source message across bots."""
+        async with self.get_connection() as db:
+            cursor = await db.execute(
+                """
+                DELETE FROM bot_file_id_cache
+                WHERE source_chat_id = ? AND source_message_id = ?
+                """,
+                (source_chat_id, source_message_id),
+            )
+            deleted = cursor.rowcount
+            await db.commit()
+            logger.info(
+                "Cleared %s bot file ID cache entries for origin chat=%s msg=%s",
+                deleted,
+                source_chat_id,
+                source_message_id,
+            )
+            return deleted
+
 
     async def clear_bot_file_id_cache_for_bot(self, bot_username: str) -> int:
         """Clear all cached file IDs for a specific bot username."""
