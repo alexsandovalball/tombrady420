@@ -1702,6 +1702,19 @@ def _is_useful_auto_seo_term(term: str) -> bool:
     return True
 
 
+def _is_cannabis_trends_term(term: str) -> bool:
+    normalized = normalize_term(term)
+    return any(
+        token in normalized
+        for token in (
+            "flower", "cannabis", "weed", "bud", "buds", "edible", "edibles", "gummy", "gummies",
+            "cart", "carts", "cartridge", "cartridges", "vape", "hash", "kief", "rosin", "resin",
+            "preroll", "pre roll", "pre-roll", "concentrate", "extract", "indica", "sativa", "hybrid",
+            "exotic", "moonrock", "moonrocks", "snowcap", "snowcaps", "solventless", "top shelf", "premium",
+        )
+    )
+
+
 async def _expand_auto_learn_mapping_variants(term: str, source_language: str = "") -> List[Dict[str, str]]:
     """Return the original query and language-tagged translated variants."""
     source_language = str(source_language or "").lower()
@@ -1811,11 +1824,14 @@ async def _import_google_trends_signals(
         inferred = infer_seo_query_mapping(
             term,
             products,
-            min_score=Config.SEO_EXTERNAL_SIGNAL_SCORE,
+            min_score=Config.SEO_EXTERNAL_SIGNAL_SCORE - (2 if _is_cannabis_trends_term(term) else 0),
             profiles=profiles,
         )
         if not inferred:
             continue
+        confidence = min(100, max(int(row.get("confidence") or 0), int(float(inferred.get("score") or 0))))
+        if _is_cannabis_trends_term(term):
+            confidence = min(100, confidence + 4)
         signals.append({
             "term": term,
             "term_type": str(row.get("term_type") or "google_trends_trending"),
@@ -1823,7 +1839,7 @@ async def _import_google_trends_signals(
             "source": str(row.get("source") or "")[:120],
             "category": inferred["category"],
             "subcategory": inferred["subcategory"],
-            "confidence": min(100, max(int(row.get("confidence") or 0), int(float(inferred.get("score") or 0)))),
+            "confidence": confidence,
             "approved": True,
             "evidence_count": max(1, int(row.get("evidence_count") or 1)),
             "notes": {
@@ -1831,6 +1847,7 @@ async def _import_google_trends_signals(
                 "hl": (row.get("notes") or {}).get("hl"),
                 "rank": (row.get("notes") or {}).get("rank"),
                 "related_queries": (row.get("notes") or {}).get("related_queries") or [],
+                "cannabis_boosted": _is_cannabis_trends_term(term),
             },
         })
 

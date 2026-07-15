@@ -31,6 +31,47 @@ except ImportError:  # pragma: no cover - production has rapidfuzz, local fallba
 
 logger = logging.getLogger(__name__)
 
+_CANNA_CATEGORY_TOKENS = {
+    "flower", "cannabis", "weed", "bud", "buds", "exotic", "exotics", "indica", "sativa", "hybrid",
+    "pre roll", "pre rolls", "preroll", "prerolls", "cart", "carts", "cartridge", "cartridges",
+    "edible", "edibles", "gummies", "gummy", "concentrate", "concentrates", "hash", "kief",
+    "rosin", "resin", "vape", "vapes", "pen", "pens", "tincture", "top shelf", "premium",
+    "light dep", "light deps", "light deprivation", "moonrocks", "snowcaps", "infused", "solventless",
+}
+
+_CANNA_VARIANT_FAMILIES = {
+    "flower": [
+        "cannabis flower", "weed flower", "bud", "buds", "top shelf flower", "premium flower",
+        "indoor flower", "greenhouse flower", "sun grown flower", "light dep flower", "light deprivation flower",
+        "designer flower", "exotic flower", "exotic weed", "top shelf bud",
+    ],
+    "concentrates": [
+        "concentrates", "extracts", "dabs", "live resin", "live rosin", "hash rosin", "rosin",
+        "solventless", "solventless concentrate", "full melt", "bubble hash", "water hash", "hash",
+        "kief", "dry sift", "sift hash", "terp sauce", "badder", "budder", "wax", "shatter",
+    ],
+    "cartridges": [
+        "cartridge", "cartridges", "cart", "carts", "vape cart", "weed cart", "vape pen",
+        "disposable vape", "thc vape", "live resin cart", "rosin cart", "cannabis vape",
+    ],
+    "edibles": [
+        "edibles", "gummies", "gummy", "cannabis edibles", "thc edibles", "weed gummies",
+        "infused candy", "chocolate edibles", "cookies", "brownies", "soft chews",
+    ],
+    "prerolls": [
+        "pre rolls", "pre-rolls", "prerolls", "pre rolled joints", "joints", "blunts",
+        "flower pre rolls", "infused prerolls", "infused pre rolls", "ready to smoke",
+    ],
+}
+
+_CANNA_TREND_HINTS = {
+    "flower", "cannabis", "weed", "bud", "buds", "exotic", "exotics", "indica", "sativa", "hybrid",
+    "pre roll", "pre rolls", "preroll", "prerolls", "cart", "carts", "cartridge", "cartridges",
+    "edible", "edibles", "gummies", "gummy", "concentrate", "concentrates", "extract", "extracts",
+    "hash", "kief", "rosin", "resin", "vape", "vapes", "tincture", "top shelf", "premium",
+    "light dep", "light deps", "light deprivation", "moonrocks", "snowcaps", "infused", "solventless",
+}
+
 
 def _plain_label(value: str) -> str:
     return normalize_term(value)
@@ -69,6 +110,8 @@ def _build_taxonomy_profiles(products: Iterable[dict[str, Any]]) -> dict[tuple[s
             continue
         category_terms = [category, get_category_display_name(category)]
         category_terms.extend(get_category_display_name(category, lang) for lang in language_codes)
+        if category in _CANNA_VARIANT_FAMILIES:
+            category_terms.extend(_CANNA_VARIANT_FAMILIES[normalize_term(category)])
         if not subcategories:
             profiles[_taxonomy_key(category)] = {
                 "category": category,
@@ -80,6 +123,9 @@ def _build_taxonomy_profiles(products: Iterable[dict[str, Any]]) -> dict[tuple[s
         for subcategory in subcategories:
             subcategory_terms = [subcategory, get_subcategory_display_name(subcategory)]
             subcategory_terms.extend(get_subcategory_display_name(subcategory, lang) for lang in language_codes)
+            sub_key = normalize_term(subcategory)
+            if sub_key in _CANNA_VARIANT_FAMILIES:
+                subcategory_terms.extend(_CANNA_VARIANT_FAMILIES[sub_key])
             profiles[_taxonomy_key(category, subcategory)] = {
                 "category": category,
                 "subcategory": subcategory,
@@ -132,6 +178,8 @@ def infer_seo_query_mapping(
 
     profiles = profiles or _build_taxonomy_profiles(products)
     scored: list[dict[str, Any]] = []
+    query_tokens = set(query_norm.split())
+    cannabisish = any(token in query_norm for token in _CANNA_TREND_HINTS)
 
     for profile in profiles.values():
         best_score = 0.0
@@ -148,6 +196,14 @@ def infer_seo_query_mapping(
             if score > best_score:
                 best_score = score
                 best_reason = "catalog"
+
+        if cannabisish and best_score < 94:
+            profile_terms = [normalize_term(term) for term in profile.get("terms", [])]
+            overlap = len(query_tokens & set(" ".join(profile_terms).split()))
+            if overlap:
+                best_score = max(best_score, min(97.0, 74.0 + (overlap * 7.0)))
+                if best_score > 0 and not best_reason:
+                    best_reason = "cannabis_vocab"
 
         if best_score >= min_score:
             scored.append({

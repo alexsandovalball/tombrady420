@@ -18,7 +18,21 @@
         "fresh buds",
         "cannabis flower",
         "weed flower",
-        "indoor flower"
+        "indoor flower",
+        "top shelf cannabis",
+        "premium cannabis flower",
+        "designer weed",
+        "exotic bud",
+        "sticky flower",
+        "fresh flower",
+        "indoor weed",
+        "craft cannabis",
+        "loud flower",
+        "gas flower",
+        "fire flower",
+        "exotic cannabis flower",
+        "boutique flower",
+        "top shelf weed"
       ]
     },
     {
@@ -33,7 +47,16 @@
         "sun grown flower",
         "affordable flower",
         "daily smoke",
-        "value flower"
+        "value flower",
+        "light deprivation",
+        "light dep weed",
+        "green house flower",
+        "greenhouse weed",
+        "sun grown weed",
+        "value weed",
+        "budget flower",
+        "smoke flower",
+        "daily flower"
       ]
     },
     {
@@ -47,7 +70,14 @@
         "snow caps",
         "infused flower",
         "kief coated flower",
-        "diamond dusted flower"
+        "diamond dusted flower",
+        "moon rock flower",
+        "snow cap flower",
+        "infused bud",
+        "infused weed",
+        "diamond coated flower",
+        "kief coated bud",
+        "kief coated weed"
       ]
     },
     {
@@ -64,7 +94,15 @@
         "solventless concentrate",
         "full melt",
         "bubble hash",
-        "water hash"
+        "water hash",
+        "premium rosin",
+        "live hash rosin",
+        "cold cure",
+        "fresh press",
+        "ice water hash",
+        "dry sift hash",
+        "solvent free",
+        "solvent free concentrate"
       ]
     },
     {
@@ -83,7 +121,16 @@
         "shatter",
         "extracts",
         "dabs",
-        "concentrates"
+        "concentrates",
+        "live resin cart",
+        "live resin disposable",
+        "terpene sauce",
+        "cannabis extract",
+        "extract cart",
+        "badder wax",
+        "budder wax",
+        "diamond sauce",
+        "sauce cart"
       ]
     },
     {
@@ -105,7 +152,15 @@
         "pressed hash",
         "dry sift",
         "sift hash",
-        "traditional hash"
+        "traditional hash",
+        "premium hash",
+        "ice hash",
+        "full melt hash",
+        "old school hash",
+        "pressed kief",
+        "smoked hash",
+        "hashish",
+        "charas"
       ]
     },
     {
@@ -124,7 +179,16 @@
         "vape pen",
         "thc vape",
         "live resin cart",
-        "rosin cart"
+        "rosin cart",
+        "weed cartridge",
+        "thc cartridge",
+        "resin cartridge",
+        "rosin cartridge",
+        "live resin vape",
+        "cannabis cartridge",
+        "oil cart",
+        "distillate cart",
+        "510 cart"
       ]
     },
     {
@@ -141,7 +205,17 @@
         "infused candy",
         "weed gummies",
         "cookies",
-        "brownies"
+        "brownies",
+        "thc gummy",
+        "thc gummies",
+        "weed edible",
+        "weed edibles",
+        "cannabis gummy",
+        "cannabis gummies",
+        "infused gummies",
+        "fruit chews",
+        "soft chews",
+        "sour gummies"
       ]
     },
     {
@@ -158,7 +232,15 @@
         "flower pre rolls",
         "ready to smoke",
         "infused prerolls",
-        "infused pre rolls"
+        "infused pre rolls",
+        "weed pre roll",
+        "cannabis pre roll",
+        "joint pack",
+        "preroll pack",
+        "infused joint",
+        "infused pre-roll",
+        "smoke pack",
+        "ready rolled"
       ]
     },
     {
@@ -198,7 +280,17 @@
       "summary": "A quick guide to exotic flower, premium buds, top shelf cannabis, and related menu terms.",
       "category": "FLOWER",
       "subcategory": "EXOTICS",
-      "terms": ["exotic flower", "top shelf flower", "premium exotics", "za", "designer flower"],
+      "terms": [
+        "exotic flower",
+        "top shelf flower",
+        "premium exotics",
+        "za",
+        "designer flower",
+        "top shelf cannabis",
+        "designer weed",
+        "craft cannabis",
+        "sticky flower"
+      ],
       "sections": [
         "Exotic flower usually refers to premium cannabis flower selected for appearance, aroma, freshness, and uncommon strain profiles.",
         "On the menu, related searches can include top shelf bud, premium flower, designer flower, za, fresh buds, and indoor flower.",
@@ -211,7 +303,17 @@
       "summary": "Learn common solventless concentrate terms such as hash rosin, live rosin, cold cure, fresh press, full melt, and bubble hash.",
       "category": "CONCENTRATES",
       "subcategory": "SOLVENTLESS",
-      "terms": ["hash rosin", "live rosin", "cold cure rosin", "fresh press", "full melt", "bubble hash"],
+      "terms": [
+        "hash rosin",
+        "live rosin",
+        "cold cure rosin",
+        "fresh press",
+        "full melt",
+        "bubble hash",
+        "dry sift hash",
+        "ice water hash",
+        "premium rosin"
+      ],
       "sections": [
         "Solventless products are concentrates made without hydrocarbon solvents, often using pressure, heat, ice, water, or mechanical separation.",
         "Common search terms include hash rosin, live rosin, cold cure, fresh press, full melt, bubble hash, and water hash.",
@@ -224,7 +326,16 @@
       "summary": "Learn how live resin, badder, sauce, diamonds, wax, shatter, and terp sauce relate to concentrate products.",
       "category": "CONCENTRATES",
       "subcategory": "LIVE RESIN AND EXTRACTS",
-      "terms": ["live resin", "badder", "budder", "sauce", "diamonds", "wax", "shatter", "dabs"],
+      "terms": [
+        "live resin",
+        "badder",
+        "budder",
+        "sauce",
+        "diamonds",
+        "wax",
+        "shatter",
+        "dabs"
+      ],
       "sections": [
         "Live resin and extract terms describe different concentrate textures, source material, and processing styles.",
         "Related searches often include badder, budder, sauce, diamonds, wax, shatter, terp sauce, extracts, and dabs.",
@@ -237,7 +348,18 @@
       "summary": "A simple guide to carts, cartridges, disposable vapes, vape pens, live resin carts, and rosin carts.",
       "category": "CARTRIDGES",
       "subcategory": "AUTHENTICS",
-      "terms": ["cartridge", "cart", "vape cart", "disposable vape", "vape pen", "live resin cart", "rosin cart"],
+      "terms": [
+        "cartridge",
+        "cart",
+        "vape cart",
+        "disposable vape",
+        "vape pen",
+        "live resin cart",
+        "rosin cart",
+        "510 cart",
+        "weed cartridge",
+        "thc cartridge"
+      ],
       "sections": [
         "Cartridge and vape searches usually refer to portable oil, resin, or rosin formats intended for compatible batteries or disposable devices.",
         "Related search terms include cart, carts, cartridge, disposable vape, vape pen, live resin cart, and rosin cart.",
@@ -250,7 +372,18 @@
       "summary": "Learn common edible search terms including gummies, chocolate edibles, infused candy, cookies, and brownies.",
       "category": "EDIBLES",
       "subcategory": "FLOWER EDIBLES",
-      "terms": ["edibles", "gummies", "chocolate edibles", "infused candy", "weed gummies", "cookies", "brownies"],
+      "terms": [
+        "edibles",
+        "gummies",
+        "chocolate edibles",
+        "infused candy",
+        "weed gummies",
+        "cookies",
+        "brownies",
+        "thc gummies",
+        "soft chews",
+        "sour gummies"
+      ],
       "sections": [
         "Edibles are menu items commonly searched by format, flavor, or product type rather than strain name.",
         "Related searches include gummies, gummy, chocolate edibles, infused candy, cookies, brownies, and cannabis edibles.",
@@ -263,7 +396,14 @@
       "summary": "Learn common mushroom-related search terms and how they connect to the Shrooms category.",
       "category": "SHROOMS",
       "subcategory": "",
-      "terms": ["mushrooms", "shrooms", "magic mushrooms", "psilocybin mushrooms", "microdose", "microdosing"],
+      "terms": [
+        "mushrooms",
+        "shrooms",
+        "magic mushrooms",
+        "psilocybin mushrooms",
+        "microdose",
+        "microdosing"
+      ],
       "sections": [
         "Mushroom-related menu searches often use terms such as shrooms, mushrooms, magic mushrooms, psilocybin mushrooms, microdose, and microdosing.",
         "Use the Shrooms category for any currently available mushroom-related listings.",
