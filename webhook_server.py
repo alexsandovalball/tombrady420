@@ -3684,6 +3684,7 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
         product_images = _product_photo_image_urls(product, absolute=True)
         if image and image not in product_images:
             product_images.insert(0, image)
+        primary_image = product_images[0] if product_images else image or _DEFAULT_OG_IMAGE
         product_videos = _product_video_urls(product, absolute=True, limit=6)
         date_published = _schema_date(product.get("created_at"))
         date_modified = _schema_date(product.get("updated_at") or product.get("created_at"), date_published)
@@ -3731,6 +3732,13 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
             product_schema["additionalProperty"] = additional_properties
         if product_images:
             product_schema["image"] = product_images
+        product_schema["primaryImageOfPage"] = {
+            "@type": "ImageObject",
+            "url": primary_image,
+            "contentUrl": primary_image,
+            "caption": schema_name,
+            "representativeOfPage": True,
+        }
         video_nodes = []
         if product_videos:
             thumbnail_url = _product_video_thumbnail_url(product)
@@ -3781,9 +3789,24 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
             "@type": "BreadcrumbList",
             "itemListElement": breadcrumb_items,
         }
+        webpage_schema: dict = {
+            "@type": "WebPage",
+            "@id": product_url,
+            "url": product_url,
+            "name": schema_name,
+            "description": desc,
+            "inLanguage": language,
+            "primaryImageOfPage": {
+                "@type": "ImageObject",
+                "url": primary_image,
+                "contentUrl": primary_image,
+                "caption": schema_name,
+            },
+            "mainEntity": {"@id": product_url, "@type": "Product"},
+        }
         schema = json.dumps({
             "@context": "https://schema.org/",
-            "@graph": [product_schema, *video_nodes, breadcrumb],
+            "@graph": [webpage_schema, product_schema, *video_nodes, breadcrumb],
         }, ensure_ascii=False)
     else:
         schema = json.dumps({
@@ -3824,8 +3847,8 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
         "seo_title": title,
         "seo_desc": desc,
         "seo_image": resolved_image,
-        "seo_image_width": _OG_IMAGE_WIDTH if is_default_image else None,
-        "seo_image_height": _OG_IMAGE_HEIGHT if is_default_image else None,
+        "seo_image_width": _OG_IMAGE_WIDTH if is_default_image else 1200,
+        "seo_image_height": _OG_IMAGE_HEIGHT if is_default_image else 630,
         "seo_url": url,
         "seo_schema": schema,
         "seo_keywords": keywords or default_keywords,
