@@ -4418,8 +4418,9 @@ async def _serve_storefront_index(
     *,
     include_seo_links: bool = False,
     language: str = "en",
+    webapp_shell: bool = False,
 ) -> HTMLResponse:
-    """Render the main storefront index.html with default SEO metadata."""
+    """Render the public storefront homepage or the Telegram WebApp shell."""
     language = _normalize_seo_language(language)
     ui = _seo_ui(language)
     home_path = "/"
@@ -4507,14 +4508,14 @@ async def _serve_storefront_index(
             logger.debug("Failed to build homepage SEO ItemList schema: %s", exc)
     ctx["localized_home_url"] = _localized_path("/", language)
     ctx["localized_learn_url"] = _localized_path("/learn", language)
-    if language != "en":
-        return _render_seo_template(
-            request,
-            "localized_home.html",
-            ctx,
-            cache_key=f"localized-home:{language}:{len(ctx['seo_recent_products'])}:{_newest_lastmod(recent_products, datetime.now().date().isoformat())}",
-        )
-    return templates.TemplateResponse(request, "index.html", context=ctx)
+    if webapp_shell:
+        return templates.TemplateResponse(request, "index.html", context=ctx)
+    return _render_seo_template(
+        request,
+        "localized_home.html",
+        ctx,
+        cache_key=f"localized-home:{language}:{len(ctx['seo_recent_products'])}:{_newest_lastmod(recent_products, datetime.now().date().isoformat())}",
+    )
 
 
 def _product_id_from_query(request: Request) -> Optional[int]:
@@ -4573,13 +4574,11 @@ async def serve_localized_homepage(request: Request):
 async def serve_webapp(request: Request):
     """Serve the WebApp for Telegram Mini Apps.
 
-    This renders the same index.html template as the homepage, but at the
-    /webapp/index.html path that Telegram bots reference via WEB_APP_URL.
-    Keeps backward compatibility with the original webapp path while the
-    clearnet storefront is served at /.
+    This serves the Telegram-style interactive shell only on the explicit
+    WebApp path used by bot deep links.
     """
     _queue_visitor_event(request, source="webapp", page_type="webapp_shell")
-    return await _serve_storefront_index(request)
+    return await _serve_storefront_index(request, webapp_shell=True)
 
 
 @app.get("/learn", response_class=HTMLResponse)
