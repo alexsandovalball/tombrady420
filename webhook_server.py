@@ -5041,6 +5041,7 @@ async def _serve_category_page(category_name: str, request: Request, language: s
     # Build keyword list from category + subcategory names
     subcat_names = ", ".join(subcategories) if subcategories else ""
     seo_terms = await _seo_side_note_terms(matched_category, language=language)
+    public_catalog_bot_url = _public_catalog_bot_url()
     order_context = await _public_order_context(telegram_bot_url=public_catalog_bot_url)
     keywords = ", ".join(filter(None, [
         display_name,
@@ -5092,7 +5093,6 @@ async def _serve_category_page(category_name: str, request: Request, language: s
     ctx["parent_category_url"] = ""
     ctx["seo_intro"] = await _translate_seo_text(build_taxonomy_intro(matched_category, total=total), language)
     ctx["seo_terms"] = seo_terms
-    public_catalog_bot_url = _public_catalog_bot_url()
     ctx["telegram_bot_url"] = public_catalog_bot_url
     ctx["storefront_domain"] = _STOREFRONT_DOMAIN
     ctx["localized_home_url"] = _localized_path("/", language)
