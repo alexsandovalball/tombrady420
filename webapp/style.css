@@ -36,14 +36,12 @@ body::before {
     inset: 0;
     background-image: url("/assets/doodle-background-v2.png");
     background-repeat: repeat;
-    background-size: 520px 520px;
+    background-size: 500px 500px;
     background-position: center;
-    background-color: #171717;
-    opacity: 0.18;
+    background-color: transparent;
     z-index: 0;
     pointer-events: none;
     transform: translateZ(0);
-    will-change: opacity, transform;
 }
 
 .container {
@@ -1123,7 +1121,6 @@ a.btn {
 @media (prefers-color-scheme: dark) {
     body::before {
         background-image: url("/assets/doodle-background-v2.png");
-        opacity: 0.20;
-        background-color: #101114;
+        background-color: transparent;
     }
 }
