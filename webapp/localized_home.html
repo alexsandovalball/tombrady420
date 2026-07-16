@@ -18,6 +18,33 @@
     <script type="application/ld+json">{{ seo_schema | safe }}</script>
     <link rel="icon" type="image/png" href="/og-image.png">
     <link rel="stylesheet" href="/assets/style.css?v=20260716-wallpaper-cannabis-mushroom-v12">
+    <link rel="preconnect" href="https://telegram.org" crossorigin>
+    <link rel="dns-prefetch" href="https://telegram.org">
+    <script>
+        (function () {
+            var isTelegramWebApp = false;
+            try {
+                isTelegramWebApp = !!(window.Telegram && window.Telegram.WebApp);
+            } catch (e) {
+                isTelegramWebApp = false;
+            }
+            if (!isTelegramWebApp) {
+                try {
+                    isTelegramWebApp = window.self !== window.top;
+                } catch (e) {
+                    isTelegramWebApp = true;
+                }
+            }
+            if (!isTelegramWebApp) {
+                var search = (window.location && window.location.search) || "";
+                var hash = (window.location && window.location.hash) || "";
+                isTelegramWebApp = /tgWebApp|tg_web_app|initData/i.test(search + hash);
+            }
+            if (!isTelegramWebApp) return;
+
+            document.write('<script src="https://telegram.org/js/telegram-web-app.js"><\\/script>');
+        })();
+    </script>
     <style>
         html { background: #fff; }
         body { color: var(--tg-theme-text-color, #111); }
@@ -37,17 +64,13 @@
         .home-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin: 1.5rem 0; }
         .home-actions a { min-height: 46px; display: inline-flex; align-items: center; padding: .65rem 1rem; border-radius: 8px; background: #2f9e55; color: #fff; text-decoration: none; font-weight: 700; }
         .home-actions a.secondary { background: #fff; color: #111; border: 1px solid rgba(0,0,0,.14); }
-        .contact-panel, .admin-panel { margin: 1.5rem 0; padding: 1rem; border: 1px solid rgba(0,0,0,.10); border-radius: 8px; background: rgba(255,255,255,.96); }
-        .contact-panel h2, .admin-panel h2 { margin: 0 0 .75rem; font-size: 1.1rem; }
+        .contact-panel { margin: 1.5rem 0; padding: 1rem; border: 1px solid rgba(0,0,0,.10); border-radius: 8px; background: rgba(255,255,255,.96); }
+        .contact-panel h2 { margin: 0 0 .75rem; font-size: 1.1rem; }
         .contact-links { display: flex; flex-wrap: wrap; gap: .5rem; }
         .contact-links a { min-height: 42px; display: inline-flex; align-items: center; gap: .45rem; padding: .6rem .9rem; border-radius: 8px; border: 1px solid rgba(0,0,0,.12); color: #111; text-decoration: none; background: #fff; font-weight: 700; }
         .contact-links a.primary { background: #2f9e55; color: #fff; border-color: #2f9e55; }
         .contact-links svg, .contact-links .icon { width: 16px; height: 16px; flex: 0 0 16px; }
-        .admin-panel[hidden] { display: none; }
-        .admin-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .6rem; }
-        .admin-grid div { padding: .7rem .8rem; border: 1px solid rgba(0,0,0,.08); border-radius: 8px; background: #fff; }
-        .admin-grid strong { display: block; font-size: .8rem; color: #666; font-weight: 600; }
-        .admin-grid span { display: block; font-size: 1rem; font-weight: 700; margin-top: .2rem; }
+        .admin-panel details summary { cursor: pointer; font-weight: 700; margin-bottom: .35rem; }
     </style>
 </head>
 <body>
@@ -92,43 +115,406 @@
                 {% endif %}
             </div>
         </section>
-        <section id="admin-monitor" class="admin-panel" hidden>
-            <h2>Admin Monitor</h2>
-            <div class="admin-grid" id="admin-monitor-grid"></div>
-        </section>
+        <section id="admin-panel" class="admin-panel" hidden aria-live="polite"></section>
     </main>
     <script>
         (function () {
-            var tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
-            if (!tg || !tg.initData) return;
-            var panel = document.getElementById('admin-monitor');
-            var grid = document.getElementById('admin-monitor-grid');
-            if (!panel || !grid) return;
-            fetch('/api/admin/status', {
-                headers: { 'X-Telegram-Init-Data': tg.initData },
-                credentials: 'same-origin'
-            }).then(function (response) {
-                if (!response.ok) return null;
-                return response.json();
-            }).then(function (data) {
-                if (!data || !data.summary) return;
-                panel.hidden = false;
+            var panel = document.getElementById('admin-panel');
+            if (!panel) return;
+
+            var adminState = {
+                sessionReady: false,
+                loading: false,
+                loaded: false,
+                refreshTimer: null
+            };
+
+            function getTelegramApp() {
+                return window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+            }
+
+            function sleep(ms) {
+                return new Promise(function (resolve) {
+                    window.setTimeout(resolve, ms);
+                });
+            }
+
+            async function waitForTelegramInitData() {
+                var tg = getTelegramApp();
+                if (!tg) return { tg: null, initData: '' };
+                try {
+                    if (typeof tg.ready === 'function') tg.ready();
+                    if (typeof tg.expand === 'function') tg.expand();
+                } catch (e) {}
+
+                for (var attempt = 0; attempt < 12; attempt += 1) {
+                    if (tg.initData) {
+                        return { tg: tg, initData: tg.initData };
+                    }
+                    await sleep(250);
+                    tg = getTelegramApp();
+                    if (!tg) break;
+                }
+                return { tg: tg, initData: tg && tg.initData ? tg.initData : '' };
+            }
+
+            function formatCount(value) {
+                var number = Number(value || 0);
+                if (!Number.isFinite(number)) return '0';
+                return number.toLocaleString();
+            }
+
+            function formatMs(value) {
+                var number = Number(value || 0);
+                if (!Number.isFinite(number)) return '0ms';
+                return String(Math.round(number)) + 'ms';
+            }
+
+            function formatPagePath(page) {
+                var value = String(page || '').trim();
+                if (!value) return '/';
+                try {
+                    var url = new URL(value, window.location.origin);
+                    return (url.pathname || '/') + (url.search || '');
+                } catch (err) {
+                    return value.replace(/^https?:\/\/[^/]+/i, '') || value;
+                }
+            }
+
+            function appendMetric(grid, label, value) {
+                var item = document.createElement('div');
+                item.className = 'admin-metric';
+
+                var labelEl = document.createElement('span');
+                labelEl.className = 'admin-metric-label';
+                labelEl.textContent = label;
+
+                var valueEl = document.createElement('strong');
+                valueEl.textContent = value;
+
+                item.append(labelEl, valueEl);
+                grid.appendChild(item);
+            }
+
+            function appendList(section, title, items, formatter, limit) {
+                if (!Array.isArray(items) || !items.length) return;
+
+                var group = document.createElement('div');
+                group.className = 'admin-list-group';
+
+                var heading = document.createElement('h4');
+                heading.textContent = title;
+                group.appendChild(heading);
+
+                var list = document.createElement('ul');
+                items.slice(0, limit || 8).forEach(function (item) {
+                    var li = document.createElement('li');
+                    li.textContent = formatter(item);
+                    list.appendChild(li);
+                });
+
+                group.appendChild(list);
+                section.appendChild(group);
+            }
+
+            function appendDetailsList(section, className, title, noteText, items, buildItem) {
+                if (!Array.isArray(items) || !items.length) return;
+
+                var group = document.createElement('div');
+                group.className = 'admin-list-group ' + className;
+
+                var details = document.createElement('details');
+                details.open = false;
+
+                var summary = document.createElement('summary');
+                summary.textContent = title;
+                details.appendChild(summary);
+
+                if (noteText) {
+                    var note = document.createElement('p');
+                    note.className = 'admin-list-note';
+                    note.textContent = noteText;
+                    details.appendChild(note);
+                }
+
+                var list = document.createElement('ul');
+                list.style.maxHeight = '320px';
+                list.style.overflow = 'auto';
+                list.style.paddingRight = '6px';
+                items.forEach(function (item) {
+                    list.appendChild(buildItem(item));
+                });
+
+                details.appendChild(list);
+                group.appendChild(details);
+                section.appendChild(group);
+            }
+
+            function appendGooglePages(section, seo) {
+                var items = Array.isArray(seo.top_search_console_pages) ? seo.top_search_console_pages : [];
+                if (!items.length) return;
+
+                var totalCount = Number(seo.search_console_pages_window || items.length);
+                appendDetailsList(
+                    section,
+                    'admin-google-pages',
+                    'Google Search Performance Pages (' + formatCount(totalCount) + ')',
+                    'Pages imported from Google Search Console performance data. These are URLs with impressions/clicks, not the full Google index.',
+                    items,
+                    function (item) {
+                        var li = document.createElement('li');
+                        var link = document.createElement('a');
+                        link.href = item.page || '/';
+                        link.target = '_blank';
+                        link.rel = 'noopener';
+                        link.textContent = formatPagePath(item.page);
+
+                        var meta = document.createElement('span');
+                        meta.className = 'admin-page-meta';
+                        meta.textContent =
+                            formatCount(item.clicks) + ' clicks, ' +
+                            formatCount(item.impressions) + ' impressions, ' +
+                            formatCount(item.query_count) + ' queries, avg pos ' +
+                            (item.avg_position || '-') + ', last ' + (item.last_seen || '-');
+
+                        li.append(link, meta);
+                        return li;
+                    }
+                );
+            }
+
+            function appendCrawlablePages(section, snapshot) {
+                var pages = snapshot && Array.isArray(snapshot.pages) ? snapshot.pages : [];
+                if (!pages.length) return;
+
+                appendDetailsList(
+                    section,
+                    'admin-crawlable-pages',
+                    'Current Crawlable Site Pages (' + formatCount(snapshot.total || pages.length) + ')',
+                    'These are the URLs currently generated by the live catalog and sitemap. Google may index fewer until it recrawls them.',
+                    pages,
+                    function (item) {
+                        var li = document.createElement('li');
+                        var link = document.createElement('a');
+                        link.href = item.url || item.path || '/';
+                        link.target = '_blank';
+                        link.rel = 'noopener';
+                        link.textContent = (item.type || 'page') + ': ' + formatPagePath(item.url || item.path);
+
+                        var meta = document.createElement('span');
+                        meta.className = 'admin-page-meta';
+                        meta.textContent = (item.title || 'Untitled') + (item.lastmod ? ', lastmod ' + item.lastmod : '');
+
+                        li.append(link, meta);
+                        return li;
+                    }
+                );
+            }
+
+            function renderAdminPanel(data) {
+                if (!data) return;
+
                 var summary = data.summary || {};
+                var cache = data.cache_state || {};
                 var seo = data.seo || {};
-                var bits = [
-                    ['Products', summary.products],
-                    ['Users 24h', summary.active_users_24h],
-                    ['Website visits 24h', summary.website_visits_24h],
-                    ['WebApp opens 24h', summary.webapp_visits_24h],
-                    ['SEO mappings', summary.seo_query_mappings],
-                    ['Google queries', seo.search_console_queries_window],
-                    ['Google clicks', seo.search_console_clicks_window],
-                    ['Google impressions', seo.search_console_impressions_window]
-                ];
-                grid.innerHTML = bits.map(function (item) {
-                    return '<div><strong>' + item[0] + '</strong><span>' + String(item[1] ?? 0) + '</span></div>';
-                }).join('');
-            }).catch(function () {});
+                var indexnow = data.indexnow || {};
+                var googleSitemap = seo.search_console_sitemap || {};
+                var metrics = data.metrics && data.metrics.endpoints ? data.metrics.endpoints : {};
+                var activeBots = Array.isArray(data.runtime_bots) ? data.runtime_bots.filter(function (bot) {
+                    return bot && bot.username;
+                }) : [];
+                var googleWindowDays = seo.search_console_window_days || 30;
+
+                panel.replaceChildren();
+                panel.hidden = false;
+
+                var header = document.createElement('div');
+                header.className = 'admin-panel-header';
+
+                var title = document.createElement('h3');
+                title.textContent = 'Admin Monitor';
+
+                var meta = document.createElement('span');
+                meta.textContent = data.generated_at
+                    ? 'Updated ' + String(data.generated_at).replace('T', ' ').replace('Z', '')
+                    : 'Live';
+
+                header.append(title, meta);
+                panel.appendChild(header);
+
+                var grid = document.createElement('div');
+                grid.className = 'admin-metric-grid';
+                appendMetric(grid, 'Bots online', formatCount(activeBots.length) + '/' + formatCount(data.configured_bot_count));
+                appendMetric(grid, 'Products', formatCount(summary.products));
+                appendMetric(grid, 'Users 24h', formatCount(summary.active_users_24h));
+                appendMetric(grid, 'Blocked users', formatCount(summary.blocked_users));
+                appendMetric(grid, 'Unique visitors 24h', formatCount(summary.unique_visitors_24h));
+                appendMetric(grid, 'Website visits 24h', formatCount(summary.website_visits_24h));
+                appendMetric(grid, 'WebApp opens 24h', formatCount(summary.webapp_visits_24h));
+                appendMetric(grid, 'Known visitors 24h', formatCount(summary.known_visitor_users_24h));
+                appendMetric(grid, 'Pending notifications', formatCount(summary.pending_notifications));
+                appendMetric(grid, 'WebApp events 24h', formatCount(summary.webapp_events_24h));
+                appendMetric(grid, 'Inline queries 24h', formatCount(summary.inline_queries_24h));
+                appendMetric(grid, 'No-result searches', formatCount(summary.search_no_result_24h));
+                appendMetric(grid, 'SEO mappings', formatCount(summary.seo_query_mappings));
+                appendMetric(grid, 'Google queries ' + googleWindowDays + 'd', formatCount(seo.search_console_queries_window));
+                appendMetric(grid, 'Google pages ' + googleWindowDays + 'd', formatCount(seo.search_console_pages_window));
+                appendMetric(grid, 'Google clicks/impr.', formatCount(seo.search_console_clicks_window) + '/' + formatCount(seo.search_console_impressions_window));
+                appendMetric(grid, 'Google Trends signals', formatCount(seo.google_trends_signals));
+                appendMetric(grid, 'Google sitemap', googleSitemap.status || 'never');
+                appendMetric(grid, 'IndexNow pending', formatCount(indexnow.pending));
+                appendMetric(grid, 'IndexNow sent', formatCount(indexnow.submitted));
+                appendMetric(grid, 'IndexNow failed', formatCount(indexnow.failed));
+                appendMetric(grid, 'IndexNow key', indexnow.key_file_available ? 'Ready' : (indexnow.enabled === false ? 'Off' : 'Pending'));
+                appendMetric(grid, 'Webhook 401 total', formatCount(data.webhook_401_total));
+                appendMetric(grid, 'File ID cache', formatCount(summary.file_id_cache_entries));
+                appendMetric(grid, 'Memory cache', formatCount(cache.api_results));
+                panel.appendChild(grid);
+
+                var latency = document.createElement('div');
+                latency.className = 'admin-latency-row';
+                ['api_products', 'api_categories', 'webhook_401'].forEach(function (name) {
+                    var stat = metrics[name];
+                    if (!stat) return;
+                    var chip = document.createElement('span');
+                    chip.textContent = name + ': avg ' + formatMs(stat.avg_ms) + ' p95 ' + formatMs(stat.p95_ms);
+                    latency.appendChild(chip);
+                });
+                if (latency.childElementCount) {
+                    panel.appendChild(latency);
+                }
+
+                appendList(panel, 'Top Google Searches', seo.top_search_console_queries || [], function (item) {
+                    return String(item.query || 'query') + ': ' + formatCount(item.clicks) + ' clicks, ' + formatCount(item.impressions) + ' impressions, avg pos ' + (item.avg_position || '-');
+                }, 10);
+
+                if (googleSitemap.status) {
+                    appendList(panel, 'Google Sitemap Submission', [googleSitemap], function (item) {
+                        var submitted = item.last_submitted_at ? 'accepted ' + item.last_submitted_at : 'attempt ' + (item.last_attempt_at || 'none yet');
+                        var target = item.sitemap_url || 'sitemap not set';
+                        var note = item.last_error ? ', ' + item.last_error : '';
+                        return item.status + ': ' + submitted + ', ' + target + note;
+                    }, 1);
+                }
+
+                appendList(panel, 'Top Visitor Locations', data.top_visitor_locations || [], function (item) {
+                    var place = [item.city, item.region, item.country].filter(function (part) {
+                        return part && part !== 'Unknown';
+                    }).join(', ') || 'Unknown';
+                    return place + ': ' + formatCount(item.visitors) + ' visitors, ' + formatCount(item.visits) + ' visits';
+                }, 10);
+
+                appendList(panel, 'Top Public Pages', data.top_public_pages || [], function (item) {
+                    return (item.page_type || item.source) + ' ' + String(item.path || '/') + ': ' + formatCount(item.visits) + ' visits, ' + formatCount(item.visitors) + ' visitors';
+                }, 10);
+
+                appendList(panel, 'Visitor Devices', data.visitor_devices || [], function (item) {
+                    return String(item.device_type || 'unknown') + ': ' + formatCount(item.visitors) + ' visitors, ' + formatCount(item.visits) + ' visits';
+                }, 10);
+
+                appendList(panel, 'Recent Search Mappings', seo.recent_mappings || [], function (item) {
+                    var language = String(item.language || 'en').toUpperCase();
+                    var taxonomy = item.category || 'catalog';
+                    if (item.subcategory) taxonomy += ' / ' + item.subcategory;
+                    return '[' + language + '] ' + item.term + ' -> ' + taxonomy;
+                }, 12);
+
+                appendList(panel, 'Recent External Signals', seo.recent_external_signals || [], function (item) {
+                    var taxonomy = item.category || 'catalog';
+                    if (item.subcategory) taxonomy += ' / ' + item.subcategory;
+                    return String(item.provider || 'signal') + ': ' + item.term + ' -> ' + taxonomy;
+                }, 12);
+
+                appendList(panel, 'SEO Mapping Languages', seo.mapping_languages || [], function (item) {
+                    return String(item.language || 'en').toUpperCase() + ': ' + formatCount(item.count) + ' mappings';
+                }, 12);
+
+                appendList(panel, 'Search Languages (30 days)', seo.search_languages_30d || [], function (item) {
+                    return String(item.language || 'en').toUpperCase() + ': ' + formatCount(item.count) + ' searches';
+                }, 12);
+
+                appendList(panel, 'Top Bots By Users', data.bot_user_counts || [], function (item) {
+                    return '@' + String(item.bot_username || 'bot') + ': ' + formatCount(item.users) + ' users, ' + formatCount(item.active_24h) + ' active';
+                }, 12);
+
+                appendList(panel, 'Top WebApp Events', data.webapp_event_counts || [], function (item) {
+                    return String(item.event_type || 'event') + '/' + String(item.action || 'action') + ': ' + formatCount(item.count);
+                }, 12);
+
+                appendGooglePages(panel, seo);
+                appendCrawlablePages(panel, data.crawlable_pages);
+            }
+
+            async function establishWebAppSession(initData) {
+                if (!initData || adminState.sessionReady) {
+                    return adminState.sessionReady;
+                }
+
+                try {
+                    var response = await fetch('/api/webapp-session', {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: { 'X-Telegram-Init-Data': initData }
+                    });
+                    adminState.sessionReady = response.ok;
+                } catch (err) {
+                    adminState.sessionReady = false;
+                }
+                return adminState.sessionReady;
+            }
+
+            async function loadAdminPanel(force) {
+                if (adminState.loading || (!force && adminState.loaded)) return;
+
+                var context = await waitForTelegramInitData();
+                if (!context.tg && !adminState.sessionReady) return;
+
+                adminState.loading = true;
+                try {
+                    await establishWebAppSession(context.initData);
+                    var headers = {};
+                    if (context.initData) {
+                        headers['X-Telegram-Init-Data'] = context.initData;
+                    }
+                    var response = await fetch('/api/admin/status', {
+                        headers: headers,
+                        credentials: 'same-origin'
+                    });
+                    if (!response.ok) {
+                        if (response.status === 403 || response.status === 404) {
+                            adminState.loaded = true;
+                        }
+                        return;
+                    }
+                    var data = await response.json();
+                    adminState.loaded = true;
+                    renderAdminPanel(data);
+                } catch (err) {
+                } finally {
+                    adminState.loading = false;
+                }
+            }
+
+            function startAdminPanelAutoRefresh() {
+                if (adminState.refreshTimer) return;
+                adminState.refreshTimer = window.setInterval(function () {
+                    if (!document.hidden) {
+                        loadAdminPanel(true);
+                    }
+                }, 60000);
+            }
+
+            window.addEventListener('pageshow', function () {
+                loadAdminPanel(false);
+            });
+            document.addEventListener('visibilitychange', function () {
+                if (!document.hidden) {
+                    loadAdminPanel(true);
+                }
+            });
+
+            loadAdminPanel(false);
+            startAdminPanelAutoRefresh();
         })();
     </script>
 </body>

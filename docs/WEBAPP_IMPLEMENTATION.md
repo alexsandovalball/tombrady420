@@ -48,19 +48,28 @@ for read-only catalog and logging paths so open-web product/category pages work.
 
 ## Frontend
 
-`webapp/app.js` drives:
+The storefront now uses the SEO-first HTML templates everywhere, including when
+opened inside Telegram Mini Apps:
+
+```text
+webapp/localized_home.html
+webapp/category.html
+webapp/product.html
+webapp/learn.html
+webapp/learn_index.html
+webapp/style.css
+```
+
+`localized_home.html` contains the Telegram-aware bootstrap for:
 
 - Telegram WebApp user detection
-- category/subcategory browsing
-- direct product deep links
-- product media gallery
-- video preview frame cache
-- session-token based API calls
-- multilingual UI strings
-- WebApp event logging
+- admin monitor loading for signed admin accounts
+- short same-origin session exchange via `/api/webapp-session`
+- home-page catalog and contact presentation inside the shared storefront shell
 
-Category card previews prefer lightweight previews. Full video streams should be
-touched only when a product is opened or the user plays media.
+`category.html` and `product.html` own the main public browsing and media-view
+experience. Category card previews prefer lightweight previews. Full video
+streams should be touched only when a product is opened or the user plays media.
 
 ## Media
 

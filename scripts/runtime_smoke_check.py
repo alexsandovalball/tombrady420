@@ -8,7 +8,7 @@ The script uses only the Python standard library. It focuses on the parts of
 the project that are easiest to accidentally break during refactors:
 
 - core Python files still parse
-- the WebApp admin monitor shell and hooks still exist
+- the unified storefront/WebApp admin monitor shell and hooks still exist
 - the media endpoint route still exists
 - obvious local DB footguns are surfaced early
 """
@@ -45,16 +45,15 @@ def compile_python_files() -> None:
 
 
 def check_webapp_shell() -> None:
-    index_html = (REPO_ROOT / "webapp" / "index.html").read_text(encoding="utf-8")
-    app_js = (REPO_ROOT / "webapp" / "app.js").read_text(encoding="utf-8")
+    localized_home = (REPO_ROOT / "webapp" / "localized_home.html").read_text(encoding="utf-8")
     webhook_server = (REPO_ROOT / "webhook_server.py").read_text(encoding="utf-8")
 
-    require('id="admin-panel"' in index_html, "webapp/index.html is missing #admin-panel")
-    require("loadAdminPanel(" in app_js, "webapp/app.js is missing loadAdminPanel")
-    require("queueAdminPanelRefresh(" in app_js, "webapp/app.js is missing queueAdminPanelRefresh")
-    require("startAdminPanelAutoRefresh(" in app_js, "webapp/app.js is missing startAdminPanelAutoRefresh")
-    require("/api/admin/status" in app_js, "webapp/app.js no longer fetches /api/admin/status")
-    require("/api/webapp-session" in app_js, "webapp/app.js is missing /api/webapp-session session exchange")
+    require('id="admin-panel"' in localized_home, "webapp/localized_home.html is missing #admin-panel")
+    require("loadAdminPanel(" in localized_home, "localized_home.html is missing loadAdminPanel")
+    require("startAdminPanelAutoRefresh(" in localized_home, "localized_home.html is missing startAdminPanelAutoRefresh")
+    require("/api/admin/status" in localized_home, "localized_home.html no longer fetches /api/admin/status")
+    require("/api/webapp-session" in localized_home, "localized_home.html is missing /api/webapp-session session exchange")
+    require("waitForTelegramInitData(" in localized_home, "localized_home.html is missing Telegram initData bootstrap")
     require('@app.get("/api/admin/status")' in webhook_server, "webhook_server.py is missing /api/admin/status")
     require(
         '@app.get("/api/catalog/{product_id}/media/{media_index}")' in webhook_server,
@@ -78,16 +77,16 @@ def _find_node() -> str | None:
     return None
 
 
-def check_webapp_js_parse() -> str:
+def check_storefront_template_presence() -> str:
     node = _find_node()
     if not node:
         return "skipped (node not found)"
 
-    app_js = REPO_ROOT / "webapp" / "app.js"
+    localized_home = REPO_ROOT / "webapp" / "localized_home.html"
     script = (
         "const fs=require('fs');"
-        f"const src=fs.readFileSync({json.dumps(str(app_js))},'utf8');"
-        "new Function(src);"
+        f"const src=fs.readFileSync({json.dumps(str(localized_home))},'utf8');"
+        "if(!src.includes('loadAdminPanel(')) throw new Error('missing admin monitor bootstrap');"
         "process.stdout.write('ok');"
     )
     completed = subprocess.run(
@@ -97,7 +96,9 @@ def check_webapp_js_parse() -> str:
         check=False,
     )
     if completed.returncode != 0:
-        raise AssertionError(f"webapp/app.js parse failed: {completed.stderr.strip() or completed.stdout.strip()}")
+        raise AssertionError(
+            f"localized_home storefront check failed: {completed.stderr.strip() or completed.stdout.strip()}"
+        )
     return "ok"
 
 
@@ -119,12 +120,12 @@ def main() -> int:
 
     compile_python_files()
     check_webapp_shell()
-    js_parse = check_webapp_js_parse()
+    js_parse = check_storefront_template_presence()
     warnings = check_local_db_warning()
 
     print("runtime smoke check passed")
     print(f"  python files: {len(CORE_PY_FILES)} parsed")
-    print(f"  webapp js parse: {js_parse}")
+    print(f"  storefront shell check: {js_parse}")
     if warnings:
         for warning in warnings:
             print(f"  {warning}")
