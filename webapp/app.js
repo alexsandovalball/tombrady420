@@ -1593,12 +1593,16 @@
     }
 
     async function loadAdminPanel(force = false) {
-        if (!tg.initData || state.adminStatusLoading || (!force && state.adminStatusLoaded)) return;
+        if ((!tg.initData && !state.webappSessionReady) || state.adminStatusLoading || (!force && state.adminStatusLoaded)) return;
         state.adminStatusLoading = true;
 
         try {
+            const headers = {};
+            if (tg.initData) {
+                headers['X-Telegram-Init-Data'] = tg.initData;
+            }
             const response = await fetch('/api/admin/status', {
-                headers: { 'X-Telegram-Init-Data': tg.initData },
+                headers,
                 credentials: 'same-origin'
             });
             if (!response.ok) {
@@ -1621,14 +1625,14 @@
     }
 
     function queueAdminPanelRefresh() {
-        if (!tg.initData || !state.userId) return;
+        if (!tg.initData && !state.webappSessionReady) return;
         setTimeout(() => {
             loadAdminPanel(true).catch(err => logger.error('admin_monitor', err.message));
         }, 0);
     }
 
     function startAdminPanelAutoRefresh() {
-        if (!tg.initData || state.adminStatusRefreshTimer) return;
+        if ((!tg.initData && !state.webappSessionReady) || state.adminStatusRefreshTimer) return;
         state.adminStatusRefreshTimer = setInterval(() => {
             if (!document.hidden) {
                 loadAdminPanel(true).catch(err => logger.error('admin_monitor', err.message));
