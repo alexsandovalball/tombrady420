@@ -38,8 +38,8 @@ body::before {
     background-repeat: repeat;
     background-size: 520px 520px;
     background-position: center;
-    background-color: #171717;
-    opacity: 0.18;
+    background-color: transparent;
+    opacity: 0.24;
     z-index: 0;
     pointer-events: none;
     transform: translateZ(0);
@@ -50,7 +50,7 @@ body::before {
     max-width: 720px;
     margin: 0 auto;
     padding: 20px 12px 40px;
-    background-color: var(--tg-theme-bg-color);
+    background-color: rgba(255, 255, 255, 0.88);
     position: relative;
     z-index: 1;
 }
@@ -1123,7 +1123,11 @@ a.btn {
 @media (prefers-color-scheme: dark) {
     body::before {
         background-image: url("/assets/doodle-background-v2.png");
-        opacity: 0.20;
-        background-color: #101114;
+        opacity: 0.28;
+        background-color: transparent;
+    }
+
+    .container {
+        background-color: rgba(17, 19, 24, 0.82);
     }
 }

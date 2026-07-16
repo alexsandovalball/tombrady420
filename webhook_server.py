@@ -4455,14 +4455,17 @@ async def _serve_storefront_index(
     public_catalog_bot_url = _public_catalog_bot_url()
     ctx["seo_recent_products"] = [
         {
+            "id": product.get("id") or product.get("product_id"),
             "title": _caption_parts(product.get("caption") or "")[0],
             "url": _localized_path(_canonical_product_path(product.get("id") or product.get("product_id"), product.get("caption") or ""), language),
             "category": get_category_display_name(product.get("category"), language) if product.get("category") else "",
             "subcategory": get_subcategory_display_name(product.get("subcategory"), language) if product.get("subcategory") else "",
             "image_url": _product_primary_image_url(product, absolute=True) or _DEFAULT_OG_IMAGE,
+            "media_count": len(media_info),
+            "media_info": media_info,
         }
         for product in recent_products
-        if product.get("id") or product.get("product_id")
+        if (media_info := _collect_media_info(product)) and (product.get("id") or product.get("product_id"))
     ]
     ctx.update(await _public_order_context(telegram_bot_url=public_catalog_bot_url))
     if include_seo_links:
@@ -5808,6 +5811,7 @@ async def get_products(
             "created_at": product.get("created_at"),
             "media_count": len(media_info),
             "media_info": media_info,  # Include full media info with types
+            "image_url": _product_primary_image_url(product, absolute=True) or _DEFAULT_OG_IMAGE,
         })
     
     payload = json.dumps({

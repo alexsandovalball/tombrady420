@@ -2700,7 +2700,7 @@
         container.replaceChildren();
     }
 
-    function createVideoPreview(mediaUrl, fallbackContainer, cacheKey = '') {
+    function createVideoPreview(mediaUrl, fallbackContainer, cacheKey = '', fallbackImageUrl = '') {
         const cachedPreview = getVideoPreviewFrame(cacheKey);
         if (cachedPreview) {
             return createPreviewImage(cachedPreview);
@@ -2715,9 +2715,24 @@
         vid.autoplay = true;
         vid.preload = 'auto';
         vid.className = 'video-preview';
+        if (fallbackImageUrl) {
+            vid.poster = fallbackImageUrl;
+        }
 
         let previewLoaded = false;
         let frameCaptured = false;
+        let fallbackShown = false;
+        const useFallbackImage = () => {
+            if (fallbackShown || !fallbackImageUrl || !fallbackContainer) return;
+            fallbackShown = true;
+            const img = createPreviewImage(fallbackImageUrl);
+            img.alt = 'Product preview';
+            if (vid.parentNode) {
+                vid.parentNode.replaceChild(img, vid);
+            } else {
+                fallbackContainer.replaceChildren(img);
+            }
+        };
         const markLoaded = () => {
             if (previewLoaded) return;
             previewLoaded = true;
@@ -2775,17 +2790,20 @@
         }, { once: true });
         vid.onerror = () => {
             if (fallbackContainer) {
+                useFallbackImage();
                 fallbackContainer.classList.add('placeholder');
                 fallbackContainer.textContent = '🎬';
             }
         };
         setTimeout(() => {
-            if (!frameCaptured) {
+            if (!frameCaptured && !fallbackShown) {
+                if (fallbackImageUrl) useFallbackImage();
                 markLoaded();
             }
         }, 1200);
         setTimeout(() => {
-            if (!frameCaptured) {
+            if (!frameCaptured && !fallbackShown) {
+                if (fallbackImageUrl) useFallbackImage();
                 markLoaded();
             }
         }, 2500);
@@ -2835,7 +2853,12 @@
         const mediaUrl = buildMediaUrl(item, mediaIndex);
         if (mediaUrl) {
             if (selectedMediaType === 'video') {
-                const vid = createVideoPreview(mediaUrl, media, videoPreviewCacheKey(item.id, mediaIndex));
+                const vid = createVideoPreview(
+                    mediaUrl,
+                    media,
+                    videoPreviewCacheKey(item.id, mediaIndex),
+                    item.image_url || '/og-image.png'
+                );
                 media.appendChild(vid);
 
                 // Play icon overlay for video cards
