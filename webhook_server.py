@@ -5212,7 +5212,8 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
     page_path = _paginated_path(base_path, current_page)
     page_url = _localized_url(page_path, language)
     seo_terms = await _seo_side_note_terms(matched_category, matched_subcategory, language)
-    order_context = await _public_order_context(telegram_bot_url=deep_link)
+    public_catalog_bot_url = _public_catalog_bot_url()
+    order_context = await _public_order_context(telegram_bot_url=public_catalog_bot_url)
 
     ctx = _build_seo_context(
         title=_build_subcategory_seo_title(category_display, subcategory_display),
@@ -5252,7 +5253,6 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
     ctx["parent_category_url"] = _localized_path(_canonical_category_path(matched_category), language)
     ctx["seo_intro"] = await _translate_seo_text(build_taxonomy_intro(matched_category, matched_subcategory, total=total), language)
     ctx["seo_terms"] = seo_terms
-    public_catalog_bot_url = _public_catalog_bot_url()
     ctx["telegram_bot_url"] = public_catalog_bot_url
     ctx["storefront_domain"] = _STOREFRONT_DOMAIN
     ctx["localized_home_url"] = _localized_path("/", language)

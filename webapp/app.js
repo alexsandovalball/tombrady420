@@ -2708,10 +2708,12 @@
 
         const vid = document.createElement('video');
         vid.src = mediaUrl;
+        vid.crossOrigin = 'anonymous';
         vid.muted = true;
         vid.playsInline = true;
         vid.setAttribute('playsinline', '');
-        vid.preload = 'metadata';
+        vid.autoplay = true;
+        vid.preload = 'auto';
         vid.className = 'video-preview';
 
         let previewLoaded = false;
@@ -2720,6 +2722,7 @@
             if (previewLoaded) return;
             previewLoaded = true;
             vid.classList.add('loaded');
+            vid.style.opacity = '1';
         };
         const capturePreviewFrame = () => {
             if (frameCaptured || !fallbackContainer || !vid.videoWidth || !vid.videoHeight) {
@@ -2753,6 +2756,7 @@
                 markLoaded();
             }
         }, { once: true });
+        vid.addEventListener('canplay', capturePreviewFrame, { once: true });
         vid.addEventListener('seeked', capturePreviewFrame, { once: true });
         vid.addEventListener('loadeddata', () => {
             if (vid.currentTime > 0.05 || !Number.isFinite(vid.duration)) {
@@ -2760,13 +2764,31 @@
                 markLoaded();
             }
         });
+        vid.addEventListener('playing', () => {
+            if (typeof vid.requestVideoFrameCallback === 'function') {
+                try {
+                    vid.requestVideoFrameCallback(() => capturePreviewFrame());
+                } catch (err) {
+                    capturePreviewFrame();
+                }
+            }
+        }, { once: true });
         vid.onerror = () => {
             if (fallbackContainer) {
                 fallbackContainer.classList.add('placeholder');
                 fallbackContainer.textContent = '🎬';
             }
         };
-        setTimeout(markLoaded, 1200);
+        setTimeout(() => {
+            if (!frameCaptured) {
+                markLoaded();
+            }
+        }, 1200);
+        setTimeout(() => {
+            if (!frameCaptured) {
+                markLoaded();
+            }
+        }, 2500);
 
         return vid;
     }
