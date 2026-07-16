@@ -7,6 +7,7 @@ import urllib.parse
 from pathlib import Path
 from typing import List, Optional
 from decouple import config, Csv, UndefinedValueError
+from utils.deeplinks import normalize_webapp_url
 
 logger = logging.getLogger(__name__)
 
@@ -256,9 +257,11 @@ class ConfigClass:
         self.EXTERNAL_SEO_SIGNALS_FILE = config('EXTERNAL_SEO_SIGNALS_FILE', default=None)
         
         # Load WEB_APP_URL - if not set, derive from WEBHOOK_URL (existing behaviour)
-        self.WEB_APP_URL = self._clean_url(config('WEB_APP_URL', default=None), strip_trailing_slash=False)
+        self.WEB_APP_URL = normalize_webapp_url(
+            self._clean_url(config('WEB_APP_URL', default=None), strip_trailing_slash=False)
+        )
         if not self.WEB_APP_URL and self.WEBHOOK_URL:
-            self.WEB_APP_URL = self.WEBHOOK_URL + '/webapp/index.html'
+            self.WEB_APP_URL = normalize_webapp_url(self.WEBHOOK_URL + '/webapp/index.html')
 
         # Load STOREFRONT_DOMAIN - canonical public origin for product deep links.
         # Falls back to CUSTOM_DOMAIN (legacy alias), then derives the origin
@@ -296,7 +299,7 @@ class ConfigClass:
         # Ensure WEB_APP_URL exists (so Telegram MenuButton still works) even
         # when it was not derivable from WEBHOOK_URL above.
         if not self.WEB_APP_URL and self.STOREFRONT_DOMAIN:
-            self.WEB_APP_URL = self.STOREFRONT_DOMAIN.rstrip('/') + '/webapp/index.html'
+            self.WEB_APP_URL = normalize_webapp_url(self.STOREFRONT_DOMAIN.rstrip('/') + '/webapp/index.html')
 
         configured_sitemap_url = config('SEARCH_CONSOLE_SITEMAP_URL', default=None)
         self.SEARCH_CONSOLE_SITEMAP_URL = (

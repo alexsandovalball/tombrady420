@@ -18,6 +18,8 @@ def get_strings():
         "product_categories": "📂 **Product Categories**\n\nSelect a category to browse products:",
         "all_products": "📦 All Products",
         "view_catalog": "📋 View Catalog",
+        "open_shop": "🛍️ Open Shop",
+        "browse_in_bot": "📋 Browse in Bot",
         "resubscribe_notifications": "🔔 Resubscribe to Notifications",
         
         # Category names

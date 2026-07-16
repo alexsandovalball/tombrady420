@@ -11,16 +11,14 @@ from translations.translator import get_translated_string_async
 from translations.language_config import LANGUAGE_DISPLAY, DEFAULT_LANGUAGE
 from utils.helpers import is_admin, get_user_display_name, ADMIN_COMMANDS_FALLBACK, escape_markdown_v1, get_bot_username, get_user_lang_async
 from utils.access_control import is_user_blocked_cached, track_user_debounced
+from utils.webapp_buttons import build_catalog_keyboard, build_welcome_keyboard
 
 logger = logging.getLogger(__name__)
 db = Database()
 
 
 async def _catalog_keyboard(user_lang: str) -> InlineKeyboardMarkup:
-    view_catalog_text = await get_translated_string_async("view_catalog", user_lang)
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(view_catalog_text, callback_data="categories")]
-    ])
+    return await build_catalog_keyboard(user_lang)
 
 
 async def _handle_product_deeplink(
@@ -203,21 +201,7 @@ async def show_welcome_message(update: Update, context: ContextTypes.DEFAULT_TYP
             welcome_text += f"\n\n{user_commands_info}"
 
     # Build keyboard based on subscription status
-    view_catalog_text = await get_translated_string_async("view_catalog", user_lang)
-    change_language_text = await get_translated_string_async("change_language", user_lang)
-    keyboard_buttons = [
-        [InlineKeyboardButton(view_catalog_text, callback_data="categories")],
-        [InlineKeyboardButton(change_language_text, callback_data="open_language_settings")]
-    ]
-
-    # Add resubscribe button only for users who have unsubscribed
-    if not is_subscribed:
-        resubscribe_text = await get_translated_string_async("resubscribe_notifications", user_lang)
-        keyboard_buttons.append(
-            [InlineKeyboardButton(resubscribe_text, callback_data="toggle_notifications")]
-        )
-
-    keyboard = InlineKeyboardMarkup(keyboard_buttons)
+    keyboard = await build_welcome_keyboard(user_lang, is_subscribed=is_subscribed)
 
     await update.message.reply_text(
         welcome_text,

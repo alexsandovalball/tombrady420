@@ -21,6 +21,7 @@ from utils.safe_send import safe_send_message, safe_send_photo, safe_send_video,
 from utils.rate_limiter import RateLimiter
 from utils.primary_instance import is_primary_instance
 from utils.deeplinks import build_bot_product_url, build_webapp_product_url
+from utils.webapp_buttons import build_webapp_button
 from translations.translator import translate_text_async
 from configs.config import Config
 from notifications.constants import (
@@ -164,9 +165,9 @@ class NotificationService:
         keyboard = [
             [InlineKeyboardButton(f"{emojis.VIEW} View Product", callback_data=f"product|{product_id}")],
         ]
-        webapp_url = cls._build_product_webapp_url(product_id)
-        if webapp_url:
-            keyboard.append([InlineKeyboardButton("🛍️ View in WebApp", url=webapp_url)])
+        webapp_button = build_webapp_button("🛍️ Open Shop", product_id=product_id)
+        if webapp_button:
+            keyboard.append([webapp_button])
         keyboard.extend([
             [InlineKeyboardButton(f"{emojis.MENU} View Catalog", callback_data="categories")],
             [InlineKeyboardButton(f"{emojis.MUTED_BELL} Unsubscribe", callback_data="unsubscribe_notifications")],

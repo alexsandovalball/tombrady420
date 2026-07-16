@@ -11,6 +11,7 @@ from translations.translator import get_translated_string_async
 from utils.helpers import is_admin, get_user_display_name, ADMIN_COMMANDS_FALLBACK, escape_markdown_v1, get_user_lang_async
 from utils.safe_send import safe_send_message, safe_edit_message_text
 from utils.access_control import is_user_blocked_cached
+from utils.webapp_buttons import build_welcome_keyboard
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -122,21 +123,7 @@ async def handle_language_callback(update: Update, context: ContextTypes.DEFAULT
             # Use fallback constant
             welcome_text += ADMIN_COMMANDS_FALLBACK
     
-    view_catalog_text = await get_translated_string_async("view_catalog", lang_code)
-    change_language_text = await get_translated_string_async("change_language", lang_code)
-    
-    keyboard_buttons = [
-        [InlineKeyboardButton(view_catalog_text, callback_data="categories")],
-        [InlineKeyboardButton(change_language_text, callback_data="open_language_settings")]
-    ]
-    
-    if not is_subscribed:
-        resubscribe_text = await get_translated_string_async("resubscribe_notifications", lang_code)
-        keyboard_buttons.append(
-            [InlineKeyboardButton(resubscribe_text, callback_data="toggle_notifications")]
-        )
-    
-    keyboard = InlineKeyboardMarkup(keyboard_buttons)
+    keyboard = await build_welcome_keyboard(lang_code, is_subscribed=is_subscribed)
     
     await safe_send_message(
         context.bot,

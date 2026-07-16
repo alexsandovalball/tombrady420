@@ -50,6 +50,7 @@ from utils.helpers import is_admin, get_user_display_name, escape_markdown_v1
 from utils.media_warmer import schedule_product_media_warm
 from utils.notification_manager import get_notification_service
 from utils.safe_send import safe_send_message, safe_edit_message_text
+from utils.webapp_buttons import build_welcome_keyboard
 import emojis
 
 logger = logging.getLogger(__name__)
@@ -189,20 +190,7 @@ async def _handle_setlang_start(update, context, query, user_id, parts):
             welcome_text = await get_translated_string_async(
                 "welcome_with_contact", lang_code, name=display_name, contact=escaped_contact
             )
-            view_catalog_text = await get_translated_string_async("view_catalog", lang_code)
-            change_language_text = await get_translated_string_async("change_language", lang_code)
-            keyboard_buttons = [
-                [InlineKeyboardButton(view_catalog_text, callback_data="categories")],
-                [InlineKeyboardButton(change_language_text, callback_data="open_language_settings")],
-            ]
-            if not is_subscribed:
-                resubscribe_text = await get_translated_string_async(
-                    "resubscribe_notifications", lang_code
-                )
-                keyboard_buttons.append(
-                    [InlineKeyboardButton(resubscribe_text, callback_data="toggle_notifications")]
-                )
-            keyboard = InlineKeyboardMarkup(keyboard_buttons)
+            keyboard = await build_welcome_keyboard(lang_code, is_subscribed=is_subscribed)
             await safe_send_message(
                 context.bot,
                 chat_id=update.effective_chat.id,
