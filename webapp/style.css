@@ -34,7 +34,7 @@ body::before {
     content: '';
     position: fixed;
     inset: 0;
-    background-image: url("/assets/doodle-elements-overlay.png?v=20260716-art-only");
+    background-image: url("/assets/doodle-elements-overlay-strong.png?v=20260716-art-strong");
     background-repeat: repeat;
     background-size: 920px 920px;
     background-position: center top;
