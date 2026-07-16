@@ -172,6 +172,7 @@
         .seo-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: .75rem 1rem; border-radius: 12px; text-decoration: none; font-weight: 700; text-align: center; }
         .seo-btn.primary { background: #2f9e55; color: #fff; }
         .seo-btn.secondary { border: 1px solid var(--border, #ddd); color: var(--text-primary, #111); background: var(--card-bg, #fff); }
+        .seo-btn svg { width: 16px; height: 16px; margin-right: .45rem; flex: 0 0 16px; }
         .term-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: .45rem; margin: .75rem 0 1.25rem; }
         .term-list li { border: 1px solid var(--border, #ddd); border-radius: 999px; padding: .28rem .65rem; color: var(--text-secondary, #666); font-size: .84rem; background: rgba(0, 0, 0, .03); }
         .seo-search-footer { margin-top: 1.75rem; border-top: 1px solid var(--border, #ddd); padding-top: 1rem; }
@@ -271,8 +272,18 @@
 
                 <div class="seo-order-panel">
                     <div class="seo-actions">
-                        {% if order_contact_url %}<a class="seo-btn primary" href="{{ order_contact_url }}">{{ ui.dm_order }}{% if order_contact %}: {{ order_contact }}{% endif %}</a>{% endif %}
-                        {% if telegram_bot_url %}<a class="seo-btn secondary" href="{{ telegram_bot_url }}">{{ ui.open_bot }}</a>{% endif %}
+                        {% for item in contact_channels or [] %}
+                        <a class="seo-btn {% if item.kind == 'telegram' or item.kind == 'bot' %}primary{% else %}secondary{% endif %}" href="{{ item.url }}">
+                            {% if item.kind == 'telegram' %}
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M9.7 15.9 9.3 20c.6 0 .9-.3 1.3-.6l3-2.9 6.2 4.5c1.1.6 1.9.3 2.2-1.1L24 4.8c.3-1.5-.6-2.1-1.7-1.7L1.9 11.7c-1.4.5-1.4 1.3-.2 1.7l5.4 1.7L19.6 6.3c.6-.4 1.1-.2.6.2"/></svg>
+                            {% elif item.kind == 'signal' %}
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 2C6.5 2 2 6.1 2 11.2c0 2.4.9 4.6 2.4 6.2L3.6 22l4.7-1.4c1.2.3 2.4.5 3.7.5 5.5 0 10-4.1 10-9.2S17.5 2 12 2Zm4.9 10.1c0 2.8-2.2 5-4.9 5-1.1 0-2.1-.3-2.9-.9l-3.1.8.8-2.9c-.7-.9-1.1-2-1.1-3.1 0-2.8 2.2-5 4.9-5s6.3 2.2 6.3 5Z"/></svg>
+                            {% else %}
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm-1 6.3c1.8 0 3.3 1.1 4 2.6l-1.8.8c-.4-.9-1.2-1.4-2.2-1.4-1.6 0-2.8 1.2-2.8 2.8s1.2 2.8 2.8 2.8c1 0 1.8-.4 2.2-1.1h-2.1V11h4.7c.1.3.1.7.1 1 0 2.9-2 5-5 5-2.9 0-5.2-2.2-5.2-5s2.4-5.7 5.3-5.7Z"/></svg>
+                            {% endif %}
+                            {{ item.label }}
+                        </a>
+                        {% endfor %}
                     </div>
                 </div>
             </section>

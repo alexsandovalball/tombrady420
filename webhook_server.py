@@ -4418,9 +4418,8 @@ async def _serve_storefront_index(
     *,
     include_seo_links: bool = False,
     language: str = "en",
-    webapp_shell: bool = False,
 ) -> HTMLResponse:
-    """Render the public storefront homepage or the Telegram WebApp shell."""
+    """Render the shared SEO-first storefront homepage."""
     language = _normalize_seo_language(language)
     ui = _seo_ui(language)
     home_path = "/"
@@ -4464,6 +4463,7 @@ async def _serve_storefront_index(
         for product in recent_products
         if product.get("id") or product.get("product_id")
     ]
+    ctx.update(await _public_order_context())
     if include_seo_links:
         try:
             schema = json.loads(ctx.get("seo_schema") or "{}")
@@ -4508,8 +4508,6 @@ async def _serve_storefront_index(
             logger.debug("Failed to build homepage SEO ItemList schema: %s", exc)
     ctx["localized_home_url"] = _localized_path("/", language)
     ctx["localized_learn_url"] = _localized_path("/learn", language)
-    if webapp_shell:
-        return templates.TemplateResponse(request, "index.html", context=ctx)
     return _render_seo_template(
         request,
         "localized_home.html",
@@ -4574,11 +4572,10 @@ async def serve_localized_homepage(request: Request):
 async def serve_webapp(request: Request):
     """Serve the WebApp for Telegram Mini Apps.
 
-    This serves the Telegram-style interactive shell only on the explicit
-    WebApp path used by bot deep links.
+    This now serves the same SEO-first storefront shell as the public site.
     """
     _queue_visitor_event(request, source="webapp", page_type="webapp_shell")
-    return await _serve_storefront_index(request, webapp_shell=True)
+    return await _serve_storefront_index(request, include_seo_links=True)
 
 
 @app.get("/learn", response_class=HTMLResponse)
@@ -5549,19 +5546,99 @@ def _normalize_contact(contact: str) -> str:
     return contact[1:] if contact.startswith("@") else contact
 
 
+def _detect_contact_kind(label: str, url: str) -> str:
+    """Best-effort classification for contact links."""
+    label_l = (label or "").strip().lower()
+    url_l = (url or "").strip().lower()
+    if "signal" in label_l or "signal.me" in url_l or "signal.org" in url_l:
+        return "signal"
+    if "telegram" in label_l or "t.me/" in url_l or "telegram.me" in url_l:
+        return "telegram"
+    if "bot" in label_l or "t.me/" in url_l:
+        return "bot"
+    return "other"
+
+
+def _build_contact_channels(
+    order_contact: str,
+    order_links: list[dict],
+    telegram_bot_url: str = "",
+) -> Dict[str, Any]:
+    """Normalize contact settings into the public channels the UI needs."""
+    order_contact_username = _normalize_contact(order_contact)
+    telegram_contact_url = f"https://t.me/{order_contact_username}" if order_contact_username else ""
+
+    signal_contact = next(
+        (
+            {
+                "label": str(item.get("label") or "Signal")[:40],
+                "url": str(item.get("url") or "")[:500],
+            }
+            for item in order_links or []
+            if item.get("url") and _detect_contact_kind(str(item.get("label") or ""), str(item.get("url") or "")) == "signal"
+        ),
+        None,
+    )
+    telegram_link = next(
+        (
+            {
+                "label": str(item.get("label") or "Telegram")[:40],
+                "url": str(item.get("url") or "")[:500],
+            }
+            for item in order_links or []
+            if item.get("url") and _detect_contact_kind(str(item.get("label") or ""), str(item.get("url") or "")) == "telegram"
+        ),
+        None,
+    )
+
+    bot_link = {
+        "label": "Open in Telegram",
+        "url": telegram_bot_url or "",
+    }
+
+    cards: list[dict[str, str]] = []
+    if telegram_link and telegram_link["url"]:
+        cards.append({"kind": "telegram", **telegram_link})
+    elif telegram_contact_url:
+        cards.append({"kind": "telegram", "label": f"Telegram @{order_contact_username}", "url": telegram_contact_url})
+    if signal_contact and signal_contact["url"]:
+        cards.append({"kind": "signal", **signal_contact})
+    if bot_link["url"]:
+        cards.append({"kind": "bot", **bot_link})
+
+    # Preserve any additional non-duplicate links for the home page footer.
+    extra_links = []
+    seen_urls = {item["url"] for item in cards if item.get("url")}
+    for item in order_links or []:
+        label = str(item.get("label") or "Contact")[:40]
+        url = str(item.get("url") or "")[:500]
+        if not url or url in seen_urls:
+            continue
+        extra_links.append({"label": label, "url": url})
+        seen_urls.add(url)
+
+    return {
+        "order_contact_username": order_contact_username,
+        "telegram_contact_url": telegram_contact_url,
+        "signal_contact": signal_contact,
+        "telegram_link": telegram_link,
+        "bot_link": bot_link,
+        "cards": cards,
+        "extra_links": extra_links,
+    }
+
+
 async def _public_order_context() -> Dict[str, Any]:
     """Return public order/contact links while keeping /setcontact separate from /setlink."""
     order_contact = await _catalog_db.get_order_contact()
     order_links = await _catalog_db.get_order_links()
-    order_contact_username = _normalize_contact(order_contact)
-    order_contact_url = f"https://t.me/{order_contact_username}" if order_contact_username else ""
+    channels = _build_contact_channels(order_contact, order_links)
     clean_links = [
         {
             "label": str(item.get("label") or "Contact")[:40],
             "url": str(item.get("url") or "")[:500],
         }
-        for item in order_links or []
-        if item.get("url")
+        for item in channels["extra_links"]
     ]
     fingerprint = hashlib.sha256(
         json.dumps(
@@ -5575,8 +5652,13 @@ async def _public_order_context() -> Dict[str, Any]:
     ).hexdigest()[:12]
     return {
         "order_contact": order_contact,
-        "order_contact_username": order_contact_username,
-        "order_contact_url": order_contact_url,
+        "order_contact_username": channels["order_contact_username"],
+        "order_contact_url": channels["telegram_contact_url"],
+        "contact_channels": channels["cards"],
+        "telegram_contact_url": channels["telegram_contact_url"],
+        "signal_contact": channels["signal_contact"],
+        "telegram_link": channels["telegram_link"],
+        "bot_link": channels["bot_link"],
         "order_links": clean_links,
         "order_fingerprint": fingerprint,
     }
