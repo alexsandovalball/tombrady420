@@ -10,7 +10,7 @@ This module provides robust wrappers that:
 import logging
 import asyncio
 import random
-from typing import Optional, Any, Callable, Dict, Tuple
+from typing import Optional, Any
 from html import escape as escape_html
 from telegram import Bot, Message, Update
 from telegram.error import TelegramError, BadRequest, Forbidden, RetryAfter
@@ -113,75 +113,96 @@ async def handle_send_exception(exception: Exception, user_id: int, operation: s
     return False
 
 
-async def _execute_with_fallback(
+def _normalize_parse_mode(parse_mode: Optional[str]) -> Optional[str]:
+    """Return a supported parse mode or a conservative fallback."""
+    if parse_mode and parse_mode.upper() not in {"HTML", "MARKDOWN", "MARKDOWNV2"}:
+        logger.warning(f"[Safe Send] Unknown parse_mode '{parse_mode}', falling back to Markdown")
+        return "Markdown"
+    return parse_mode
+
+
+def _retry_delay_seconds(retry_after: float) -> float:
+    """Apply bounded jitter to Telegram RetryAfter values."""
+    delay = max(MIN_RETRY_DELAY, retry_after)
+    jitter = delay * JITTER_RANGE * (2 * random.random() - 1)
+    return max(MIN_RETRY_DELAY, delay + jitter)
+
+
+def _is_entity_parsing_error(error_msg: str) -> bool:
+    """Return True when Telegram rejected malformed formatting entities."""
+    lowered = str(error_msg).lower()
+    return "can't find end of the entity" in lowered or "can't parse entities" in lowered
+
+
+async def _safe_send_media_with_caption(
+    bot: Bot,
+    *,
     operation: str,
+    method_name: str,
+    media_arg_name: str,
+    media_value: Any,
     chat_id: int,
-    telegram_call: Callable,
-    text_or_caption: Optional[str],
+    caption: Optional[str],
     parse_mode: Optional[str],
-    retry_count: int = 0
+    **kwargs,
 ) -> Optional[Message]:
-    """
-    Internal executor for Telegram operations with fallback and rate limiting.
-    
-    This is the centralized handler that:
-    1. Executes the Telegram API call
-    2. Handles rate limiting (429/RetryAfter) with bounded retries
-    3. Falls back through parse modes on entity errors (original -> escaped -> plain)
-    4. Triggers user cleanup for unreachable accounts
-    
-    Args:
-        operation: Operation name for logging (e.g., "send_message", "send_photo")
-        chat_id: Target chat ID
-        telegram_call: Async callable that executes the Telegram API call
-        text_or_caption: Text or caption to process (None for media-only)
-        parse_mode: Current parse mode to use
-        retry_count: Current retry attempt (for rate limiting)
-        
-    Returns:
-        Message object on success, None on failure
-    """
+    """Shared implementation for photo/video/animation/document sends."""
+    parse_mode = _normalize_parse_mode(parse_mode)
+    method = getattr(bot, method_name)
+    media_kwargs = {media_arg_name: media_value, **kwargs}
+
+    async def attempt_send(
+        current_caption: Optional[str],
+        current_parse_mode: Optional[str],
+        retry_count: int = 0,
+    ) -> Optional[Message]:
+        try:
+            return await method(
+                chat_id=chat_id,
+                caption=current_caption,
+                parse_mode=current_parse_mode,
+                **media_kwargs,
+            )
+        except RetryAfter as e:
+            if retry_count >= MAX_RETRIES:
+                logger.warning(f"[Safe Send] Rate limit max retries ({MAX_RETRIES}) exceeded for {operation} to chat {chat_id}")
+                return None
+            if e.retry_after > MAX_RETRY_DELAY:
+                logger.warning(f"[Safe Send] Rate limit delay too long ({e.retry_after}s) for {operation} to chat {chat_id}")
+                return None
+
+            total_delay = _retry_delay_seconds(e.retry_after)
+            logger.info(f"[Safe Send] Rate limited, retrying {operation} to chat {chat_id} in {total_delay:.2f}s")
+            await asyncio.sleep(total_delay)
+            return await attempt_send(current_caption, current_parse_mode, retry_count + 1)
+
     try:
-        logger.debug(f"[Safe Send] {operation} to chat {chat_id}, parse_mode={parse_mode}, retry={retry_count}")
-        return await telegram_call()
-        
-    except RetryAfter as e:
-        # Handle Telegram rate limiting (429)
-        if retry_count >= MAX_RETRIES:
-            logger.warning(f"[Safe Send] Rate limit max retries ({MAX_RETRIES}) exceeded for {operation} to chat {chat_id}")
-            return None
-        
-        # Use server-specified delay with bounded limits and jitter
-        delay = max(MIN_RETRY_DELAY, min(e.retry_after, MAX_RETRY_DELAY))
-        jitter = delay * JITTER_RANGE * (2 * random.random() - 1)  # +/- JITTER_RANGE
-        total_delay = delay + jitter
-        
-        logger.info(f"[Safe Send] Rate limited (429) for {operation} to chat {chat_id}, "
-                   f"retrying in {total_delay:.2f}s (attempt {retry_count + 1}/{MAX_RETRIES})")
-        
-        await asyncio.sleep(total_delay)
-        return await _execute_with_fallback(
-            operation, chat_id, telegram_call, text_or_caption, parse_mode, retry_count + 1
-        )
-        
+        return await attempt_send(caption, parse_mode)
     except BadRequest as e:
-        error_msg = str(e).lower()
-        
-        # Check if this is an entity parsing error that we can fix
-        if text_or_caption and ("can't find end of the entity" in error_msg or "can't parse entities" in error_msg):
-            logger.warning(f"[Safe Send] Entity parsing error for {operation} to chat {chat_id}, attempting fallback")
-            # Return None to signal wrapper to try escaped/plain text fallback
-            return None
-        else:
-            # Not a parsing error, check if user should be removed
-            await handle_send_exception(e, chat_id, operation)
-            return None
-            
-    except (Forbidden, TelegramError) as e:
-        # Handle other Telegram errors (user blocked, deactivated, etc.)
+        if caption and _is_entity_parsing_error(str(e)):
+            logger.warning(f"[Safe Send] Caption parsing error for {operation} to chat {chat_id}, attempting fallback")
+
+            if parse_mode:
+                try:
+                    escaped_caption = escape_text_for_parse_mode(caption, parse_mode)
+                    logger.debug(f"[Safe Send] Fallback stage 1: escaped caption with {parse_mode}")
+                    return await attempt_send(escaped_caption, parse_mode)
+                except (BadRequest, TelegramError):
+                    logger.warning(f"[Safe Send] Escaped caption failed for {operation} to chat {chat_id}, trying plain caption")
+
+            try:
+                logger.debug("[Safe Send] Fallback stage 2: plain caption (no parse_mode)")
+                return await attempt_send(caption, None)
+            except Exception as final_error:
+                logger.error(f"[Safe Send] All {operation} attempts failed for chat {chat_id}: {final_error}", exc_info=True)
+                await handle_send_exception(final_error, chat_id, operation)
+                return None
+
         await handle_send_exception(e, chat_id, operation)
         return None
-        
+    except (Forbidden, TelegramError) as e:
+        await handle_send_exception(e, chat_id, operation)
+        return None
     except Exception as e:
         logger.error(f"[Safe Send] Unexpected error in {operation} to chat {chat_id}: {e}", exc_info=True)
         return None
@@ -212,9 +233,7 @@ async def safe_send_message(
         Message object on success, None on failure
     """
     # Validate and normalize parse_mode
-    if parse_mode and parse_mode.upper() not in ["HTML", "MARKDOWN", "MARKDOWNV2"]:
-        logger.warning(f"[Safe Send] Unknown parse_mode '{parse_mode}', falling back to Markdown")
-        parse_mode = "Markdown"
+    parse_mode = _normalize_parse_mode(parse_mode)
     
     # Attempt 1: Original text with specified parse_mode
     try:
@@ -321,9 +340,7 @@ async def safe_edit_message_text(
         Message object on success, None on failure
     """
     # Validate and normalize parse_mode
-    if parse_mode and parse_mode.upper() not in ["HTML", "MARKDOWN", "MARKDOWNV2"]:
-        logger.warning(f"[Safe Send] Unknown parse_mode '{parse_mode}', falling back to Markdown")
-        parse_mode = "Markdown"
+    parse_mode = _normalize_parse_mode(parse_mode)
     
     # Attempt 1: Original text with specified parse_mode
     try:
@@ -440,90 +457,17 @@ async def safe_send_photo(
     Returns:
         Message object on success, None on failure
     """
-    # Validate and normalize parse_mode
-    if parse_mode and parse_mode.upper() not in ["HTML", "MARKDOWN", "MARKDOWNV2"]:
-        logger.warning(f"[Safe Send] Unknown parse_mode '{parse_mode}', falling back to Markdown")
-        parse_mode = "Markdown"
-    
-    # Attempt 1: Original caption with specified parse_mode
-    try:
-        return await bot.send_photo(
-            chat_id=chat_id,
-            photo=photo,
-            caption=caption,
-            parse_mode=parse_mode,
-            **kwargs
-        )
-    except RetryAfter as e:
-        # Handle rate limiting
-        if e.retry_after > MAX_RETRY_DELAY:
-            logger.warning(f"[Safe Send] Rate limit delay too long ({e.retry_after}s) for send_photo to chat {chat_id}")
-            return None
-        
-        delay = max(MIN_RETRY_DELAY, e.retry_after)
-        jitter = delay * JITTER_RANGE * (2 * random.random() - 1)  # +/- JITTER_RANGE as percentage
-        total_delay = max(MIN_RETRY_DELAY, delay + jitter)  # Ensure delay is always >= MIN_RETRY_DELAY
-        logger.info(f"[Safe Send] Rate limited, retrying send_photo to chat {chat_id} in {total_delay:.2f}s")
-        await asyncio.sleep(total_delay)
-        
-        try:
-            return await bot.send_photo(
-                chat_id=chat_id, photo=photo, caption=caption, parse_mode=parse_mode, **kwargs
-            )
-        except Exception as retry_error:
-            logger.error(f"[Safe Send] Retry failed for send_photo to chat {chat_id}: {retry_error}", exc_info=True)
-            await handle_send_exception(retry_error, chat_id, "send_photo")
-            return None
-            
-    except BadRequest as e:
-        error_msg = str(e).lower()
-        
-        # Check if this is a caption parsing error
-        if caption and ("can't find end of the entity" in error_msg or "can't parse entities" in error_msg):
-            logger.warning(f"[Safe Send] Caption parsing error for send_photo to chat {chat_id}, attempting fallback")
-            
-            # Attempt 2: Escaped caption with same parse_mode
-            if parse_mode:
-                try:
-                    escaped_caption = escape_text_for_parse_mode(caption, parse_mode)
-                    logger.debug(f"[Safe Send] Fallback stage 1: escaped caption with {parse_mode}")
-                    return await bot.send_photo(
-                        chat_id=chat_id,
-                        photo=photo,
-                        caption=escaped_caption,
-                        parse_mode=parse_mode,
-                        **kwargs
-                    )
-                except (BadRequest, TelegramError) as retry_error:
-                    logger.warning(f"[Safe Send] Escaped caption failed for send_photo to chat {chat_id}, trying plain caption")
-            
-            # Attempt 3: Plain caption with no parse_mode
-            try:
-                logger.debug(f"[Safe Send] Fallback stage 2: plain caption (no parse_mode)")
-                return await bot.send_photo(
-                    chat_id=chat_id,
-                    photo=photo,
-                    caption=caption,
-                    parse_mode=None,
-                    **kwargs
-                )
-            except Exception as final_error:
-                logger.error(f"[Safe Send] All send_photo attempts failed for chat {chat_id}: {final_error}", exc_info=True)
-                await handle_send_exception(final_error, chat_id, "send_photo")
-                return None
-        else:
-            # Not a parsing error, check if user should be removed
-            await handle_send_exception(e, chat_id, "send_photo")
-            return None
-            
-    except (Forbidden, TelegramError) as e:
-        # Handle other Telegram errors
-        await handle_send_exception(e, chat_id, "send_photo")
-        return None
-        
-    except Exception as e:
-        logger.error(f"[Safe Send] Unexpected error in send_photo to chat {chat_id}: {e}", exc_info=True)
-        return None
+    return await _safe_send_media_with_caption(
+        bot,
+        operation="send_photo",
+        method_name="send_photo",
+        media_arg_name="photo",
+        media_value=photo,
+        chat_id=chat_id,
+        caption=caption,
+        parse_mode=parse_mode,
+        **kwargs,
+    )
 
 
 async def safe_send_video(
@@ -552,90 +496,17 @@ async def safe_send_video(
     Returns:
         Message object on success, None on failure
     """
-    # Validate and normalize parse_mode
-    if parse_mode and parse_mode.upper() not in ["HTML", "MARKDOWN", "MARKDOWNV2"]:
-        logger.warning(f"[Safe Send] Unknown parse_mode '{parse_mode}', falling back to Markdown")
-        parse_mode = "Markdown"
-    
-    # Attempt 1: Original caption with specified parse_mode
-    try:
-        return await bot.send_video(
-            chat_id=chat_id,
-            video=video,
-            caption=caption,
-            parse_mode=parse_mode,
-            **kwargs
-        )
-    except RetryAfter as e:
-        # Handle rate limiting
-        if e.retry_after > MAX_RETRY_DELAY:
-            logger.warning(f"[Safe Send] Rate limit delay too long ({e.retry_after}s) for send_video to chat {chat_id}")
-            return None
-        
-        delay = max(MIN_RETRY_DELAY, e.retry_after)
-        jitter = delay * JITTER_RANGE * (2 * random.random() - 1)  # +/- JITTER_RANGE as percentage
-        total_delay = max(MIN_RETRY_DELAY, delay + jitter)  # Ensure delay is always >= MIN_RETRY_DELAY
-        logger.info(f"[Safe Send] Rate limited, retrying send_video to chat {chat_id} in {total_delay:.2f}s")
-        await asyncio.sleep(total_delay)
-        
-        try:
-            return await bot.send_video(
-                chat_id=chat_id, video=video, caption=caption, parse_mode=parse_mode, **kwargs
-            )
-        except Exception as retry_error:
-            logger.error(f"[Safe Send] Retry failed for send_video to chat {chat_id}: {retry_error}", exc_info=True)
-            await handle_send_exception(retry_error, chat_id, "send_video")
-            return None
-            
-    except BadRequest as e:
-        error_msg = str(e).lower()
-        
-        # Check if this is a caption parsing error
-        if caption and ("can't find end of the entity" in error_msg or "can't parse entities" in error_msg):
-            logger.warning(f"[Safe Send] Caption parsing error for send_video to chat {chat_id}, attempting fallback")
-            
-            # Attempt 2: Escaped caption with same parse_mode
-            if parse_mode:
-                try:
-                    escaped_caption = escape_text_for_parse_mode(caption, parse_mode)
-                    logger.debug(f"[Safe Send] Fallback stage 1: escaped caption with {parse_mode}")
-                    return await bot.send_video(
-                        chat_id=chat_id,
-                        video=video,
-                        caption=escaped_caption,
-                        parse_mode=parse_mode,
-                        **kwargs
-                    )
-                except (BadRequest, TelegramError) as retry_error:
-                    logger.warning(f"[Safe Send] Escaped caption failed for send_video to chat {chat_id}, trying plain caption")
-            
-            # Attempt 3: Plain caption with no parse_mode
-            try:
-                logger.debug(f"[Safe Send] Fallback stage 2: plain caption (no parse_mode)")
-                return await bot.send_video(
-                    chat_id=chat_id,
-                    video=video,
-                    caption=caption,
-                    parse_mode=None,
-                    **kwargs
-                )
-            except Exception as final_error:
-                logger.error(f"[Safe Send] All send_video attempts failed for chat {chat_id}: {final_error}", exc_info=True)
-                await handle_send_exception(final_error, chat_id, "send_video")
-                return None
-        else:
-            # Not a parsing error, check if user should be removed
-            await handle_send_exception(e, chat_id, "send_video")
-            return None
-            
-    except (Forbidden, TelegramError) as e:
-        # Handle other Telegram errors
-        await handle_send_exception(e, chat_id, "send_video")
-        return None
-        
-    except Exception as e:
-        logger.error(f"[Safe Send] Unexpected error in send_video to chat {chat_id}: {e}", exc_info=True)
-        return None
+    return await _safe_send_media_with_caption(
+        bot,
+        operation="send_video",
+        method_name="send_video",
+        media_arg_name="video",
+        media_value=video,
+        chat_id=chat_id,
+        caption=caption,
+        parse_mode=parse_mode,
+        **kwargs,
+    )
 
 
 async def safe_send_animation(
@@ -664,90 +535,17 @@ async def safe_send_animation(
     Returns:
         Message object on success, None on failure
     """
-    # Validate and normalize parse_mode
-    if parse_mode and parse_mode.upper() not in ["HTML", "MARKDOWN", "MARKDOWNV2"]:
-        logger.warning(f"[Safe Send] Unknown parse_mode '{parse_mode}', falling back to Markdown")
-        parse_mode = "Markdown"
-    
-    # Attempt 1: Original caption with specified parse_mode
-    try:
-        return await bot.send_animation(
-            chat_id=chat_id,
-            animation=animation,
-            caption=caption,
-            parse_mode=parse_mode,
-            **kwargs
-        )
-    except RetryAfter as e:
-        # Handle rate limiting
-        if e.retry_after > MAX_RETRY_DELAY:
-            logger.warning(f"[Safe Send] Rate limit delay too long ({e.retry_after}s) for send_animation to chat {chat_id}")
-            return None
-        
-        delay = max(MIN_RETRY_DELAY, e.retry_after)
-        jitter = delay * JITTER_RANGE * (2 * random.random() - 1)  # +/- JITTER_RANGE as percentage
-        total_delay = max(MIN_RETRY_DELAY, delay + jitter)  # Ensure delay is always >= MIN_RETRY_DELAY
-        logger.info(f"[Safe Send] Rate limited, retrying send_animation to chat {chat_id} in {total_delay:.2f}s")
-        await asyncio.sleep(total_delay)
-        
-        try:
-            return await bot.send_animation(
-                chat_id=chat_id, animation=animation, caption=caption, parse_mode=parse_mode, **kwargs
-            )
-        except Exception as retry_error:
-            logger.error(f"[Safe Send] Retry failed for send_animation to chat {chat_id}: {retry_error}", exc_info=True)
-            await handle_send_exception(retry_error, chat_id, "send_animation")
-            return None
-            
-    except BadRequest as e:
-        error_msg = str(e).lower()
-        
-        # Check if this is a caption parsing error
-        if caption and ("can't find end of the entity" in error_msg or "can't parse entities" in error_msg):
-            logger.warning(f"[Safe Send] Caption parsing error for send_animation to chat {chat_id}, attempting fallback")
-            
-            # Attempt 2: Escaped caption with same parse_mode
-            if parse_mode:
-                try:
-                    escaped_caption = escape_text_for_parse_mode(caption, parse_mode)
-                    logger.debug(f"[Safe Send] Fallback stage 1: escaped caption with {parse_mode}")
-                    return await bot.send_animation(
-                        chat_id=chat_id,
-                        animation=animation,
-                        caption=escaped_caption,
-                        parse_mode=parse_mode,
-                        **kwargs
-                    )
-                except (BadRequest, TelegramError) as retry_error:
-                    logger.warning(f"[Safe Send] Escaped caption failed for send_animation to chat {chat_id}, trying plain caption")
-            
-            # Attempt 3: Plain caption with no parse_mode
-            try:
-                logger.debug(f"[Safe Send] Fallback stage 2: plain caption (no parse_mode)")
-                return await bot.send_animation(
-                    chat_id=chat_id,
-                    animation=animation,
-                    caption=caption,
-                    parse_mode=None,
-                    **kwargs
-                )
-            except Exception as final_error:
-                logger.error(f"[Safe Send] All send_animation attempts failed for chat {chat_id}: {final_error}", exc_info=True)
-                await handle_send_exception(final_error, chat_id, "send_animation")
-                return None
-        else:
-            # Not a parsing error, check if user should be removed
-            await handle_send_exception(e, chat_id, "send_animation")
-            return None
-            
-    except (Forbidden, TelegramError) as e:
-        # Handle other Telegram errors
-        await handle_send_exception(e, chat_id, "send_animation")
-        return None
-        
-    except Exception as e:
-        logger.error(f"[Safe Send] Unexpected error in send_animation to chat {chat_id}: {e}", exc_info=True)
-        return None
+    return await _safe_send_media_with_caption(
+        bot,
+        operation="send_animation",
+        method_name="send_animation",
+        media_arg_name="animation",
+        media_value=animation,
+        chat_id=chat_id,
+        caption=caption,
+        parse_mode=parse_mode,
+        **kwargs,
+    )
 
 
 async def safe_send_document(
@@ -776,90 +574,17 @@ async def safe_send_document(
     Returns:
         Message object on success, None on failure
     """
-    # Validate and normalize parse_mode
-    if parse_mode and parse_mode.upper() not in ["HTML", "MARKDOWN", "MARKDOWNV2"]:
-        logger.warning(f"[Safe Send] Unknown parse_mode '{parse_mode}', falling back to Markdown")
-        parse_mode = "Markdown"
-    
-    # Attempt 1: Original caption with specified parse_mode
-    try:
-        return await bot.send_document(
-            chat_id=chat_id,
-            document=document,
-            caption=caption,
-            parse_mode=parse_mode,
-            **kwargs
-        )
-    except RetryAfter as e:
-        # Handle rate limiting
-        if e.retry_after > MAX_RETRY_DELAY:
-            logger.warning(f"[Safe Send] Rate limit delay too long ({e.retry_after}s) for send_document to chat {chat_id}")
-            return None
-        
-        delay = max(MIN_RETRY_DELAY, e.retry_after)
-        jitter = delay * JITTER_RANGE * (2 * random.random() - 1)  # +/- JITTER_RANGE as percentage
-        total_delay = max(MIN_RETRY_DELAY, delay + jitter)  # Ensure delay is always >= MIN_RETRY_DELAY
-        logger.info(f"[Safe Send] Rate limited, retrying send_document to chat {chat_id} in {total_delay:.2f}s")
-        await asyncio.sleep(total_delay)
-        
-        try:
-            return await bot.send_document(
-                chat_id=chat_id, document=document, caption=caption, parse_mode=parse_mode, **kwargs
-            )
-        except Exception as retry_error:
-            logger.error(f"[Safe Send] Retry failed for send_document to chat {chat_id}: {retry_error}", exc_info=True)
-            await handle_send_exception(retry_error, chat_id, "send_document")
-            return None
-            
-    except BadRequest as e:
-        error_msg = str(e).lower()
-        
-        # Check if this is a caption parsing error
-        if caption and ("can't find end of the entity" in error_msg or "can't parse entities" in error_msg):
-            logger.warning(f"[Safe Send] Caption parsing error for send_document to chat {chat_id}, attempting fallback")
-            
-            # Attempt 2: Escaped caption with same parse_mode
-            if parse_mode:
-                try:
-                    escaped_caption = escape_text_for_parse_mode(caption, parse_mode)
-                    logger.debug(f"[Safe Send] Fallback stage 1: escaped caption with {parse_mode}")
-                    return await bot.send_document(
-                        chat_id=chat_id,
-                        document=document,
-                        caption=escaped_caption,
-                        parse_mode=parse_mode,
-                        **kwargs
-                    )
-                except (BadRequest, TelegramError) as retry_error:
-                    logger.warning(f"[Safe Send] Escaped caption failed for send_document to chat {chat_id}, trying plain caption")
-            
-            # Attempt 3: Plain caption with no parse_mode
-            try:
-                logger.debug(f"[Safe Send] Fallback stage 2: plain caption (no parse_mode)")
-                return await bot.send_document(
-                    chat_id=chat_id,
-                    document=document,
-                    caption=caption,
-                    parse_mode=None,
-                    **kwargs
-                )
-            except Exception as final_error:
-                logger.error(f"[Safe Send] All send_document attempts failed for chat {chat_id}: {final_error}", exc_info=True)
-                await handle_send_exception(final_error, chat_id, "send_document")
-                return None
-        else:
-            # Not a parsing error, check if user should be removed
-            await handle_send_exception(e, chat_id, "send_document")
-            return None
-            
-    except (Forbidden, TelegramError) as e:
-        # Handle other Telegram errors
-        await handle_send_exception(e, chat_id, "send_document")
-        return None
-        
-    except Exception as e:
-        logger.error(f"[Safe Send] Unexpected error in send_document to chat {chat_id}: {e}", exc_info=True)
-        return None
+    return await _safe_send_media_with_caption(
+        bot,
+        operation="send_document",
+        method_name="send_document",
+        media_arg_name="document",
+        media_value=document,
+        chat_id=chat_id,
+        caption=caption,
+        parse_mode=parse_mode,
+        **kwargs,
+    )
 
 
 async def handle_handler_error(

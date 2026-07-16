@@ -479,6 +479,176 @@ def _is_media_temp_in_use(path: Path) -> bool:
     return _media_active_streams.get(path, 0) > 0
 
 
+def _resolve_product_media_message_id(product: dict[str, Any], product_id: int, media_index: int) -> Any:
+    """Return the Telegram message id that owns the requested media item."""
+    source_message_id = product.get("message_id")
+    if media_index <= 0:
+        return source_message_id
+
+    additional_message_ids_json = product.get("additional_message_ids")
+    if not additional_message_ids_json:
+        return source_message_id
+
+    try:
+        additional_message_ids = json.loads(additional_message_ids_json)
+        if media_index - 1 < len(additional_message_ids):
+            return additional_message_ids[media_index - 1]
+    except (json.JSONDecodeError, TypeError, IndexError) as exc:
+        logger.warning(
+            "Failed to parse additional_message_ids JSON for product %s, media_index %s. Data: %s. Error: %s",
+            product_id,
+            media_index,
+            additional_message_ids_json,
+            exc,
+        )
+    return source_message_id
+
+
+async def _resolve_bot_specific_media_file_id(
+    *,
+    bot: Any,
+    source_chat_id: Any,
+    source_message_id: Any,
+    file_type: str,
+    file_id: str,
+    product_id: int,
+    media_index: int,
+) -> str:
+    """Resolve the current bot's compatible file_id when possible."""
+    if not source_chat_id or not source_message_id:
+        logger.debug(
+            "Product %s missing chat_id or message_id, cannot resolve bot-specific file_id",
+            product_id,
+        )
+        return file_id
+
+    try:
+        bot_username = bot.username or ""
+        cache_key = (source_chat_id, source_message_id, 0, bot_username)
+        bot_specific_file_id = _resolved_file_id_cache.get(cache_key)
+        if bot_specific_file_id is None:
+            bot_specific_file_id = await get_bot_specific_file_id(
+                bot,
+                source_chat_id,
+                source_message_id,
+                file_type,
+                file_index=0,
+            )
+            if bot_specific_file_id:
+                _cache_resolved_file_id(cache_key, bot_specific_file_id)
+
+        if bot_specific_file_id:
+            logger.debug(
+                "Using bot-specific file_id for product %s, media %s: original=%s..., bot_specific=%s...",
+                product_id,
+                media_index,
+                file_id[:20],
+                bot_specific_file_id[:20],
+            )
+            return bot_specific_file_id
+
+        logger.debug(
+            "Bot-specific file_id not available for product %s, media %s, using original file_id",
+            product_id,
+            media_index,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Error getting bot-specific file_id for product %s, media %s: %s. Falling back to original file_id",
+            product_id,
+            media_index,
+            exc,
+        )
+
+    return file_id
+
+
+def _guess_stream_media_type(file_path: Path, media_kind: str) -> str:
+    """Return a browser-friendly MIME type for streamed media files."""
+    media_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+    if media_kind == "photo" and media_type == "application/octet-stream":
+        return "image/jpeg"
+    if media_kind == "video" and media_type == "application/octet-stream":
+        return "video/mp4"
+    return media_type
+
+
+def _build_media_range_response(
+    *,
+    file_path: Path,
+    media_type: str,
+    start: int,
+    end: int,
+    content_length: int,
+) -> StreamingResponse:
+    async def stream_range():
+        active = await _stream_started(file_path)
+        logger.info(
+            "[media_cache] active_streams path=%s count=%d range=%s-%s",
+            file_path.name,
+            active,
+            start,
+            end,
+        )
+        try:
+            with open(file_path, "rb") as file_handle:
+                file_handle.seek(start)
+                remaining = end - start + 1
+                chunk_size = 8192
+                while remaining > 0:
+                    chunk = file_handle.read(min(chunk_size, remaining))
+                    if not chunk:
+                        break
+                    yield chunk
+                    remaining -= len(chunk)
+        finally:
+            remaining_streams = await _stream_finished(file_path)
+            logger.info(
+                "[media_cache] active_streams path=%s count=%d event=finished",
+                file_path.name,
+                remaining_streams,
+            )
+
+    return StreamingResponse(
+        stream_range(),
+        status_code=206,
+        media_type=media_type,
+        headers={
+            "Content-Range": f"bytes {start}-{end}/{content_length}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(end - start + 1),
+            "Cache-Control": "public, max-age=3600",
+        },
+    )
+
+
+def _build_media_full_response(*, file_path: Path, media_type: str, content_length: int) -> StreamingResponse:
+    async def stream_file():
+        active = await _stream_started(file_path)
+        logger.info("[media_cache] active_streams path=%s count=%d range=full", file_path.name, active)
+        try:
+            with open(file_path, "rb") as file_handle:
+                while chunk := file_handle.read(8192):
+                    yield chunk
+        finally:
+            remaining_streams = await _stream_finished(file_path)
+            logger.info(
+                "[media_cache] active_streams path=%s count=%d event=finished",
+                file_path.name,
+                remaining_streams,
+            )
+
+    return StreamingResponse(
+        stream_file(),
+        media_type=media_type,
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(content_length),
+        },
+    )
+
+
 async def _cleanup_media_temp_files(force: bool = False) -> tuple[int, int]:
     """Evict expired reusable media temps without touching active streams."""
     ensure_resource_dirs()
@@ -6058,62 +6228,16 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
     # This ensures the file_id works with the current bot instance even if
     # the file was originally indexed by a different bot
     source_chat_id = product.get('chat_id')
-    source_message_id = product.get('message_id')
-
-    # For additional media in media groups, we need to get the correct message_id
-    if media_index > 0:
-        additional_message_ids_json = product.get('additional_message_ids')
-        if additional_message_ids_json:
-            try:
-                additional_message_ids = json.loads(additional_message_ids_json)
-                if media_index - 1 < len(additional_message_ids):
-                    source_message_id = additional_message_ids[media_index - 1]
-            except (json.JSONDecodeError, TypeError, IndexError) as e:
-                logger.warning(
-                    f"Failed to parse additional_message_ids JSON for product {product_id}, "
-                    f"media_index {media_index}. Data: {additional_message_ids_json}. Error: {e}"
-                )
-
-    if source_chat_id and source_message_id:
-        try:
-            # Try to get bot-specific file_id
-            file_type = media_type_info.get('type', 'document')
-            bot_username = bot.username or ""
-            _res_key = (source_chat_id, source_message_id, 0, bot_username)
-            # Check lightweight in-memory cache first to avoid DB lookup on repeated
-            # Range 206 requests for the same media item.
-            bot_specific_file_id = _resolved_file_id_cache.get(_res_key)
-            if bot_specific_file_id is None:
-                bot_specific_file_id = await get_bot_specific_file_id(
-                    bot,
-                    source_chat_id,
-                    source_message_id,
-                    file_type,
-                    file_index=0  # file_index within this specific message (always 0 since each Telegram message contains exactly one media item)
-                )
-                if bot_specific_file_id:
-                    _cache_resolved_file_id(_res_key, bot_specific_file_id)
-
-            if bot_specific_file_id:
-                logger.debug(
-                    f"Using bot-specific file_id for product {product_id}, media {media_index}: "
-                    f"original={file_id[:20]}..., bot_specific={bot_specific_file_id[:20]}..."
-                )
-                file_id = bot_specific_file_id
-            else:
-                logger.debug(
-                    f"Bot-specific file_id not available for product {product_id}, media {media_index}, "
-                    f"using original file_id"
-                )
-        except Exception as e:
-            logger.warning(
-                f"Error getting bot-specific file_id for product {product_id}, media {media_index}: {e}. "
-                f"Falling back to original file_id"
-            )
-    else:
-        logger.debug(
-            f"Product {product_id} missing chat_id or message_id, cannot resolve bot-specific file_id"
-        )
+    source_message_id = _resolve_product_media_message_id(product, product_id, media_index)
+    file_id = await _resolve_bot_specific_media_file_id(
+        bot=bot,
+        source_chat_id=source_chat_id,
+        source_message_id=source_message_id,
+        file_type=media_type_info.get('type', 'document'),
+        file_id=file_id,
+        product_id=product_id,
+        media_index=media_index,
+    )
 
     # Structured logging for diagnostics
     logger.debug(
@@ -6316,12 +6440,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Media unavailable")
 
     # Determine media type
-    media_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
-    if media_type_info.get("type") == "photo" and media_type == "application/octet-stream":
-        media_type = "image/jpeg"
-    # For videos, ensure correct content type for browser compatibility
-    if is_video and media_type == "application/octet-stream":
-        media_type = "video/mp4"
+    media_type = _guess_stream_media_type(file_path, media_type_info.get("type", "document"))
 
     content_length = file_size if file_size > 0 else file_path.stat().st_size
 
@@ -6343,74 +6462,21 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
             end = int(range_parts[1]) if range_parts[1] else content_length - 1
             end = min(end, content_length - 1)
 
-            # Stream the requested range efficiently
-            async def stream_range():
-                active = await _stream_started(file_path)
-                logger.info(
-                    "[media_cache] active_streams path=%s count=%d range=%s-%s",
-                    file_path.name,
-                    active,
-                    start,
-                    end,
-                )
-                try:
-                    with open(file_path, 'rb') as f:
-                        f.seek(start)
-                        remaining = end - start + 1
-                        chunk_size = 8192
-                        while remaining > 0:
-                            chunk = f.read(min(chunk_size, remaining))
-                            if not chunk:
-                                break
-                            yield chunk
-                            remaining -= len(chunk)
-                finally:
-                    remaining_streams = await _stream_finished(file_path)
-                    logger.info(
-                        "[media_cache] active_streams path=%s count=%d event=finished",
-                        file_path.name,
-                        remaining_streams,
-                    )
-
-            return StreamingResponse(
-                stream_range(),
-                status_code=206,
+            return _build_media_range_response(
+                file_path=file_path,
                 media_type=media_type,
-                headers={
-                    "Content-Range": f"bytes {start}-{end}/{content_length}",
-                    "Accept-Ranges": "bytes",
-                    "Content-Length": str(end - start + 1),
-                    "Cache-Control": "public, max-age=3600"  # Extended cache for better performance
-                }
+                start=start,
+                end=end,
+                content_length=content_length,
             )
         except (ValueError, IndexError) as e:
             logger.warning(f"Invalid range header: {range_header}, error: {e}")
             pass  # Fall through to full response
 
-    # Stream the full file efficiently (no loading into memory)
-    async def stream_file():
-        active = await _stream_started(file_path)
-        logger.info("[media_cache] active_streams path=%s count=%d range=full", file_path.name, active)
-        try:
-            with open(file_path, 'rb') as f:
-                while chunk := f.read(8192):
-                    yield chunk
-        finally:
-            remaining_streams = await _stream_finished(file_path)
-            logger.info(
-                "[media_cache] active_streams path=%s count=%d event=finished",
-                file_path.name,
-                remaining_streams,
-            )
-
-    return StreamingResponse(
-        stream_file(),
+    return _build_media_full_response(
+        file_path=file_path,
         media_type=media_type,
-        headers={
-            "Cache-Control": "public, max-age=3600",  # Extended cache for better performance
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(content_length)
-        }
+        content_length=content_length,
     )
 
 

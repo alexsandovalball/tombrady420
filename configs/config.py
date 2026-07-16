@@ -396,6 +396,22 @@ class ConfigClass:
                     "WEBHOOK_URL should be the site origin only, not a webhook path: %s",
                     self.WEBHOOK_URL,
                 )
+
+        try:
+            db_path = Path(self.DB_PATH).expanduser().resolve()
+            if (
+                db_path.name == "catalog.db"
+                and str(db_path) != "/data/catalog.db"
+                and db_path.exists()
+                and db_path.stat().st_size == 0
+            ):
+                logger.warning(
+                    "DB_PATH currently points at a zero-byte local database placeholder (%s). "
+                    "If this is not intentional, set DB_PATH explicitly or use /data/catalog.db on Render.",
+                    db_path,
+                )
+        except OSError:
+            pass
         
         # If there are any errors, raise a comprehensive error message
         if errors:
