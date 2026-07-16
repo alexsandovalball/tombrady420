@@ -47,11 +47,34 @@
     <!-- PWA Manifest -->
     <link rel="manifest" href="/assets/manifest.json">
 
-    <!-- Preconnect to Telegram CDN for faster script loading -->
+    <!-- Preconnect to Telegram CDN for faster script loading when embedded -->
     <link rel="preconnect" href="https://telegram.org" crossorigin>
     <link rel="dns-prefetch" href="https://telegram.org">
+    <script>
+        (function () {
+            var isTelegramWebApp = false;
+            try {
+                isTelegramWebApp = !!(window.Telegram && window.Telegram.WebApp);
+            } catch (e) {
+                isTelegramWebApp = false;
+            }
+            if (!isTelegramWebApp) {
+                try {
+                    isTelegramWebApp = window.self !== window.top;
+                } catch (e) {
+                    isTelegramWebApp = true;
+                }
+            }
+            if (!isTelegramWebApp) {
+                var search = (window.location && window.location.search) || "";
+                var hash = (window.location && window.location.hash) || "";
+                isTelegramWebApp = /tgWebApp|tg_web_app|initData/i.test(search + hash);
+            }
+            if (!isTelegramWebApp) return;
 
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+            document.write('<script src="https://telegram.org/js/telegram-web-app.js"><\\/script>');
+        })();
+    </script>
     <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body>
