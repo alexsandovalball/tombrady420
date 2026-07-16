@@ -8,7 +8,8 @@ The script uses only the Python standard library. It focuses on the parts of
 the project that are easiest to accidentally break during refactors:
 
 - core Python files still parse
-- the unified storefront/WebApp admin monitor shell and hooks still exist
+- the Telegram Mini App shell and hooks still exist
+- the shared storefront home still exists
 - the media endpoint route still exists
 - obvious local DB footguns are surfaced early
 """
@@ -45,9 +46,18 @@ def compile_python_files() -> None:
 
 
 def check_webapp_shell() -> None:
+    index_html = (REPO_ROOT / "webapp" / "index.html").read_text(encoding="utf-8")
+    app_js = (REPO_ROOT / "webapp" / "app.js").read_text(encoding="utf-8")
     localized_home = (REPO_ROOT / "webapp" / "localized_home.html").read_text(encoding="utf-8")
     webhook_server = (REPO_ROOT / "webhook_server.py").read_text(encoding="utf-8")
 
+    require('id="admin-panel"' in index_html, "webapp/index.html is missing #admin-panel")
+    require("/assets/app.js" in index_html, "webapp/index.html is missing the Mini App script include")
+    require("loadAdminPanel(" in app_js, "webapp/app.js is missing loadAdminPanel")
+    require("queueAdminPanelRefresh(" in app_js, "webapp/app.js is missing queueAdminPanelRefresh")
+    require("startAdminPanelAutoRefresh(" in app_js, "webapp/app.js is missing startAdminPanelAutoRefresh")
+    require("/api/admin/status" in app_js, "webapp/app.js no longer fetches /api/admin/status")
+    require("/api/webapp-session" in app_js, "webapp/app.js is missing /api/webapp-session session exchange")
     require('id="admin-panel"' in localized_home, "webapp/localized_home.html is missing #admin-panel")
     require("loadAdminPanel(" in localized_home, "localized_home.html is missing loadAdminPanel")
     require("startAdminPanelAutoRefresh(" in localized_home, "localized_home.html is missing startAdminPanelAutoRefresh")
@@ -83,10 +93,16 @@ def check_storefront_template_presence() -> str:
         return "skipped (node not found)"
 
     localized_home = REPO_ROOT / "webapp" / "localized_home.html"
+    index_html = REPO_ROOT / "webapp" / "index.html"
+    app_js = REPO_ROOT / "webapp" / "app.js"
     script = (
         "const fs=require('fs');"
         f"const src=fs.readFileSync({json.dumps(str(localized_home))},'utf8');"
-        "if(!src.includes('loadAdminPanel(')) throw new Error('missing admin monitor bootstrap');"
+        f"const indexSrc=fs.readFileSync({json.dumps(str(index_html))},'utf8');"
+        f"const appSrc=fs.readFileSync({json.dumps(str(app_js))},'utf8');"
+        "if(!src.includes('loadAdminPanel(')) throw new Error('missing shared storefront admin bootstrap');"
+        "if(!indexSrc.includes('/assets/app.js')) throw new Error('missing Mini App script include');"
+        "if(!appSrc.includes('loadAdminPanel(')) throw new Error('missing Mini App admin bootstrap');"
         "process.stdout.write('ok');"
     )
     completed = subprocess.run(

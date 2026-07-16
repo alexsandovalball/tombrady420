@@ -4589,13 +4589,13 @@ async def _crawlable_page_snapshot(limit: int = 5000) -> Dict[str, Any]:
     }
 
 
-async def _serve_storefront_index(
+async def _build_storefront_index_context(
     request: Request,
     *,
     include_seo_links: bool = False,
     language: str = "en",
-) -> HTMLResponse:
-    """Render the shared SEO-first storefront homepage."""
+) -> tuple[dict, list[dict[str, Any]]]:
+    """Build shared storefront homepage context for both public and Mini App shells."""
     language = _normalize_seo_language(language)
     ui = _seo_ui(language)
     home_path = "/"
@@ -4688,11 +4688,46 @@ async def _serve_storefront_index(
             logger.debug("Failed to build homepage SEO ItemList schema: %s", exc)
     ctx["localized_home_url"] = _localized_path("/", language)
     ctx["localized_learn_url"] = _localized_path("/learn", language)
+    return ctx, recent_products
+
+
+async def _serve_storefront_index(
+    request: Request,
+    *,
+    include_seo_links: bool = False,
+    language: str = "en",
+) -> HTMLResponse:
+    """Render the public SEO-first storefront homepage."""
+    ctx, recent_products = await _build_storefront_index_context(
+        request,
+        include_seo_links=include_seo_links,
+        language=language,
+    )
     return _render_seo_template(
         request,
         "localized_home.html",
         ctx,
         cache_key=f"localized-home:{language}:{len(ctx['seo_recent_products'])}:{_newest_lastmod(recent_products, datetime.now().date().isoformat())}",
+    )
+
+
+async def _serve_webapp_index(
+    request: Request,
+    *,
+    include_seo_links: bool = True,
+    language: str = "en",
+) -> HTMLResponse:
+    """Render the Telegram Mini App shell with the shared storefront data/styling."""
+    ctx, recent_products = await _build_storefront_index_context(
+        request,
+        include_seo_links=include_seo_links,
+        language=language,
+    )
+    return _render_seo_template(
+        request,
+        "index.html",
+        ctx,
+        cache_key=f"webapp-index:{language}:{len(ctx['seo_recent_products'])}:{_newest_lastmod(recent_products, datetime.now().date().isoformat())}",
     )
 
 
@@ -4750,12 +4785,9 @@ async def serve_localized_homepage(request: Request):
 @app.get("/webapp/", response_class=HTMLResponse)
 @app.get("/webapp", response_class=HTMLResponse)
 async def serve_webapp(request: Request):
-    """Serve the WebApp for Telegram Mini Apps.
-
-    This now serves the same SEO-first storefront shell as the public site.
-    """
+    """Serve the Telegram Mini App shell."""
     _queue_visitor_event(request, source="webapp", page_type="webapp_shell")
-    return await _serve_storefront_index(request, include_seo_links=True)
+    return await _serve_webapp_index(request, include_seo_links=True)
 
 
 @app.get("/learn", response_class=HTMLResponse)

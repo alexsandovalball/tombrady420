@@ -48,24 +48,36 @@ for read-only catalog and logging paths so open-web product/category pages work.
 
 ## Frontend
 
-The storefront now uses the SEO-first HTML templates everywhere, including when
-opened inside Telegram Mini Apps:
+The project now uses one shared visual system, but two browser shells:
 
 ```text
-webapp/localized_home.html
-webapp/category.html
-webapp/product.html
-webapp/learn.html
-webapp/learn_index.html
-webapp/style.css
+Public storefront shell:
+  webapp/localized_home.html
+  webapp/category.html
+  webapp/product.html
+  webapp/learn.html
+  webapp/learn_index.html
+
+Telegram Mini App shell:
+  webapp/index.html
+  webapp/app.js
+
+Shared styling/assets:
+  webapp/style.css
 ```
 
-`localized_home.html` contains the Telegram-aware bootstrap for:
+The Mini App is intentionally kept because it still owns Telegram-specific
+behavior that the public storefront does not need:
 
 - Telegram WebApp user detection
-- admin monitor loading for signed admin accounts
-- short same-origin session exchange via `/api/webapp-session`
-- home-page catalog and contact presentation inside the shared storefront shell
+- authenticated session exchange via `/api/webapp-session`
+- dynamic category/product/search navigation without full page loads
+- signed admin monitor loading for Telegram admins
+- direct product deep-link handling inside Telegram
+
+The public storefront remains SEO-first and crawlable. The Mini App should keep
+using the same styling direction so both surfaces feel consistent, but it is
+still a distinct shell.
 
 `category.html` and `product.html` own the main public browsing and media-view
 experience. Category card previews prefer lightweight previews. Full video
