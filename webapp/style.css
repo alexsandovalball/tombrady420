@@ -34,12 +34,12 @@ body::before {
     content: '';
     position: fixed;
     inset: 0;
-    background-image: url("/assets/doodle-background.png");
+    background-image: url("/assets/doodle-background-v2.png");
     background-repeat: repeat;
     background-size: 520px 520px;
     background-position: center;
     background-color: #171717;
-    opacity: 0.14;
+    opacity: 0.18;
     z-index: 0;
     pointer-events: none;
     transform: translateZ(0);
@@ -1122,8 +1122,8 @@ a.btn {
 
 @media (prefers-color-scheme: dark) {
     body::before {
-        background-image: url("/assets/doodle-background.png");
-        opacity: 0.16;
+        background-image: url("/assets/doodle-background-v2.png");
+        opacity: 0.20;
         background-color: #101114;
     }
 }

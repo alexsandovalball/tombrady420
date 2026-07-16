@@ -67,7 +67,7 @@
             <h2>{{ ui.related_products }}</h2>
             <ul class="product-grid">
                 {% for item in seo_recent_products %}
-                <li><a href="{{ item.url }}"><img src="{{ item.image_url }}" alt="{{ item.title }}" loading="lazy" onerror="this.onerror=null;this.src='/og-image.png';"><span>{{ item.title }}</span></a></li>
+                <li><a href="{{ item.url }}"><img src="{{ item.image_url or '/og-image.png' }}" alt="{{ item.title }}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';"><span>{{ item.title }}</span></a></li>
                 {% endfor %}
             </ul>
         </section>

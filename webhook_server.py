@@ -4452,18 +4452,19 @@ async def _serve_storefront_index(
         for category in get_all_categories()
         if not include_seo_links or category_counts.get(category, 0) > 0
     ]
+    public_catalog_bot_url = _public_catalog_bot_url()
     ctx["seo_recent_products"] = [
         {
             "title": _caption_parts(product.get("caption") or "")[0],
             "url": _localized_path(_canonical_product_path(product.get("id") or product.get("product_id"), product.get("caption") or ""), language),
             "category": get_category_display_name(product.get("category"), language) if product.get("category") else "",
             "subcategory": get_subcategory_display_name(product.get("subcategory"), language) if product.get("subcategory") else "",
-            "image_url": _product_primary_image_url(product, absolute=False) or "/og-image.png",
+            "image_url": _product_primary_image_url(product, absolute=True) or _DEFAULT_OG_IMAGE,
         }
         for product in recent_products
         if product.get("id") or product.get("product_id")
     ]
-    ctx.update(await _public_order_context())
+    ctx.update(await _public_order_context(telegram_bot_url=public_catalog_bot_url))
     if include_seo_links:
         try:
             schema = json.loads(ctx.get("seo_schema") or "{}")
@@ -4882,7 +4883,7 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
         language=language,
     )
     visible_search_terms = _dedupe_seo_phrases([*product_search_phrases, *seo_side_notes], limit=18)
-    order_context = await _public_order_context()
+    order_context = await _public_order_context(telegram_bot_url=public_catalog_bot_url)
     product_media = [
         {
             "index": idx,
@@ -5040,7 +5041,7 @@ async def _serve_category_page(category_name: str, request: Request, language: s
     # Build keyword list from category + subcategory names
     subcat_names = ", ".join(subcategories) if subcategories else ""
     seo_terms = await _seo_side_note_terms(matched_category, language=language)
-    order_context = await _public_order_context()
+    order_context = await _public_order_context(telegram_bot_url=public_catalog_bot_url)
     keywords = ", ".join(filter(None, [
         display_name,
         subcat_names,
@@ -5211,7 +5212,7 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
     page_path = _paginated_path(base_path, current_page)
     page_url = _localized_url(page_path, language)
     seo_terms = await _seo_side_note_terms(matched_category, matched_subcategory, language)
-    order_context = await _public_order_context()
+    order_context = await _public_order_context(telegram_bot_url=deep_link)
 
     ctx = _build_seo_context(
         title=_build_subcategory_seo_title(category_display, subcategory_display),
@@ -5628,11 +5629,11 @@ def _build_contact_channels(
     }
 
 
-async def _public_order_context() -> Dict[str, Any]:
+async def _public_order_context(telegram_bot_url: str = "") -> Dict[str, Any]:
     """Return public order/contact links while keeping /setcontact separate from /setlink."""
     order_contact = await _catalog_db.get_order_contact()
     order_links = await _catalog_db.get_order_links()
-    channels = _build_contact_channels(order_contact, order_links)
+    channels = _build_contact_channels(order_contact, order_links, telegram_bot_url=telegram_bot_url)
     clean_links = [
         {
             "label": str(item.get("label") or "Contact")[:40],
