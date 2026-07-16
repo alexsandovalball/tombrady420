@@ -4883,7 +4883,7 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
         language=language,
     )
     visible_search_terms = _dedupe_seo_phrases([*product_search_phrases, *seo_side_notes], limit=18)
-    order_context = await _public_order_context(telegram_bot_url=public_catalog_bot_url)
+    order_context = await _public_order_context(telegram_bot_url=deep_link)
     product_media = [
         {
             "index": idx,
@@ -4911,7 +4911,7 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
                     "id": p.get("id") or p.get("product_id"),
                     "title": _caption_parts(p.get("caption") or "")[0],
                     "url": _localized_path(_canonical_product_path(p.get("id") or p.get("product_id"), p.get("caption") or ""), language),
-                    "image_url": _product_primary_image_url(p, absolute=False) or "/og-image.png",
+                    "image_url": _product_primary_image_url(p, absolute=True) or _DEFAULT_OG_IMAGE,
                 }
                 for p in candidates
                 if (p.get("id") or p.get("product_id")) != product_id
