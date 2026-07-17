@@ -52,6 +52,131 @@ body::before {
     z-index: 1;
 }
 
+/* Unified public storefront treatment for the Telegram Mini App shell.
+   This keeps the Mini App functionality intact while matching the SEO UI. */
+body.unified-storefront-ui {
+    background-color: #ffffff;
+    color: var(--tg-theme-text-color, #111111);
+}
+
+body.unified-storefront-ui .miniapp-shell {
+    max-width: 900px;
+    min-height: 100vh;
+    padding: 1rem 0.8rem 2rem;
+    background: transparent;
+}
+
+body.unified-storefront-ui .miniapp-shell .header {
+    align-items: flex-start;
+    margin: 0.4rem 0 1rem;
+}
+
+body.unified-storefront-ui .miniapp-shell h1 {
+    font-size: 2rem;
+    line-height: 1.15;
+}
+
+body.unified-storefront-ui .miniapp-shell .subtitle,
+body.unified-storefront-ui .miniapp-shell .hint,
+body.unified-storefront-ui .miniapp-shell .card-meta,
+body.unified-storefront-ui .miniapp-shell .card-footer {
+    color: var(--tg-theme-hint-color, #666666);
+}
+
+body.unified-storefront-ui .miniapp-shell .info-row,
+body.unified-storefront-ui .miniapp-shell .breadcrumb,
+body.unified-storefront-ui .miniapp-shell .section,
+body.unified-storefront-ui .miniapp-shell .product-card,
+body.unified-storefront-ui .miniapp-shell .category-btn,
+body.unified-storefront-ui .miniapp-shell .language-btn,
+body.unified-storefront-ui .miniapp-shell .admin-panel {
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.94);
+    box-shadow: none;
+}
+
+body.unified-storefront-ui .miniapp-shell .section {
+    padding: 1rem;
+}
+
+body.unified-storefront-ui .miniapp-shell .welcome-message {
+    padding: 0;
+    margin: 0 0 1.25rem;
+    text-align: left;
+}
+
+body.unified-storefront-ui .miniapp-shell .welcome-message h2 {
+    font-size: 1.35rem;
+}
+
+body.unified-storefront-ui .miniapp-shell .action-buttons,
+body.unified-storefront-ui .miniapp-shell .order-links {
+    display: flex;
+    flex-flow: row wrap;
+    gap: 0.75rem;
+    margin: 1.25rem 0;
+}
+
+body.unified-storefront-ui .miniapp-shell .action-btn,
+body.unified-storefront-ui .miniapp-shell .order-link-btn {
+    width: auto;
+    flex: 1 1 180px;
+    min-height: 46px;
+    padding: 0.65rem 1rem;
+    border-radius: 8px;
+    border: 1px solid rgba(0, 0, 0, 0.14);
+    background: #ffffff;
+    color: #111111;
+    font-size: 1rem;
+    font-weight: 700;
+    justify-content: center;
+    box-shadow: none;
+}
+
+body.unified-storefront-ui .miniapp-shell .action-btn:first-child {
+    border-color: #2f9e55;
+    background: #2f9e55;
+    color: #ffffff;
+}
+
+body.unified-storefront-ui .miniapp-shell .btn-icon {
+    font-size: 1.15rem;
+}
+
+body.unified-storefront-ui .miniapp-shell .category-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0.75rem;
+}
+
+body.unified-storefront-ui .miniapp-shell .category-btn {
+    min-height: 52px;
+    padding: 0.8rem 1rem;
+    font-size: 1rem;
+    font-weight: 700;
+}
+
+body.unified-storefront-ui .miniapp-shell .product-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 0.75rem;
+}
+
+body.unified-storefront-ui .miniapp-shell .product-card {
+    color: #111111;
+    overflow: hidden;
+}
+
+body.unified-storefront-ui .miniapp-shell .card-body {
+    padding: 0.75rem;
+}
+
+body.unified-storefront-ui .miniapp-shell .footer-actions {
+    border-top: 0;
+    padding-top: 0;
+}
+
 .header {
     display: flex;
     align-items: center;
