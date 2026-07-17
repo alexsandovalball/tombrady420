@@ -3333,6 +3333,31 @@ def _product_primary_image_url(product: dict, *, absolute: bool = True) -> str:
     return ""
 
 
+def _product_card_preview_media(product: dict, *, absolute: bool = False) -> dict[str, str]:
+    """Return the best lightweight media URL for product cards.
+
+    Cards should show a real photo when possible. For video-only products, use
+    the Mini App media stream directly so the browser can render a video frame
+    instead of falling back to the brand icon.
+    """
+    product_id = product.get("id") or product.get("product_id")
+    if product_id is None:
+        return {"type": "", "url": ""}
+
+    media_info = _collect_media_info(product)
+    for idx, media in enumerate(media_info):
+        if media.get("type") == "photo":
+            path = _product_public_media_path(product_id, idx)
+            return {"type": "photo", "url": _absolute_storefront_url(path) if absolute else path}
+
+    for idx, media in enumerate(media_info):
+        if media.get("type") == "video":
+            path = f"/api/catalog/{product_id}/media/{idx}"
+            return {"type": "video", "url": _absolute_storefront_url(path) if absolute else path}
+
+    return {"type": "", "url": ""}
+
+
 def _product_photo_image_urls(product: dict, *, absolute: bool = True, limit: int = 8) -> list[str]:
     """Return crawlable photo URLs for product image sitemaps and Product schema."""
     product_id = product.get("id")
@@ -4217,6 +4242,13 @@ def _read_brand_icon_png() -> bytes:
     return image_path.read_bytes()
 
 
+def _read_site_icon_png(size: int = 512) -> bytes:
+    image_path = Path(__file__).parent / "webapp" / "assets" / f"site-icon-{size}.png"
+    if image_path.exists():
+        return image_path.read_bytes()
+    return _read_brand_icon_png()
+
+
 def _png_response(image_bytes: bytes, *, max_age: int = 86400, request: Optional[Request] = None) -> Response:
     etag = _seo_etag(image_bytes)
     headers = {
@@ -4261,7 +4293,7 @@ async def serve_og_image(request: Request):
 @app.head("/favicon.ico", response_class=Response)
 async def serve_favicon(request: Request):
     """Serve a fallback favicon for browsers and crawlers that probe /favicon.ico."""
-    return _png_response(_read_brand_icon_png(), max_age=604800, request=request)
+    return _png_response(_read_site_icon_png(192), max_age=604800, request=request)
 
 
 @app.get("/apple-touch-icon.png", response_class=Response)
@@ -4270,7 +4302,7 @@ async def serve_favicon(request: Request):
 @app.head("/apple-touch-icon-precomposed.png", response_class=Response)
 async def serve_apple_touch_icon(request: Request):
     """Serve an Apple touch icon fallback to avoid crawler/mobile browser 404 noise."""
-    return _png_response(_read_brand_icon_png(), max_age=604800, request=request)
+    return _png_response(_read_site_icon_png(512), max_age=604800, request=request)
 
 
 @app.get("/robots.txt", response_class=Response)
@@ -4636,12 +4668,15 @@ async def _build_storefront_index_context(
             "url": _localized_path(_canonical_product_path(product.get("id") or product.get("product_id"), product.get("caption") or ""), language),
             "category": get_category_display_name(product.get("category"), language) if product.get("category") else "",
             "subcategory": get_subcategory_display_name(product.get("subcategory"), language) if product.get("subcategory") else "",
-            "image_url": _product_primary_image_url(product, absolute=True) or _DEFAULT_OG_IMAGE,
+            "image_url": preview_media.get("url") if preview_media.get("type") == "photo" else "",
+            "media_url": preview_media.get("url") or "",
+            "media_type": preview_media.get("type") or "",
             "media_count": len(media_info),
             "media_info": media_info,
         }
         for product in recent_products
         if (media_info := _collect_media_info(product)) and (product.get("id") or product.get("product_id"))
+        for preview_media in [_product_card_preview_media(product, absolute=True)]
     ]
     ctx.update(await _public_order_context(telegram_bot_url=public_catalog_bot_url))
     if include_seo_links:
@@ -4676,7 +4711,7 @@ async def _build_storefront_index_context(
                                 "@type": "Product",
                                 "name": item["title"],
                                 "url": _absolute_storefront_url(item["url"]),
-                                "image": _absolute_storefront_url(item["image_url"]),
+                                **({"image": _absolute_storefront_url(item["image_url"])} if item.get("image_url") else {}),
                                 "category": item["category"],
                             },
                         }
@@ -4726,7 +4761,7 @@ async def _serve_storefront_index(
         request,
         "localized_home.html",
         ctx,
-        cache_key=f"localized-home:{language}:{len(ctx['seo_recent_products'])}:{_newest_lastmod(recent_products, datetime.now().date().isoformat())}",
+        cache_key=f"localized-home-card-media-v2:{language}:{len(ctx['seo_recent_products'])}:{_newest_lastmod(recent_products, datetime.now().date().isoformat())}",
     )
 
 
@@ -5355,9 +5390,12 @@ async def _serve_category_page(category_name: str, request: Request, language: s
             "subcategory_display": get_subcategory_display_name(p.get("subcategory"), language) if p.get("subcategory") else "",
             "slug": _generate_slug(p.get("caption") or ""),
             "url": _localized_path(_canonical_product_path(p.get("id") or p.get("product_id"), p.get("caption") or ""), language),
-            "image_url": _product_primary_image_url(p, absolute=False),
+            "image_url": preview_media.get("url") if preview_media.get("type") == "photo" else "",
+            "media_url": preview_media.get("url") or "",
+            "media_type": preview_media.get("type") or "",
         }
         for p in products
+        for preview_media in [_product_card_preview_media(p, absolute=False)]
     ]
     ctx["total"] = total
     ctx["current_subcategory"] = ""
@@ -5421,7 +5459,7 @@ async def _serve_category_page(category_name: str, request: Request, language: s
         request,
         "category.html",
         ctx,
-        cache_key=f"category:{language}:{matched_category}:{current_page}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{public_catalog_bot_url}:{order_context.get('order_fingerprint')}",
+        cache_key=f"category-card-media-v2:{language}:{matched_category}:{current_page}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{public_catalog_bot_url}:{order_context.get('order_fingerprint')}",
     )
 
 
@@ -5515,9 +5553,12 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
             "subcategory_display": subcategory_display,
             "slug": _generate_slug(p.get("caption") or ""),
             "url": _localized_path(_canonical_product_path(p.get("id") or p.get("product_id"), p.get("caption") or ""), language),
-            "image_url": _product_primary_image_url(p, absolute=False),
+            "image_url": preview_media.get("url") if preview_media.get("type") == "photo" else "",
+            "media_url": preview_media.get("url") or "",
+            "media_type": preview_media.get("type") or "",
         }
         for p in products
+        for preview_media in [_product_card_preview_media(p, absolute=False)]
     ]
     ctx["total"] = total
     ctx["current_subcategory"] = matched_subcategory
@@ -5580,7 +5621,7 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
         request,
         "category.html",
         ctx,
-        cache_key=f"subcategory:{language}:{matched_category}:{matched_subcategory}:{current_page}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{public_catalog_bot_url}:{order_context.get('order_fingerprint')}",
+        cache_key=f"subcategory-card-media-v2:{language}:{matched_category}:{matched_subcategory}:{current_page}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{public_catalog_bot_url}:{order_context.get('order_fingerprint')}",
     )
 
 

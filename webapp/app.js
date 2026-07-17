@@ -2929,8 +2929,7 @@
                 const vid = createVideoPreview(
                     mediaUrl,
                     media,
-                    videoPreviewCacheKey(item.id, mediaIndex),
-                    item.image_url || '/og-image.png'
+                    videoPreviewCacheKey(item.id, mediaIndex)
                 );
                 media.appendChild(vid);
 

@@ -39,9 +39,9 @@
     <script type="application/ld+json">{{ seo_schema | safe }}</script>
 
     <!-- Browser icons -->
-    <link rel="icon" type="image/png" href="/og-image.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/assets/site-icon-192.png">
     <link rel="shortcut icon" href="/favicon.ico">
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="apple-touch-icon" sizes="512x512" href="/assets/site-icon-512.png">
     
     <!-- PWA Manifest -->
     <link rel="manifest" href="/assets/manifest.json">
@@ -104,7 +104,7 @@
         .product-list li { padding: 0; min-width: 0; }
         .product-list li a { text-decoration: none; color: var(--text-primary, #111); display: flex; flex-direction: column; height: 100%; overflow: hidden; background: rgba(0, 0, 0, .04); border-radius: 12px; }
         .product-list li a:hover { color: var(--accent, #2481cc); }
-        .cat-page img.product-thumb, .product-thumb { display: block; width: 100%; aspect-ratio: 4 / 3; border-radius: 0; object-fit: cover; background: rgba(0, 0, 0, .04); border: 0; opacity: 1; }
+        .cat-page img.product-thumb, .cat-page video.product-thumb, .product-thumb { display: block; width: 100%; aspect-ratio: 4 / 3; border-radius: 0; object-fit: cover; background: rgba(0, 0, 0, .04); border: 0; opacity: 1; }
         .product-thumb.placeholder { display: block; }
         .product-card-body { padding: 12px; display: flex; flex-direction: column; gap: 6px; }
         .product-title { font-weight: 600; }
@@ -155,7 +155,9 @@
                 {% for p in products %}
                 <li>
                     <a href="{{ p.url }}">
-                        {% if p.image_url %}
+                        {% if p.media_type == 'video' and p.media_url %}
+                        <video class="product-thumb seo-card-video" muted playsinline preload="metadata" src="{{ p.media_url }}#t=0.2" aria-label="{{ p.title }}"></video>
+                        {% elif p.image_url %}
                         <img class="product-thumb" src="{{ p.image_url }}" alt="{{ p.title }}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
                         {% else %}
                         <span class="product-thumb placeholder" aria-hidden="true"></span>
@@ -212,5 +214,21 @@
             <a href="{{ localized_home_url }}">&larr; {{ ui.back_home }}</a>
         </footer>
     </div>
+    <script>
+        (function () {
+            document.querySelectorAll('video.seo-card-video').forEach(function (video) {
+                video.addEventListener('loadedmetadata', function () {
+                    try {
+                        if (Number.isFinite(video.duration) && video.duration > 0.4) {
+                            video.currentTime = Math.min(0.4, video.duration / 3);
+                        }
+                    } catch (err) {}
+                }, { once: true });
+                video.addEventListener('loadeddata', function () {
+                    video.classList.add('loaded');
+                }, { once: true });
+            });
+        })();
+    </script>
 </body>
 </html>
