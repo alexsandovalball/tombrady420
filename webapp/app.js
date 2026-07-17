@@ -6,9 +6,8 @@
     const CONFIG = {
         MIN_SEARCH_LENGTH: 2,
         MAX_CARD_CAPTION_LENGTH: 47,
-        ITEMS_PER_PAGE: 5,
-        MAX_SEARCH_PRODUCTS: 500,
-        SEARCH_BATCH_SIZE: 50,
+        ITEMS_PER_PAGE: 6,
+        PRODUCT_CACHE_TTL_MS: 120000,
         LOG_BATCH_SIZE: 10,
         LOG_BATCH_INTERVAL: 30000,  // 30 seconds
         VIDEO_THUMBNAIL_SEEK_TIME: 1,  // 1 second
@@ -2557,8 +2556,8 @@
             const cached = state.cache[cacheKey];
             const cacheAge = cached ? Date.now() - cached.timestamp : Infinity;
             
-            // Use cache if less than 30 seconds old
-            if (cached && cacheAge < 30000) {
+            // Use short-lived page cache so back/forward category browsing stays responsive.
+            if (cached && cacheAge < CONFIG.PRODUCT_CACHE_TTL_MS) {
                 logger.apiCall('load_products', 'cache_hit', { 
                     url, 
                     cache_age_ms: cacheAge,

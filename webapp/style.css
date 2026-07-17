@@ -134,10 +134,16 @@ body.unified-storefront-ui .miniapp-shell .order-link-btn {
     box-shadow: none;
 }
 
-body.unified-storefront-ui .miniapp-shell .action-btn:first-child {
+body.unified-storefront-ui .miniapp-shell .action-buttons > .action-btn:first-of-type {
     border-color: #2f9e55;
     background: #2f9e55;
     color: #ffffff;
+}
+
+body.unified-storefront-ui .miniapp-shell .order-links .order-link-btn {
+    border-color: rgba(0, 0, 0, 0.14);
+    background: #ffffff;
+    color: #111111;
 }
 
 body.unified-storefront-ui .miniapp-shell .btn-icon {
