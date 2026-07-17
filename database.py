@@ -4645,18 +4645,24 @@ class Database:
 
             summary = {
                 "products": await scalar("SELECT COUNT(*) FROM products"),
+                "categories": await scalar("SELECT COUNT(DISTINCT category) FROM products WHERE category IS NOT NULL AND TRIM(category) <> ''"),
+                "subcategories": await scalar("SELECT COUNT(DISTINCT category || '|' || subcategory) FROM products WHERE category IS NOT NULL AND TRIM(category) <> '' AND subcategory IS NOT NULL AND TRIM(subcategory) <> ''"),
                 "bot_users": await scalar("SELECT COUNT(*) FROM bot_users"),
                 "active_users_24h": await scalar(
                     "SELECT COUNT(*) FROM bot_users WHERE last_seen >= ?",
                     (since_24h,),
                 ),
                 "blocked_users": await scalar("SELECT COUNT(*) FROM bot_users WHERE is_blocked = 1"),
+                "blocked_entities": await scalar("SELECT COUNT(*) FROM blocked_entities WHERE is_permanent = 1"),
+                "blocked_ips": await scalar("SELECT COUNT(*) FROM blocked_ips"),
                 "subscribed_users": await scalar("SELECT COUNT(*) FROM bot_users WHERE is_subscribed = 1"),
                 "pending_notifications": await scalar("SELECT COUNT(*) FROM notification_queue WHERE sent_at IS NULL"),
                 "queued_custom_messages": await scalar("SELECT COUNT(*) FROM custom_message_queue WHERE sent_at IS NULL"),
                 "file_id_cache_entries": await scalar("SELECT COUNT(*) FROM bot_file_id_cache"),
                 "canonical_media": await scalar("SELECT COUNT(*) FROM canonical_media"),
                 "bot_media_mappings": await scalar("SELECT COUNT(*) FROM bot_media_file_ids WHERE is_valid = 1"),
+                "media_objects_active": await scalar("SELECT COUNT(*) FROM media_objects WHERE deleted_at IS NULL"),
+                "translation_cache_entries": await scalar("SELECT COUNT(*) FROM translation_cache"),
                 "bot_registry_active": await scalar("SELECT COUNT(*) FROM bot_registry WHERE status = 'active'"),
                 "webapp_events_24h": await scalar(
                     "SELECT COUNT(*) FROM webapp_events WHERE created_at >= ?",
@@ -4750,6 +4756,13 @@ class Database:
                 LIMIT ?
             """, (recent_limit,))
 
+            recent_products = await rows("""
+                SELECT id, category, subcategory, caption, file_type, created_at, bot_username
+                FROM products
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+            """, (recent_limit,))
+
             recent_webapp_events = await rows("""
                 SELECT
                     created_at, client_timestamp, session_id, user_id, username,
@@ -4767,6 +4780,30 @@ class Database:
                 ORDER BY count DESC
                 LIMIT 25
             """, (since_24h,))
+
+            pending_notifications_by_bot = await rows("""
+                SELECT
+                    COALESCE(NULLIF(LOWER(bu.bot_username), ''), '_untracked_') AS bot_username,
+                    COUNT(*) AS pending
+                FROM notification_queue nq
+                LEFT JOIN bot_users bu ON bu.user_id = nq.user_id
+                WHERE nq.sent_at IS NULL
+                GROUP BY COALESCE(NULLIF(LOWER(bu.bot_username), ''), '_untracked_')
+                ORDER BY pending DESC
+                LIMIT 20
+            """)
+
+            pending_custom_messages_by_bot = await rows("""
+                SELECT
+                    COALESCE(NULLIF(LOWER(bu.bot_username), ''), '_untracked_') AS bot_username,
+                    COUNT(*) AS pending
+                FROM custom_message_queue cmq
+                LEFT JOIN bot_users bu ON bu.user_id = cmq.user_id
+                WHERE cmq.sent_at IS NULL
+                GROUP BY COALESCE(NULLIF(LOWER(bu.bot_username), ''), '_untracked_')
+                ORDER BY pending DESC
+                LIMIT 20
+            """)
 
             inline_activity = await rows("""
                 SELECT
@@ -4854,8 +4891,11 @@ class Database:
             "bot_instances": bot_instances,
             "bot_user_counts": bot_user_counts,
             "recent_users": recent_users,
+            "recent_products": recent_products,
             "recent_webapp_events": recent_webapp_events,
             "webapp_event_counts": webapp_event_counts,
+            "pending_notifications_by_bot": pending_notifications_by_bot,
+            "pending_custom_messages_by_bot": pending_custom_messages_by_bot,
             "inline_activity": inline_activity,
             "top_visitor_locations": top_visitor_locations,
             "top_public_pages": top_public_pages,

@@ -137,6 +137,8 @@ _seo_trends_lock: Optional[asyncio.Lock] = None
 _webapp_search_cache: OrderedDict[str, tuple[float, dict]] = OrderedDict()
 _WEBAPP_SEARCH_CACHE_TTL_SECONDS = _bounded_int_env("WEBAPP_SEARCH_CACHE_TTL_SECONDS", 90, 15, 600)
 _WEBAPP_SEARCH_CACHE_MAX = _bounded_int_env("WEBAPP_SEARCH_CACHE_MAX", 256, 32, 2000)
+_PROCESS_STARTED_AT = datetime.utcnow()
+_PROCESS_STARTED_MONOTONIC = _time.monotonic()
 
 # Per-process counter for webhook 401 rejections (in-memory, not persisted).
 # Useful for setting alerts: check logs for [WEBHOOK_401] or watch this counter
@@ -1366,6 +1368,40 @@ def _cache_state_snapshot() -> Dict[str, int]:
         "orphan_legacy_secrets": len(_orphan_legacy_secret_cache),
         "webhook_processing_locks": len(_webhook_processing_semaphores),
         "webhook_update_concurrency": _WEBHOOK_UPDATE_CONCURRENCY,
+    }
+
+
+def _runtime_process_snapshot() -> Dict[str, object]:
+    uptime_seconds = max(0, int(_time.monotonic() - _PROCESS_STARTED_MONOTONIC))
+    return {
+        "started_at": _PROCESS_STARTED_AT.isoformat(timespec="seconds") + "Z",
+        "uptime_seconds": uptime_seconds,
+        "uptime_minutes": round(uptime_seconds / 60, 1),
+        "visitor_queue_size": _visitor_event_queue.qsize() if _visitor_event_queue else 0,
+        "visitor_queue_max": _VISITOR_EVENT_QUEUE_MAX,
+        "visitor_events_written": _visitor_events_written,
+        "visitor_events_dropped": _visitor_events_dropped,
+        "seo_response_cache_entries": len(_seo_response_cache),
+        "webapp_search_cache_entries": len(_webapp_search_cache),
+    }
+
+
+def _media_runtime_snapshot() -> Dict[str, object]:
+    active_streams = sum(_media_active_streams.values())
+    return {
+        "storage_mode": MEDIA_STORAGE_MODE,
+        "cache_enabled": MEDIA_CACHE_ENABLED,
+        "video_cache_enabled": MEDIA_CACHE_VIDEO_ENABLED,
+        "cache_dir": str(MEDIA_CACHE_DIR),
+        "cache_max_mb": MEDIA_CACHE_MAX_SIZE_MB,
+        "cache_ttl_hours": MEDIA_CACHE_TTL_HOURS,
+        "cache_cleanup_interval_seconds": MEDIA_CACHE_CLEANUP_INTERVAL_SECONDS,
+        "temp_ttl_seconds": MEDIA_CACHE_TTL_SECONDS,
+        "max_file_mb": int(MEDIA_CACHE_MAX_FILE_BYTES / (1024 * 1024)),
+        "active_streams": active_streams,
+        "active_files": len(_media_active_streams),
+        "tracked_temp_files": len(_media_last_access),
+        "generation_locks": len(_media_generation_locks),
     }
 
 
@@ -4242,11 +4278,32 @@ def _read_brand_icon_png() -> bytes:
     return image_path.read_bytes()
 
 
-def _read_site_icon_png(size: int = 512) -> bytes:
-    image_path = Path(__file__).parent / "webapp" / "assets" / f"site-icon-{size}.png"
-    if image_path.exists():
-        return image_path.read_bytes()
-    return _read_brand_icon_png()
+def _read_site_icon_svg() -> bytes:
+    image_path = Path(__file__).parent / "webapp" / "assets" / "site-icon.svg"
+    if not image_path.exists():
+        return (
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 128 128\">"
+            "<text x=\"50%\" y=\"50%\" text-anchor=\"middle\" dominant-baseline=\"central\" "
+            "font-family=\"Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif\" "
+            "font-size=\"104\">🏈</text></svg>"
+        ).encode("utf-8")
+    return image_path.read_bytes()
+
+
+def _svg_response(svg_bytes: bytes, *, max_age: int = 604800, request: Optional[Request] = None) -> Response:
+    etag = _seo_etag(svg_bytes)
+    headers = {
+        "Cache-Control": f"public, max-age={max_age}",
+        "Content-Length": str(len(svg_bytes)),
+        "ETag": etag,
+    }
+    if request is not None and _request_matches_etag(request, etag):
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    return Response(
+        content=svg_bytes,
+        media_type="image/svg+xml",
+        headers=headers,
+    )
 
 
 def _png_response(image_bytes: bytes, *, max_age: int = 86400, request: Optional[Request] = None) -> Response:
@@ -4293,7 +4350,7 @@ async def serve_og_image(request: Request):
 @app.head("/favicon.ico", response_class=Response)
 async def serve_favicon(request: Request):
     """Serve a fallback favicon for browsers and crawlers that probe /favicon.ico."""
-    return _png_response(_read_site_icon_png(192), max_age=604800, request=request)
+    return _svg_response(_read_site_icon_svg(), max_age=604800, request=request)
 
 
 @app.get("/apple-touch-icon.png", response_class=Response)
@@ -4302,7 +4359,7 @@ async def serve_favicon(request: Request):
 @app.head("/apple-touch-icon-precomposed.png", response_class=Response)
 async def serve_apple_touch_icon(request: Request):
     """Serve an Apple touch icon fallback to avoid crawler/mobile browser 404 noise."""
-    return _png_response(_read_site_icon_png(512), max_age=604800, request=request)
+    return _svg_response(_read_site_icon_svg(), max_age=604800, request=request)
 
 
 @app.get("/robots.txt", response_class=Response)
@@ -5062,6 +5119,8 @@ async def admin_dashboard_overview(request: Request):
         "configured_bot_count": len(Config.BOT_TOKENS),
         "runtime_bots": _runtime_bot_snapshots(),
         "cache_state": _cache_state_snapshot(),
+        "process": _runtime_process_snapshot(),
+        "media_runtime": _media_runtime_snapshot(),
         "resource_usage": {
             "tmp": get_tmp_usage(),
             "cache": get_cache_usage(),
@@ -5096,6 +5155,8 @@ async def webapp_admin_status(request: Request):
         "configured_bot_count": len(Config.BOT_TOKENS),
         "runtime_bots": _runtime_bot_snapshots(),
         "cache_state": _cache_state_snapshot(),
+        "process": _runtime_process_snapshot(),
+        "media_runtime": _media_runtime_snapshot(),
         "resource_usage": {
             "tmp": get_tmp_usage(),
             "cache": get_cache_usage(),

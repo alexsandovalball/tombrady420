@@ -16,7 +16,7 @@
     <meta property="og:url" content="{{ seo_url }}">
     <meta property="og:locale" content="{{ seo_locale or 'en_US' }}">
     <script type="application/ld+json">{{ seo_schema | safe }}</script>
-    <link rel="icon" type="image/png" sizes="192x192" href="/assets/site-icon-192.png">
+    <link rel="icon" type="image/svg+xml" href="/assets/site-icon.svg">
     <link rel="stylesheet" href="/assets/style.css?v=20260717-unified-seo-ui-v2">
     <link rel="preconnect" href="https://telegram.org" crossorigin>
     <link rel="dns-prefetch" href="https://telegram.org">
@@ -194,6 +194,29 @@
                 return String(Math.round(number)) + 'ms';
             }
 
+            function formatBytes(value) {
+                var number = Number(value || 0);
+                if (!Number.isFinite(number) || number <= 0) return '0 B';
+                var units = ['B', 'KB', 'MB', 'GB'];
+                var unit = 0;
+                while (number >= 1024 && unit < units.length - 1) {
+                    number /= 1024;
+                    unit += 1;
+                }
+                return (unit === 0 ? Math.round(number) : number.toFixed(number >= 10 ? 1 : 2)) + ' ' + units[unit];
+            }
+
+            function formatDuration(seconds) {
+                var total = Math.max(0, Number(seconds || 0));
+                if (!Number.isFinite(total)) return '0m';
+                var days = Math.floor(total / 86400);
+                var hours = Math.floor((total % 86400) / 3600);
+                var minutes = Math.floor((total % 3600) / 60);
+                if (days > 0) return days + 'd ' + hours + 'h';
+                if (hours > 0) return hours + 'h ' + minutes + 'm';
+                return minutes + 'm';
+            }
+
             function formatPagePath(page) {
                 var value = String(page || '').trim();
                 if (!value) return '/';
@@ -342,6 +365,11 @@
                 var cache = data.cache_state || {};
                 var seo = data.seo || {};
                 var indexnow = data.indexnow || {};
+                var process = data.process || {};
+                var mediaRuntime = data.media_runtime || {};
+                var resourceUsage = data.resource_usage || {};
+                var tmpUsage = resourceUsage.tmp || {};
+                var cacheUsage = resourceUsage.cache || {};
                 var googleSitemap = seo.search_console_sitemap || {};
                 var metrics = data.metrics && data.metrics.endpoints ? data.metrics.endpoints : {};
                 var activeBots = Array.isArray(data.runtime_bots) ? data.runtime_bots.filter(function (bot) {
@@ -370,15 +398,22 @@
                 grid.className = 'admin-metric-grid';
                 appendMetric(grid, 'Bots online', formatCount(activeBots.length) + '/' + formatCount(data.configured_bot_count));
                 appendMetric(grid, 'Products', formatCount(summary.products));
+                appendMetric(grid, 'Categories/Subcats', formatCount(summary.categories) + '/' + formatCount(summary.subcategories));
+                appendMetric(grid, 'Total users', formatCount(summary.bot_users));
                 appendMetric(grid, 'Users 24h', formatCount(summary.active_users_24h));
+                appendMetric(grid, 'Subscribed users', formatCount(summary.subscribed_users));
                 appendMetric(grid, 'Blocked users', formatCount(summary.blocked_users));
+                appendMetric(grid, 'Blocked entities/IPs', formatCount(summary.blocked_entities) + '/' + formatCount(summary.blocked_ips));
                 appendMetric(grid, 'Unique visitors 24h', formatCount(summary.unique_visitors_24h));
                 appendMetric(grid, 'Website visits 24h', formatCount(summary.website_visits_24h));
                 appendMetric(grid, 'WebApp opens 24h', formatCount(summary.webapp_visits_24h));
                 appendMetric(grid, 'Known visitors 24h', formatCount(summary.known_visitor_users_24h));
                 appendMetric(grid, 'Pending notifications', formatCount(summary.pending_notifications));
+                appendMetric(grid, 'Queued custom msgs', formatCount(summary.queued_custom_messages));
                 appendMetric(grid, 'WebApp events 24h', formatCount(summary.webapp_events_24h));
                 appendMetric(grid, 'Inline queries 24h', formatCount(summary.inline_queries_24h));
+                appendMetric(grid, 'Inline chosen 24h', formatCount(summary.inline_chosen_24h));
+                appendMetric(grid, 'Searches 24h', formatCount(summary.search_queries_24h));
                 appendMetric(grid, 'No-result searches', formatCount(summary.search_no_result_24h));
                 appendMetric(grid, 'SEO mappings', formatCount(summary.seo_query_mappings));
                 appendMetric(grid, 'Google queries ' + googleWindowDays + 'd', formatCount(seo.search_console_queries_window));
@@ -392,7 +427,22 @@
                 appendMetric(grid, 'IndexNow key', indexnow.key_file_available ? 'Ready' : (indexnow.enabled === false ? 'Off' : 'Pending'));
                 appendMetric(grid, 'Webhook 401 total', formatCount(data.webhook_401_total));
                 appendMetric(grid, 'File ID cache', formatCount(summary.file_id_cache_entries));
+                appendMetric(grid, 'Canonical media', formatCount(summary.canonical_media));
+                appendMetric(grid, 'Bot media mappings', formatCount(summary.bot_media_mappings));
+                appendMetric(grid, 'Media objects', formatCount(summary.media_objects_active));
+                appendMetric(grid, 'Translation cache', formatCount(summary.translation_cache_entries));
                 appendMetric(grid, 'Memory cache', formatCount(cache.api_results));
+                appendMetric(grid, 'Media info cache', formatCount(cache.media_info));
+                appendMetric(grid, 'SEO page cache', formatCount(process.seo_response_cache_entries));
+                appendMetric(grid, 'WebApp search cache', formatCount(process.webapp_search_cache_entries));
+                appendMetric(grid, 'Uptime', formatDuration(process.uptime_seconds));
+                appendMetric(grid, 'Visitor queue', formatCount(process.visitor_queue_size) + '/' + formatCount(process.visitor_queue_max));
+                appendMetric(grid, 'Visitor writes/drops', formatCount(process.visitor_events_written) + '/' + formatCount(process.visitor_events_dropped));
+                appendMetric(grid, 'Media cache mode', (mediaRuntime.storage_mode || '-') + (mediaRuntime.video_cache_enabled ? ' + video' : ''));
+                appendMetric(grid, 'Active media streams', formatCount(mediaRuntime.active_streams));
+                appendMetric(grid, 'Media cache limit', formatCount(mediaRuntime.cache_max_mb) + ' MB');
+                appendMetric(grid, 'Temp app usage', formatBytes(tmpUsage.used_bytes));
+                appendMetric(grid, 'Persistent cache used', formatBytes(cacheUsage.app_cache_bytes));
                 panel.appendChild(grid);
 
                 var latency = document.createElement('div');
@@ -407,6 +457,56 @@
                 if (latency.childElementCount) {
                     panel.appendChild(latency);
                 }
+
+                appendList(panel, 'Runtime Bots', data.runtime_bots || [], function (item) {
+                    var username = item.username ? '@' + item.username : 'not started';
+                    var slot = item.slot_name || (item.slot_id !== null && item.slot_id !== undefined ? 'slot ' + item.slot_id : 'slot -');
+                    return '#' + item.index + ' ' + username + ': ' + (item.running ? 'running' : 'stopped') + ', ' + slot + ', id ' + (item.telegram_bot_id || '-');
+                }, 20);
+
+                appendList(panel, 'Registered Bot Slots', data.bot_instances || [], function (item) {
+                    var username = item.telegram_username || item.bot_username || 'unknown';
+                    return (item.slot_name || ('slot ' + (item.slot_id || '-'))) + ': @' + username + ', telegram id ' + (item.bot_id || '-') + ', last seen ' + (item.last_seen || '-');
+                }, 20);
+
+                appendList(panel, 'Bot Registry', data.bots || [], function (item) {
+                    return '@' + (item.bot_username || 'unknown') + ': ' + (item.status || '-') + ', telegram id ' + (item.telegram_bot_id || '-') + ', updated ' + (item.updated_at || '-');
+                }, 20);
+
+                appendList(panel, 'Pending Notifications By Bot', data.pending_notifications_by_bot || [], function (item) {
+                    return '@' + String(item.bot_username || '_untracked_') + ': ' + formatCount(item.pending) + ' pending';
+                }, 12);
+
+                appendList(panel, 'Pending Custom Messages By Bot', data.pending_custom_messages_by_bot || [], function (item) {
+                    return '@' + String(item.bot_username || '_untracked_') + ': ' + formatCount(item.pending) + ' pending';
+                }, 12);
+
+                appendList(panel, 'Inline Activity 24h', data.inline_activity || [], function (item) {
+                    return '@' + String(item.bot_username || '_unknown_') + ': ' + formatCount(item.queries) + ' queries, avg ' + formatMs(item.avg_latency_ms) + ', results ' + Number(item.avg_results || 0).toFixed(1);
+                }, 12);
+
+                appendList(panel, 'Recent Products', data.recent_products || [], function (item) {
+                    var title = String(item.caption || '').split('\n')[0] || ('Product ' + item.id);
+                    return '#' + item.id + ' ' + title + ' - ' + (item.category || '-') + (item.subcategory ? ' / ' + item.subcategory : '') + ', ' + (item.file_type || 'media') + ', ' + (item.created_at || '-');
+                }, 12);
+
+                appendList(panel, 'Recent Users', data.recent_users || [], function (item) {
+                    var name = item.username ? '@' + item.username : (item.first_name || String(item.user_id || 'user'));
+                    return name + ' (' + (item.user_id || '-') + '): ' + (item.bot_username || '_untracked_') + ', ' + String(item.language || 'en').toUpperCase() + ', seen ' + (item.last_seen || '-') + (item.is_blocked ? ', blocked' : '');
+                }, 12);
+
+                appendList(panel, 'Recent Visitors', data.recent_visitor_events || [], function (item) {
+                    var who = item.username ? '@' + item.username : (item.telegram_user_id || 'unknown');
+                    var place = [item.city, item.region, item.country].filter(function (part) {
+                        return part && part !== 'Unknown';
+                    }).join(', ') || 'Unknown';
+                    return who + ': ' + (item.source || '-') + '/' + (item.page_type || '-') + ' ' + formatPagePath(item.path || '/') + ', ' + place + ', ' + (item.device_type || '-') + ', ' + (item.created_at || '-');
+                }, 12);
+
+                appendList(panel, 'Recent WebApp Events', data.recent_webapp_events || [], function (item) {
+                    var who = item.username ? '@' + item.username : (item.user_id || 'unknown');
+                    return who + ': ' + (item.event_type || 'event') + '/' + (item.action || 'action') + ', ' + (item.status || '-') + (item.error ? ', ' + item.error : '') + ', ' + (item.created_at || '-');
+                }, 12);
 
                 appendList(panel, 'Top Google Searches', seo.top_search_console_queries || [], function (item) {
                     return String(item.query || 'query') + ': ' + formatCount(item.clicks) + ' clicks, ' + formatCount(item.impressions) + ' impressions, avg pos ' + (item.avg_position || '-');
