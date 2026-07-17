@@ -55,6 +55,7 @@ from utils.notification_manager import notification_service
 from utils.safe_send import safe_send_message, safe_edit_message_text
 from utils.primary_instance import is_primary_instance
 from utils.access_control import is_user_blocked_cached, track_user_debounced
+from utils.deeplinks import normalize_webapp_url
 
 # Configure logging
 from configs.logging_config import configure_logging
@@ -623,12 +624,13 @@ async def setup_bot_commands(bot):
     """
     bot_label = getattr(bot, "username", None) or "unknown"
     # Configure Menu Button to open webapp (if WEB_APP_URL is configured)
-    if Config.WEB_APP_URL:
+    launch_url = normalize_webapp_url(Config.WEB_APP_URL)
+    if launch_url:
         try:
             await bot.set_chat_menu_button(
                 menu_button=MenuButtonWebApp(
                     text="🛒 SHOP",  # Text shown on menu button
-                    web_app=WebAppInfo(url=Config.WEB_APP_URL)
+                    web_app=WebAppInfo(url=launch_url)
                 )
             )
             logger.info("Menu button configured for bot=%s", bot_label)

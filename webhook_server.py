@@ -4688,7 +4688,6 @@ async def _build_storefront_index_context(
             logger.debug("Failed to build homepage SEO ItemList schema: %s", exc)
     ctx["localized_home_url"] = _localized_path("/", language)
     ctx["localized_learn_url"] = _localized_path("/learn", language)
-    ctx["webapp_shell_url"] = Config.WEB_APP_URL or "/webapp/index.html"
     return ctx, recent_products
 
 
@@ -4753,55 +4752,12 @@ def _product_id_from_query(request: Request) -> Optional[int]:
     return None
 
 
-def _looks_like_telegram_webapp_request(request: Request) -> bool:
-    """Avoid redirecting Telegram Mini App launches away from the WebApp shell."""
-    user_agent = (request.headers.get("user-agent") or "").lower()
-    if "telegram" in user_agent:
-        return True
-    if request.query_params.get("tgWebAppStartParam") or request.query_params.get("start_param"):
-        return True
-    return any(key.lower().startswith("tgwebapp") for key in request.query_params.keys())
-
-
-async def _maybe_serve_webapp_shell(
-    request: Request,
-    *,
-    language: str = "en",
-    include_seo_links: bool = True,
-) -> Optional[Response]:
-    """Redirect Telegram launches on public routes to the canonical Mini App shell.
-
-    This keeps the SEO storefront and Telegram Mini App separated again while
-    still rescuing stale Telegram entry points that may still point at `/`.
-    """
-    if not _looks_like_telegram_webapp_request(request):
-        return None
-    shell_url = Config.WEB_APP_URL or "/webapp/index.html"
-    target = urllib.parse.urlsplit(shell_url)
-    source_params = urllib.parse.parse_qsl(request.url.query, keep_blank_values=True)
-    merged_params = dict(urllib.parse.parse_qsl(target.query, keep_blank_values=True))
-    for key, value in source_params:
-        merged_params.setdefault(key, value)
-    redirect_url = urllib.parse.urlunsplit((
-        target.scheme,
-        target.netloc,
-        target.path or "/webapp/index.html",
-        urllib.parse.urlencode(merged_params),
-        target.fragment,
-    ))
-    _queue_visitor_event(request, source="webapp", page_type="webapp_redirect", language=language)
-    return RedirectResponse(url=redirect_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
-
-
 @app.get("/", response_class=HTMLResponse)
 @app.head("/", response_class=HTMLResponse)
 async def serve_homepage(request: Request):
     """Serve the homepage with default Storefront SEO metadata."""
-    webapp_response = await _maybe_serve_webapp_shell(request, include_seo_links=True)
-    if webapp_response is not None:
-        return webapp_response
     product_id = _product_id_from_query(request)
-    if product_id and not _looks_like_telegram_webapp_request(request):
+    if product_id:
         product = await _catalog_db.get_product(product_id)
         if product:
             return RedirectResponse(
@@ -4825,13 +4781,6 @@ async def serve_homepage(request: Request):
 @app.get("/fr/", response_class=HTMLResponse)
 async def serve_localized_homepage(request: Request):
     language = _normalize_seo_language(request.url.path.strip("/").split("/", 1)[0])
-    webapp_response = await _maybe_serve_webapp_shell(
-        request,
-        include_seo_links=True,
-        language=language,
-    )
-    if webapp_response is not None:
-        return webapp_response
     _queue_visitor_event(request, source="website", page_type="home", language=language)
     return await _serve_storefront_index(request, include_seo_links=True, language=language)
 
@@ -4840,9 +4789,20 @@ async def serve_localized_homepage(request: Request):
 @app.get("/webapp/", response_class=HTMLResponse)
 @app.get("/webapp", response_class=HTMLResponse)
 async def serve_webapp(request: Request):
-    """Serve the Telegram Mini App shell."""
-    _queue_visitor_event(request, source="webapp", page_type="webapp_shell")
-    return await _serve_webapp_index(request, include_seo_links=True)
+    """Compatibility route that forwards legacy Mini App URLs into the unified storefront."""
+    product_id = _product_id_from_query(request)
+    if product_id:
+        product = await _catalog_db.get_product(product_id)
+        if product:
+            _queue_visitor_event(request, source="webapp", page_type="webapp_redirect", product_id=product_id)
+            return RedirectResponse(
+                url=_canonical_product_path(product_id, product.get("caption") or ""),
+                status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+            )
+        return await _missing_product_redirect(product_id, permanent_when_known=False)
+
+    _queue_visitor_event(request, source="webapp", page_type="webapp_redirect")
+    return RedirectResponse(url="/", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
 
 @app.get("/learn", response_class=HTMLResponse)
