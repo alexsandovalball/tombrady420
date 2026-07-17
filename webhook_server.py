@@ -6981,7 +6981,10 @@ async def get_user_info(request: Request):
         username = user_data.username
         first_name = user_data.first_name
         last_name = user_data.last_name
-        language_code = user_data.language_code
+        telegram_language_code = user_data.language_code
+        user_row = await _catalog_db.get_user_by_id(user_id)
+        stored_language = (user_row or {}).get("language") if user_row else None
+        preferred_language = _normalize_seo_language(stored_language or telegram_language_code or "en")
         
         return {
             "authenticated": True,
@@ -6989,7 +6992,10 @@ async def get_user_info(request: Request):
             "username": username,
             "first_name": first_name,
             "last_name": last_name,
-            "language_code": language_code
+            "language_code": preferred_language,
+            "preferred_language": preferred_language,
+            "telegram_language_code": telegram_language_code,
+            "language_source": "bot" if stored_language else "telegram"
         }
     except HTTPException:
         raise
@@ -7021,6 +7027,9 @@ async def track_webapp_user(request: Request):
         username = data.get("username")
         first_name = data.get("first_name")
         last_name = data.get("last_name")
+        raw_language = str(data.get("language_code") or "").split("-", 1)[0].strip().lower()
+        requested_language = raw_language if raw_language in SUPPORTED_LANGUAGES else ""
+        language_source = str(data.get("language_source") or "").strip().lower()
         
         # Try to extract user info from initData if not in request body
         if not user_id and init_data:
@@ -7069,6 +7078,16 @@ async def track_webapp_user(request: Request):
             last_name=last_name,
             bot_username=bot_username
         )
+
+        if init_data and language_source in {"manual", "top_switch", "language_screen"} and requested_language in SUPPORTED_LANGUAGES:
+            await _catalog_db.set_user_language(int(user_id), requested_language)
+            logger.info(
+                "[WebApp] Synced user %s language preference to %s from %s",
+                user_id,
+                requested_language,
+                language_source,
+            )
+
         _queue_visitor_event(request, source="webapp", page_type="user_track", init_data=init_data)
 
         # Record the client IP so it can be blocked alongside the account later
@@ -7084,7 +7103,8 @@ async def track_webapp_user(request: Request):
         return {
             "success": True,
             "user_id": user_id,
-            "tracked": True
+            "tracked": True,
+            "language_code": requested_language if requested_language in SUPPORTED_LANGUAGES else None
         }
         
     except HTTPException:

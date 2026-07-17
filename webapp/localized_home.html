@@ -17,9 +17,13 @@
     <meta property="og:locale" content="{{ seo_locale or 'en_US' }}">
     <script type="application/ld+json">{{ seo_schema | safe }}</script>
     <link rel="icon" type="image/svg+xml" href="/assets/site-icon.svg">
+    <link rel="shortcut icon" href="/favicon.ico">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="manifest" href="/assets/manifest.json">
     <link rel="stylesheet" href="/assets/style.css?v=20260717-unified-seo-ui-v2">
     <link rel="preconnect" href="https://telegram.org" crossorigin>
     <link rel="dns-prefetch" href="https://telegram.org">
+    <script src="/assets/telegram-miniapp-bridge.js?v=20260717-botfather-bridge-v1"></script>
     <script>
         (function () {
             var isTelegramWebApp = false;

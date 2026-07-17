@@ -693,7 +693,7 @@
     }
 
     function canAutoReplaceLanguage() {
-        return !['url', 'stored', 'manual'].includes(state.languageSource);
+        return !['url', 'stored', 'manual', 'bot'].includes(state.languageSource);
     }
 
     // Helper: Normalize contact username (remove @ prefix)
@@ -1318,10 +1318,11 @@
                             if (!state.username && userInfo.username) {
                                 state.username = userInfo.username;
                             }
-                            const backendLanguage = normalizeSupportedLanguage(userInfo.language_code);
-                            if (backendLanguage && canAutoReplaceLanguage()) {
+                            const backendLanguage = normalizeSupportedLanguage(userInfo.preferred_language || userInfo.language_code);
+                            if (backendLanguage) {
                                 state.userLanguage = backendLanguage;
-                                state.languageSource = 'telegram';
+                                state.languageSource = userInfo.language_source === 'bot' ? 'bot' : 'telegram';
+                                persistLanguage(backendLanguage);
                             }
                         }
                     }
@@ -1412,12 +1413,47 @@
                 user_id: state.userId,
                 username: state.username || user.username || null,
                 first_name: user.first_name || null,
-                last_name: user.last_name || null
+                last_name: user.last_name || null,
+                language_code: state.userLanguage,
+                language_source: state.languageSource
             })
         });
         logger.log('user_tracking', 'user_tracked_in_db', 'success', '', {
             user_id: state.userId
         });
+    }
+
+    async function syncUserLanguagePreference(languageCode, source = 'manual') {
+        const supported = normalizeSupportedLanguage(languageCode);
+        if (!supported || !tg.initData || !state.userId) return;
+
+        const user = tg.initDataUnsafe?.user || {};
+        try {
+            const response = await fetch('/api/user/track', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Telegram-Init-Data': tg.initData
+                },
+                body: JSON.stringify({
+                    user_id: state.userId,
+                    username: state.username || user.username || null,
+                    first_name: user.first_name || null,
+                    last_name: user.last_name || null,
+                    language_code: supported,
+                    language_source: source
+                })
+            });
+            if (!response.ok) {
+                logger.apiCall('sync_language_preference', 'error', {
+                    status: response.status,
+                    language: supported,
+                    source
+                });
+            }
+        } catch (err) {
+            logger.error('sync_language_preference', err.message, { stack: err.stack });
+        }
     }
 
     async function loadUserSubscriptionStatus() {
@@ -2183,9 +2219,11 @@
     }
 
     function selectLanguage(lang, options = {}) {
+        const source = options.source || (state.view === 'language' ? 'language_screen' : 'manual');
         state.userLanguage = lang.code;
         state.languageSource = 'manual';
         persistLanguage(lang.code);
+        syncUserLanguagePreference(lang.code, source);
         
         // Apply translations immediately
         applyTranslations();
