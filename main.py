@@ -55,7 +55,7 @@ from utils.notification_manager import notification_service
 from utils.safe_send import safe_send_message, safe_edit_message_text
 from utils.primary_instance import is_primary_instance
 from utils.access_control import is_user_blocked_cached, track_user_debounced
-from utils.deeplinks import normalize_webapp_url
+from utils.deeplinks import build_webapp_shell_url
 
 # Configure logging
 from configs.logging_config import configure_logging
@@ -624,7 +624,7 @@ async def setup_bot_commands(bot):
     """
     bot_label = getattr(bot, "username", None) or "unknown"
     # Configure Menu Button to open webapp (if WEB_APP_URL is configured)
-    launch_url = normalize_webapp_url(Config.WEB_APP_URL)
+    launch_url = build_webapp_shell_url(Config.WEB_APP_URL)
     if launch_url:
         try:
             await bot.set_chat_menu_button(

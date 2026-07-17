@@ -4789,20 +4789,15 @@ async def serve_localized_homepage(request: Request):
 @app.get("/webapp/", response_class=HTMLResponse)
 @app.get("/webapp", response_class=HTMLResponse)
 async def serve_webapp(request: Request):
-    """Compatibility route that forwards legacy Mini App URLs into the unified storefront."""
+    """Serve the Telegram Mini App shell."""
     product_id = _product_id_from_query(request)
-    if product_id:
-        product = await _catalog_db.get_product(product_id)
-        if product:
-            _queue_visitor_event(request, source="webapp", page_type="webapp_redirect", product_id=product_id)
-            return RedirectResponse(
-                url=_canonical_product_path(product_id, product.get("caption") or ""),
-                status_code=status.HTTP_307_TEMPORARY_REDIRECT,
-            )
-        return await _missing_product_redirect(product_id, permanent_when_known=False)
-
-    _queue_visitor_event(request, source="webapp", page_type="webapp_redirect")
-    return RedirectResponse(url="/", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    _queue_visitor_event(
+        request,
+        source="webapp",
+        page_type="webapp_shell",
+        product_id=product_id,
+    )
+    return await _serve_webapp_index(request, include_seo_links=True)
 
 
 @app.get("/learn", response_class=HTMLResponse)

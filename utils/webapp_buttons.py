@@ -14,7 +14,7 @@ from telegram import (
 
 from configs.config import Config
 from translations.translator import get_translated_string_async
-from utils.deeplinks import build_webapp_product_url, normalize_webapp_url
+from utils.deeplinks import build_webapp_shell_url
 
 
 def build_webapp_button(
@@ -23,10 +23,7 @@ def build_webapp_button(
     product_id: Optional[int] = None,
 ) -> Optional[InlineKeyboardButton]:
     """Return a Telegram Mini App button when the WebApp URL is configured."""
-    if product_id is None:
-        url = normalize_webapp_url(Config.WEB_APP_URL)
-    else:
-        url = build_webapp_product_url(Config.WEB_APP_URL, product_id)
+    url = build_webapp_shell_url(Config.WEB_APP_URL, product_id=product_id)
 
     if not url:
         return None
@@ -41,7 +38,7 @@ async def build_welcome_keyboard(
 ) -> ReplyKeyboardMarkup:
     """Build the shared welcome keyboard using Telegram's more reliable reply-keyboard WebApp button."""
     open_shop_text = await get_translated_string_async("open_shop", user_lang)
-    webapp_url = normalize_webapp_url(Config.WEB_APP_URL)
+    webapp_url = build_webapp_shell_url(Config.WEB_APP_URL)
 
     keyboard_buttons: list[list[KeyboardButton]] = []
     if webapp_url:

@@ -1,4 +1,4 @@
-"""Helpers for product deep links across bot and storefront/Mini App surfaces."""
+"""Helpers for product deep links across bot, storefront, and Mini App surfaces."""
 
 from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -15,12 +15,7 @@ def build_bot_start_url(bot_username: str, payload: str = "start") -> Optional[s
 
 
 def normalize_webapp_url(web_app_url: str) -> Optional[str]:
-    """Return the canonical storefront home URL used for Telegram WebApp launches.
-
-    The storefront and the Telegram Mini App now intentionally share the same UI,
-    so fresh launches should land on the public home route rather than the old
-    dedicated `/webapp/index.html` shell.
-    """
+    """Return the canonical storefront home URL."""
     if not web_app_url:
         return None
 
@@ -31,6 +26,26 @@ def normalize_webapp_url(web_app_url: str) -> Optional[str]:
         parts.scheme,
         parts.netloc,
         "/",
+        urlencode(query),
+        parts.fragment,
+    ))
+
+
+def build_webapp_shell_url(web_app_url: str, product_id: Optional[int] = None) -> Optional[str]:
+    """Return the Telegram Mini App shell URL, optionally preloading a product."""
+    base_url = normalize_webapp_url(web_app_url)
+    if not base_url:
+        return None
+
+    parts = urlsplit(base_url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    if product_id is not None:
+        query["product_id"] = str(int(product_id))
+
+    return urlunsplit((
+        parts.scheme,
+        parts.netloc,
+        "/webapp/index.html",
         urlencode(query),
         parts.fragment,
     ))
