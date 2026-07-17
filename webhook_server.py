@@ -4318,12 +4318,7 @@ def _read_brand_icon_png() -> bytes:
 def _read_site_icon_svg() -> bytes:
     image_path = Path(__file__).parent / "webapp" / "assets" / "site-icon.svg"
     if not image_path.exists():
-        return (
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 128 128\">"
-            "<text x=\"50%\" y=\"50%\" text-anchor=\"middle\" dominant-baseline=\"central\" "
-            "font-family=\"Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif\" "
-            "font-size=\"104\">🏈</text></svg>"
-        ).encode("utf-8")
+        raise HTTPException(status_code=404, detail="Site icon not found")
     return image_path.read_bytes()
 
 
