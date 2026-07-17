@@ -4748,10 +4748,35 @@ def _looks_like_telegram_webapp_request(request: Request) -> bool:
     return any(key.lower().startswith("tgwebapp") for key in request.query_params.keys())
 
 
+async def _maybe_serve_webapp_shell(
+    request: Request,
+    *,
+    language: str = "en",
+    include_seo_links: bool = True,
+) -> Optional[HTMLResponse]:
+    """Serve the Telegram Mini App shell when the request is a real WebApp launch.
+
+    This keeps public SEO pages intact for normal browser traffic while ensuring
+    stale Telegram entry points (for example a root URL saved in a menu button)
+    still land inside the Mini App shell instead of the public storefront.
+    """
+    if not _looks_like_telegram_webapp_request(request):
+        return None
+    _queue_visitor_event(request, source="webapp", page_type="webapp_shell", language=language)
+    return await _serve_webapp_index(
+        request,
+        include_seo_links=include_seo_links,
+        language=language,
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 @app.head("/", response_class=HTMLResponse)
 async def serve_homepage(request: Request):
     """Serve the homepage with default Storefront SEO metadata."""
+    webapp_response = await _maybe_serve_webapp_shell(request, include_seo_links=True)
+    if webapp_response is not None:
+        return webapp_response
     product_id = _product_id_from_query(request)
     if product_id and not _looks_like_telegram_webapp_request(request):
         product = await _catalog_db.get_product(product_id)
@@ -4777,6 +4802,13 @@ async def serve_homepage(request: Request):
 @app.get("/fr/", response_class=HTMLResponse)
 async def serve_localized_homepage(request: Request):
     language = _normalize_seo_language(request.url.path.strip("/").split("/", 1)[0])
+    webapp_response = await _maybe_serve_webapp_shell(
+        request,
+        include_seo_links=True,
+        language=language,
+    )
+    if webapp_response is not None:
+        return webapp_response
     _queue_visitor_event(request, source="website", page_type="home", language=language)
     return await _serve_storefront_index(request, include_seo_links=True, language=language)
 
