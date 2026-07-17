@@ -7,8 +7,6 @@ from typing import Optional
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    KeyboardButton,
-    ReplyKeyboardMarkup,
     WebAppInfo,
 )
 
@@ -35,33 +33,31 @@ async def build_welcome_keyboard(
     user_lang: str,
     *,
     is_subscribed: bool,
-) -> ReplyKeyboardMarkup:
-    """Build the shared welcome keyboard using Telegram's more reliable reply-keyboard WebApp button."""
+) -> InlineKeyboardMarkup:
+    """Build the shared welcome keyboard with Mini App and in-bot entry points."""
     open_shop_text = await get_translated_string_async("open_shop", user_lang)
-    webapp_url = build_webapp_shell_url(Config.WEB_APP_URL)
+    browse_in_bot_text = await get_translated_string_async("browse_in_bot", user_lang)
+    change_language_text = await get_translated_string_async("change_language", user_lang)
 
-    keyboard_buttons: list[list[KeyboardButton]] = []
-    if webapp_url:
-        keyboard_buttons.append([
-            KeyboardButton(open_shop_text, web_app=WebAppInfo(url=webapp_url))
-        ])
+    keyboard_buttons: list[list[InlineKeyboardButton]] = []
+    webapp_button = build_webapp_button(open_shop_text)
+    if webapp_button:
+        keyboard_buttons.append([webapp_button])
 
     keyboard_buttons.append([
-        KeyboardButton("/menu"),
-        KeyboardButton("/language"),
+        InlineKeyboardButton(browse_in_bot_text, callback_data="categories")
+    ])
+    keyboard_buttons.append([
+        InlineKeyboardButton(change_language_text, callback_data="open_language_settings")
     ])
 
     if not is_subscribed:
+        resubscribe_text = await get_translated_string_async("resubscribe_notifications", user_lang)
         keyboard_buttons.append([
-            KeyboardButton("/subscribe"),
+            InlineKeyboardButton(resubscribe_text, callback_data="toggle_notifications")
         ])
 
-    return ReplyKeyboardMarkup(
-        keyboard_buttons,
-        resize_keyboard=True,
-        is_persistent=True,
-        one_time_keyboard=False,
-    )
+    return InlineKeyboardMarkup(keyboard_buttons)
 
 
 async def build_catalog_keyboard(user_lang: str) -> InlineKeyboardMarkup:

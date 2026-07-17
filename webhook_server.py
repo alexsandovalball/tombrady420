@@ -4752,10 +4752,53 @@ def _product_id_from_query(request: Request) -> Optional[int]:
     return None
 
 
+def _looks_like_telegram_webapp_request(request: Request) -> bool:
+    """Detect Telegram Mini App launches that should stay in the shell."""
+    user_agent = (request.headers.get("user-agent") or "").lower()
+    if "telegram" in user_agent:
+        return True
+    if request.query_params.get("tgWebAppStartParam") or request.query_params.get("start_param"):
+        return True
+    return any(key.lower().startswith("tgwebapp") for key in request.query_params.keys())
+
+
+async def _maybe_serve_webapp_shell(
+    request: Request,
+    *,
+    language: str = "en",
+    include_seo_links: bool = True,
+) -> Optional[HTMLResponse]:
+    """Serve the Mini App shell for stale or root-based Telegram launch URLs.
+
+    Public browser traffic still gets crawlable SEO pages, while Telegram clients
+    that open an older root URL do not get stranded on the public storefront.
+    """
+    if not _looks_like_telegram_webapp_request(request):
+        return None
+
+    product_id = _product_id_from_query(request)
+    _queue_visitor_event(
+        request,
+        source="webapp",
+        page_type="webapp_shell",
+        product_id=product_id,
+        language=language,
+    )
+    return await _serve_webapp_index(
+        request,
+        include_seo_links=include_seo_links,
+        language=language,
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 @app.head("/", response_class=HTMLResponse)
 async def serve_homepage(request: Request):
     """Serve the homepage with default Storefront SEO metadata."""
+    webapp_response = await _maybe_serve_webapp_shell(request, include_seo_links=True)
+    if webapp_response is not None:
+        return webapp_response
+
     product_id = _product_id_from_query(request)
     if product_id:
         product = await _catalog_db.get_product(product_id)
@@ -4781,6 +4824,14 @@ async def serve_homepage(request: Request):
 @app.get("/fr/", response_class=HTMLResponse)
 async def serve_localized_homepage(request: Request):
     language = _normalize_seo_language(request.url.path.strip("/").split("/", 1)[0])
+    webapp_response = await _maybe_serve_webapp_shell(
+        request,
+        include_seo_links=True,
+        language=language,
+    )
+    if webapp_response is not None:
+        return webapp_response
+
     _queue_visitor_event(request, source="website", page_type="home", language=language)
     return await _serve_storefront_index(request, include_seo_links=True, language=language)
 
