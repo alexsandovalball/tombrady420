@@ -652,9 +652,11 @@
 
     function applyDetectedLanguage() {
         const params = new URLSearchParams(window.location.search || '');
+        const pathLanguage = normalizeSupportedLanguage(window.location.pathname.split('/').filter(Boolean)[0]);
         const browserLanguages = Array.isArray(navigator.languages) ? navigator.languages : [];
         const candidates = [
             { source: 'url', value: params.get('lang') || params.get('language') },
+            { source: 'url', value: pathLanguage },
             { source: 'stored', value: readStoredLanguage() },
             { source: 'telegram', value: tg.initDataUnsafe?.user?.language_code },
             { source: 'browser', value: browserLanguages[0] || navigator.language || navigator.userLanguage }
@@ -675,6 +677,19 @@
 
         state.userLanguage = 'en';
         state.languageSource = 'default';
+    }
+
+    function updateTopLanguageSwitch() {
+        document.querySelectorAll('.miniapp-language-option').forEach(link => {
+            const linkLanguage = normalizeSupportedLanguage(link.dataset.language || link.textContent);
+            const isSelected = !!linkLanguage && findLanguageByCode(state.userLanguage)?.code === linkLanguage;
+            link.classList.toggle('selected', isSelected);
+            if (isSelected) {
+                link.setAttribute('aria-current', 'page');
+            } else {
+                link.removeAttribute('aria-current');
+            }
+        });
     }
 
     function canAutoReplaceLanguage() {
@@ -1088,6 +1103,7 @@
                 langDisplay.textContent = lang.name;
             }
         }
+        updateTopLanguageSwitch();
         
 
         // Update status message if it's showing a translatable key
@@ -1823,6 +1839,7 @@
                 state.lastLoggedUserStateId = userStateKey;
             }
         }
+        updateTopLanguageSwitch();
     }
 
     function setupEventListeners() {
@@ -1838,6 +1855,15 @@
         document.getElementById('home-btn').addEventListener('click', () => showWelcome());
         document.getElementById('search-btn').addEventListener('click', () => showSearch());
         document.getElementById('language-btn').addEventListener('click', () => showLanguageSelection());
+        document.querySelectorAll('.miniapp-language-option').forEach(link => {
+            link.addEventListener('click', (event) => {
+                const selectedLanguage = normalizeSupportedLanguage(link.dataset.language || link.textContent);
+                const language = selectedLanguage ? findLanguageByCode(selectedLanguage) : null;
+                if (!language) return;
+                event.preventDefault();
+                selectLanguage(language, { closeSelection: false, source: 'top_switch' });
+            });
+        });
 
         // Back button - use touchstart for instant response on mobile
         const backBtn = document.getElementById('back-btn');
@@ -1891,6 +1917,7 @@
             '.action-btn',
             '.category-btn',
             '.language-btn',
+            '.miniapp-language-option',
             '.product-card',
             '#back-btn'
         ];
@@ -2155,7 +2182,7 @@
         setStatus(t('language_title'));
     }
 
-    function selectLanguage(lang) {
+    function selectLanguage(lang, options = {}) {
         state.userLanguage = lang.code;
         state.languageSource = 'manual';
         persistLanguage(lang.code);
@@ -2165,22 +2192,28 @@
         
         setStatus(t('language_changed', lang.name));
         
-        // Close language selection view immediately
-        goBack();
+        updateTopLanguageSwitch();
+        renderUserInfo();
+
+        // Close language selection view immediately when using the full language screen.
+        if (options.closeSelection !== false && state.view === 'language') {
+            goBack();
+        }
         
-        // Reload data with new language in background
+        // Reload the currently visible data with the new language in background.
+        // The top language row should not force users out of the page they are viewing.
         setTimeout(async () => {
             try {
-                // Reload categories with new language
-                await loadCategories(false, 'replace');
-                
-                // Reload current view content with new language if needed
-                if (state.view === 'products' && (state.currentCategory || state.currentSubcategory)) {
+                if (state.view === 'categories') {
+                    await loadCategories(false, 'replace');
+                } else if (state.view === 'products' && (state.currentCategory || state.currentSubcategory)) {
                     // Reload products in current category/subcategory - don't add to history
                     await loadProducts(state.currentCategory, state.currentSubcategory, false, false);
                 } else if (state.view === 'search' && state.searchQuery) {
                     // Re-run search with new language
                     await performSearch();
+                } else if (state.view === 'welcome') {
+                    showWelcome(false, 'replace');
                 }
             } catch (error) {
                 logger.error('language_reload_failed', error.message, { stack: error.stack });

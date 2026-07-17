@@ -66,6 +66,37 @@ body.unified-storefront-ui .miniapp-shell {
     background: transparent;
 }
 
+body.unified-storefront-ui .miniapp-language-switch {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin: 0 0 1rem;
+}
+
+body.unified-storefront-ui .miniapp-language-switch a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 34px;
+    padding: 0.35rem 0.55rem;
+    border: 1px solid rgba(0, 0, 0, 0.14);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.94);
+    color: var(--tg-theme-hint-color, #555555);
+    font-size: 0.82rem;
+    font-weight: 700;
+    line-height: 1;
+    text-decoration: none;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+
+body.unified-storefront-ui .miniapp-language-switch a[aria-current="page"],
+body.unified-storefront-ui .miniapp-language-switch a.selected {
+    border-color: var(--tg-theme-link-color, #2481cc);
+    color: var(--tg-theme-link-color, #2481cc);
+}
+
 body.unified-storefront-ui .miniapp-shell .header {
     align-items: flex-start;
     margin: 0.4rem 0 1rem;
