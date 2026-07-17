@@ -169,6 +169,25 @@
     // Initialize logger
     const logger = new WebAppLogger();
 
+    window.addEventListener('error', (event) => {
+        logger.error('window_error', event.message || 'Unhandled window error', {
+            filename: event.filename || '',
+            lineno: event.lineno || 0,
+            colno: event.colno || 0
+        });
+    });
+
+    window.addEventListener('unhandledrejection', (event) => {
+        const reason = event.reason;
+        logger.error(
+            'unhandled_rejection',
+            reason && reason.message ? reason.message : String(reason || 'Unhandled promise rejection'),
+            {
+                stack: reason && reason.stack ? reason.stack : ''
+            }
+        );
+    });
+
     // Cleanup on page unload
     window.addEventListener('beforeunload', () => {
         logger.cleanup();
@@ -218,6 +237,7 @@
         adminStatusLoaded: false,
         adminStatusLoading: false,
         adminStatusRefreshTimer: null,
+        bootFallbackTimer: null,
         languages: [
             { code: 'en', name: 'English (USA)', flag: '🇺🇸' },
             { code: 'de', name: 'German', flag: '🇩🇪' },
@@ -1078,76 +1098,126 @@
         }
     }
 
-    async function init() {
-        applyThemeColors();
-        tg.ready();
-        tg.expand();
-        
-        // Wait a bit for Telegram WebApp to populate initDataUnsafe
-        // This ensures user data is available before rendering
-        await new Promise(resolve => setTimeout(resolve, 100));
+    function hasVisibleView() {
+        return Array.from(document.querySelectorAll('.view')).some(view => {
+            return getComputedStyle(view).display !== 'none';
+        });
+    }
 
-        applyDetectedLanguage();
-        renderUserInfo();
-        
-        // Re-check user info multiple times to ensure it gets loaded
-        // This handles cases where Telegram WebApp initialization is slow
-        let userDataFound = false;
-        const checkUserInfo = (attemptNumber) => {
-            // Check if user data is available
-            if (tg.initDataUnsafe?.user) {
-                if (!userDataFound) {
-                    renderUserInfo();
-                    userDataFound = true;
-                }
-                return true; // Stop checking once found
+    function clearBootFallbackTimer() {
+        if (state.bootFallbackTimer) {
+            clearTimeout(state.bootFallbackTimer);
+            state.bootFallbackTimer = null;
+        }
+    }
+
+    function scheduleBootFallback() {
+        clearBootFallbackTimer();
+        state.bootFallbackTimer = setTimeout(() => {
+            if (hasVisibleView()) {
+                return;
             }
-            return false;
-        };
-        
-        // Check at configured intervals with early exit
-        const checkWithDelay = (delay, attemptNumber) => {
-            setTimeout(() => {
-                if (!userDataFound) {
-                    checkUserInfo(attemptNumber);
-                }
-            }, delay);
-        };
-        
-        checkWithDelay(CONFIG.USER_DATA_CHECK_INTERVALS[0], 1);
-        checkWithDelay(CONFIG.USER_DATA_CHECK_INTERVALS[1], 2);
-        checkWithDelay(CONFIG.USER_DATA_CHECK_INTERVALS[2], 3);
-        
-        setupEventListeners();
-        await establishWebAppSession();
-        
-        // Apply initial translations
-        applyTranslations();
-        
-        // Load initial data before showing welcome
-        // Wrapped in try-catch to ensure showWelcome() is ALWAYS called
+
+            logger.error('boot_fallback', 'No Mini App view rendered after startup', {
+                pathname: window.location.pathname,
+                search: window.location.search,
+                initData_present: !!tg.initData,
+                telegram_available: !!(window.Telegram && window.Telegram.WebApp)
+            });
+
+            try {
+                showWelcome(false, 'replace');
+            } catch (err) {
+                logger.error('boot_fallback_show_welcome', err.message, {
+                    stack: err.stack
+                });
+            }
+        }, 2500);
+    }
+
+    async function init() {
         try {
-            await loadInitialData();
+            scheduleBootFallback();
+
+            applyThemeColors();
+            tg.ready();
+            tg.expand();
+            
+            // Wait a bit for Telegram WebApp to populate initDataUnsafe
+            // This ensures user data is available before rendering
+            await new Promise(resolve => setTimeout(resolve, 100));
+
+            applyDetectedLanguage();
+            renderUserInfo();
+            
+            // Re-check user info multiple times to ensure it gets loaded
+            // This handles cases where Telegram WebApp initialization is slow
+            let userDataFound = false;
+            const checkUserInfo = () => {
+                // Check if user data is available
+                if (tg.initDataUnsafe?.user) {
+                    if (!userDataFound) {
+                        renderUserInfo();
+                        userDataFound = true;
+                    }
+                    return true; // Stop checking once found
+                }
+                return false;
+            };
+            
+            // Check at configured intervals with early exit
+            const checkWithDelay = (delay) => {
+                setTimeout(() => {
+                    if (!userDataFound) {
+                        checkUserInfo();
+                    }
+                }, delay);
+            };
+            
+            checkWithDelay(CONFIG.USER_DATA_CHECK_INTERVALS[0]);
+            checkWithDelay(CONFIG.USER_DATA_CHECK_INTERVALS[1]);
+            checkWithDelay(CONFIG.USER_DATA_CHECK_INTERVALS[2]);
+            
+            setupEventListeners();
+            await establishWebAppSession();
+            
+            // Apply initial translations
+            applyTranslations();
+            
+            // Load initial data before showing welcome
+            // Wrapped in try-catch to ensure showWelcome() is ALWAYS called
+            try {
+                await loadInitialData();
+            } catch (err) {
+                // Log any unexpected errors but continue to show welcome
+                logger.error('init_load_data', 'Unexpected error during initial data load: ' + err.message, {
+                    stack: err.stack
+                });
+                state.initialDataLoadFailed = true;
+            }
+            
+            // Re-render user info after loading data from backend
+            // This ensures we show updated status if user ID was fetched from backend
+            renderUserInfo();
+            queueAdminPanelRefresh();
+            startAdminPanelAutoRefresh();
+            
+            // Open product-specific WebApp links or restore an app route when present.
+            const openedRoute = await restoreBrowserRoute(window.history.state);
+            const openedDeepLink = openedRoute ? true : await openDeepLinkedProduct('replace', { addToHistory: false });
+            if (!openedDeepLink) {
+                // Show welcome screen with loaded data (even if data loading failed)
+                showWelcome(false, 'replace');
+            }
         } catch (err) {
-            // Log any unexpected errors but continue to show welcome
-            logger.error('init_load_data', 'Unexpected error during initial data load: ' + err.message, {
+            logger.error('init_boot', err.message, {
                 stack: err.stack
             });
-            state.initialDataLoadFailed = true;
-        }
-        
-        // Re-render user info after loading data from backend
-        // This ensures we show updated status if user ID was fetched from backend
-        renderUserInfo();
-        queueAdminPanelRefresh();
-        startAdminPanelAutoRefresh();
-        
-        // Open product-specific WebApp links or restore an app route when present.
-        const openedRoute = await restoreBrowserRoute(window.history.state);
-        const openedDeepLink = openedRoute ? true : await openDeepLinkedProduct('replace', { addToHistory: false });
-        if (!openedDeepLink) {
-            // Show welcome screen with loaded data (even if data loading failed)
             showWelcome(false, 'replace');
+        } finally {
+            if (hasVisibleView()) {
+                clearBootFallbackTimer();
+            }
         }
     }
 
