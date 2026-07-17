@@ -7,7 +7,7 @@
     var search = window.location.search || '';
     var hash = window.location.hash || '';
     var markers = search + hash;
-    var hasTelegramMarker = /tgWebApp|tg_web_app|tgWebAppData|tgWebAppStartParam|start_param|initData/i.test(markers);
+    var hasTelegramMarker = /tgWebApp|tg_web_app|tgWebAppData|tgWebAppStartParam|initData/i.test(markers);
     var hasTelegramObject = false;
 
     try {

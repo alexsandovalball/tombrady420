@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional
 from fastapi import FastAPI, HTTPException, Request, Response, status
-from fastapi.responses import StreamingResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from telegram import Update
@@ -90,6 +90,15 @@ configure_logging()
 logger = logging.getLogger(__name__)
 
 
+def _json_no_store(payload: Any, status_code: int = status.HTTP_200_OK) -> JSONResponse:
+    """Return private JSON without allowing browser/proxy caching."""
+    return JSONResponse(
+        payload,
+        status_code=status_code,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
     raw = os.getenv(name)
     try:
@@ -137,6 +146,16 @@ _seo_trends_lock: Optional[asyncio.Lock] = None
 _webapp_search_cache: OrderedDict[str, tuple[float, dict]] = OrderedDict()
 _WEBAPP_SEARCH_CACHE_TTL_SECONDS = _bounded_int_env("WEBAPP_SEARCH_CACHE_TTL_SECONDS", 90, 15, 600)
 _WEBAPP_SEARCH_CACHE_MAX = _bounded_int_env("WEBAPP_SEARCH_CACHE_MAX", 256, 32, 2000)
+_ADMIN_STATUS_CACHE_SECONDS = _bounded_int_env("ADMIN_STATUS_CACHE_SECONDS", 15, 5, 120)
+_ADMIN_STATUS_CACHE_MAX = _bounded_int_env("ADMIN_STATUS_CACHE_MAX", 16, 1, 64)
+_admin_status_cache: OrderedDict[int, tuple[float, dict[str, Any]]] = OrderedDict()
+_SEARCH_CONSOLE_IMPORT_INTERVAL_SECONDS = _bounded_int_env(
+    "SEARCH_CONSOLE_IMPORT_INTERVAL_SECONDS",
+    3600,
+    900,
+    12 * 3600,
+)
+_search_console_import_last_attempt = 0.0
 _PROCESS_STARTED_AT = datetime.utcnow()
 _PROCESS_STARTED_MONOTONIC = _time.monotonic()
 
@@ -798,7 +817,7 @@ def _remember_media_registry_write(bot_identifier: str, file_unique_id: str, res
 
 def clear_in_memory_caches() -> int:
     """Clear all in-memory caches. Returns total entries cleared."""
-    global _resolved_file_id_cache, _media_info_cache, _api_result_cache, _media_registry_write_cache, _seo_query_mapping_cache
+    global _resolved_file_id_cache, _media_info_cache, _api_result_cache, _media_registry_write_cache, _seo_query_mapping_cache, _admin_status_cache
 
     total = (
         len(_resolved_file_id_cache)
@@ -813,14 +832,16 @@ def clear_in_memory_caches() -> int:
     _api_result_cache.clear()
     _media_registry_write_cache.clear()
     _seo_query_mapping_cache = None
+    _admin_status_cache.clear()
 
     logger.info(f"Cleared {total} in-memory cache entries")
     return total
 
 
 def _invalidate_seo_query_mapping_cache() -> None:
-    global _seo_query_mapping_cache
+    global _seo_query_mapping_cache, _admin_status_cache
     _seo_query_mapping_cache = None
+    _admin_status_cache.clear()
 
 
 async def _get_cached_approved_seo_query_mappings() -> List[Dict[str, Any]]:
@@ -2170,6 +2191,20 @@ async def _import_search_console_signals(
     profiles: dict[tuple[str, str], dict[str, Any]],
 ) -> int:
     """Import Search Console queries and convert confident matches into approved signals."""
+    global _search_console_import_last_attempt
+
+    now = _time.monotonic()
+    if (
+        _search_console_import_last_attempt
+        and now - _search_console_import_last_attempt < _SEARCH_CONSOLE_IMPORT_INTERVAL_SECONDS
+    ):
+        logger.debug(
+            "[search_console] skipped reason=throttled elapsed=%.0f interval=%d",
+            now - _search_console_import_last_attempt,
+            _SEARCH_CONSOLE_IMPORT_INTERVAL_SECONDS,
+        )
+        return 0
+
     setup = describe_search_console_setup(
         enabled=Config.SEARCH_CONSOLE_ENABLED,
         site_url=Config.SEARCH_CONSOLE_SITE_URL,
@@ -2191,6 +2226,8 @@ async def _import_search_console_signals(
             setup["service_account_file_exists"],
         )
         return 0
+
+    _search_console_import_last_attempt = now
 
     rows = await fetch_search_console_rows(
         enabled=Config.SEARCH_CONSOLE_ENABLED,
@@ -5114,7 +5151,7 @@ async def admin_dashboard_overview(request: Request):
     db_snapshot = await _catalog_db.get_admin_dashboard_snapshot()
     metrics_snapshot = metrics.snapshot()
     webhook_snapshot = _webhook_monitor.snapshot()
-    return {
+    return _json_no_store({
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "configured_bot_count": len(Config.BOT_TOKENS),
         "runtime_bots": _runtime_bot_snapshots(),
@@ -5129,7 +5166,7 @@ async def admin_dashboard_overview(request: Request):
         "metrics": metrics_snapshot,
         "webhook_monitor": webhook_snapshot,
         **db_snapshot,
-    }
+    })
 
 
 @app.get("/api/admin/status")
@@ -5140,6 +5177,14 @@ async def webapp_admin_status(request: Request):
     if int(user.id) not in {int(admin_id) for admin_id in Config.ADMIN_IDS}:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
+    admin_user_id = int(user.id)
+    now = _time.monotonic()
+    cached = _admin_status_cache.get(admin_user_id)
+    if cached and now - cached[0] < _ADMIN_STATUS_CACHE_SECONDS:
+        payload = dict(cached[1])
+        payload["cache_age_seconds"] = round(now - cached[0], 1)
+        return _json_no_store(payload)
+
     db_snapshot = await _catalog_db.get_admin_dashboard_snapshot(recent_limit=10)
     seo_snapshot = await _catalog_db.get_search_intelligence_snapshot(limit=150)
     crawlable_snapshot = await _crawlable_page_snapshot(limit=5000)
@@ -5149,9 +5194,10 @@ async def webapp_admin_status(request: Request):
         "endpoint": Config.INDEXNOW_ENDPOINT,
         "key_file_available": bool(_indexnow_key(create=False)),
     })
-    return {
+    payload = {
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-        "admin_user_id": int(user.id),
+        "admin_user_id": admin_user_id,
+        "cache_age_seconds": 0,
         "configured_bot_count": len(Config.BOT_TOKENS),
         "runtime_bots": _runtime_bot_snapshots(),
         "cache_state": _cache_state_snapshot(),
@@ -5169,6 +5215,11 @@ async def webapp_admin_status(request: Request):
         **db_snapshot,
         "indexnow": indexnow_snapshot,
     }
+    _admin_status_cache[admin_user_id] = (now, payload)
+    _admin_status_cache.move_to_end(admin_user_id)
+    while len(_admin_status_cache) > _ADMIN_STATUS_CACHE_MAX:
+        _admin_status_cache.popitem(last=False)
+    return _json_no_store(payload)
 
 
 @app.get("/product/{product_id}", response_class=HTMLResponse)
@@ -6849,7 +6900,7 @@ async def get_user_subscription(request: Request, user_id: int):
     try:
         result = await _catalog_db.get_user_subscription(user_id)
         # User not in database → default to subscribed
-        return {"is_subscribed": result if result is not None else True}
+        return _json_no_store({"is_subscribed": result if result is not None else True})
     except Exception as e:
         logger.exception(f"Error getting user subscription: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get subscription status")
@@ -6873,7 +6924,7 @@ async def update_user_subscription(request: Request):
         
         await _catalog_db.update_user_subscription(int(user_id), bool(is_subscribed))
         logger.info(f"User {user_id} subscription updated to: {is_subscribed}")
-        return {"success": True, "is_subscribed": is_subscribed}
+        return _json_no_store({"success": True, "is_subscribed": is_subscribed})
         
     except HTTPException:
         raise
@@ -6897,7 +6948,7 @@ async def webapp_logs(request: Request):
         logs = data.get("logs", [])
         
         if not logs:
-            return {"success": True, "message": "No logs to process"}
+            return _json_no_store({"success": True, "message": "No logs to process"})
 
         persisted = 0
         try:
@@ -6931,7 +6982,7 @@ async def webapp_logs(request: Request):
             else:
                 logger.info(log_msg)
         
-        return {"success": True, "processed": len(logs), "persisted": persisted}
+        return _json_no_store({"success": True, "processed": len(logs), "persisted": persisted})
         
     except HTTPException:
         raise
@@ -6955,26 +7006,26 @@ async def get_user_info(request: Request):
         
         if not init_data:
             # No initData available
-            return {
+            return _json_no_store({
                 "authenticated": False,
                 "user_id": None,
                 "username": None,
                 "first_name": None,
                 "last_name": None
-            }
+            })
         
         # Parse user info from initData
         parsed_data = parse_init_data(init_data)
         user_data = parsed_data.get("user")
 
         if not isinstance(user_data, TelegramUser):
-            return {
+            return _json_no_store({
                 "authenticated": False,
                 "user_id": None,
                 "username": None,
                 "first_name": None,
                 "last_name": None
-            }
+            })
 
         # Extract user information
         user_id = user_data.id
@@ -6986,7 +7037,7 @@ async def get_user_info(request: Request):
         stored_language = (user_row or {}).get("language") if user_row else None
         preferred_language = _normalize_seo_language(stored_language or telegram_language_code or "en")
         
-        return {
+        return _json_no_store({
             "authenticated": True,
             "user_id": user_id,
             "username": username,
@@ -6996,19 +7047,19 @@ async def get_user_info(request: Request):
             "preferred_language": preferred_language,
             "telegram_language_code": telegram_language_code,
             "language_source": "bot" if stored_language else "telegram"
-        }
+        })
     except HTTPException:
         raise
     except Exception as e:
         logger.exception(f"Error getting user info: {e}")
         # Return unauthenticated response instead of error
-        return {
+        return _json_no_store({
             "authenticated": False,
             "user_id": None,
             "username": None,
             "first_name": None,
             "last_name": None
-        }
+        })
 
 
 @app.post("/api/user/track")
@@ -7042,7 +7093,7 @@ async def track_webapp_user(request: Request):
                 last_name = last_name or user_data.last_name
         
         if not user_id:
-            return {"success": False, "message": "No user_id available"}
+            return _json_no_store({"success": False, "message": "No user_id available"})
         
         # Reject blocked users — do not re-register them in the database
         if await is_user_blocked_cached(
@@ -7100,18 +7151,18 @@ async def track_webapp_user(request: Request):
         
         logger.info(f"[WebApp] Tracked user {user_id} (username={username}) in bot_users database")
         
-        return {
+        return _json_no_store({
             "success": True,
             "user_id": user_id,
             "tracked": True,
             "language_code": requested_language if requested_language in SUPPORTED_LANGUAGES else None
-        }
+        })
         
     except HTTPException:
         raise
     except Exception as e:
         logger.exception(f"Error tracking webapp user: {e}")
-        return {"success": False, "message": "Failed to track user"}
+        return _json_no_store({"success": False, "message": "Failed to track user"})
 
 
 async def process_webhook_request(request: Request, bot_registry_id: str):

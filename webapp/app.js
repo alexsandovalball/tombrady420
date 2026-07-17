@@ -1335,7 +1335,11 @@
             // bot's stored language preference chosen via /language.
             if (tg.initData) {
                 try {
-                    const userInfoResponse = await fetch('/api/user/info', { headers });
+                    const userInfoResponse = await fetch('/api/user/info', {
+                        headers,
+                        cache: 'no-store',
+                        credentials: 'same-origin'
+                    });
                     if (userInfoResponse.ok) {
                         const userInfo = await userInfoResponse.json();
                         const applied = applyAuthenticatedUserInfo(userInfo);
@@ -1396,6 +1400,7 @@
             const response = await fetch('/api/webapp-session', {
                 method: 'POST',
                 credentials: 'same-origin',
+                cache: 'no-store',
                 headers: { 'X-Telegram-Init-Data': tg.initData }
             });
             state.webappSessionReady = response.ok;
@@ -1432,6 +1437,8 @@
         await fetch('/api/user/track', {
             method: 'POST',
             headers: trackHeaders,
+            cache: 'no-store',
+            credentials: 'same-origin',
             body: JSON.stringify({
                 user_id: state.userId,
                 username: state.username || user.username || null,
@@ -1454,6 +1461,8 @@
         try {
             const response = await fetch('/api/user/track', {
                 method: 'POST',
+                cache: 'no-store',
+                credentials: 'same-origin',
                 headers: {
                     'Content-Type': 'application/json',
                     'X-Telegram-Init-Data': tg.initData
@@ -1484,7 +1493,11 @@
         
         try {
             const headers = { 'X-Telegram-Init-Data': tg.initData };
-            const response = await fetch(`/api/user/subscription?user_id=${state.userId}`, { headers });
+            const response = await fetch(`/api/user/subscription?user_id=${state.userId}`, {
+                headers,
+                cache: 'no-store',
+                credentials: 'same-origin'
+            });
             if (response.ok) {
                 const data = await response.json();
                 state.isSubscribed = data.is_subscribed !== false;
