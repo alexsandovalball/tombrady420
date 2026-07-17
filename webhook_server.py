@@ -4688,7 +4688,27 @@ async def _build_storefront_index_context(
             logger.debug("Failed to build homepage SEO ItemList schema: %s", exc)
     ctx["localized_home_url"] = _localized_path("/", language)
     ctx["localized_learn_url"] = _localized_path("/learn", language)
+    ctx["webapp_shell_url"] = Config.WEB_APP_URL or "/webapp/index.html"
     return ctx, recent_products
+
+
+def _render_uncached_template(
+    request: Request,
+    template_name: str,
+    context: dict,
+) -> HTMLResponse:
+    """Render dynamic Mini App templates without public SEO caching."""
+    ctx = dict(context)
+    ctx["request"] = request
+    content = templates.env.get_template(template_name).render(ctx)
+    return HTMLResponse(
+        content,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 async def _serve_storefront_index(
@@ -4723,12 +4743,7 @@ async def _serve_webapp_index(
         include_seo_links=include_seo_links,
         language=language,
     )
-    return _render_seo_template(
-        request,
-        "index.html",
-        ctx,
-        cache_key=f"webapp-index:{language}:{len(ctx['seo_recent_products'])}:{_newest_lastmod(recent_products, datetime.now().date().isoformat())}",
-    )
+    return _render_uncached_template(request, "index.html", ctx)
 
 
 def _product_id_from_query(request: Request) -> Optional[int]:
@@ -4753,21 +4768,29 @@ async def _maybe_serve_webapp_shell(
     *,
     language: str = "en",
     include_seo_links: bool = True,
-) -> Optional[HTMLResponse]:
-    """Serve the Telegram Mini App shell when the request is a real WebApp launch.
+) -> Optional[Response]:
+    """Redirect Telegram launches on public routes to the canonical Mini App shell.
 
-    This keeps public SEO pages intact for normal browser traffic while ensuring
-    stale Telegram entry points (for example a root URL saved in a menu button)
-    still land inside the Mini App shell instead of the public storefront.
+    This keeps the SEO storefront and Telegram Mini App separated again while
+    still rescuing stale Telegram entry points that may still point at `/`.
     """
     if not _looks_like_telegram_webapp_request(request):
         return None
-    _queue_visitor_event(request, source="webapp", page_type="webapp_shell", language=language)
-    return await _serve_webapp_index(
-        request,
-        include_seo_links=include_seo_links,
-        language=language,
-    )
+    shell_url = Config.WEB_APP_URL or "/webapp/index.html"
+    target = urllib.parse.urlsplit(shell_url)
+    source_params = urllib.parse.parse_qsl(request.url.query, keep_blank_values=True)
+    merged_params = dict(urllib.parse.parse_qsl(target.query, keep_blank_values=True))
+    for key, value in source_params:
+        merged_params.setdefault(key, value)
+    redirect_url = urllib.parse.urlunsplit((
+        target.scheme,
+        target.netloc,
+        target.path or "/webapp/index.html",
+        urllib.parse.urlencode(merged_params),
+        target.fragment,
+    ))
+    _queue_visitor_event(request, source="webapp", page_type="webapp_redirect", language=language)
+    return RedirectResponse(url=redirect_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
 
 @app.get("/", response_class=HTMLResponse)

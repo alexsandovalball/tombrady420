@@ -45,6 +45,46 @@
             document.write('<script src="https://telegram.org/js/telegram-web-app.js"><\\/script>');
         })();
     </script>
+    <script>
+        (function () {
+            var isTelegramWebApp = false;
+            try {
+                isTelegramWebApp = !!(window.Telegram && window.Telegram.WebApp);
+            } catch (e) {
+                isTelegramWebApp = false;
+            }
+            if (!isTelegramWebApp) {
+                try {
+                    isTelegramWebApp = window.self !== window.top;
+                } catch (e) {
+                    isTelegramWebApp = true;
+                }
+            }
+            if (!isTelegramWebApp) {
+                var source = ((window.location && window.location.search) || "") + ((window.location && window.location.hash) || "");
+                isTelegramWebApp = /tgWebApp|tg_web_app|initData/i.test(source);
+            }
+            if (!isTelegramWebApp) return;
+
+            var pathname = (window.location && window.location.pathname) || "/";
+            if (pathname === "/webapp" || pathname === "/webapp/" || pathname === "/webapp/index.html") {
+                return;
+            }
+
+            try {
+                var target = new URL("{{ webapp_shell_url }}", window.location.origin);
+                var current = new URL(window.location.href);
+                current.searchParams.forEach(function (value, key) {
+                    if (!target.searchParams.has(key)) {
+                        target.searchParams.set(key, value);
+                    }
+                });
+                window.location.replace(target.toString());
+            } catch (err) {
+                window.location.replace("{{ webapp_shell_url }}");
+            }
+        })();
+    </script>
     <style>
         html { background: #fff; }
         body { color: var(--tg-theme-text-color, #111); }
