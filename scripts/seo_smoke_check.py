@@ -1,7 +1,7 @@
 """Lightweight SEO route smoke checks for a running Bradycadia deployment.
 
 Usage:
-    python scripts/seo_smoke_check.py https://topshelfcaliplug.com
+    python scripts/seo_smoke_check.py https://your-domain.example
     python scripts/seo_smoke_check.py http://localhost:10000 --product-id 123
 
 The script uses only the Python standard library so it can run on Render shells
@@ -69,7 +69,7 @@ def check_etag(url: str, label: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke-check public SEO routes.")
-    parser.add_argument("base_url", help="Site origin, for example https://topshelfcaliplug.com")
+    parser.add_argument("base_url", help="Site origin, for example https://your-domain.example")
     parser.add_argument("--product-id", type=int, default=0, help="Optional product ID to inspect")
     args = parser.parse_args()
 
