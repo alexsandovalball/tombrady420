@@ -696,6 +696,36 @@
         return !['url', 'stored', 'manual', 'bot'].includes(state.languageSource);
     }
 
+    function applyAuthenticatedUserInfo(userInfo, source = 'backend_initData') {
+        if (!userInfo || !userInfo.authenticated || !userInfo.user_id) {
+            return false;
+        }
+
+        state.userId = userInfo.user_id;
+        if (userInfo.username) {
+            state.username = userInfo.username;
+        }
+
+        const backendLanguage = normalizeSupportedLanguage(userInfo.preferred_language || userInfo.language_code);
+        if (backendLanguage) {
+            state.userLanguage = backendLanguage;
+            state.languageSource = userInfo.language_source === 'bot' ? 'bot' : 'telegram';
+            persistLanguage(backendLanguage);
+            logger.log('language', 'synced_from_bot_preference', 'success', '', {
+                language: backendLanguage,
+                source: state.languageSource
+            });
+        }
+
+        logger.log('user_identification', 'user_id_from_backend', 'success', '', {
+            user_id: state.userId,
+            source,
+            username: userInfo.username || 'none'
+        });
+
+        return true;
+    }
+
     // Helper: Normalize contact username (remove @ prefix)
     function normalizeContactUsername(contact) {
         if (!contact) return '';
@@ -1300,31 +1330,24 @@
                 });
             }
             
-            // 2. If not available, try to get from backend via initData
-            if (!state.userId && tg.initData) {
+            // 2. Always ask the backend when initData is signed.
+            // Telegram frontend data has the user id, but only the backend has the
+            // bot's stored language preference chosen via /language.
+            if (tg.initData) {
                 try {
                     const userInfoResponse = await fetch('/api/user/info', { headers });
                     if (userInfoResponse.ok) {
                         const userInfo = await userInfoResponse.json();
-                        if (userInfo.authenticated && userInfo.user_id) {
-                            state.userId = userInfo.user_id;
-                            logger.log('user_identification', 'user_id_from_backend', 'success', '', {
-                                user_id: state.userId,
-                                source: 'backend_initData',
-                                username: userInfo.username
-                            });
-                            
-                            // Also update state with other user info if not already set
-                            if (!state.username && userInfo.username) {
-                                state.username = userInfo.username;
-                            }
-                            const backendLanguage = normalizeSupportedLanguage(userInfo.preferred_language || userInfo.language_code);
-                            if (backendLanguage) {
-                                state.userLanguage = backendLanguage;
-                                state.languageSource = userInfo.language_source === 'bot' ? 'bot' : 'telegram';
-                                persistLanguage(backendLanguage);
-                            }
+                        const applied = applyAuthenticatedUserInfo(userInfo);
+                        if (applied) {
+                            applyTranslations();
+                            renderUserInfo();
                         }
+                    } else {
+                        logger.apiCall('load_user_info_from_backend', 'error', {
+                            endpoint: '/api/user/info',
+                            status: userInfoResponse.status
+                        });
                     }
                 } catch (err) {
                     logger.error('load_user_info_from_backend', err.message, {

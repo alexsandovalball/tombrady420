@@ -7,6 +7,7 @@
     --tg-theme-link-color: #2481cc;
     --tg-theme-button-color: #2481cc;
     --tg-theme-button-text-color: #ffffff;
+    color-scheme: light;
 }
 
 * {
@@ -56,7 +57,13 @@ body::before {
    This keeps the Mini App functionality intact while matching the SEO UI. */
 body.unified-storefront-ui {
     background-color: #ffffff;
-    color: var(--tg-theme-text-color, #111111);
+    color: #111111;
+    color-scheme: light;
+    --tg-theme-bg-color: #ffffff;
+    --tg-theme-secondary-bg-color: rgba(255, 255, 255, 0.94);
+    --tg-theme-text-color: #111111;
+    --tg-theme-hint-color: #555555;
+    --tg-theme-button-text-color: #ffffff;
 }
 
 body.unified-storefront-ui .miniapp-shell {
@@ -111,7 +118,7 @@ body.unified-storefront-ui .miniapp-shell .subtitle,
 body.unified-storefront-ui .miniapp-shell .hint,
 body.unified-storefront-ui .miniapp-shell .card-meta,
 body.unified-storefront-ui .miniapp-shell .card-footer {
-    color: var(--tg-theme-hint-color, #666666);
+    color: #555555;
 }
 
 body.unified-storefront-ui .miniapp-shell .info-row,
@@ -124,6 +131,7 @@ body.unified-storefront-ui .miniapp-shell .admin-panel {
     border: 1px solid rgba(0, 0, 0, 0.12);
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.94);
+    color: #111111;
     box-shadow: none;
 }
 
@@ -207,6 +215,27 @@ body.unified-storefront-ui .miniapp-shell .product-card {
 
 body.unified-storefront-ui .miniapp-shell .card-body {
     padding: 0.75rem;
+    color: #111111;
+}
+
+body.unified-storefront-ui .miniapp-shell .card-body h3,
+body.unified-storefront-ui .miniapp-shell #product-detail-content,
+body.unified-storefront-ui .miniapp-shell #product-detail-content h2,
+body.unified-storefront-ui .miniapp-shell .info-text,
+body.unified-storefront-ui .miniapp-shell .breadcrumb,
+body.unified-storefront-ui .miniapp-shell .page-info,
+body.unified-storefront-ui .miniapp-shell .count-pill,
+body.unified-storefront-ui .miniapp-shell .admin-metric strong,
+body.unified-storefront-ui .miniapp-shell .admin-list-group li {
+    color: #111111;
+}
+
+body.unified-storefront-ui .miniapp-shell #product-detail-content .card-meta,
+body.unified-storefront-ui .miniapp-shell .info-text strong,
+body.unified-storefront-ui .miniapp-shell .admin-metric-label,
+body.unified-storefront-ui .miniapp-shell .admin-list-note,
+body.unified-storefront-ui .miniapp-shell .admin-page-meta {
+    color: #555555;
 }
 
 body.unified-storefront-ui .miniapp-shell .footer-actions {
