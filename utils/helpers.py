@@ -8,7 +8,7 @@ import inspect
 from typing import List, Optional, Dict, Tuple
 from telegram import Bot, Update, User
 from telegram.ext import ContextTypes
-from telegram.error import Forbidden, BadRequest, TelegramError
+from telegram.error import Forbidden, BadRequest, RetryAfter, TelegramError
 
 from configs.config import Config
 from database import Database
@@ -596,11 +596,58 @@ async def get_bot_specific_file_id(
         if not message_id:
             logger.warning("[get_bot_specific_file_id] Forwarded message had no message_id; cannot delete admin-chat copy")
             return
+        last_error = None
         try:
             await bot.delete_message(chat_id=target_chat_id, message_id=message_id)
+            await _call_db_optional(
+                "delete_admin_cache_cleanup",
+                bot_username=bot_username,
+                admin_chat_id=target_chat_id,
+                message_id=message_id,
+            )
             logger.debug("[get_bot_specific_file_id] Deleted forwarded message from admin chat")
+            return
+        except RetryAfter as e:
+            last_error = e
+            retry_after = int(getattr(e, "retry_after", 0) or 0)
+            if retry_after and retry_after <= 2:
+                try:
+                    await asyncio.sleep(retry_after)
+                    await bot.delete_message(chat_id=target_chat_id, message_id=message_id)
+                    await _call_db_optional(
+                        "delete_admin_cache_cleanup",
+                        bot_username=bot_username,
+                        admin_chat_id=target_chat_id,
+                        message_id=message_id,
+                    )
+                    logger.debug("[get_bot_specific_file_id] Deleted forwarded message from admin chat after retry")
+                    return
+                except Exception as retry_exc:
+                    last_error = retry_exc
+        except BadRequest as e:
+            last_error = e
+            error_msg = str(e).lower()
+            if "message to delete not found" in error_msg:
+                await _call_db_optional(
+                    "delete_admin_cache_cleanup",
+                    bot_username=bot_username,
+                    admin_chat_id=target_chat_id,
+                    message_id=message_id,
+                )
+                logger.debug("[get_bot_specific_file_id] Forwarded admin-chat copy already gone")
+                return
         except Exception as e:
-            logger.warning("[get_bot_specific_file_id] Could not delete forwarded message: %s", e)
+            last_error = e
+
+        logger.warning("[get_bot_specific_file_id] Could not delete forwarded message immediately: %s", last_error)
+        await _call_db_optional(
+            "reschedule_admin_cache_cleanup",
+            bot_username=bot_username,
+            admin_chat_id=target_chat_id,
+            message_id=message_id,
+            error=str(last_error or "delete_failed"),
+            delay_seconds=max(30, int(getattr(last_error, "retry_after", 0) or 60)),
+        )
     
     # Log context for debugging
     logger.debug(
@@ -621,6 +668,16 @@ async def get_bot_specific_file_id(
         logger.debug(
             f"[get_bot_specific_file_id] Successfully forwarded message {source_message_id} "
             f"from chat {source_chat_id} to admin {target_chat_id}"
+        )
+
+        await _call_db_optional(
+            "enqueue_admin_cache_cleanup",
+            bot_username=bot_username,
+            admin_chat_id=target_chat_id,
+            message_id=getattr(forwarded, "message_id", None),
+            source_chat_id=source_chat_id,
+            source_message_id=source_message_id,
+            file_type=file_type,
         )
         
         # Extract stable and bot-specific media IDs from the forwarded message.

@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <text
-    x="50%"
-    y="50%"
-    text-anchor="middle"
-    dominant-baseline="central"
-    font-family="Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif"
-    font-size="104">🏈</text>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Top Shelf Cali Plug</title>
+  <image
+    href="/assets/site-icon-512.png?v=20260717-site-icon-svg-v2"
+    xlink:href="/assets/site-icon-512.png?v=20260717-site-icon-svg-v2"
+    width="512"
+    height="512"
+    preserveAspectRatio="xMidYMid meet" />
 </svg>

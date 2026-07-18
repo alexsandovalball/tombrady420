@@ -531,6 +531,24 @@ class Database:
             """)
 
             await db.execute("""
+                CREATE TABLE IF NOT EXISTS admin_cache_cleanup_queue (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bot_username TEXT NOT NULL,
+                    admin_chat_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    source_chat_id INTEGER,
+                    source_message_id INTEGER,
+                    file_type TEXT,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    next_attempt_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(bot_username, admin_chat_id, message_id)
+                )
+            """)
+
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS blocked_entities (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     telegram_user_id INTEGER,
@@ -679,6 +697,8 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_media_file_ids_bot ON bot_media_file_ids(bot_identifier)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_media_file_ids_slot ON bot_media_file_ids(slot_id, identity_hash)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_bot_media_file_ids_valid ON bot_media_file_ids(bot_identifier, is_valid)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_admin_cache_cleanup_due ON admin_cache_cleanup_queue(next_attempt_at, created_at)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_admin_cache_cleanup_bot ON admin_cache_cleanup_queue(bot_username, admin_chat_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_media_objects_owner ON media_objects(media_owner_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_media_objects_ttl ON media_objects(ttl_expiry, deleted_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_blocked_entities_user ON blocked_entities(telegram_user_id)")
@@ -3075,6 +3095,126 @@ class Database:
             await db.commit()
             logger.info(f"Cleared {deleted} bot file ID cache entries")
             return deleted
+
+    async def enqueue_admin_cache_cleanup(
+        self,
+        *,
+        bot_username: str,
+        admin_chat_id: int,
+        message_id: int,
+        source_chat_id: Optional[int] = None,
+        source_message_id: Optional[int] = None,
+        file_type: Optional[str] = None,
+    ) -> None:
+        """Persist a temporary admin-chat cache copy that must be deleted later."""
+        normalized_bot_username = self.normalize_bot_username(bot_username)
+        if not normalized_bot_username or not admin_chat_id or not message_id:
+            return
+
+        now = datetime.now()
+        async with self.get_connection() as db:
+            await db.execute("""
+                INSERT INTO admin_cache_cleanup_queue (
+                    bot_username,
+                    admin_chat_id,
+                    message_id,
+                    source_chat_id,
+                    source_message_id,
+                    file_type,
+                    attempt_count,
+                    last_error,
+                    created_at,
+                    updated_at,
+                    next_attempt_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?)
+                ON CONFLICT(bot_username, admin_chat_id, message_id) DO UPDATE SET
+                    source_chat_id = COALESCE(excluded.source_chat_id, admin_cache_cleanup_queue.source_chat_id),
+                    source_message_id = COALESCE(excluded.source_message_id, admin_cache_cleanup_queue.source_message_id),
+                    file_type = COALESCE(excluded.file_type, admin_cache_cleanup_queue.file_type),
+                    updated_at = excluded.updated_at,
+                    next_attempt_at = excluded.next_attempt_at
+            """, (
+                normalized_bot_username,
+                int(admin_chat_id),
+                int(message_id),
+                source_chat_id,
+                source_message_id,
+                file_type,
+                now,
+                now,
+                now,
+            ))
+            await db.commit()
+
+    async def delete_admin_cache_cleanup(
+        self,
+        *,
+        bot_username: str,
+        admin_chat_id: int,
+        message_id: int,
+    ) -> int:
+        """Remove one admin-chat cache cleanup entry after successful deletion."""
+        normalized_bot_username = self.normalize_bot_username(bot_username)
+        if not normalized_bot_username:
+            return 0
+
+        async with self.get_connection() as db:
+            cursor = await db.execute("""
+                DELETE FROM admin_cache_cleanup_queue
+                WHERE bot_username = ? AND admin_chat_id = ? AND message_id = ?
+            """, (normalized_bot_username, int(admin_chat_id), int(message_id)))
+            deleted = cursor.rowcount
+            await db.commit()
+            return deleted
+
+    async def reschedule_admin_cache_cleanup(
+        self,
+        *,
+        bot_username: str,
+        admin_chat_id: int,
+        message_id: int,
+        error: str,
+        delay_seconds: int,
+    ) -> None:
+        """Back off one admin-chat cache cleanup item after a failed delete attempt."""
+        normalized_bot_username = self.normalize_bot_username(bot_username)
+        if not normalized_bot_username:
+            return
+
+        next_attempt_at = datetime.now() + timedelta(seconds=max(10, int(delay_seconds or 10)))
+        async with self.get_connection() as db:
+            await db.execute("""
+                UPDATE admin_cache_cleanup_queue
+                SET attempt_count = attempt_count + 1,
+                    last_error = ?,
+                    updated_at = ?,
+                    next_attempt_at = ?
+                WHERE bot_username = ? AND admin_chat_id = ? AND message_id = ?
+            """, (
+                str(error or "")[:500],
+                datetime.now(),
+                next_attempt_at,
+                normalized_bot_username,
+                int(admin_chat_id),
+                int(message_id),
+            ))
+            await db.commit()
+
+    async def get_due_admin_cache_cleanup_entries(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return due admin-chat cache copies that still need deletion retries."""
+        limit = max(1, min(limit, 500))
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT *
+                FROM admin_cache_cleanup_queue
+                WHERE next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP
+                ORDER BY next_attempt_at ASC, created_at ASC
+                LIMIT ?
+            """, (limit,)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
 
     async def upsert_canonical_media(
         self,

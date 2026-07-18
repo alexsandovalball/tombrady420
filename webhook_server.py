@@ -38,7 +38,15 @@ from main import (
 )
 from utils.webapp_security import verify_init_data, parse_init_data, TelegramUser
 from database import Database
-from utils.helpers import get_channel_id, get_channel_username, get_file_id_cache_size, get_bot_specific_file_id, is_admin, register_bot_handlers
+from utils.helpers import (
+    get_channel_id,
+    get_channel_username,
+    get_file_id_cache_size,
+    get_bot_specific_file_id,
+    is_admin,
+    is_transient_telegram_error,
+    register_bot_handlers,
+)
 from utils.categories import get_all_categories, get_category_display_name, get_subcategory_display_name, get_subcategories, EXCLUDED_FROM_ALL_PRODUCTS
 from utils.fuzzy_search import normalize_text, rank_products_for_query
 from utils.seo_terms import (
@@ -138,6 +146,10 @@ _SEO_SITEMAP_CACHE_SECONDS = _bounded_int_env("SEO_SITEMAP_CACHE_SECONDS", 300, 
 _SEO_PAGE_CACHE_SECONDS = _bounded_int_env("SEO_PAGE_CACHE_SECONDS", 300, 30, 3600)
 _SEO_PUBLIC_MEDIA_CACHE_SECONDS = _bounded_int_env("SEO_PUBLIC_MEDIA_CACHE_SECONDS", 86400, 300, 604800)
 _SEO_PUBLIC_MEDIA_RATE_LIMIT_REQUESTS = _bounded_int_env("SEO_PUBLIC_MEDIA_RATE_LIMIT_REQUESTS", 120, 10, 2000)
+_ADMIN_CACHE_CLEANUP_INTERVAL_SECONDS = _bounded_int_env("ADMIN_CACHE_CLEANUP_INTERVAL_SECONDS", 45, 10, 600)
+_ADMIN_CACHE_CLEANUP_BATCH_SIZE = _bounded_int_env("ADMIN_CACHE_CLEANUP_BATCH_SIZE", 50, 5, 500)
+_ADMIN_CACHE_CLEANUP_MAX_ATTEMPTS = _bounded_int_env("ADMIN_CACHE_CLEANUP_MAX_ATTEMPTS", 12, 1, 100)
+_ADMIN_CACHE_CLEANUP_RETRY_BASE_SECONDS = _bounded_int_env("ADMIN_CACHE_CLEANUP_RETRY_BASE_SECONDS", 60, 10, 3600)
 _SEO_PUBLIC_MEDIA_RATE_LIMIT_WINDOW = _bounded_int_env("SEO_PUBLIC_MEDIA_RATE_LIMIT_WINDOW", 60, 10, 3600)
 _SEO_RESPONSE_CACHE_MAX = _bounded_int_env("SEO_RESPONSE_CACHE_MAX", 256, 16, 2000)
 _seo_response_cache: OrderedDict[str, tuple[float, bytes, str, str, int]] = OrderedDict()
@@ -1319,6 +1331,29 @@ def get_bot_usernames() -> List[str]:
     return usernames
 
 
+def _get_bot_application_by_username(bot_username: Optional[str]) -> Optional[Application]:
+    normalized = (bot_username or "").strip().lower()
+    if not normalized:
+        return None
+    apps = _bot_applications or getattr(app.state, "bot_apps", []) or []
+    for bot_app in apps:
+        if bot_app is None:
+            continue
+        bot = getattr(bot_app, "bot", None)
+        username = getattr(bot, "username", None)
+        if username and username.lower() == normalized:
+            return bot_app
+    return None
+
+
+def _admin_cache_cleanup_retry_delay(attempt_count: int, exc: Optional[BaseException] = None) -> int:
+    if isinstance(exc, telegram.error.RetryAfter):
+        retry_after = int(getattr(exc, "retry_after", 0) or 0)
+        return max(10, min(3600, retry_after + 5))
+    exponent = max(0, min(int(attempt_count) - 1, 5))
+    return min(3600, _ADMIN_CACHE_CLEANUP_RETRY_BASE_SECONDS * (2 ** exponent))
+
+
 def _get_admin_dashboard_token() -> str:
     """Read the dashboard token dynamically so Render env updates are respected."""
     return (os.getenv("ADMIN_DASHBOARD_TOKEN") or getattr(Config, "ADMIN_DASHBOARD_TOKEN", "") or "").strip()
@@ -1902,6 +1937,136 @@ async def _wal_checkpoint_loop():
             await _catalog_db.checkpoint_wal()
         except Exception as e:
             logger.warning(f"WAL checkpoint loop error: {e}")
+
+
+async def _admin_cache_cleanup_loop():
+    """Background task: retry deletion of temporary admin-chat cache copies."""
+    await asyncio.sleep(20)
+    while True:
+        try:
+            entries = await _catalog_db.get_due_admin_cache_cleanup_entries(
+                limit=_ADMIN_CACHE_CLEANUP_BATCH_SIZE
+            )
+            if entries:
+                processed = 0
+                deleted = 0
+                rescheduled = 0
+                dropped = 0
+                for entry in entries:
+                    processed += 1
+                    bot_username = (entry.get("bot_username") or "").strip().lower()
+                    admin_chat_id = entry.get("admin_chat_id")
+                    message_id = entry.get("message_id")
+                    attempt_count = int(entry.get("attempt_count") or 0)
+
+                    if not bot_username or not admin_chat_id or not message_id:
+                        if bot_username and admin_chat_id and message_id:
+                            await _catalog_db.delete_admin_cache_cleanup(
+                                bot_username=bot_username,
+                                admin_chat_id=int(admin_chat_id),
+                                message_id=int(message_id),
+                            )
+                        dropped += 1
+                        continue
+
+                    if attempt_count >= _ADMIN_CACHE_CLEANUP_MAX_ATTEMPTS:
+                        await _catalog_db.delete_admin_cache_cleanup(
+                            bot_username=bot_username,
+                            admin_chat_id=int(admin_chat_id),
+                            message_id=int(message_id),
+                        )
+                        dropped += 1
+                        logger.warning(
+                            "[admin_cache_cleanup] dropped bot=%s chat=%s message_id=%s attempts=%s",
+                            bot_username,
+                            admin_chat_id,
+                            message_id,
+                            attempt_count,
+                        )
+                        continue
+
+                    bot_app = _get_bot_application_by_username(bot_username)
+                    if bot_app is None:
+                        await _catalog_db.reschedule_admin_cache_cleanup(
+                            bot_username=bot_username,
+                            admin_chat_id=int(admin_chat_id),
+                            message_id=int(message_id),
+                            error="runtime_bot_unavailable",
+                            delay_seconds=_admin_cache_cleanup_retry_delay(attempt_count + 1),
+                        )
+                        rescheduled += 1
+                        continue
+
+                    try:
+                        await bot_app.bot.delete_message(
+                            chat_id=int(admin_chat_id),
+                            message_id=int(message_id),
+                        )
+                        await _catalog_db.delete_admin_cache_cleanup(
+                            bot_username=bot_username,
+                            admin_chat_id=int(admin_chat_id),
+                            message_id=int(message_id),
+                        )
+                        deleted += 1
+                    except telegram.error.BadRequest as exc:
+                        error_msg = str(exc).lower()
+                        if "message to delete not found" in error_msg:
+                            await _catalog_db.delete_admin_cache_cleanup(
+                                bot_username=bot_username,
+                                admin_chat_id=int(admin_chat_id),
+                                message_id=int(message_id),
+                            )
+                            deleted += 1
+                        else:
+                            await _catalog_db.reschedule_admin_cache_cleanup(
+                                bot_username=bot_username,
+                                admin_chat_id=int(admin_chat_id),
+                                message_id=int(message_id),
+                                error=str(exc),
+                                delay_seconds=_admin_cache_cleanup_retry_delay(attempt_count + 1, exc),
+                            )
+                            rescheduled += 1
+                    except telegram.error.RetryAfter as exc:
+                        await _catalog_db.reschedule_admin_cache_cleanup(
+                            bot_username=bot_username,
+                            admin_chat_id=int(admin_chat_id),
+                            message_id=int(message_id),
+                            error=str(exc),
+                            delay_seconds=_admin_cache_cleanup_retry_delay(attempt_count + 1, exc),
+                        )
+                        rescheduled += 1
+                    except telegram.error.TelegramError as exc:
+                        await _catalog_db.reschedule_admin_cache_cleanup(
+                            bot_username=bot_username,
+                            admin_chat_id=int(admin_chat_id),
+                            message_id=int(message_id),
+                            error=str(exc),
+                            delay_seconds=_admin_cache_cleanup_retry_delay(attempt_count + 1, exc),
+                        )
+                        rescheduled += 1
+                    except Exception as exc:
+                        retry_delay = _admin_cache_cleanup_retry_delay(attempt_count + 1)
+                        if not is_transient_telegram_error(exc):
+                            retry_delay = max(retry_delay, 300)
+                        await _catalog_db.reschedule_admin_cache_cleanup(
+                            bot_username=bot_username,
+                            admin_chat_id=int(admin_chat_id),
+                            message_id=int(message_id),
+                            error=str(exc),
+                            delay_seconds=retry_delay,
+                        )
+                        rescheduled += 1
+
+                logger.info(
+                    "[admin_cache_cleanup] processed=%d deleted=%d rescheduled=%d dropped=%d",
+                    processed,
+                    deleted,
+                    rescheduled,
+                    dropped,
+                )
+        except Exception as exc:
+            logger.warning("[admin_cache_cleanup] loop_error error=%s", exc, exc_info=True)
+        await asyncio.sleep(_ADMIN_CACHE_CLEANUP_INTERVAL_SECONDS)
 
 
 async def _ensure_database_initialized() -> None:
@@ -2662,6 +2827,7 @@ async def lifespan(app: FastAPI):
     _bg_tasks = [
         asyncio.create_task(_visitor_event_writer_loop(), name="visitor_event_writer"),
         asyncio.create_task(_media_cache_prune_loop(), name="media_cache_prune"),
+        asyncio.create_task(_admin_cache_cleanup_loop(), name="admin_cache_cleanup"),
         asyncio.create_task(_wal_checkpoint_loop(), name="wal_checkpoint"),
         asyncio.create_task(_seo_auto_learn_loop(), name="seo_auto_learn"),
         asyncio.create_task(_seo_trends_loop(), name="seo_trends"),
@@ -4309,7 +4475,7 @@ def _log_seo_public_request(request: Request, route: str, **fields: Any) -> None
 
 
 def _read_brand_icon_png() -> bytes:
-    image_path = Path(__file__).parent / "webapp" / "og-football.png"
+    image_path = Path(__file__).parent / "webapp" / "assets" / "site-icon-512.png"
     if not image_path.exists():
         raise HTTPException(status_code=404, detail="Brand image not found")
     return image_path.read_bytes()
@@ -4357,14 +4523,14 @@ def _png_response(image_bytes: bytes, *, max_age: int = 86400, request: Optional
 @app.get("/og-image.png", response_class=Response)
 @app.head("/og-image.png", response_class=Response)
 async def serve_og_image(request: Request):
-    """Serve the football emoji OG image for social media link previews.
+    """Serve the storefront brand image for social media and crawler previews.
 
-    Returns a static PNG file with football branding. Social media crawlers
+    Returns a static PNG file. Social media crawlers
     (WhatsApp, iMessage, Twitter/X, Facebook, Discord, Slack, Telegram) require
     a real HTTP/HTTPS URL — data: URIs are never fetched by these crawlers.
     """
     _log_seo_public_request(request, "og_image")
-    cache_key = "og-image"
+    cache_key = "og-image-v2"
     cached = _seo_cached_response(request, cache_key)
     if cached:
         return cached
@@ -4382,7 +4548,7 @@ async def serve_og_image(request: Request):
 @app.head("/favicon.ico", response_class=Response)
 async def serve_favicon(request: Request):
     """Serve a fallback favicon for browsers and crawlers that probe /favicon.ico."""
-    return _svg_response(_read_site_icon_svg(), max_age=604800, request=request)
+    return _png_response(_read_brand_icon_png(), max_age=604800, request=request)
 
 
 @app.get("/apple-touch-icon.png", response_class=Response)
@@ -4391,7 +4557,7 @@ async def serve_favicon(request: Request):
 @app.head("/apple-touch-icon-precomposed.png", response_class=Response)
 async def serve_apple_touch_icon(request: Request):
     """Serve an Apple touch icon fallback to avoid crawler/mobile browser 404 noise."""
-    return _svg_response(_read_site_icon_svg(), max_age=604800, request=request)
+    return _png_response(_read_brand_icon_png(), max_age=604800, request=request)
 
 
 @app.get("/robots.txt", response_class=Response)
