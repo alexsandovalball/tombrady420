@@ -20,7 +20,7 @@ from utils.helpers import get_admin_ids, get_bot_specific_file_id
 from utils.safe_send import safe_send_message, safe_send_photo, safe_send_video, safe_send_animation, safe_send_document, handle_send_exception
 from utils.rate_limiter import RateLimiter
 from utils.primary_instance import is_primary_instance
-from utils.deeplinks import build_bot_product_url, build_webapp_product_url
+from utils.deeplinks import build_bot_product_url, build_telegram_webapp_product_url
 from utils.webapp_buttons import build_webapp_button
 from translations.translator import translate_text_async
 from configs.config import Config
@@ -155,9 +155,13 @@ class NotificationService:
         return self._bot_rate_limiters[key]
 
     @staticmethod
-    def _build_product_webapp_url(product_id: int) -> Optional[str]:
-        """Return a product-specific WebApp URL for notification buttons."""
-        return build_webapp_product_url(Config.WEB_APP_URL, product_id)
+    def _build_product_webapp_url(product_id: int, bot_username: str) -> Optional[str]:
+        """Return a Telegram-facing Mini App URL for broadcast buttons."""
+        return build_telegram_webapp_product_url(
+            bot_username,
+            product_id,
+            getattr(Config, "TELEGRAM_WEBAPP_SHORT_NAME", None),
+        )
 
     @classmethod
     def _build_product_notification_keyboard(cls, product_id: int) -> InlineKeyboardMarkup:
@@ -189,7 +193,7 @@ class NotificationService:
             buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
             details.append(f"\n  - 🔗 View in Bot → {bot_deep_link}")
 
-        webapp_url = cls._build_product_webapp_url(product_id)
+        webapp_url = cls._build_product_webapp_url(product_id, bot_username)
         if webapp_url:
             buttons.append(InlineKeyboardButton("🛍️ View in WebApp", url=webapp_url))
             details.append(f"\n  - 🛍️ View in WebApp → {webapp_url}")

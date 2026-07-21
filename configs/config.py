@@ -32,6 +32,7 @@ class ConfigClass:
         self.USE_WEBHOOK: bool = False
         self.WEBHOOK_URL: Optional[str] = None
         self.WEB_APP_URL: Optional[str] = None
+        self.TELEGRAM_WEBAPP_SHORT_NAME: Optional[str] = None
         self.STOREFRONT_DOMAIN: Optional[str] = None
         self.ORDER_CONTACT: Optional[str] = None  # Configurable order contact
         self.ADMIN_DASHBOARD_ENABLED: bool = False
@@ -163,6 +164,11 @@ class ConfigClass:
             config('WEBHOOK_URL', default=None) or os.getenv('RENDER_EXTERNAL_URL')
         )
         self.ORDER_CONTACT = config('ORDER_CONTACT', default=None)
+        self.TELEGRAM_WEBAPP_SHORT_NAME = (
+            config('TELEGRAM_WEBAPP_SHORT_NAME', default=None)
+            or config('WEBAPP_SHORT_NAME', default=None)
+            or config('MINI_APP_SHORT_NAME', default=None)
+        )
         self.ADMIN_DASHBOARD_ENABLED = config('ADMIN_DASHBOARD_ENABLED', default=False, cast=bool)
         self.ADMIN_DASHBOARD_TOKEN = config('ADMIN_DASHBOARD_TOKEN', default=None)
         self.SEO_AUTO_LEARN_ENABLED = config('SEO_AUTO_LEARN_ENABLED', default=True, cast=bool)

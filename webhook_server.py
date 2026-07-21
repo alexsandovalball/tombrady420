@@ -3617,16 +3617,22 @@ def _product_photo_image_urls(product: dict, *, absolute: bool = True, limit: in
 
 
 def _product_video_urls(product: dict, *, absolute: bool = True, limit: int = 8) -> list[tuple[int, str]]:
-    """Return crawlable video media URLs for video sitemaps and VideoObject schema."""
+    """Return product-page URLs for VideoObject schema without exposing heavy API streams.
+
+    Crawlers only need a stable page URL plus thumbnail metadata here. Pointing
+    them at /api/catalog video streams causes unnecessary Telegram/file-cache
+    work on small Render instances.
+    """
     product_id = product.get("id")
     if product_id is None:
         return []
 
     urls: list[tuple[int, str]] = []
+    product_path = _canonical_product_path(product_id, product.get("caption") or "")
     for idx, media in enumerate(_collect_media_info(product)):
         if media.get("type") != "video":
             continue
-        path = f"/api/catalog/{product_id}/media/{idx}"
+        path = product_path
         urls.append((idx, _absolute_storefront_url(path) if absolute else path))
         if len(urls) >= limit:
             break
@@ -4226,9 +4232,8 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
                     "name": f"{schema_name} video {idx + 1}",
                     "description": desc,
                     "thumbnailUrl": [thumbnail_url],
-                    "contentUrl": video_url,
                     "embedUrl": product_url,
-                    "url": product_url,
+                    "url": video_url,
                     "isPartOf": {"@id": product_url},
                 }
                 if date_published:
@@ -4572,7 +4577,6 @@ async def serve_robots_txt(request: Request):
         "User-agent: *\n"
         "Allow: /\n"
         "Allow: /media/products/\n"
-        "Allow: /api/catalog/\n"
         "Disallow: /api/\n"
         "Disallow: /admin\n"
         "Disallow: /admin/\n"
@@ -4580,6 +4584,24 @@ async def serve_robots_txt(request: Request):
         "Disallow: /webhook/\n"
         "Disallow: /webapp\n"
         "Disallow: /webapp/\n"
+        "\n"
+        "User-agent: AhrefsBot\n"
+        "Allow: /\n"
+        "Allow: /media/products/\n"
+        "Disallow: /api/\n"
+        "Crawl-delay: 10\n"
+        "\n"
+        "User-agent: DotBot\n"
+        "Allow: /\n"
+        "Allow: /media/products/\n"
+        "Disallow: /api/\n"
+        "Crawl-delay: 10\n"
+        "\n"
+        "User-agent: Amazonbot\n"
+        "Allow: /\n"
+        "Allow: /media/products/\n"
+        "Disallow: /api/\n"
+        "Crawl-delay: 10\n"
         "\n"
         f"Sitemap: {_STOREFRONT_DOMAIN}/sitemap.xml\n"
     )
@@ -6613,6 +6635,24 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
         media_index: Index of media in product's media array
     """
     init_data, _ = _get_validated_init_data(request, allow_preview=True)
+    if (
+        init_data is None
+        and _is_crawler_user_agent(request.headers.get("user-agent", ""))
+        and not request.url.path.startswith("/media/products/")
+    ):
+        logger.info(
+            "[media_cache] crawler_api_media_blocked product_id=%s media_index=%s ip=%s",
+            product_id,
+            media_index,
+            get_client_ip(request),
+        )
+        return Response(
+            status_code=status.HTTP_204_NO_CONTENT,
+            headers={
+                "Cache-Control": "public, max-age=3600",
+                "X-Robots-Tag": "noindex, nofollow",
+            },
+        )
     await _check_user_not_blocked(init_data, get_client_ip(request))
     bot = _get_primary_bot(request)
 
@@ -6869,22 +6909,28 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
             end = int(range_parts[1]) if range_parts[1] else content_length - 1
             end = min(end, content_length - 1)
 
-            return _build_media_range_response(
+            response = _build_media_range_response(
                 file_path=file_path,
                 media_type=media_type,
                 start=start,
                 end=end,
                 content_length=content_length,
             )
+            if request.url.path.startswith("/api/catalog/"):
+                response.headers["X-Robots-Tag"] = "noindex, nofollow"
+            return response
         except (ValueError, IndexError) as e:
             logger.warning(f"Invalid range header: {range_header}, error: {e}")
             pass  # Fall through to full response
 
-    return _build_media_full_response(
+    response = _build_media_full_response(
         file_path=file_path,
         media_type=media_type,
         content_length=content_length,
     )
+    if request.url.path.startswith("/api/catalog/"):
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return response
 
 
 @app.get("/api/search")
