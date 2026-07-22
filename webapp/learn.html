@@ -26,6 +26,7 @@
     <link rel="shortcut icon" href="/favicon.ico?v=20260722-football-emoji-v3">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260722-football-emoji-v3">
     <link rel="manifest" href="/assets/manifest.json">
+    <link rel="alternate" type="application/rss+xml" title="Catalog Guides" href="/guides-feed.xml">
     <script src="/assets/telegram-miniapp-bridge.js?v=20260717-botfather-bridge-v1"></script>
     <link rel="stylesheet" href="/assets/style.css?v=20260717-ios-dark-text-v1">
     <style>
@@ -53,6 +54,13 @@
         .learn-nav a { color: var(--accent, #2481cc); text-decoration: none; }
         .learn-article h1 { font-size: 1.9rem; line-height: 1.15; }
         .learn-summary, .learn-article p { color: var(--text-secondary, #666); line-height: 1.58; }
+        .learn-meta { color: var(--text-secondary, #666); font-size: .88rem; }
+        .learn-section h2 { font-size: 1.2rem; margin: 1.4rem 0 .4rem; }
+        .learn-sources { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border, #ddd); }
+        .learn-sources a { color: var(--accent, #2481cc); overflow-wrap: anywhere; }
+        .learn-products { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: .7rem; }
+        .learn-products a { color: var(--text-primary, #111); text-decoration: none; font-weight: 600; }
+        .learn-products img, .learn-products video { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; background: #111; }
         .term-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: .45rem; margin: 1rem 0; }
         .term-list li { border: 1px solid var(--border, #ddd); border-radius: 999px; padding: .28rem .65rem; color: var(--text-secondary, #666); font-size: .86rem; background: rgba(0, 0, 0, .03); }
         .learn-cta { display: inline-block; margin-top: 1rem; padding: .7rem 1rem; border-radius: 8px; background: #2f9e55; color: #fff; text-decoration: none; font-weight: 700; }
@@ -72,6 +80,7 @@
         <article>
             <h1>{{ page.title }}</h1>
             <p class="learn-summary">{{ page.summary }}</p>
+            {% if page.author_name or page.updated_at %}<p class="learn-meta">By {{ page.author_name or 'Top Shelf Editorial Team' }}{% if page.updated_at %} · Updated {{ page.updated_at|string|truncate(10, True, '') }}{% endif %}</p>{% endif %}
             {% if page.terms %}
             <ul class="term-list">
                 {% for term in page.terms %}
@@ -80,11 +89,13 @@
             </ul>
             {% endif %}
             {% for section in page.sections %}
-            <p>{{ section }}</p>
+            {% if section is mapping %}<section class="learn-section"><h2>{{ section.heading }}</h2><p>{{ section.text }}</p></section>{% else %}<p>{{ section }}</p>{% endif %}
             {% endfor %}
             {% if subcategory_url or category_url %}
             <a class="learn-cta" href="{{ subcategory_url or category_url }}">{{ ui.browse_related }}</a>
             {% endif %}
+            {% if related_products %}<section><h2>{{ ui.related_products }}</h2><ul class="learn-products">{% for product in related_products %}<li><a href="{{ product.url }}">{% if product.preview.type == 'video' %}<video src="{{ product.preview.url }}" muted playsinline preload="metadata"></video>{% elif product.preview.url %}<img src="{{ product.preview.url }}" alt="{{ product.title }}" loading="lazy">{% endif %}<span>{{ product.title }}</span></a></li>{% endfor %}</ul></section>{% endif %}
+            {% if page.sources %}<section class="learn-sources"><h2>Sources</h2><ul>{% for source in page.sources %}<li><a href="{{ source.url }}" rel="noopener noreferrer">{{ source.title or source.publisher or source.url }}</a>{% if source.publisher %} · {{ source.publisher }}{% endif %}</li>{% endfor %}</ul></section>{% endif %}
         </article>
     </main>
 </body>

@@ -1638,6 +1638,55 @@
         section.appendChild(group);
     }
 
+    function appendAdminGuideDrafts(section, drafts) {
+        if (!drafts?.length) return;
+        const group = document.createElement('div');
+        group.className = 'admin-list-group';
+        const heading = document.createElement('h4');
+        heading.textContent = `Guide Drafts Awaiting Review (${drafts.length})`;
+        const list = document.createElement('ul');
+        drafts.forEach(item => {
+            const li = document.createElement('li');
+            const text = document.createElement('span');
+            text.textContent = `${item.title} -> ${item.category || 'catalog'}${item.subcategory ? ` / ${item.subcategory}` : ''} (quality ${item.quality_score || 0})`;
+            const preview = document.createElement('details');
+            const previewTitle = document.createElement('summary');
+            previewTitle.textContent = 'Review draft';
+            const previewText = document.createElement('p');
+            let sections = [];
+            try { sections = JSON.parse(item.body_json || '[]'); } catch (_) {}
+            previewText.textContent = [item.summary, ...sections.map(section => typeof section === 'string' ? section : `${section.heading}: ${section.text}`)].filter(Boolean).join('\n\n');
+            preview.append(previewTitle, previewText);
+            const actions = document.createElement('span');
+            actions.className = 'admin-page-meta';
+            ['approve', 'reject'].forEach(action => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.textContent = action === 'approve' ? 'Publish' : 'Reject';
+                button.addEventListener('click', async () => {
+                    button.disabled = true;
+                    const headers = tg.initData ? {'X-Telegram-Init-Data': tg.initData} : {};
+                    try {
+                        const response = await fetch(`/api/admin/guides/${item.id}/${action}`, {
+                            method: 'POST', headers, credentials: 'same-origin', cache: 'no-store'
+                        });
+                        if (!response.ok) throw new Error(`Review failed (${response.status})`);
+                        state.adminStatusLoaded = false;
+                        await loadAdminPanel(true);
+                    } catch (err) {
+                        logger.error('admin_guide_review', err.message);
+                        button.disabled = false;
+                    }
+                });
+                actions.appendChild(button);
+            });
+            li.append(text, preview, actions);
+            list.appendChild(li);
+        });
+        group.append(heading, list);
+        section.appendChild(group);
+    }
+
     function renderAdminPanel(data) {
         const panel = document.getElementById('admin-panel');
         if (!panel || !data) return;
@@ -1677,6 +1726,8 @@
         appendAdminMetric(grid, 'Website visits 24h', formatAdminCount(summary.website_visits_24h));
         appendAdminMetric(grid, 'WebApp opens 24h', formatAdminCount(summary.webapp_visits_24h));
         appendAdminMetric(grid, 'Known visitors 24h', formatAdminCount(summary.known_visitor_users_24h));
+        appendAdminMetric(grid, 'Crawler samples 24h', formatAdminCount(summary.crawler_events_24h));
+        appendAdminMetric(grid, 'Search crawler samples', formatAdminCount(summary.search_crawler_events_24h));
         appendAdminMetric(grid, 'Pending notifications', formatAdminCount(summary.pending_notifications));
         appendAdminMetric(grid, 'WebApp events 24h', formatAdminCount(summary.webapp_events_24h));
         appendAdminMetric(grid, 'Inline queries 24h', formatAdminCount(summary.inline_queries_24h));
@@ -1689,11 +1740,16 @@
         appendAdminMetric(grid, 'SEO auto changed', formatAdminCount(seoRuntime.seo_auto_learn_last_changed));
         appendAdminMetric(grid, 'SEO candidates checked', formatAdminCount(seoRuntime.seo_auto_learn_last_candidates));
         appendAdminMetric(grid, 'SEO terms paused', formatAdminCount(seoRuntime.seo_auto_learn_last_suppressed));
+        appendAdminMetric(grid, 'SEO noise retired', formatAdminCount(seoRuntime.seo_auto_learn_last_retired_noise));
         appendAdminMetric(grid, 'Trends last run', seoRuntime.seo_trends_last_run_at || 'pending');
+        appendAdminMetric(grid, 'Guide research last', seoRuntime.seo_content_research_last_run_at || 'pending');
+        appendAdminMetric(grid, 'Guide drafts created', formatAdminCount(seoRuntime.seo_content_research_last_drafts));
         appendAdminMetric(grid, 'Google import last', seoRuntime.search_console_import_last_attempt_at || 'pending');
         appendAdminMetric(grid, 'Google import rows', formatAdminCount(seoRuntime.search_console_import_last_rows));
         appendAdminMetric(grid, 'Google sitemap', googleSitemap.status || 'never');
         appendAdminMetric(grid, 'SEO mappings', formatAdminCount(summary.seo_query_mappings));
+        appendAdminMetric(grid, 'Published guides', formatAdminCount(summary.seo_guides_published));
+        appendAdminMetric(grid, 'Guide drafts', formatAdminCount(summary.seo_guides_draft));
         appendAdminMetric(grid, 'IndexNow pending', formatAdminCount(indexnow.pending));
         appendAdminMetric(grid, 'IndexNow sent', formatAdminCount(indexnow.submitted));
         appendAdminMetric(grid, 'IndexNow failed', formatAdminCount(indexnow.failed));
@@ -1735,6 +1791,10 @@
         appendAdminList(panel, 'Visitor Devices', data.visitor_devices || [], item =>
             `${item.device_type}: ${formatAdminCount(item.visitors)} visitors, ${formatAdminCount(item.visits)} visits`
         );
+        appendAdminList(panel, 'Crawler Activity (sampled)', data.crawler_activity || [], item =>
+            `${item.crawler_name}: ${formatAdminCount(item.requests)} requests across ${formatAdminCount(item.pages)} pages, last ${item.last_seen || '-'}`
+        );
+        appendAdminGuideDrafts(panel, data.seo_guide_drafts || []);
         appendAdminList(panel, 'Recent Search Mappings', seo.recent_mappings || [], item =>
             `[${String(item.language || 'en').toUpperCase()}] ${item.term} -> ${item.category || 'catalog'}${item.subcategory ? ` / ${item.subcategory}` : ''}`
         );

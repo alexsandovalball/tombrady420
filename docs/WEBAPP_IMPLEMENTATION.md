@@ -126,6 +126,22 @@ learn, or product pages. The automatic learner approves only confident mappings
 to existing catalog taxonomy and expands them into supported bot/WebApp
 languages.
 
+### Visitor analytics and guide publishing
+
+`visitor_events` separates human page views from search crawlers, social link
+previews, SEO tools, and automation. The admin monitor's visitor/location/page
+headlines use human page views only; crawler traffic appears in its own sampled
+section. Raw events are retained for 45 days by default and then rolled into
+daily aggregates.
+
+The guide worker turns qualified WebApp searches and Search Console demand into
+source-backed drafts. It never publishes them automatically. Telegram admins
+review each draft in the home-page Admin Monitor and choose Publish or Reject.
+Published guides enter `/learn`, matching product/category internal links, the
+sitemap, the guide RSS feed, and the IndexNow queue. Source material is limited
+to the curated public-health list in `utils/guide_research.py`; competitor pages
+are not scraped or copied.
+
 ## Production Checks
 
 After deploy, verify:

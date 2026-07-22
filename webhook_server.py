@@ -58,8 +58,14 @@ from utils.seo_terms import (
     match_query_mappings,
     normalize_term,
 )
-from utils.seo_autolearn import build_taxonomy_profiles, infer_seo_query_mapping
+from utils.seo_autolearn import (
+    build_taxonomy_profiles,
+    has_search_audience_intent,
+    infer_seo_query_mapping,
+    is_bad_auto_seo_term,
+)
 from utils.google_trends import fetch_trending_queries_for_supported_locales
+from utils.guide_research import build_guide_draft, enrich_seed_guide
 from utils.external_seo_signals import load_external_seo_signal_file
 from utils.search_console import describe_search_console_setup, fetch_search_console_rows, submit_sitemap
 from translations.language_config import SUPPORTED_LANGUAGES
@@ -91,6 +97,7 @@ from utils.access_control import (
     record_user_ip_debounced,
     track_user_debounced,
 )
+from utils.traffic_classifier import classify_user_agent, is_crawler_user_agent
 
 # Configure logging
 from configs.logging_config import configure_logging
@@ -132,6 +139,16 @@ _VISITOR_EVENT_LOG_EVERY = _bounded_int_env("VISITOR_EVENT_LOG_EVERY", 500, 50, 
 _visitor_event_queue: Optional[asyncio.Queue] = None
 _visitor_events_written = 0
 _visitor_events_dropped = 0
+_crawler_event_sample: OrderedDict[tuple[str, str, str], float] = OrderedDict()
+_CRAWLER_EVENT_SAMPLE_SECONDS = 3600
+_CRAWLER_EVENT_SAMPLE_MAX = 4096
+_VISITOR_ANALYTICS_RETENTION_DAYS = _bounded_int_env("VISITOR_ANALYTICS_RETENTION_DAYS", 45, 7, 365)
+_VISITOR_ANALYTICS_PRUNE_INTERVAL_SECONDS = _bounded_int_env(
+    "VISITOR_ANALYTICS_PRUNE_INTERVAL_SECONDS",
+    86400,
+    3600,
+    7 * 86400,
+)
 _SEO_AUTO_LEARN_STARTUP_DELAY_SECONDS = _bounded_int_env(
     "SEO_AUTO_LEARN_STARTUP_DELAY_SECONDS",
     60,
@@ -141,6 +158,9 @@ _SEO_AUTO_LEARN_STARTUP_DELAY_SECONDS = _bounded_int_env(
 _SEO_TRANSLATION_WARMUP_STARTUP_SECONDS = 240
 _SEO_TRANSLATION_WARMUP_INTERVAL_SECONDS = 1800
 _SEO_TRANSLATION_WARMUP_BATCH_SIZE = 4
+_SEO_CONTENT_RESEARCH_STARTUP_SECONDS = _bounded_int_env("SEO_CONTENT_RESEARCH_STARTUP_SECONDS", 180, 60, 3600)
+_SEO_CONTENT_RESEARCH_INTERVAL_SECONDS = _bounded_int_env("SEO_CONTENT_RESEARCH_INTERVAL_SECONDS", 21600, 3600, 86400)
+_SEO_CONTENT_RESEARCH_MAX_DRAFTS = _bounded_int_env("SEO_CONTENT_RESEARCH_MAX_DRAFTS", 2, 1, 10)
 _SEO_ROBOTS_CACHE_SECONDS = _bounded_int_env("SEO_ROBOTS_CACHE_SECONDS", 3600, 60, 86400)
 _SEO_SITEMAP_CACHE_SECONDS = _bounded_int_env("SEO_SITEMAP_CACHE_SECONDS", 300, 60, 3600)
 _SEO_PAGE_CACHE_SECONDS = _bounded_int_env("SEO_PAGE_CACHE_SECONDS", 300, 30, 3600)
@@ -153,6 +173,8 @@ _ADMIN_CACHE_CLEANUP_RETRY_BASE_SECONDS = _bounded_int_env("ADMIN_CACHE_CLEANUP_
 _SEO_PUBLIC_MEDIA_RATE_LIMIT_WINDOW = _bounded_int_env("SEO_PUBLIC_MEDIA_RATE_LIMIT_WINDOW", 60, 10, 3600)
 _SEO_RESPONSE_CACHE_MAX = _bounded_int_env("SEO_RESPONSE_CACHE_MAX", 256, 16, 2000)
 _seo_response_cache: OrderedDict[str, tuple[float, bytes, str, str, int]] = OrderedDict()
+_published_guide_cache: Dict[str, tuple[float, list[dict]]] = {}
+_PUBLISHED_GUIDE_CACHE_SECONDS = 300
 _seo_auto_learn_lock: Optional[asyncio.Lock] = None
 _seo_trends_lock: Optional[asyncio.Lock] = None
 _webapp_search_cache: OrderedDict[str, tuple[float, dict]] = OrderedDict()
@@ -829,13 +851,14 @@ def _remember_media_registry_write(bot_identifier: str, file_unique_id: str, res
 
 def clear_in_memory_caches() -> int:
     """Clear all in-memory caches. Returns total entries cleared."""
-    global _resolved_file_id_cache, _media_info_cache, _api_result_cache, _media_registry_write_cache, _seo_query_mapping_cache, _admin_status_cache
+    global _resolved_file_id_cache, _media_info_cache, _api_result_cache, _media_registry_write_cache, _seo_query_mapping_cache, _admin_status_cache, _published_guide_cache
 
     total = (
         len(_resolved_file_id_cache)
         + len(_media_info_cache)
         + len(_api_result_cache)
         + len(_media_registry_write_cache)
+        + len(_published_guide_cache)
         + (len(_seo_query_mapping_cache[1]) if _seo_query_mapping_cache else 0)
     )
 
@@ -843,6 +866,7 @@ def clear_in_memory_caches() -> int:
     _media_info_cache.clear()
     _api_result_cache.clear()
     _media_registry_write_cache.clear()
+    _published_guide_cache.clear()
     _seo_query_mapping_cache = None
     _admin_status_cache.clear()
 
@@ -1075,7 +1099,7 @@ def _user_agent_hash(request: Request) -> str:
 
 def _visitor_device_type(request: Request) -> str:
     user_agent = (request.headers.get("user-agent") or "").lower()
-    if any(token in user_agent for token in ("bot", "crawler", "spider", "bingpreview", "slurp")):
+    if is_crawler_user_agent(user_agent):
         return "bot"
     if "tablet" in user_agent or "ipad" in user_agent:
         return "tablet"
@@ -1183,6 +1207,7 @@ def _queue_visitor_event(
     subcategory: str = "",
     init_data: str = "",
     language: str = "",
+    is_pageview: bool = True,
 ) -> None:
     """Record a page/app open in the background without storing raw IP."""
     if request.method == "HEAD":
@@ -1191,8 +1216,22 @@ def _queue_visitor_event(
     user_data = _visitor_user_from_init_data(init_data)
     telegram_user_id = user_data.id if user_data else None
     location = _visitor_location(request)
+    traffic = classify_user_agent(request.headers.get("user-agent", ""))
+    if traffic.is_crawler:
+        now = _time.monotonic()
+        sample_key = (traffic.traffic_class, traffic.crawler_name, request.url.path)
+        last_seen = _crawler_event_sample.get(sample_key)
+        if last_seen is not None and now - last_seen < _CRAWLER_EVENT_SAMPLE_SECONDS:
+            return
+        _crawler_event_sample[sample_key] = now
+        _crawler_event_sample.move_to_end(sample_key)
+        while len(_crawler_event_sample) > _CRAWLER_EVENT_SAMPLE_MAX:
+            _crawler_event_sample.popitem(last=False)
+    visitor_hash = _visitor_hash(request, telegram_user_id)
+    session_material = f"session:{telegram_user_id}" if telegram_user_id is not None else f"session:{visitor_hash}"
+    session_hash = hashlib.sha256(session_material.encode("utf-8")).hexdigest()[:32]
     payload = {
-        "visitor_hash": _visitor_hash(request, telegram_user_id),
+        "visitor_hash": visitor_hash,
         "telegram_user_id": telegram_user_id,
         "username": user_data.username if user_data else "",
         "source": source,
@@ -1206,6 +1245,10 @@ def _queue_visitor_event(
         "user_agent_hash": _user_agent_hash(request),
         "referrer": _visitor_referrer(request),
         "is_authenticated": user_data is not None,
+        "traffic_class": traffic.traffic_class,
+        "crawler_name": traffic.crawler_name,
+        "is_pageview": is_pageview,
+        "session_hash": session_hash,
         **location,
     }
 
@@ -2108,6 +2151,8 @@ def _is_useful_auto_seo_term(term: str) -> bool:
         return False
     if len(normalized.split()) > 7:
         return False
+    if is_bad_auto_seo_term(term):
+        return False
     return True
 
 
@@ -2130,16 +2175,20 @@ async def _expand_auto_learn_mapping_variants(term: str, source_language: str = 
     if source_language not in SUPPORTED_LANGUAGES:
         source_language = "en"
     terms = [{"term": term, "language": source_language}]
-    for lang in SUPPORTED_LANGUAGES:
-        if lang == source_language:
-            continue
-        try:
-            translated = await translation_service.translate(term, lang, source_lang="auto")
-        except Exception as exc:
-            logger.debug("[seo_auto_learn] translation_skipped term=%r lang=%s error=%s", term, lang, exc)
-            continue
-        if translated and translated != term:
-            terms.append({"term": translated, "language": lang})
+    # Product/brand names should not be blindly translated. That created noise
+    # such as "other mommy" from name-like searches. Only expand terms that
+    # clearly look like cannabis/mushroom community vocabulary.
+    if has_search_audience_intent(term):
+        for lang in SUPPORTED_LANGUAGES:
+            if lang == source_language:
+                continue
+            try:
+                translated = await translation_service.translate(term, lang, source_lang="auto")
+            except Exception as exc:
+                logger.debug("[seo_auto_learn] translation_skipped term=%r lang=%s error=%s", term, lang, exc)
+                continue
+            if translated and translated != term:
+                terms.append({"term": translated, "language": lang})
 
     seen = set()
     cleaned = []
@@ -2236,6 +2285,8 @@ async def _import_google_trends_signals(
         term = str(row.get("term") or "").strip()
         if not _is_useful_auto_seo_term(term):
             continue
+        if not has_search_audience_intent(term):
+            continue
         inferred = infer_seo_query_mapping(
             term,
             products,
@@ -2304,6 +2355,8 @@ async def _promote_approved_external_signals() -> int:
     for item in candidates:
         term = str(item.get("term") or "").strip()
         if not _is_useful_auto_seo_term(term):
+            continue
+        if not has_search_audience_intent(term):
             continue
         for variant in await _expand_auto_learn_mapping_variants(term, item.get("language") or "en"):
             approvals.append({
@@ -2542,7 +2595,13 @@ async def _seo_auto_learn_once() -> int:
     profiles = build_taxonomy_profiles(products)
     external_imports = 0
     external_promoted = 0
+    retired_noise = 0
     try:
+        retired_noise = await _catalog_db.retire_off_audience_seo_mappings()
+        if retired_noise:
+            _invalidate_seo_query_mapping_cache()
+            _invalidate_admin_status_cache()
+            logger.info("[seo_auto_learn] retired_off_audience_mappings=%d", retired_noise)
         external_imports += await _import_external_signal_file(products, profiles)
         external_imports += await _import_search_console_signals(products, profiles)
         external_promoted = await _promote_approved_external_signals()
@@ -2566,8 +2625,9 @@ async def _seo_auto_learn_once() -> int:
             "seo_auto_learn_last_candidates": 0,
             "seo_auto_learn_last_skipped": 0,
             "seo_auto_learn_last_suppressed": 0,
+            "seo_auto_learn_last_retired_noise": retired_noise,
         })
-        return external_imports + external_promoted
+        return external_imports + external_promoted + retired_noise
 
     approvals = []
     suppressed = []
@@ -2586,6 +2646,10 @@ async def _seo_auto_learn_once() -> int:
         if not inferred:
             skipped += 1
             suppressed.append({**item, "query": query, "reason": "no_confident_mapping"})
+            continue
+        if not has_search_audience_intent(query) and inferred.get("reason") != "catalog":
+            skipped += 1
+            suppressed.append({**item, "query": query, "reason": "off_audience"})
             continue
 
         # One-off queries are approved only if they match the explicit SEO
@@ -2632,8 +2696,9 @@ async def _seo_auto_learn_once() -> int:
                 "seo_auto_learn_last_candidates": len(candidates),
                 "seo_auto_learn_last_skipped": skipped,
                 "seo_auto_learn_last_suppressed": suppressed_count,
+                "seo_auto_learn_last_retired_noise": retired_noise,
             })
-        return external_imports + external_promoted
+        return external_imports + external_promoted + retired_noise
 
     approved = await _catalog_db.upsert_seo_query_mappings(
         approvals,
@@ -2663,8 +2728,9 @@ async def _seo_auto_learn_once() -> int:
         "seo_auto_learn_last_candidates": len(candidates),
         "seo_auto_learn_last_skipped": skipped,
         "seo_auto_learn_last_suppressed": suppressed_count,
+        "seo_auto_learn_last_retired_noise": retired_noise,
     })
-    return approved + external_imports + external_promoted
+    return approved + external_imports + external_promoted + retired_noise
 
 
 def _get_seo_auto_learn_lock() -> asyncio.Lock:
@@ -2714,6 +2780,93 @@ async def _seo_auto_learn_loop():
                 "seo_auto_learn_last_error": str(e)[:300],
             })
         await asyncio.sleep(Config.SEO_AUTO_LEARN_INTERVAL_SECONDS)
+
+
+async def _seo_content_research_once() -> int:
+    """Turn qualified first-party demand into cited admin-review drafts."""
+    products = await _catalog_db.get_all_products_for_search()
+    profiles = build_taxonomy_profiles(products)
+    candidates = await _catalog_db.get_seo_content_topic_candidates(limit=20)
+    created = 0
+    reviewed = 0
+
+    for item in candidates:
+        if created >= _SEO_CONTENT_RESEARCH_MAX_DRAFTS:
+            break
+        topic = str(item.get("topic") or "").strip()
+        normalized = normalize_term(topic)
+        if not topic or not has_search_audience_intent(topic):
+            await _catalog_db.record_seo_content_topic(
+                topic=topic,
+                normalized_topic=normalized,
+                source=str(item.get("source") or ""),
+                demand_score=float(item.get("demand_score") or 0),
+                status_value="off_audience",
+            )
+            reviewed += 1
+            continue
+
+        inferred = infer_seo_query_mapping(topic, products, min_score=88, profiles=profiles)
+        if not inferred:
+            await _catalog_db.record_seo_content_topic(
+                topic=topic,
+                normalized_topic=normalized,
+                source=str(item.get("source") or ""),
+                demand_score=float(item.get("demand_score") or 0),
+                status_value="unmapped",
+            )
+            reviewed += 1
+            continue
+
+        profile = profiles.get((inferred["category"], inferred.get("subcategory") or ""), {})
+        draft = build_guide_draft(
+            topic,
+            category=inferred["category"],
+            subcategory=inferred.get("subcategory") or "",
+            source=str(item.get("source") or "first_party_demand"),
+            demand_score=float(item.get("demand_score") or 0),
+            related_terms=profile.get("terms") or (),
+        )
+        guide_id = await _catalog_db.create_seo_guide_draft(draft or {}) if draft else None
+        await _catalog_db.record_seo_content_topic(
+            topic=topic,
+            normalized_topic=normalized,
+            category=inferred["category"],
+            subcategory=inferred.get("subcategory") or "",
+            source=str(item.get("source") or ""),
+            demand_score=float(item.get("demand_score") or 0),
+            status_value="draft" if guide_id else "duplicate",
+        )
+        reviewed += 1
+        if guide_id:
+            created += 1
+
+    await _set_runtime_settings({
+        "seo_content_research_last_run_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+        "seo_content_research_last_status": "ok",
+        "seo_content_research_last_candidates": len(candidates),
+        "seo_content_research_last_reviewed": reviewed,
+        "seo_content_research_last_drafts": created,
+    })
+    if created:
+        _invalidate_admin_status_cache()
+    return created
+
+
+async def _seo_content_research_loop():
+    await asyncio.sleep(_SEO_CONTENT_RESEARCH_STARTUP_SECONDS)
+    while True:
+        try:
+            created = await _seo_content_research_once()
+            logger.info("[seo_content] research_complete drafts=%d", created)
+        except Exception as exc:
+            logger.warning("[seo_content] research_error error=%s", exc)
+            await _set_runtime_settings({
+                "seo_content_research_last_run_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+                "seo_content_research_last_status": "error",
+                "seo_content_research_last_error": str(exc)[:300],
+            })
+        await asyncio.sleep(_SEO_CONTENT_RESEARCH_INTERVAL_SECONDS)
 
 
 async def _seo_trends_loop():
@@ -2816,6 +2969,20 @@ async def _seo_translation_warmup_loop():
         except Exception as exc:
             logger.warning("[seo_translation] warmup_error error=%s", exc)
         await asyncio.sleep(_SEO_TRANSLATION_WARMUP_INTERVAL_SECONDS)
+
+
+async def _visitor_analytics_prune_loop():
+    await asyncio.sleep(300)
+    while True:
+        try:
+            result = await _catalog_db.prune_visitor_analytics(
+                raw_retention_days=_VISITOR_ANALYTICS_RETENTION_DAYS,
+            )
+            if result.get("raw_removed"):
+                logger.info("[visitor_analytics] pruned=%s", result)
+        except Exception as exc:
+            logger.warning("[visitor_analytics] prune_failed error=%s", exc)
+        await asyncio.sleep(_VISITOR_ANALYTICS_PRUNE_INTERVAL_SECONDS)
 
 
 @asynccontextmanager
@@ -2935,14 +3102,25 @@ async def lifespan(app: FastAPI):
 
     await _log_setup_check()
 
+    try:
+        seed_pages = []
+        for seed_page in get_learn_pages():
+            seed_pages.append(enrich_seed_guide(seed_page))
+        seeded_guides = await _catalog_db.sync_seed_seo_guides(seed_pages)
+        logger.info("[seo_content] seed_sync changed=%d", seeded_guides)
+    except Exception as exc:
+        logger.warning("[seo_content] seed_sync_failed error=%s", exc)
+
     # Start background maintenance tasks
     _visitor_event_queue = asyncio.Queue(maxsize=_VISITOR_EVENT_QUEUE_MAX)
     _bg_tasks = [
         asyncio.create_task(_visitor_event_writer_loop(), name="visitor_event_writer"),
+        asyncio.create_task(_visitor_analytics_prune_loop(), name="visitor_analytics_prune"),
         asyncio.create_task(_media_cache_prune_loop(), name="media_cache_prune"),
         asyncio.create_task(_admin_cache_cleanup_loop(), name="admin_cache_cleanup"),
         asyncio.create_task(_wal_checkpoint_loop(), name="wal_checkpoint"),
         asyncio.create_task(_seo_auto_learn_loop(), name="seo_auto_learn"),
+        asyncio.create_task(_seo_content_research_loop(), name="seo_content_research"),
         asyncio.create_task(_seo_trends_loop(), name="seo_trends"),
         asyncio.create_task(_seo_translation_warmup_loop(), name="seo_translation_warmup"),
         asyncio.create_task(_indexnow_loop(), name="indexnow"),
@@ -3886,7 +4064,7 @@ async def _indexnow_bootstrap_once() -> int:
         urls.append(_indexnow_public_url(_canonical_category_path(category)))
         for subcategory in get_subcategories(category):
             urls.append(_indexnow_public_url(_canonical_subcategory_path(category, subcategory)))
-    for page in get_learn_pages():
+    for page in await _published_learn_pages("en"):
         learn_path = _learn_page_path(page.get("slug", ""))
         urls.extend(
             _indexnow_public_url(_localized_path(learn_path, language))
@@ -4569,11 +4747,7 @@ def _render_seo_template(
 
 
 def _is_crawler_user_agent(user_agent: str) -> bool:
-    ua = (user_agent or "").lower()
-    return any(token in ua for token in (
-        "bot", "crawler", "spider", "slurp", "bingpreview", "facebookexternalhit",
-        "whatsapp", "telegrambot", "twitterbot", "linkedinbot", "discordbot",
-    ))
+    return is_crawler_user_agent(user_agent)
 
 
 def _log_seo_public_request(request: Request, route: str, **fields: Any) -> None:
@@ -4827,14 +5001,14 @@ async def serve_sitemap_xml(request: Request):
                     f"    <priority>0.85</priority>\n"
                     f"  </url>"
                 )
-    for page in get_learn_pages():
+    for page in await _published_learn_pages("en"):
         learn_path = _learn_page_path(page.get('slug', ''))
         for language in SUPPORTED_LANGUAGES:
             urls.append(
                 f"  <url>\n"
                 f"    <loc>{html.escape(_localized_url(learn_path, language))}</loc>\n"
                 f"{_sitemap_alternate_xml(learn_path)}"
-                f"    <lastmod>{static_seo_lastmod}</lastmod>\n"
+            f"    <lastmod>{str(page.get('updated_at') or page.get('published_at') or static_seo_lastmod)[:10]}</lastmod>\n"
                 f"    <changefreq>monthly</changefreq>\n"
                 f"    <priority>0.7</priority>\n"
                 f"  </url>"
@@ -4978,13 +5152,13 @@ async def _crawlable_page_snapshot(limit: int = 5000) -> Dict[str, Any]:
                 subcategory_lastmod,
             )
 
-    for page in get_learn_pages():
+    for page in await _published_learn_pages("en"):
         slug = page.get("slug", "")
         append_localized(
             _learn_page_path(slug),
             "learn",
             page.get("title") or slug or "Learn",
-            static_seo_lastmod,
+            str(page.get("updated_at") or page.get("published_at") or static_seo_lastmod)[:10],
         )
 
     for product in products:
@@ -5114,6 +5288,23 @@ async def _build_storefront_index_context(
             logger.debug("Failed to build homepage SEO ItemList schema: %s", exc)
     ctx["localized_home_url"] = _localized_path("/", language)
     ctx["localized_learn_url"] = _localized_path("/learn", language)
+    if category and subcategory:
+        guide_products = await _catalog_db.get_products_by_category_and_subcategory(category, subcategory, limit=6)
+    elif category:
+        guide_products = await _catalog_db.get_products_by_category(category, limit=6)
+    else:
+        guide_products = []
+    ctx["related_products"] = [
+        {
+            "title": _caption_parts(product.get("caption") or "")[0],
+            "url": _localized_path(
+                _canonical_product_path(product.get("id") or product.get("product_id"), product.get("caption") or ""),
+                language,
+            ),
+            "preview": _product_card_preview_media(product, absolute=False),
+        }
+        for product in guide_products
+    ]
     return ctx, recent_products
 
 
@@ -5282,18 +5473,61 @@ async def serve_learn_index(request: Request):
     return await _serve_learn_index(request, "en")
 
 
+async def _published_learn_pages(language: str = "en") -> list[dict]:
+    now = _time.monotonic()
+    cached = _published_guide_cache.get(language)
+    if cached and now - cached[0] < _PUBLISHED_GUIDE_CACHE_SECONDS:
+        return cached[1]
+    try:
+        pages = await _catalog_db.get_published_seo_guides(language=language)
+        if pages:
+            _published_guide_cache[language] = (now, pages)
+            return pages
+    except Exception as exc:
+        logger.warning("[seo_content] published_guides_fallback error=%s", exc)
+    pages = get_learn_pages()
+    _published_guide_cache[language] = (now, pages)
+    return pages
+
+
+async def _published_learn_page(slug: str, language: str = "en") -> Optional[dict]:
+    try:
+        page = await _catalog_db.get_published_seo_guide(slug, language=language)
+        if page:
+            return page
+    except Exception as exc:
+        logger.warning("[seo_content] published_guide_fallback slug=%s error=%s", slug, exc)
+    return get_learn_page(slug)
+
+
+async def _related_learn_guides(category: str, subcategory: str = "", language: str = "en", limit: int = 4) -> list[dict]:
+    matches = []
+    for page in await _published_learn_pages(language):
+        if str(page.get("category") or "").upper() != str(category or "").upper():
+            continue
+        page_subcategory = str(page.get("subcategory") or "").upper()
+        if subcategory and page_subcategory and page_subcategory != str(subcategory).upper():
+            continue
+        matches.append({
+            **page,
+            "url": _localized_path(_learn_page_path(page.get("slug") or ""), language),
+        })
+        if len(matches) >= limit:
+            break
+    return matches
+
+
 async def _serve_learn_index(request: Request, language: str):
     """Serve an index of approved educational/navigation glossary pages."""
     language = _normalize_seo_language(language)
     _queue_visitor_event(request, source="website", page_type="learn_index", language=language)
     pages = []
-    for page in get_learn_pages():
+    for page in await _published_learn_pages(language):
         category = page.get("category") or ""
         subcategory = page.get("subcategory") or ""
-        localized_values = await _translate_seo_lines(
-            [page.get("title") or "", page.get("summary") or ""],
-            language,
-        )
+        localized_values = [page.get("title") or "", page.get("summary") or ""]
+        if language != "en" and page.get("translation_language") != language:
+            localized_values = await _translate_seo_lines(localized_values, language)
         title = localized_values[0] if localized_values else page.get("title") or ""
         summary = localized_values[1] if len(localized_values) > 1 else page.get("summary") or ""
         pages.append({
@@ -5319,6 +5553,21 @@ async def _serve_learn_index(request: Request, language: str):
     ctx["request"] = request
     ctx["learn_pages"] = pages
     ctx["localized_home_url"] = _localized_path("/", language)
+    ctx["seo_schema"] = json.dumps({
+        "@context": "https://schema.org",
+        "@type": "ItemList",
+        "name": ui["guides"],
+        "numberOfItems": len(pages),
+        "itemListElement": [
+            {
+                "@type": "ListItem",
+                "position": index + 1,
+                "name": page.get("title") or "Guide",
+                "url": _absolute_storefront_url(page.get("url") or "/learn"),
+            }
+            for index, page in enumerate(pages)
+        ],
+    }, ensure_ascii=False)
     return _render_seo_template(
         request,
         "learn_index.html",
@@ -5343,7 +5592,7 @@ async def serve_learn_page(slug: str, request: Request):
 async def _serve_learn_page(slug: str, request: Request, language: str):
     """Serve one approved glossary/content page for search-friendly navigation."""
     language = _normalize_seo_language(language)
-    page = get_learn_page(slug)
+    page = await _published_learn_page(slug, language)
     if not page:
         return RedirectResponse(url=_localized_path("/learn", language), status_code=status.HTTP_302_FOUND)
 
@@ -5362,13 +5611,28 @@ async def _serve_learn_page(slug: str, request: Request, language: str):
 
     category = page.get("category") or ""
     subcategory = page.get("subcategory") or ""
-    localized_values = await _translate_seo_lines(
-        [page.get("title") or "", page.get("summary") or "", *(page.get("sections") or [])],
-        language,
-    )
+    raw_sections = list(page.get("sections") or [])
+    section_lines = []
+    for section in raw_sections:
+        if isinstance(section, dict):
+            section_lines.extend([str(section.get("heading") or ""), str(section.get("text") or "")])
+        else:
+            section_lines.append(str(section or ""))
+    localized_values = [page.get("title") or "", page.get("summary") or "", *section_lines]
+    if language != "en" and page.get("translation_language") != language:
+        localized_values = await _translate_seo_lines(localized_values, language)
     localized_title = localized_values[0] if localized_values else page.get("title") or ""
     localized_summary = localized_values[1] if len(localized_values) > 1 else page.get("summary") or ""
-    localized_sections = localized_values[2:] if len(localized_values) > 2 else list(page.get("sections") or [])
+    translated_lines = iter(localized_values[2:])
+    localized_sections = []
+    for section in raw_sections:
+        if isinstance(section, dict):
+            localized_sections.append({
+                "heading": next(translated_lines, str(section.get("heading") or "")),
+                "text": next(translated_lines, str(section.get("text") or "")),
+            })
+        else:
+            localized_sections.append(next(translated_lines, str(section or "")))
     localized_terms = await _translate_seo_lines(page.get("terms") or [], language)
     localized_page = {
         **page,
@@ -5396,6 +5660,13 @@ async def _serve_learn_page(slug: str, request: Request, language: str):
         "mainEntityOfPage": page_url,
         "about": localized_terms[:10],
         "inLanguage": language,
+        "datePublished": str(page.get("published_at") or page.get("created_at") or "")[:10] or None,
+        "dateModified": str(page.get("updated_at") or page.get("published_at") or "")[:10] or None,
+        "author": {
+            "@type": "Organization",
+            "name": page.get("author_name") or "Top Shelf Editorial Team",
+        },
+        "citation": [source.get("url") for source in page.get("sources") or [] if source.get("url")],
         "publisher": {
             "@type": "Organization",
             "name": "Top Shelf Cali Plug",
@@ -5414,8 +5685,32 @@ async def _serve_learn_page(slug: str, request: Request, language: str):
         request,
         "learn.html",
         ctx,
-        cache_key=f"learn:{language}:{page.get('slug')}:{_static_seo_lastmod(datetime.now().date().isoformat())}",
+        cache_key=f"learn:{language}:{page.get('slug')}:{page.get('updated_at') or 'seed'}",
     )
+
+
+@app.get("/guides-feed.xml", response_class=Response)
+async def serve_learn_feed():
+    pages = await _published_learn_pages("en")
+    items = []
+    for page in pages[:30]:
+        url = _absolute_storefront_url(_learn_page_path(page.get("slug") or ""))
+        items.append(
+            "<item><title>{}</title><link>{}</link><guid>{}</guid>"
+            "<description>{}</description><pubDate>{}</pubDate></item>".format(
+                html.escape(str(page.get("title") or "")),
+                html.escape(url),
+                html.escape(url),
+                html.escape(str(page.get("summary") or "")),
+                html.escape(str(page.get("published_at") or page.get("updated_at") or "")),
+            )
+        )
+    xml = (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><rss version=\"2.0\"><channel>"
+        f"<title>Top Shelf Catalog Guides</title><link>{html.escape(_absolute_storefront_url('/learn'))}</link>"
+        f"{''.join(items)}</channel></rss>"
+    )
+    return Response(xml, media_type="application/rss+xml", headers={"Cache-Control": "public, max-age=900"})
 
 
 @app.get("/{language}/learn/{slug}", response_class=HTMLResponse)
@@ -5517,6 +5812,31 @@ async def webapp_admin_status(request: Request):
     while len(_admin_status_cache) > _ADMIN_STATUS_CACHE_MAX:
         _admin_status_cache.popitem(last=False)
     return _json_no_store(payload)
+
+
+@app.post("/api/admin/guides/{guide_id}/{action}")
+async def review_seo_guide(guide_id: int, action: str, request: Request):
+    """Publish or reject an automatically prepared guide after admin review."""
+    user, _, init_data = _get_authenticated_webapp_user(request)
+    await _check_user_not_blocked(init_data, get_client_ip(request))
+    if int(user.id) not in {int(admin_id) for admin_id in Config.ADMIN_IDS}:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    status_value = {"approve": "published", "reject": "rejected"}.get(str(action or "").lower())
+    if not status_value:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid action")
+    guide = await _catalog_db.set_seo_guide_status(guide_id, status_value, user.id)
+    if not guide:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Guide not found")
+
+    _seo_response_cache.clear()
+    _published_guide_cache.clear()
+    _invalidate_admin_status_cache()
+    queued = 0
+    if status_value == "published" and _indexnow_enabled():
+        path = _learn_page_path(guide.get("slug") or "")
+        urls = [_indexnow_public_url(_localized_path(path, language)) for language in SUPPORTED_LANGUAGES]
+        queued = await _catalog_db.enqueue_indexnow_urls(urls, reason="guide_publish")
+    return _json_no_store({"ok": True, "status": status_value, "guide": guide, "indexnow_queued": queued})
 
 
 @app.get("/product/{product_id}", response_class=HTMLResponse)
@@ -5674,6 +5994,7 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
     ctx["telegram_bot_url"] = deep_link
     ctx["webapp_product_url"] = webapp_link
     ctx["related_products"] = related_products
+    ctx["related_guides"] = await _related_learn_guides(category, subcategory, language)
     ctx["seo_side_notes"] = visible_search_terms
     ctx["product_search_phrases"] = product_search_phrases
     ctx["localized_home_url"] = _localized_path("/", language)
@@ -5815,6 +6136,7 @@ async def _serve_category_page(category_name: str, request: Request, language: s
     ctx["telegram_bot_url"] = public_catalog_bot_url
     ctx["storefront_domain"] = _STOREFRONT_DOMAIN
     ctx["localized_home_url"] = _localized_path("/", language)
+    ctx["related_guides"] = await _related_learn_guides(matched_category, "", language)
     ctx["current_page"] = current_page
     ctx["total_pages"] = total_pages
     ctx["previous_url"] = _localized_path(_paginated_path(base_path, current_page - 1), language) if current_page > 1 else ""
@@ -5973,6 +6295,7 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
     ctx["current_subcategory"] = matched_subcategory
     ctx["current_subcategory_display"] = subcategory_display
     ctx["parent_category_url"] = _localized_path(_canonical_category_path(matched_category), language)
+    ctx["related_guides"] = await _related_learn_guides(matched_category, matched_subcategory, language)
     ctx["seo_intro"] = await _translate_seo_text(build_taxonomy_intro(matched_category, matched_subcategory, total=total), language)
     ctx["seo_terms"] = seo_terms
     ctx["telegram_bot_url"] = public_catalog_bot_url
@@ -7187,7 +7510,13 @@ async def create_webapp_session(request: Request):
     """Exchange signed Telegram initData for a short same-origin media session."""
     init_data, _ = _get_validated_init_data(request, allow_preview=False)
     await _check_user_not_blocked(init_data, get_client_ip(request))
-    _queue_visitor_event(request, source="webapp", page_type="session", init_data=init_data)
+    _queue_visitor_event(
+        request,
+        source="webapp",
+        page_type="session",
+        init_data=init_data,
+        is_pageview=False,
+    )
 
     token = _remember_webapp_session(init_data)
     secure_cookie = (
@@ -7460,7 +7789,13 @@ async def track_webapp_user(request: Request):
                 language_source,
             )
 
-        _queue_visitor_event(request, source="webapp", page_type="user_track", init_data=init_data)
+        _queue_visitor_event(
+            request,
+            source="webapp",
+            page_type="user_track",
+            init_data=init_data,
+            is_pageview=False,
+        )
 
         # Record the client IP so it can be blocked alongside the account later
         client_ip = get_client_ip(request)

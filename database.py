@@ -11,6 +11,7 @@ import asyncio
 import uuid
 import re
 import json
+import hashlib
 
 from configs.config import Config
 from utils.categories import EXCLUDED_FROM_ALL_PRODUCTS
@@ -339,7 +340,25 @@ class Database:
                     user_agent_hash TEXT NOT NULL DEFAULT '',
                     referrer TEXT NOT NULL DEFAULT '',
                     is_authenticated INTEGER NOT NULL DEFAULT 0,
+                    traffic_class TEXT NOT NULL DEFAULT 'human',
+                    crawler_name TEXT NOT NULL DEFAULT '',
+                    is_pageview INTEGER NOT NULL DEFAULT 1,
+                    session_hash TEXT NOT NULL DEFAULT '',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS visitor_daily_stats (
+                    stat_date TEXT NOT NULL,
+                    traffic_class TEXT NOT NULL DEFAULT 'human',
+                    source TEXT NOT NULL DEFAULT 'website',
+                    page_type TEXT NOT NULL DEFAULT '',
+                    country TEXT NOT NULL DEFAULT 'Unknown',
+                    device_type TEXT NOT NULL DEFAULT 'unknown',
+                    visits INTEGER NOT NULL DEFAULT 0,
+                    visitors INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (stat_date, traffic_class, source, page_type, country, device_type)
                 )
             """)
 
@@ -384,6 +403,76 @@ class Database:
                     last_count INTEGER NOT NULL DEFAULT 0,
                     best_matched_count INTEGER,
                     expires_at TIMESTAMP NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS seo_guides (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slug TEXT NOT NULL UNIQUE,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    body_json TEXT NOT NULL DEFAULT '[]',
+                    terms_json TEXT NOT NULL DEFAULT '[]',
+                    category TEXT NOT NULL DEFAULT '',
+                    subcategory TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    author_name TEXT NOT NULL DEFAULT 'Editorial Team',
+                    reviewer_user_id TEXT NOT NULL DEFAULT '',
+                    image_url TEXT NOT NULL DEFAULT '',
+                    topic_source TEXT NOT NULL DEFAULT '',
+                    quality_score INTEGER NOT NULL DEFAULT 0,
+                    content_hash TEXT NOT NULL DEFAULT '',
+                    published_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS seo_guide_sources (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guide_id INTEGER NOT NULL,
+                    source_url TEXT NOT NULL,
+                    source_title TEXT NOT NULL DEFAULT '',
+                    publisher TEXT NOT NULL DEFAULT '',
+                    retrieved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    source_hash TEXT NOT NULL DEFAULT '',
+                    UNIQUE(guide_id, source_url),
+                    FOREIGN KEY(guide_id) REFERENCES seo_guides(id) ON DELETE CASCADE
+                )
+            """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS seo_guide_translations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guide_id INTEGER NOT NULL,
+                    language TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL DEFAULT '',
+                    body_json TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL DEFAULT 'published',
+                    content_hash TEXT NOT NULL DEFAULT '',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(guide_id, language),
+                    FOREIGN KEY(guide_id) REFERENCES seo_guides(id) ON DELETE CASCADE
+                )
+            """)
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS seo_content_topics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    topic TEXT NOT NULL,
+                    normalized_topic TEXT NOT NULL UNIQUE,
+                    category TEXT NOT NULL DEFAULT '',
+                    subcategory TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT '',
+                    demand_score REAL NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'new',
+                    last_error TEXT NOT NULL DEFAULT '',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -623,6 +712,10 @@ class Database:
                 ("broadcast_chats", "last_delivery_error", "TEXT", True),
                 ("search_query_events", "language", "TEXT NOT NULL DEFAULT ''", True),
                 ("seo_query_mappings", "language", "TEXT NOT NULL DEFAULT ''", True),
+                ("visitor_events", "traffic_class", "TEXT NOT NULL DEFAULT 'human'", True),
+                ("visitor_events", "crawler_name", "TEXT NOT NULL DEFAULT ''", True),
+                ("visitor_events", "is_pageview", "INTEGER NOT NULL DEFAULT 1", True),
+                ("visitor_events", "session_hash", "TEXT NOT NULL DEFAULT ''", True),
             ]
 
             for table, column, definition, log_on_add in migrations:
@@ -730,6 +823,9 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_visitor_events_visitor ON visitor_events(visitor_hash, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_visitor_events_source ON visitor_events(source, page_type, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_visitor_events_location ON visitor_events(country, region, city, created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_visitor_events_traffic ON visitor_events(traffic_class, is_pageview, created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_visitor_events_session ON visitor_events(session_hash, created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_visitor_daily_stats_date ON visitor_daily_stats(stat_date DESC, traffic_class)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_query_events_created ON search_query_events(created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_query_events_matched ON search_query_events(matched_count, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_query_events_autolearn ON search_query_events(matched_count, normalized_query, created_at DESC)")
@@ -742,6 +838,11 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_console_query_events_query ON search_console_query_events(normalized_query, source_date DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_external_seo_signals_approved ON external_seo_signals(approved, confidence DESC, last_seen DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_external_seo_signals_taxonomy ON external_seo_signals(category, subcategory, approved)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_guides_status_updated ON seo_guides(status, updated_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_guides_taxonomy ON seo_guides(category, subcategory, status)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_guide_sources_guide ON seo_guide_sources(guide_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_guide_translations_lookup ON seo_guide_translations(guide_id, language, status)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_content_topics_status ON seo_content_topics(status, demand_score DESC, updated_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_indexnow_submissions_status ON indexnow_submissions(status, updated_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_indexnow_submissions_submitted ON indexnow_submissions(submitted_at DESC)")
 
@@ -4033,6 +4134,10 @@ class Database:
         user_agent_hash: str = "",
         referrer: str = "",
         is_authenticated: bool = False,
+        traffic_class: str = "human",
+        crawler_name: str = "",
+        is_pageview: bool = True,
+        session_hash: str = "",
     ) -> None:
         """Persist a privacy-aware visitor/page-open event."""
         visitor_hash = str(visitor_hash or "").strip()
@@ -4045,9 +4150,10 @@ class Database:
                 INSERT INTO visitor_events (
                     visitor_hash, telegram_user_id, username, source, page_type, path,
                     product_id, category, subcategory, country, region, city, language,
-                    device_type, user_agent_hash, referrer, is_authenticated
+                    device_type, user_agent_hash, referrer, is_authenticated,
+                    traffic_class, crawler_name, is_pageview, session_hash
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     visitor_hash[:80],
@@ -4067,9 +4173,67 @@ class Database:
                     str(user_agent_hash or "")[:80],
                     str(referrer or "")[:200],
                     int(bool(is_authenticated)),
+                    str(traffic_class or "human")[:40],
+                    str(crawler_name or "")[:100],
+                    int(bool(is_pageview)),
+                    str(session_hash or "")[:80],
                 ),
             )
             await db.commit()
+
+    async def prune_visitor_analytics(self, *, raw_retention_days: int = 45) -> Dict[str, int]:
+        """Aggregate and remove old raw visitor rows to protect the SQLite disk."""
+        raw_retention_days = max(7, min(int(raw_retention_days or 45), 365))
+        cutoff = (datetime.now() - timedelta(days=raw_retention_days)).strftime("%Y-%m-%d %H:%M:%S")
+        async with self.get_connection() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                await db.execute(
+                    """
+                    INSERT INTO visitor_daily_stats (
+                        stat_date, traffic_class, source, page_type, country, device_type,
+                        visits, visitors
+                    )
+                    SELECT
+                        date(created_at),
+                        CASE
+                            WHEN COALESCE(traffic_class, 'human') = 'human' AND device_type = 'bot'
+                            THEN 'automation'
+                            ELSE COALESCE(NULLIF(traffic_class, ''), 'human')
+                        END,
+                        COALESCE(NULLIF(source, ''), 'website'),
+                        COALESCE(page_type, ''),
+                        COALESCE(NULLIF(country, ''), 'Unknown'),
+                        COALESCE(NULLIF(device_type, ''), 'unknown'),
+                        COUNT(*),
+                        COUNT(DISTINCT visitor_hash)
+                    FROM visitor_events
+                    WHERE created_at < ?
+                    GROUP BY
+                        date(created_at),
+                        CASE
+                            WHEN COALESCE(traffic_class, 'human') = 'human' AND device_type = 'bot'
+                            THEN 'automation'
+                            ELSE COALESCE(NULLIF(traffic_class, ''), 'human')
+                        END,
+                        COALESCE(NULLIF(source, ''), 'website'),
+                        COALESCE(page_type, ''),
+                        COALESCE(NULLIF(country, ''), 'Unknown'),
+                        COALESCE(NULLIF(device_type, ''), 'unknown')
+                    ON CONFLICT(stat_date, traffic_class, source, page_type, country, device_type)
+                    DO UPDATE SET
+                        visits = excluded.visits,
+                        visitors = excluded.visitors
+                    """,
+                    (cutoff,),
+                )
+                cursor = await db.execute("DELETE FROM visitor_events WHERE created_at < ?", (cutoff,))
+                removed = max(0, int(cursor.rowcount or 0))
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
+        return {"raw_removed": removed, "retention_days": raw_retention_days}
 
     async def log_search_query(
         self,
@@ -4247,6 +4411,53 @@ class Database:
             )
             await db.commit()
         return len(rows)
+
+    async def retire_off_audience_seo_mappings(self, *, limit: int = 500) -> int:
+        """Disable auto-learned SEO mappings that are clearly off-audience noise."""
+        from utils.seo_autolearn import has_search_audience_intent, is_bad_auto_seo_term
+
+        limit = max(1, min(int(limit or 500), 5000))
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT id, term, language, source
+                FROM seo_query_mappings
+                WHERE approved = 1
+                  AND source IN ('auto_learn', 'external_signal')
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ) as cursor:
+                rows = [dict(row) for row in await cursor.fetchall()]
+
+            retired_ids = []
+            for row in rows:
+                term = str(row.get("term") or "")
+                language = str(row.get("language") or "").lower()
+                if is_bad_auto_seo_term(term):
+                    retired_ids.append(row["id"])
+                    continue
+                # Non-English auto variants should only survive when the phrase
+                # itself carries cannabis/mushroom/community intent.
+                if language and language != "en" and not has_search_audience_intent(term):
+                    retired_ids.append(row["id"])
+
+            if not retired_ids:
+                return 0
+
+            placeholders = ",".join("?" * len(retired_ids))
+            await db.execute(
+                f"""
+                UPDATE seo_query_mappings
+                SET approved = 0, updated_at = CURRENT_TIMESTAMP
+                WHERE id IN ({placeholders})
+                """,
+                tuple(retired_ids),
+            )
+            await db.commit()
+        return len(retired_ids)
 
     async def upsert_search_console_query_events(self, rows: List[Dict[str, Any]]) -> int:
         """Insert/update Search Console query snapshots."""
@@ -4682,6 +4893,340 @@ class Database:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
 
+    @staticmethod
+    def _decode_guide_row(row: Dict[str, Any], sources: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        item = dict(row)
+        for source_key, target_key in (("body_json", "sections"), ("terms_json", "terms")):
+            try:
+                item[target_key] = json.loads(item.get(source_key) or "[]")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                item[target_key] = []
+            item.pop(source_key, None)
+        item["sources"] = list(sources or [])
+        return item
+
+    async def sync_seed_seo_guides(self, pages: List[Dict[str, Any]]) -> int:
+        """Seed file-backed guides once while preserving later editorial changes."""
+        changed = 0
+        async with self.get_connection() as db:
+            for page in pages or []:
+                slug = re.sub(r"[^a-z0-9-]+", "-", str(page.get("slug") or "").lower()).strip("-")
+                title = str(page.get("title") or "").strip()
+                if not slug or not title:
+                    continue
+                sections = page.get("sections") or []
+                terms = page.get("terms") or []
+                body_json = json.dumps(sections, ensure_ascii=False)
+                terms_json = json.dumps(terms, ensure_ascii=False)
+                content_hash = hashlib.sha256(
+                    f"{title}\n{page.get('summary') or ''}\n{body_json}".encode("utf-8")
+                ).hexdigest()[:32]
+                cursor = await db.execute(
+                    """
+                    INSERT INTO seo_guides (
+                        slug, title, summary, body_json, terms_json, category, subcategory,
+                        status, author_name, topic_source, quality_score, content_hash,
+                        published_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'published', ?, 'seed', ?, ?,
+                            COALESCE(?, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
+                    ON CONFLICT(slug) DO UPDATE SET
+                        title = excluded.title,
+                        summary = excluded.summary,
+                        body_json = excluded.body_json,
+                        terms_json = excluded.terms_json,
+                        category = excluded.category,
+                        subcategory = excluded.subcategory,
+                        author_name = excluded.author_name,
+                        quality_score = excluded.quality_score,
+                        content_hash = excluded.content_hash,
+                        updated_at = CASE
+                            WHEN seo_guides.content_hash <> excluded.content_hash THEN CURRENT_TIMESTAMP
+                            ELSE seo_guides.updated_at
+                        END
+                    WHERE seo_guides.topic_source = 'seed'
+                      AND seo_guides.content_hash <> excluded.content_hash
+                    """,
+                    (
+                        slug,
+                        title,
+                        str(page.get("summary") or ""),
+                        body_json,
+                        terms_json,
+                        str(page.get("category") or ""),
+                        str(page.get("subcategory") or ""),
+                        str(page.get("author_name") or "Top Shelf Editorial Team"),
+                        max(0, min(int(page.get("quality_score") or 70), 100)),
+                        content_hash,
+                        page.get("published_at"),
+                    ),
+                )
+                changed += max(0, int(cursor.rowcount or 0))
+                async with db.execute("SELECT id FROM seo_guides WHERE slug = ?", (slug,)) as result:
+                    guide_row = await result.fetchone()
+                if not guide_row:
+                    continue
+                guide_id = int(guide_row[0])
+                for source in page.get("sources") or []:
+                    source_url = str(source.get("url") or "").strip()
+                    if not source_url.startswith(("https://", "http://")):
+                        continue
+                    await db.execute(
+                        """
+                        INSERT INTO seo_guide_sources (guide_id, source_url, source_title, publisher, source_hash)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(guide_id, source_url) DO UPDATE SET
+                            source_title = excluded.source_title,
+                            publisher = excluded.publisher,
+                            retrieved_at = CURRENT_TIMESTAMP,
+                            source_hash = excluded.source_hash
+                        """,
+                        (
+                            guide_id,
+                            source_url[:500],
+                            str(source.get("title") or "")[:240],
+                            str(source.get("publisher") or "")[:160],
+                            hashlib.sha256(source_url.encode("utf-8")).hexdigest()[:32],
+                        ),
+                    )
+            await db.commit()
+        return changed
+
+    async def _guide_sources(self, db, guide_id: int) -> List[Dict[str, Any]]:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT source_url AS url, source_title AS title, publisher, retrieved_at
+               FROM seo_guide_sources WHERE guide_id = ? ORDER BY id""",
+            (guide_id,),
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_published_seo_guides(self, *, language: str = "en") -> List[Dict[str, Any]]:
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """SELECT * FROM seo_guides WHERE status = 'published'
+                   ORDER BY COALESCE(published_at, created_at) DESC, id DESC"""
+            ) as cursor:
+                rows = await cursor.fetchall()
+            result = []
+            for row in rows:
+                item = dict(row)
+                if language and language != "en":
+                    async with db.execute(
+                        """SELECT title, summary, body_json FROM seo_guide_translations
+                           WHERE guide_id = ? AND language = ? AND status = 'published'""",
+                        (item["id"], language),
+                    ) as cursor:
+                        translated = await cursor.fetchone()
+                    if translated:
+                        item["title"] = translated[0]
+                        item["summary"] = translated[1]
+                        item["body_json"] = translated[2]
+                        item["translation_language"] = language
+                result.append(self._decode_guide_row(item, await self._guide_sources(db, item["id"])))
+            return result
+
+    async def get_published_seo_guide(self, slug: str, *, language: str = "en") -> Optional[Dict[str, Any]]:
+        clean_slug = re.sub(r"[^a-z0-9-]+", "-", str(slug or "").lower()).strip("-")
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM seo_guides WHERE slug = ? AND status = 'published'",
+                (clean_slug,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if not row:
+                return None
+            item = dict(row)
+            if language and language != "en":
+                async with db.execute(
+                    """SELECT title, summary, body_json FROM seo_guide_translations
+                       WHERE guide_id = ? AND language = ? AND status = 'published'""",
+                    (item["id"], language),
+                ) as cursor:
+                    translated = await cursor.fetchone()
+                if translated:
+                    item["title"] = translated[0]
+                    item["summary"] = translated[1]
+                    item["body_json"] = translated[2]
+                    item["translation_language"] = language
+            return self._decode_guide_row(item, await self._guide_sources(db, item["id"]))
+
+    async def get_seo_guide_drafts(self, limit: int = 20) -> List[Dict[str, Any]]:
+        limit = max(1, min(int(limit or 20), 100))
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """SELECT * FROM seo_guides WHERE status = 'draft'
+                   ORDER BY quality_score DESC, updated_at DESC LIMIT ?""",
+                (limit,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            result = []
+            for row in rows:
+                item = dict(row)
+                result.append(self._decode_guide_row(item, await self._guide_sources(db, item["id"])))
+            return result
+
+    async def create_seo_guide_draft(self, guide: Dict[str, Any]) -> Optional[int]:
+        slug = re.sub(r"[^a-z0-9-]+", "-", str(guide.get("slug") or "").lower()).strip("-")
+        title = str(guide.get("title") or "").strip()
+        if not slug or not title:
+            return None
+        body_json = json.dumps(guide.get("sections") or [], ensure_ascii=False)
+        terms_json = json.dumps(guide.get("terms") or [], ensure_ascii=False)
+        content_hash = hashlib.sha256(
+            f"{title}\n{guide.get('summary') or ''}\n{body_json}".encode("utf-8")
+        ).hexdigest()[:32]
+        async with self.get_connection() as db:
+            cursor = await db.execute(
+                """
+                INSERT INTO seo_guides (
+                    slug, title, summary, body_json, terms_json, category, subcategory,
+                    status, author_name, topic_source, quality_score, content_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)
+                ON CONFLICT(slug) DO NOTHING
+                """,
+                (
+                    slug,
+                    title,
+                    str(guide.get("summary") or ""),
+                    body_json,
+                    terms_json,
+                    str(guide.get("category") or ""),
+                    str(guide.get("subcategory") or ""),
+                    str(guide.get("author_name") or "Top Shelf Editorial Team"),
+                    str(guide.get("topic_source") or "auto_research"),
+                    max(0, min(int(guide.get("quality_score") or 0), 100)),
+                    content_hash,
+                ),
+            )
+            if not cursor.rowcount:
+                return None
+            guide_id = int(cursor.lastrowid)
+            for source in guide.get("sources") or []:
+                source_url = str(source.get("url") or "").strip()
+                if not source_url.startswith(("https://", "http://")):
+                    continue
+                await db.execute(
+                    """INSERT OR IGNORE INTO seo_guide_sources
+                       (guide_id, source_url, source_title, publisher, source_hash)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        guide_id,
+                        source_url[:500],
+                        str(source.get("title") or "")[:240],
+                        str(source.get("publisher") or "")[:160],
+                        hashlib.sha256(source_url.encode("utf-8")).hexdigest()[:32],
+                    ),
+                )
+            await db.commit()
+            return guide_id
+
+    async def set_seo_guide_status(self, guide_id: int, status_value: str, reviewer_user_id: Any = "") -> Optional[Dict[str, Any]]:
+        status_value = str(status_value or "").strip().lower()
+        if status_value not in {"draft", "published", "rejected", "retired"}:
+            raise ValueError("invalid guide status")
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute(
+                """UPDATE seo_guides SET
+                       status = ?, reviewer_user_id = ?,
+                       published_at = CASE
+                           WHEN ? = 'published' THEN COALESCE(published_at, CURRENT_TIMESTAMP)
+                           ELSE published_at
+                       END,
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ?""",
+                (status_value, str(reviewer_user_id or ""), status_value, int(guide_id)),
+            )
+            await db.commit()
+            async with db.execute("SELECT * FROM seo_guides WHERE id = ?", (int(guide_id),)) as cursor:
+                row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def get_seo_content_topic_candidates(self, limit: int = 20) -> List[Dict[str, Any]]:
+        limit = max(1, min(int(limit or 20), 100))
+        since_search = datetime.now() - timedelta(days=30)
+        since_console = (datetime.now() - timedelta(days=90)).date().isoformat()
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                WITH candidates AS (
+                    SELECT query AS topic, normalized_query,
+                           COUNT(*) * 4.0 + SUM(CASE WHEN matched_count <= 2 THEN 2 ELSE 0 END) AS demand,
+                           'site_search' AS source
+                    FROM search_query_events
+                    WHERE created_at >= ? AND length(normalized_query) >= 3
+                    GROUP BY normalized_query
+                    UNION ALL
+                    SELECT query AS topic, normalized_query,
+                           SUM(impressions) + SUM(clicks) * 12.0 AS demand,
+                           'search_console' AS source
+                    FROM search_console_query_events
+                    WHERE source_date >= ? AND length(normalized_query) >= 3
+                    GROUP BY normalized_query
+                ), combined AS (
+                    SELECT MIN(topic) AS topic, normalized_query,
+                           SUM(demand) AS demand_score,
+                           GROUP_CONCAT(DISTINCT source) AS source
+                    FROM candidates GROUP BY normalized_query
+                )
+                SELECT combined.*
+                FROM combined
+                LEFT JOIN seo_content_topics topics
+                  ON topics.normalized_topic = combined.normalized_query
+                WHERE topics.id IS NULL
+                ORDER BY combined.demand_score DESC, combined.normalized_query
+                LIMIT ?
+                """,
+                (since_search, since_console, limit),
+            ) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
+
+    async def record_seo_content_topic(
+        self,
+        *,
+        topic: str,
+        normalized_topic: str,
+        category: str = "",
+        subcategory: str = "",
+        source: str = "",
+        demand_score: float = 0,
+        status_value: str = "reviewed",
+        last_error: str = "",
+    ) -> None:
+        async with self.get_connection() as db:
+            await db.execute(
+                """
+                INSERT INTO seo_content_topics (
+                    topic, normalized_topic, category, subcategory, source,
+                    demand_score, status, last_error, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(normalized_topic) DO UPDATE SET
+                    category = excluded.category,
+                    subcategory = excluded.subcategory,
+                    source = excluded.source,
+                    demand_score = max(seo_content_topics.demand_score, excluded.demand_score),
+                    status = excluded.status,
+                    last_error = excluded.last_error,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    str(topic or "")[:240],
+                    str(normalized_topic or "")[:240],
+                    str(category or "")[:80],
+                    str(subcategory or "")[:120],
+                    str(source or "")[:120],
+                    float(demand_score or 0),
+                    str(status_value or "reviewed")[:40],
+                    str(last_error or "")[:500],
+                ),
+            )
+            await db.commit()
+
     async def get_search_intelligence_snapshot(self, limit: int = 10) -> Dict[str, Any]:
         """Compact snapshot for the /seostatus admin command."""
         limit = max(1, min(limit, 250))
@@ -4715,6 +5260,7 @@ class Database:
                 "seo_auto_learn_last_candidates",
                 "seo_auto_learn_last_skipped",
                 "seo_auto_learn_last_suppressed",
+                "seo_auto_learn_last_retired_noise",
                 "seo_auto_learn_last_error",
                 "seo_trends_last_run_at",
                 "seo_trends_last_status",
@@ -4723,6 +5269,12 @@ class Database:
                 "seo_trends_last_promoted",
                 "seo_trends_last_duration_ms",
                 "seo_trends_last_error",
+                "seo_content_research_last_run_at",
+                "seo_content_research_last_status",
+                "seo_content_research_last_candidates",
+                "seo_content_research_last_reviewed",
+                "seo_content_research_last_drafts",
+                "seo_content_research_last_error",
                 "search_console_import_last_attempt_at",
                 "search_console_import_last_status",
                 "search_console_import_last_rows",
@@ -4917,23 +5469,57 @@ class Database:
                     (since_24h,),
                 ),
                 "visitor_events_24h": await scalar(
-                    "SELECT COUNT(*) FROM visitor_events WHERE created_at >= ?",
+                    """SELECT COUNT(*) FROM visitor_events
+                       WHERE created_at >= ?
+                         AND COALESCE(traffic_class, 'human') = 'human'
+                         AND COALESCE(device_type, '') <> 'bot'
+                         AND COALESCE(is_pageview, 1) = 1
+                         AND page_type NOT IN ('session', 'user_track')""",
                     (since_24h,),
                 ),
                 "unique_visitors_24h": await scalar(
-                    "SELECT COUNT(DISTINCT visitor_hash) FROM visitor_events WHERE created_at >= ?",
+                    """SELECT COUNT(DISTINCT COALESCE(NULLIF(session_hash, ''), visitor_hash))
+                       FROM visitor_events
+                       WHERE created_at >= ?
+                         AND COALESCE(traffic_class, 'human') = 'human'
+                         AND COALESCE(device_type, '') <> 'bot'
+                         AND COALESCE(is_pageview, 1) = 1
+                         AND page_type NOT IN ('session', 'user_track')""",
                     (since_24h,),
                 ),
                 "known_visitor_users_24h": await scalar(
-                    "SELECT COUNT(DISTINCT telegram_user_id) FROM visitor_events WHERE created_at >= ? AND telegram_user_id IS NOT NULL",
+                    """SELECT COUNT(DISTINCT telegram_user_id) FROM visitor_events
+                       WHERE created_at >= ? AND telegram_user_id IS NOT NULL
+                         AND COALESCE(traffic_class, 'human') = 'human'
+                         AND COALESCE(device_type, '') <> 'bot'""",
                     (since_24h,),
                 ),
                 "website_visits_24h": await scalar(
-                    "SELECT COUNT(*) FROM visitor_events WHERE created_at >= ? AND source = 'website'",
+                    """SELECT COUNT(*) FROM visitor_events
+                       WHERE created_at >= ? AND source = 'website'
+                         AND COALESCE(traffic_class, 'human') = 'human'
+                         AND COALESCE(device_type, '') <> 'bot'
+                         AND COALESCE(is_pageview, 1) = 1
+                         AND page_type NOT IN ('session', 'user_track')""",
                     (since_24h,),
                 ),
                 "webapp_visits_24h": await scalar(
-                    "SELECT COUNT(*) FROM visitor_events WHERE created_at >= ? AND source = 'webapp'",
+                    """SELECT COUNT(*) FROM visitor_events
+                       WHERE created_at >= ? AND source = 'webapp'
+                         AND COALESCE(traffic_class, 'human') = 'human'
+                         AND COALESCE(device_type, '') <> 'bot'
+                         AND COALESCE(is_pageview, 1) = 1
+                         AND page_type NOT IN ('session', 'user_track')""",
+                    (since_24h,),
+                ),
+                "crawler_events_24h": await scalar(
+                    """SELECT COUNT(*) FROM visitor_events
+                       WHERE created_at >= ?
+                         AND (COALESCE(traffic_class, 'human') <> 'human' OR device_type = 'bot')""",
+                    (since_24h,),
+                ),
+                "search_crawler_events_24h": await scalar(
+                    "SELECT COUNT(*) FROM visitor_events WHERE created_at >= ? AND traffic_class = 'search_crawler'",
                     (since_24h,),
                 ),
                 "inline_queries_24h": await scalar(
@@ -4953,6 +5539,9 @@ class Database:
                     (since_24h,),
                 ),
                 "seo_query_mappings": await scalar("SELECT COUNT(*) FROM seo_query_mappings WHERE approved = 1"),
+                "seo_guides_published": await scalar("SELECT COUNT(*) FROM seo_guides WHERE status = 'published'"),
+                "seo_guides_draft": await scalar("SELECT COUNT(*) FROM seo_guides WHERE status = 'draft'"),
+                "seo_guides_rejected": await scalar("SELECT COUNT(*) FROM seo_guides WHERE status = 'rejected'"),
             }
 
             async def rows(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
@@ -5075,6 +5664,10 @@ class Database:
                     SUM(CASE WHEN is_authenticated = 1 THEN 1 ELSE 0 END) AS signed_visits
                 FROM visitor_events
                 WHERE created_at >= ?
+                  AND COALESCE(traffic_class, 'human') = 'human'
+                  AND COALESCE(device_type, '') <> 'bot'
+                  AND COALESCE(is_pageview, 1) = 1
+                  AND page_type NOT IN ('session', 'user_track')
                 GROUP BY
                     COALESCE(NULLIF(country, ''), 'Unknown'),
                     COALESCE(NULLIF(region, ''), 'Unknown'),
@@ -5091,6 +5684,10 @@ class Database:
                     COUNT(DISTINCT visitor_hash) AS visitors
                 FROM visitor_events
                 WHERE created_at >= ?
+                  AND COALESCE(traffic_class, 'human') = 'human'
+                  AND COALESCE(device_type, '') <> 'bot'
+                  AND COALESCE(is_pageview, 1) = 1
+                  AND page_type NOT IN ('session', 'user_track')
                 GROUP BY source, page_type, path
                 ORDER BY visits DESC
                 LIMIT 20
@@ -5103,6 +5700,10 @@ class Database:
                     COUNT(DISTINCT visitor_hash) AS visitors
                 FROM visitor_events
                 WHERE created_at >= ?
+                  AND COALESCE(traffic_class, 'human') = 'human'
+                  AND COALESCE(device_type, '') <> 'bot'
+                  AND COALESCE(is_pageview, 1) = 1
+                  AND page_type NOT IN ('session', 'user_track')
                 GROUP BY COALESCE(NULLIF(device_type, ''), 'unknown')
                 ORDER BY visitors DESC, visits DESC
             """, (since_24h,))
@@ -5113,10 +5714,41 @@ class Database:
                     product_id, category, subcategory, country, region, city,
                     language, device_type, is_authenticated
                 FROM visitor_events
+                WHERE COALESCE(traffic_class, 'human') = 'human'
+                  AND COALESCE(device_type, '') <> 'bot'
+                  AND COALESCE(is_pageview, 1) = 1
+                  AND page_type NOT IN ('session', 'user_track')
                 ORDER BY created_at DESC
                 LIMIT ?
             """, (recent_limit,))
             recent_visitor_events = expand_country_names(recent_visitor_events)
+
+            crawler_activity = await rows("""
+                SELECT
+                    COALESCE(NULLIF(traffic_class, ''), 'automation') AS traffic_class,
+                    COALESCE(NULLIF(crawler_name, ''), 'Unknown crawler') AS crawler_name,
+                    COUNT(*) AS requests,
+                    COUNT(DISTINCT path) AS pages,
+                    MAX(created_at) AS last_seen
+                FROM visitor_events
+                WHERE created_at >= ?
+                  AND (COALESCE(traffic_class, 'human') <> 'human' OR device_type = 'bot')
+                GROUP BY
+                    COALESCE(NULLIF(traffic_class, ''), 'automation'),
+                    COALESCE(NULLIF(crawler_name, ''), 'Unknown crawler')
+                ORDER BY requests DESC
+                LIMIT 20
+            """, (since_24h,))
+
+            seo_guide_drafts = await rows("""
+                SELECT id, slug, title, summary, body_json, terms_json, category, subcategory,
+                       topic_source, quality_score, created_at, updated_at,
+                       (SELECT COUNT(*) FROM seo_guide_sources s WHERE s.guide_id = seo_guides.id) AS source_count
+                FROM seo_guides
+                WHERE status = 'draft'
+                ORDER BY quality_score DESC, updated_at DESC
+                LIMIT 20
+            """)
 
             indexnow_last_rows = await rows("""
                 SELECT url, reason, status, attempts, http_status, last_error,
@@ -5149,6 +5781,8 @@ class Database:
             "top_public_pages": top_public_pages,
             "visitor_devices": visitor_devices,
             "recent_visitor_events": recent_visitor_events,
+            "crawler_activity": crawler_activity,
+            "seo_guide_drafts": seo_guide_drafts,
             "indexnow": indexnow,
         }
 

@@ -317,6 +317,13 @@
         </section>
         {% endif %}
 
+        {% if related_guides %}
+        <section class="seo-search-footer" aria-labelledby="related-guides-heading">
+            <h2 id="related-guides-heading">{{ ui.guides }}</h2>
+            <ul class="term-list">{% for guide in related_guides %}<li><a href="{{ guide.url }}">{{ guide.title }}</a></li>{% endfor %}</ul>
+        </section>
+        {% endif %}
+
         {% if seo_side_notes %}
         <section class="seo-search-footer" aria-labelledby="related-searches-heading">
             <h2 id="related-searches-heading">{{ ui.related_searches }}</h2>

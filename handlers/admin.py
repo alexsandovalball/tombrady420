@@ -94,12 +94,16 @@ def _format_admin_status_message(snapshot: dict) -> str:
         f"• Website visits 24h: {_fmt_count(summary.get('website_visits_24h'))}",
         f"• WebApp opens 24h: {_fmt_count(summary.get('webapp_visits_24h'))}",
         f"• Known Telegram visitors 24h: {_fmt_count(summary.get('known_visitor_users_24h'))}",
+        f"• Crawler samples 24h: {_fmt_count(summary.get('crawler_events_24h'))} "
+        f"({_fmt_count(summary.get('search_crawler_events_24h'))} search crawlers)",
         f"• WebApp events 24h: {_fmt_count(summary.get('webapp_events_24h'))}",
         f"• Inline queries 24h: {_fmt_count(summary.get('inline_queries_24h'))}",
         f"• Inline chosen 24h: {_fmt_count(summary.get('inline_chosen_24h'))}",
         f"• WebApp searches 24h: {_fmt_count(summary.get('search_queries_24h'))}",
         f"• No-result searches 24h: {_fmt_count(summary.get('search_no_result_24h'))}",
         f"• SEO mappings: {_fmt_count(summary.get('seo_query_mappings'))}",
+        f"• Guides published/draft: {_fmt_count(summary.get('seo_guides_published'))}/"
+        f"{_fmt_count(summary.get('seo_guides_draft'))}",
         f"• Google queries {search_console_days}d: {_fmt_count(google_queries)}",
         f"• Google clicks/impressions {search_console_days}d: {_fmt_count(google_clicks)}/{_fmt_count(google_impressions)}",
         f"• IndexNow: {'on' if indexnow.get('enabled', True) else 'off'} "
@@ -252,6 +256,7 @@ def _format_search_console_status(snapshot: dict) -> list[str]:
     last_run = runtime.get("seo_auto_learn_last_run_at") or "pending"
     last_candidates = runtime.get("seo_auto_learn_last_candidates", 0)
     last_suppressed = runtime.get("seo_auto_learn_last_suppressed", 0)
+    last_retired_noise = runtime.get("seo_auto_learn_last_retired_noise", 0)
 
     return [
         "",
@@ -275,6 +280,7 @@ def _format_search_console_status(snapshot: dict) -> list[str]:
         f"• Weak-term cooldown: {_fmt_count(suppression_hours)}h",
         f"• Last learner run: {last_run}",
         f"• Last checked/paused: {_fmt_count(last_candidates)}/{_fmt_count(last_suppressed)}",
+        f"• Off-audience mappings retired: {_fmt_count(last_retired_noise)}",
     ]
 
 

@@ -70,7 +70,51 @@ _CANNA_TREND_HINTS = {
     "edible", "edibles", "gummies", "gummy", "concentrate", "concentrates", "extract", "extracts",
     "hash", "kief", "rosin", "resin", "vape", "vapes", "tincture", "top shelf", "premium",
     "light dep", "light deps", "light deprivation", "moonrocks", "snowcaps", "infused", "solventless",
+    "static", "statico", "estatico", "estático", "filtered", "filter", "filt", "filtr",
+    "filtre", "filtré", "filtree", "filtrée", "filtrado",
 }
+
+_COMMUNITY_INTENT_HINTS = _CANNA_TREND_HINTS | {
+    "thc", "cbd", "terp", "terps", "terpene", "terpenes", "strain", "strains", "kush", "haze",
+    "runtz", "gelato", "sherb", "sherbet", "zkittlez", "zkittles", "cookies", "og", "diesel",
+    "amnesia", "gorilla", "glue", "zaza", "cali", "topshelf", "top shelf", "plug",
+    "mushroom", "mushrooms", "shroom", "shrooms", "magic mushroom", "magic mushrooms",
+    "psilocybin", "microdose", "microdosing", "capsule", "capsules", "spores", "mycology",
+    "truffle", "truffles", "amanita", "cubensis", "golden teacher", "penis envy",
+    "cannabis", "cannabisblüte", "blüte", "hasch", "haschisch", "gras", "wiet", "hasj",
+    "fleur", "beuh", "herbe", "résine", "resine", "filtré", "filtre", "hachís", "hachis", "haschich",
+    "marihuana", "marijuana", "hierba", "flor", "fiore", "erba", "fungo", "funghi",
+}
+
+_BAD_AUTO_SEO_TERMS = {
+    "autre maman", "ostra mami", "altra mamma", "andere mama", "other mommy",
+    "other mother", "another mother", "autre mère", "autre mere", "otra madre",
+    "altra madre", "andere mutter", "andere moeder", "mommy", "maman", "mamma",
+    "mami", "mama", "mother",
+}
+
+
+def has_search_audience_intent(term: str) -> bool:
+    """Return true when a term looks relevant to cannabis/mushroom search intent."""
+    normalized = normalize_term(term)
+    if not normalized:
+        return False
+    return any(hint in normalized for hint in _COMMUNITY_INTENT_HINTS)
+
+
+def is_bad_auto_seo_term(term: str) -> bool:
+    """Block known translation noise that attracts the wrong audience."""
+    normalized = normalize_term(term)
+    if not normalized:
+        return True
+    if has_search_audience_intent(normalized):
+        return False
+    if normalized in _BAD_AUTO_SEO_TERMS:
+        return True
+    family_noise = {"mommy", "mother", "maman", "mamma", "mama", "mami", "madre", "mutter", "moeder"}
+    qualifier_noise = {"other", "another", "autre", "otra", "ostras", "altra", "andere"}
+    tokens = set(normalized.split())
+    return bool(tokens & family_noise) and bool(tokens <= (family_noise | qualifier_noise))
 
 
 def _plain_label(value: str) -> str:
