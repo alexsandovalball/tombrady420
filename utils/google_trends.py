@@ -25,9 +25,13 @@ _TRENDS_USER_AGENT = "Mozilla/5.0 (compatible; tombrady420-seo-bot/1.0)"
 
 _TREND_GEO_SPECS = (
     {"geo": "US", "hl": "en-US", "language": "en"},
+    {"geo": "CA", "hl": "en-CA", "language": "en"},
+    {"geo": "CA", "hl": "fr-CA", "language": "fr"},
     {"geo": "GB", "hl": "en-GB", "language": "en"},
     {"geo": "DE", "hl": "de-DE", "language": "de"},
     {"geo": "NL", "hl": "nl-NL", "language": "nl"},
+    {"geo": "BE", "hl": "nl-BE", "language": "nl"},
+    {"geo": "BE", "hl": "fr-BE", "language": "fr"},
     {"geo": "IT", "hl": "it-IT", "language": "it"},
     {"geo": "ES", "hl": "es-ES", "language": "es"},
     {"geo": "FR", "hl": "fr-FR", "language": "fr"},
@@ -142,11 +146,16 @@ def fetch_trending_queries_for_supported_locales(
     max_terms = max(1, min(max_terms, 200))
     all_rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for spec in _TREND_GEO_SPECS:
+    locale_count = len(_TREND_GEO_SPECS)
+    base_quota, remainder = divmod(max_terms, locale_count)
+    for locale_index, spec in enumerate(_TREND_GEO_SPECS):
+        locale_quota = min(limit_per_geo, base_quota + (1 if locale_index < remainder else 0))
+        if locale_quota <= 0:
+            continue
         rows = fetch_trending_queries(
             geo=spec["geo"],
             hl=spec["hl"],
-            limit=limit_per_geo,
+            limit=locale_quota,
         )
         for row in rows:
             key = re.sub(r"\s+", " ", str(row.get("term") or "").strip().lower())

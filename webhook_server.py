@@ -58,13 +58,15 @@ from utils.seo_terms import (
 )
 from utils.seo_autolearn import (
     build_taxonomy_profiles,
+    has_cannabis_search_intent,
+    has_mushroom_search_intent,
     has_search_audience_intent,
     infer_seo_query_mapping,
     is_bad_auto_seo_term,
 )
 from utils.google_trends import fetch_trending_queries_for_supported_locales
 from utils.external_seo_signals import load_external_seo_signal_file
-from utils.search_console import describe_search_console_setup, fetch_search_console_rows, submit_sitemap
+from utils.search_console import describe_search_console_setup, fetch_search_console_data, submit_sitemap
 from translations.language_config import SUPPORTED_LANGUAGES
 from translations.translator import translation_service
 from utils.metrics import metrics
@@ -883,8 +885,11 @@ async def _set_runtime_setting(key: str, value: Any) -> None:
 
 
 async def _set_runtime_settings(values: dict[str, Any]) -> None:
-    for key, value in values.items():
-        await _set_runtime_setting(key, value)
+    try:
+        await _catalog_db.set_bot_settings(values)
+        _invalidate_admin_status_cache()
+    except Exception as exc:
+        logger.debug("[runtime_status] settings_write_failed count=%d error=%s", len(values), exc)
 
 
 async def _get_cached_approved_seo_query_mappings() -> List[Dict[str, Any]]:
@@ -2146,19 +2151,6 @@ def _is_useful_auto_seo_term(term: str) -> bool:
     return True
 
 
-def _is_cannabis_trends_term(term: str) -> bool:
-    normalized = normalize_term(term)
-    return any(
-        token in normalized
-        for token in (
-            "flower", "cannabis", "weed", "bud", "buds", "edible", "edibles", "gummy", "gummies",
-            "cart", "carts", "cartridge", "cartridges", "vape", "hash", "kief", "rosin", "resin",
-            "preroll", "pre roll", "pre-roll", "concentrate", "extract", "indica", "sativa", "hybrid",
-            "exotic", "moonrock", "moonrocks", "snowcap", "snowcaps", "solventless", "top shelf", "premium",
-        )
-    )
-
-
 async def _expand_auto_learn_mapping_variants(term: str, source_language: str = "") -> List[Dict[str, str]]:
     """Return the original query and language-tagged translated variants."""
     source_language = str(source_language or "").lower()
@@ -2257,7 +2249,8 @@ async def _import_google_trends_signals(
     if not Config.SEO_TRENDS_ENABLED:
         return 0
 
-    trend_rows = fetch_trending_queries_for_supported_locales(
+    trend_rows = await asyncio.to_thread(
+        fetch_trending_queries_for_supported_locales,
         limit_per_geo=Config.SEO_TRENDS_LIMIT_PER_GEO,
         max_terms=Config.SEO_TRENDS_MAX_TERMS_PER_RUN,
     )
@@ -2266,33 +2259,76 @@ async def _import_google_trends_signals(
         await _set_runtime_settings({
             "seo_trends_last_fetch_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
             "seo_trends_last_rows": 0,
+            "seo_trends_last_candidates": 0,
             "seo_trends_last_imported": 0,
         })
         return 0
 
-    signals = []
+    candidate_rows: List[Dict[str, Any]] = []
+    seen_candidates: set[tuple[str, str]] = set()
     for row in trend_rows:
+        parent_term = str(row.get("term") or "").strip()
+        notes = row.get("notes") or {}
+        entries = [(parent_term, "google_trends_trending", 0)]
+        entries.extend(
+            (str(term or "").strip(), "google_trends_related", rank)
+            for rank, term in enumerate((notes.get("related_queries") or [])[:3], start=1)
+        )
+        for term, term_type, related_rank in entries:
+            language = str(row.get("language") or "en").lower()
+            key = (language, normalize_term(term))
+            if not key[1] or key in seen_candidates:
+                continue
+            seen_candidates.add(key)
+            candidate = dict(row)
+            candidate.update({
+                "term": term,
+                "term_type": term_type,
+                "language": language,
+                "confidence": max(
+                    1,
+                    int(row.get("confidence") or 1) - (8 + related_rank * 2 if related_rank else 0),
+                ),
+                "evidence_count": max(
+                    1,
+                    int(row.get("evidence_count") or 1) - (related_rank * 3 if related_rank else 0),
+                ),
+                "notes": {
+                    **notes,
+                    "parent_term": parent_term if related_rank else "",
+                    "related_rank": related_rank,
+                },
+            })
+            candidate_rows.append(candidate)
+
+    signals = []
+    for row in candidate_rows:
         term = str(row.get("term") or "").strip()
         if not _is_useful_auto_seo_term(term):
             continue
-        if not has_search_audience_intent(term):
+        cannabis_intent = has_cannabis_search_intent(term)
+        mushroom_intent = has_mushroom_search_intent(term)
+        if not (cannabis_intent or mushroom_intent):
             continue
-        inferred = infer_seo_query_mapping(
+        is_related = str(row.get("term_type") or "") == "google_trends_related"
+        inferred = await asyncio.to_thread(
+            infer_seo_query_mapping,
             term,
             products,
-            min_score=Config.SEO_EXTERNAL_SIGNAL_SCORE - (2 if _is_cannabis_trends_term(term) else 0),
+            min_score=Config.SEO_EXTERNAL_SIGNAL_SCORE - (2 if cannabis_intent and not is_related else 0),
             profiles=profiles,
         )
         if not inferred:
             continue
         confidence = min(100, max(int(row.get("confidence") or 0), int(float(inferred.get("score") or 0))))
-        if _is_cannabis_trends_term(term):
+        if cannabis_intent:
             confidence = min(100, confidence + 4)
         signals.append({
             "term": term,
             "term_type": str(row.get("term_type") or "google_trends_trending"),
             "provider": "google_trends",
             "source": str(row.get("source") or "")[:120],
+            "language": str(row.get("language") or "en").lower(),
             "category": inferred["category"],
             "subcategory": inferred["subcategory"],
             "confidence": confidence,
@@ -2302,16 +2338,23 @@ async def _import_google_trends_signals(
                 "geo": (row.get("notes") or {}).get("geo"),
                 "hl": (row.get("notes") or {}).get("hl"),
                 "rank": (row.get("notes") or {}).get("rank"),
-                "related_queries": (row.get("notes") or {}).get("related_queries") or [],
-                "cannabis_boosted": _is_cannabis_trends_term(term),
+                "parent_term": (row.get("notes") or {}).get("parent_term") or "",
+                "related_rank": (row.get("notes") or {}).get("related_rank") or 0,
+                "cannabis_boosted": cannabis_intent,
+                "mushroom_relevant": mushroom_intent,
             },
         })
 
     if not signals:
-        logger.info("[seo_trends] rows=%d imported=0 promoted=0", len(trend_rows))
+        logger.info(
+            "[seo_trends] rows=%d candidates=%d imported=0 promoted=0",
+            len(trend_rows),
+            len(candidate_rows),
+        )
         await _set_runtime_settings({
             "seo_trends_last_fetch_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
             "seo_trends_last_rows": len(trend_rows),
+            "seo_trends_last_candidates": len(candidate_rows),
             "seo_trends_last_imported": 0,
         })
         return 0
@@ -2324,10 +2367,17 @@ async def _import_google_trends_signals(
     )
     if imported:
         _invalidate_admin_status_cache()
-    logger.info("[seo_trends] rows=%d imported=%d", len(trend_rows), imported)
+    logger.info(
+        "[seo_trends] rows=%d candidates=%d relevant=%d imported=%d",
+        len(trend_rows),
+        len(candidate_rows),
+        len(signals),
+        imported,
+    )
     await _set_runtime_settings({
         "seo_trends_last_fetch_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
         "seo_trends_last_rows": len(trend_rows),
+        "seo_trends_last_candidates": len(candidate_rows),
         "seo_trends_last_imported": imported,
     })
     return imported
@@ -2430,6 +2480,171 @@ async def _import_external_signal_file(
     return imported
 
 
+def _search_console_page_context(
+    page_url: str,
+    products_by_id: Dict[int, Dict[str, Any]],
+) -> Dict[str, str]:
+    """Resolve language and catalog taxonomy from a ranked canonical URL."""
+    try:
+        path = urllib.parse.urlparse(str(page_url or "")).path
+    except ValueError:
+        path = ""
+    segments = [urllib.parse.unquote(part) for part in path.strip("/").split("/") if part]
+    language = "en"
+    if segments and segments[0].lower() in SUPPORTED_LANGUAGES:
+        language = segments.pop(0).lower()
+
+    if len(segments) >= 2 and segments[0] == "product" and segments[1].isdigit():
+        product = products_by_id.get(int(segments[1])) or {}
+        return {
+            "language": language,
+            "category": str(product.get("category") or "").strip(),
+            "subcategory": str(product.get("subcategory") or "").strip(),
+            "page_type": "product",
+        }
+
+    if len(segments) >= 2 and segments[0] == "category":
+        category = next(
+            (value for value in get_all_categories() if _taxonomy_slug(value) == segments[1]),
+            "",
+        )
+        subcategory = ""
+        if category and len(segments) >= 3:
+            subcategory = next(
+                (value for value in get_subcategories(category) if _taxonomy_slug(value) == segments[2]),
+                "",
+            )
+        return {
+            "language": language,
+            "category": category,
+            "subcategory": subcategory,
+            "page_type": "subcategory" if subcategory else "category",
+        }
+
+    return {"language": language, "category": "", "subcategory": "", "page_type": "other"}
+
+
+def _build_search_console_signals(
+    rows: List[Dict[str, Any]],
+    products: List[Dict[str, Any]],
+    profiles: Dict[tuple[str, str], Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], int, int]:
+    """Aggregate Search Console evidence and build page-consistent signals."""
+    products_by_id = {
+        int(product.get("id") or product.get("product_id")): product
+        for product in products
+        if str(product.get("id") or product.get("product_id") or "").isdigit()
+    }
+    aggregates: Dict[tuple[str, str], Dict[str, Any]] = {}
+    for row in rows:
+        query = str(row.get("query") or "").strip()
+        normalized = normalize_term(query)
+        page = str(row.get("page") or "").strip()
+        source_date = str(row.get("date") or "").strip()
+        if not normalized or not source_date:
+            continue
+        key = (normalized, page)
+        item = aggregates.setdefault(key, {
+            "query": query,
+            "page": page,
+            "clicks": 0,
+            "impressions": 0,
+            "position_weight": 0.0,
+            "position_samples": [],
+            "dates": set(),
+        })
+        impressions = max(0, int(row.get("impressions") or 0))
+        position = max(0.0, float(row.get("position") or 0))
+        item["clicks"] += max(0, int(row.get("clicks") or 0))
+        item["impressions"] += impressions
+        item["position_weight"] += position * impressions
+        item["position_samples"].append(position)
+        item["dates"].add(source_date)
+
+    signal_groups: Dict[tuple[str, str, str], Dict[str, Any]] = {}
+    page_mismatches = 0
+    for item in aggregates.values():
+        query = item["query"]
+        if not _is_useful_auto_seo_term(query):
+            continue
+        inferred = infer_seo_query_mapping(
+            query,
+            products,
+            min_score=Config.SEO_EXTERNAL_SIGNAL_SCORE,
+            profiles=profiles,
+        )
+        if not inferred:
+            continue
+
+        clicks = int(item["clicks"])
+        impressions = int(item["impressions"])
+        active_days = len(item["dates"])
+        score = float(inferred.get("score") or 0)
+        reason = str(inferred.get("reason") or "")
+        strong_catalog_match = reason in {"catalog", "seo_term", "category"} and score >= 94
+        if not (clicks > 0 or impressions >= 3 or active_days >= 2 or (impressions > 0 and strong_catalog_match)):
+            continue
+
+        page_context = _search_console_page_context(item["page"], products_by_id)
+        page_category = page_context["category"]
+        page_subcategory = page_context["subcategory"]
+        inferred_category = str(inferred.get("category") or "").strip()
+        inferred_subcategory = str(inferred.get("subcategory") or "").strip()
+        if page_category and inferred_category != page_category:
+            page_mismatches += 1
+            continue
+        category = page_category or inferred_category
+        subcategory = page_subcategory or inferred_subcategory
+        language = page_context["language"]
+        average_position = (
+            item["position_weight"] / impressions
+            if impressions > 0
+            else sum(item["position_samples"]) / max(1, len(item["position_samples"]))
+        )
+        confidence = min(
+            100,
+            int(score)
+            + min(3, clicks)
+            + min(2, max(0, active_days - 1))
+            + (1 if impressions >= 10 else 0),
+        )
+        key = (normalize_term(query), category, subcategory)
+        signal = signal_groups.get(key)
+        if signal is None:
+            signal = {
+                "term": query,
+                "term_type": "search_console_query",
+                "provider": "google_search_console",
+                "source": item["page"][:120],
+                "language": language,
+                "category": category,
+                "subcategory": subcategory,
+                "confidence": confidence,
+                "approved": True,
+                "evidence_count": 0,
+                "notes": {
+                    "clicks": 0,
+                    "impressions": 0,
+                    "active_days": 0,
+                    "position": average_position,
+                    "pages": [],
+                    "mapping_reason": reason,
+                    "page_type": page_context["page_type"],
+                },
+            }
+            signal_groups[key] = signal
+        signal["confidence"] = max(int(signal["confidence"]), confidence)
+        signal["evidence_count"] += max(1, clicks * 5 + impressions + active_days * 2)
+        notes = signal["notes"]
+        notes["clicks"] += clicks
+        notes["impressions"] += impressions
+        notes["active_days"] = max(int(notes["active_days"]), active_days)
+        if item["page"] and item["page"] not in notes["pages"] and len(notes["pages"]) < 5:
+            notes["pages"].append(item["page"])
+
+    return list(signal_groups.values()), len(aggregates), page_mismatches
+
+
 async def _import_search_console_signals(
     products: list[dict[str, Any]],
     profiles: dict[tuple[str, str], dict[str, Any]],
@@ -2474,12 +2689,19 @@ async def _import_search_console_signals(
             "search_console_import_last_status": "not_configured",
             "search_console_import_last_rows": 0,
             "search_console_import_last_signals": 0,
+            "search_console_import_last_media_rows": 0,
+            "search_console_import_last_requests": 0,
+            "search_console_import_last_property": "",
+            "search_console_import_last_aggregates": 0,
+            "search_console_import_last_page_mismatches": 0,
+            "search_console_import_last_error": "not configured",
+            "search_console_import_last_auth_source": setup["auth_source"],
         })
         return 0
 
     _search_console_import_last_attempt = now
 
-    rows = await fetch_search_console_rows(
+    fetch_result = await fetch_search_console_data(
         enabled=Config.SEARCH_CONSOLE_ENABLED,
         site_url=Config.SEARCH_CONSOLE_SITE_URL,
         service_account_json=Config.SEARCH_CONSOLE_SERVICE_ACCOUNT_JSON,
@@ -2491,7 +2713,43 @@ async def _import_search_console_signals(
         lookback_days=Config.SEARCH_CONSOLE_LOOKBACK_DAYS,
         row_limit=Config.SEARCH_CONSOLE_ROW_LIMIT,
     )
+    rows = list(fetch_result.get("rows") or [])
+    media_rows = list(fetch_result.get("media_rows") or [])
+    fetch_status = str(fetch_result.get("status") or "api_error")
+    fetch_error = str(fetch_result.get("error") or "")[:500]
+    fetch_property = str(fetch_result.get("property_url") or "")[:300]
+    fetch_requests = int(fetch_result.get("requests") or 0)
+    if fetch_status not in {"ok", "ok_empty"}:
+        logger.warning(
+            "[search_console] import_failed status=%s auth=%s property=%s requests=%d error=%s",
+            fetch_status,
+            fetch_result.get("auth_source") or setup["auth_source"],
+            fetch_property or setup["site_url"],
+            fetch_requests,
+            fetch_error,
+        )
+        await _set_runtime_settings({
+            "search_console_import_last_attempt_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+            "search_console_import_last_status": fetch_status,
+            "search_console_import_last_rows": 0,
+            "search_console_import_last_signals": 0,
+            "search_console_import_last_media_rows": 0,
+            "search_console_import_last_requests": fetch_requests,
+            "search_console_import_last_property": fetch_property,
+            "search_console_import_last_error": fetch_error,
+            "search_console_import_last_auth_source": fetch_result.get("auth_source") or setup["auth_source"],
+        })
+        return 0
+
+    replace_since = (datetime.utcnow().date() - timedelta(days=Config.SEARCH_CONSOLE_LOOKBACK_DAYS)).isoformat()
+    imported_media_rows = await _catalog_db.replace_search_console_media_events(
+        media_rows,
+        replace_since=replace_since,
+    )
+    if imported_media_rows or media_rows:
+        _invalidate_admin_status_cache()
     if not rows:
+        await _catalog_db.upsert_search_console_query_events([], replace_since=replace_since)
         logger.info(
             "[search_console] rows=0 stored=0 approved_signals=0 site_url=%s auth=%s lookback_days=%s row_limit=%s",
             setup["site_url"],
@@ -2504,51 +2762,26 @@ async def _import_search_console_signals(
             "search_console_import_last_status": "ok_empty",
             "search_console_import_last_rows": 0,
             "search_console_import_last_signals": 0,
-            "search_console_import_last_auth_source": setup["auth_source"],
+            "search_console_import_last_media_rows": imported_media_rows,
+            "search_console_import_last_requests": fetch_requests,
+            "search_console_import_last_property": fetch_property,
+            "search_console_import_last_error": fetch_error,
+            "search_console_import_last_auth_source": fetch_result.get("auth_source") or setup["auth_source"],
         })
         return 0
 
-    imported_rows = await _catalog_db.upsert_search_console_query_events(rows)
+    imported_rows = await _catalog_db.upsert_search_console_query_events(
+        rows,
+        replace_since=replace_since,
+    )
     if imported_rows:
         _invalidate_admin_status_cache()
-    signals = []
-    for row in rows:
-        query = str(row.get("query") or "").strip()
-        impressions = int(row.get("impressions") or 0)
-        clicks = int(row.get("clicks") or 0)
-        if not _is_useful_auto_seo_term(query):
-            continue
-        if clicks <= 0 and impressions < 1:
-            continue
-        inferred = infer_seo_query_mapping(
-            query,
-            products,
-            min_score=Config.SEO_EXTERNAL_SIGNAL_SCORE,
-            profiles=profiles,
-        )
-        if not inferred:
-            continue
-
-        confidence = min(100, int(float(inferred.get("score") or 0)) + (1 if clicks > 0 else 0))
-        signals.append({
-            "term": query,
-            "term_type": "search_console_query",
-            "provider": "google_search_console",
-            "source": str(row.get("page") or "")[:120],
-            "category": inferred["category"],
-            "subcategory": inferred["subcategory"],
-            "confidence": confidence,
-            "approved": True,
-            "evidence_count": max(1, clicks * 5 + impressions),
-            "notes": {
-                "clicks": clicks,
-                "impressions": impressions,
-                "position": row.get("position"),
-                "date": row.get("date"),
-                "country": row.get("country"),
-                "device": row.get("device"),
-            },
-        })
+    signals, aggregate_count, page_mismatches = await asyncio.to_thread(
+        _build_search_console_signals,
+        rows,
+        products,
+        profiles,
+    )
 
     imported_signals = await _catalog_db.upsert_external_seo_signals(
         signals,
@@ -2559,19 +2792,30 @@ async def _import_search_console_signals(
     if imported_signals:
         _invalidate_admin_status_cache()
     logger.info(
-        "[search_console] rows=%d stored=%d approved_signals=%d site_url=%s auth=%s",
+        "[search_console] rows=%d stored=%d aggregates=%d approved_signals=%d media_rows=%d page_mismatches=%d property=%s auth=%s requests=%d partial=%s",
         len(rows),
         imported_rows,
+        aggregate_count,
         imported_signals,
-        setup["site_url"],
-        setup["auth_source"],
+        imported_media_rows,
+        page_mismatches,
+        fetch_property or setup["site_url"],
+        fetch_result.get("auth_source") or setup["auth_source"],
+        fetch_requests,
+        bool(fetch_result.get("partial")),
     )
     await _set_runtime_settings({
         "search_console_import_last_attempt_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
         "search_console_import_last_status": "ok",
         "search_console_import_last_rows": imported_rows,
         "search_console_import_last_signals": imported_signals,
-        "search_console_import_last_auth_source": setup["auth_source"],
+        "search_console_import_last_media_rows": imported_media_rows,
+        "search_console_import_last_requests": fetch_requests,
+        "search_console_import_last_property": fetch_property,
+        "search_console_import_last_aggregates": aggregate_count,
+        "search_console_import_last_page_mismatches": page_mismatches,
+        "search_console_import_last_error": fetch_error,
+        "search_console_import_last_auth_source": fetch_result.get("auth_source") or setup["auth_source"],
     })
     return imported_signals
 
@@ -5392,6 +5636,16 @@ async def webapp_admin_status(request: Request):
 
     db_snapshot = await _catalog_db.get_admin_dashboard_snapshot(recent_limit=10)
     seo_snapshot = await _catalog_db.get_search_intelligence_snapshot(limit=150)
+    seo_snapshot["search_console_setup"] = describe_search_console_setup(
+        enabled=Config.SEARCH_CONSOLE_ENABLED,
+        site_url=Config.SEARCH_CONSOLE_SITE_URL,
+        service_account_json=Config.SEARCH_CONSOLE_SERVICE_ACCOUNT_JSON,
+        service_account_file=Config.SEARCH_CONSOLE_SERVICE_ACCOUNT_FILE,
+        oauth_client_json=Config.SEARCH_CONSOLE_OAUTH_CLIENT_JSON,
+        oauth_client_file=Config.SEARCH_CONSOLE_OAUTH_CLIENT_FILE,
+        oauth_token_json=Config.SEARCH_CONSOLE_OAUTH_TOKEN_JSON,
+        oauth_token_file=Config.SEARCH_CONSOLE_OAUTH_TOKEN_FILE,
+    )
     crawlable_snapshot = await _crawlable_page_snapshot(limit=5000)
     indexnow_snapshot = dict(db_snapshot.get("indexnow") or {})
     indexnow_snapshot.update({

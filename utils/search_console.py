@@ -242,7 +242,103 @@ def _search_console_site_candidates(site_url: str) -> list[str]:
     return candidates
 
 
-def _fetch_search_console_rows_sync(
+def _query_search_analytics(
+    requests_module,
+    *,
+    endpoint: str,
+    token: str,
+    start_date: str,
+    end_date: str,
+    dimensions: list[str],
+    row_limit: int,
+    search_type: str = "web",
+) -> dict[str, Any]:
+    """Fetch a bounded, paginated Search Analytics view."""
+    rows: list[dict[str, Any]] = []
+    requests_made = 0
+    start_row = 0
+    page_size = min(1000, row_limit)
+
+    while len(rows) < row_limit:
+        batch_limit = min(page_size, row_limit - len(rows))
+        body = {
+            "startDate": start_date,
+            "endDate": end_date,
+            "dimensions": dimensions,
+            "type": search_type,
+            "rowLimit": batch_limit,
+            "startRow": start_row,
+            "dataState": "final",
+        }
+        try:
+            response = requests_module.post(
+                endpoint,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+                timeout=20,
+            )
+        except requests_module.RequestException as exc:
+            return {
+                "rows": rows,
+                "requests": requests_made,
+                "error": str(exc),
+                "http_status": None,
+            }
+
+        requests_made += 1
+        if response.status_code >= 400:
+            return {
+                "rows": rows,
+                "requests": requests_made,
+                "error": response.text[:500] or f"HTTP {response.status_code}",
+                "http_status": int(response.status_code or 0),
+            }
+
+        try:
+            payload = response.json()
+        except (TypeError, ValueError) as exc:
+            return {
+                "rows": rows,
+                "requests": requests_made,
+                "error": f"invalid JSON response: {exc}",
+                "http_status": int(response.status_code or 0),
+            }
+        if not isinstance(payload, dict):
+            return {
+                "rows": rows,
+                "requests": requests_made,
+                "error": "invalid JSON response: expected an object",
+                "http_status": int(response.status_code or 0),
+            }
+        batch = payload.get("rows") or []
+        for item in batch:
+            keys = item.get("keys") or []
+            if len(keys) != len(dimensions):
+                continue
+            keyed = dict(zip(dimensions, keys))
+            rows.append({
+                "date": str(keyed.get("date") or ""),
+                "query": str(keyed.get("query") or ""),
+                "page": str(keyed.get("page") or ""),
+                "country": str(keyed.get("country") or ""),
+                "device": str(keyed.get("device") or ""),
+                "search_type": search_type,
+                "clicks": int(item.get("clicks") or 0),
+                "impressions": int(item.get("impressions") or 0),
+                "ctr": float(item.get("ctr") or 0),
+                "position": float(item.get("position") or 0),
+            })
+        if len(batch) < batch_limit:
+            break
+        start_row += len(batch)
+
+    return {"rows": rows, "requests": requests_made, "error": "", "http_status": 200}
+
+
+def _fetch_search_console_data_sync(
     *,
     site_url: str,
     service_account_json: Optional[str],
@@ -253,12 +349,12 @@ def _fetch_search_console_rows_sync(
     oauth_token_file: Optional[str],
     lookback_days: int,
     row_limit: int,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     try:
         import requests
     except ImportError as exc:  # pragma: no cover - depends on Render install state
         logger.warning("[search_console] dependency_missing error=%s", exc)
-        return []
+        return {"status": "dependency_error", "rows": [], "media_rows": [], "error": str(exc)}
 
     credentials, auth_source = _load_search_console_credentials(
         service_account_json=service_account_json,
@@ -270,65 +366,52 @@ def _fetch_search_console_rows_sync(
         scopes=[SEARCH_CONSOLE_READ_SCOPE],
     )
     if credentials is None:
-        return []
+        return {
+            "status": "auth_error",
+            "rows": [],
+            "media_rows": [],
+            "auth_source": auth_source,
+            "error": "credentials unavailable or refresh failed",
+        }
 
     end_date = (datetime.utcnow().date() - timedelta(days=1))
     start_date = end_date - timedelta(days=max(0, lookback_days - 1))
-    body = {
-        "startDate": start_date.isoformat(),
-        "endDate": end_date.isoformat(),
-        "dimensions": ["date", "query", "page", "country", "device"],
-        "rowLimit": max(10, min(2500, int(row_limit or 250))),
-    }
-
-    last_rows: list[dict[str, Any]] = []
+    total_limit = max(10, min(10000, int(row_limit or 2500)))
+    last_error = ""
+    last_http_status = None
+    successful_empty_property = ""
+    total_requests = 0
+    selected_property = ""
+    selected_rows: list[dict[str, Any]] = []
     for candidate_site_url in _search_console_site_candidates(site_url):
         encoded_site = urllib.parse.quote(candidate_site_url, safe="")
         endpoint = f"https://searchconsole.googleapis.com/webmasters/v3/sites/{encoded_site}/searchAnalytics/query"
-
-        try:
-            response = requests.post(
-                endpoint,
-                headers={
-                    "Authorization": f"Bearer {credentials.token}",
-                    "Content-Type": "application/json",
-                },
-                json=body,
-                timeout=20,
-            )
-        except requests.RequestException as exc:
-            logger.warning("[search_console] request_failed site_url=%s error=%s", candidate_site_url, exc)
-            continue
-
-        if response.status_code >= 400:
+        result = _query_search_analytics(
+            requests,
+            endpoint=endpoint,
+            token=credentials.token,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            dimensions=["date", "query", "page"],
+            row_limit=total_limit,
+            search_type="web",
+        )
+        total_requests += int(result.get("requests") or 0)
+        if result.get("error"):
+            last_error = str(result.get("error") or "")
+            last_http_status = result.get("http_status")
             logger.warning(
-                "[search_console] api_error auth=%s site_url=%s status=%s body=%s",
+                "[search_console] api_error auth=%s site_url=%s status=%s error=%s",
                 auth_source,
                 candidate_site_url,
-                response.status_code,
-                response.text[:500],
+                last_http_status,
+                last_error,
             )
             continue
-
-        payload = response.json()
-        rows: list[dict[str, Any]] = []
-        for item in payload.get("rows") or []:
-            keys = item.get("keys") or []
-            if len(keys) < 5:
-                continue
-            rows.append({
-                "date": keys[0],
-                "query": keys[1],
-                "page": keys[2],
-                "country": keys[3],
-                "device": keys[4],
-                "clicks": int(item.get("clicks") or 0),
-                "impressions": int(item.get("impressions") or 0),
-                "ctr": float(item.get("ctr") or 0),
-                "position": float(item.get("position") or 0),
-                "property_url": candidate_site_url,
-            })
+        rows = result.get("rows") or []
         if rows:
+            selected_property = candidate_site_url
+            selected_rows = rows
             if candidate_site_url != site_url:
                 logger.info(
                     "[search_console] alternate_property_used configured_site_url=%s site_url=%s rows=%d",
@@ -336,13 +419,65 @@ def _fetch_search_console_rows_sync(
                     candidate_site_url,
                     len(rows),
                 )
-            return rows
-        last_rows = rows
+            break
+        if not successful_empty_property:
+            successful_empty_property = candidate_site_url
 
-    return last_rows
+    if not selected_property:
+        selected_property = successful_empty_property
+    if not selected_property:
+        return {
+            "status": "api_error",
+            "rows": [],
+            "media_rows": [],
+            "auth_source": auth_source,
+            "property_url": "",
+            "requests": total_requests,
+            "http_status": last_http_status,
+            "error": last_error or "all Search Console properties failed",
+        }
+
+    for row in selected_rows:
+        row["property_url"] = selected_property
+
+    media_rows: list[dict[str, Any]] = []
+    encoded_site = urllib.parse.quote(selected_property, safe="")
+    endpoint = f"https://searchconsole.googleapis.com/webmasters/v3/sites/{encoded_site}/searchAnalytics/query"
+    media_limit = min(500, total_limit)
+    media_errors: list[str] = []
+    for search_type in ("image", "video"):
+        result = _query_search_analytics(
+            requests,
+            endpoint=endpoint,
+            token=credentials.token,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            dimensions=["date", "query", "page"],
+            row_limit=media_limit,
+            search_type=search_type,
+        )
+        total_requests += int(result.get("requests") or 0)
+        if result.get("error"):
+            media_errors.append(f"{search_type}: {result.get('error')}")
+            continue
+        for row in result.get("rows") or []:
+            row["property_url"] = selected_property
+            media_rows.append(row)
+
+    return {
+        "status": "ok" if selected_rows else "ok_empty",
+        "rows": selected_rows,
+        "media_rows": media_rows,
+        "auth_source": auth_source,
+        "property_url": selected_property,
+        "requests": total_requests,
+        "http_status": 200,
+        "partial": bool(media_errors),
+        "error": "; ".join(media_errors),
+    }
 
 
-async def fetch_search_console_rows(
+async def fetch_search_console_data(
     *,
     enabled: bool,
     site_url: Optional[str],
@@ -353,9 +488,9 @@ async def fetch_search_console_rows(
     oauth_token_json: Optional[str] = None,
     oauth_token_file: Optional[str] = None,
     lookback_days: int = 7,
-    row_limit: int = 250,
-) -> list[dict[str, Any]]:
-    """Fetch Search Console rows, returning [] when disabled or unavailable."""
+    row_limit: int = 2500,
+) -> dict[str, Any]:
+    """Fetch learning and media views with structured connection health."""
     if not is_search_console_configured(
         enabled=enabled,
         site_url=site_url,
@@ -366,10 +501,10 @@ async def fetch_search_console_rows(
         oauth_token_json=oauth_token_json,
         oauth_token_file=oauth_token_file,
     ):
-        return []
+        return {"status": "not_configured", "rows": [], "media_rows": [], "error": "not configured"}
 
     return await asyncio.to_thread(
-        _fetch_search_console_rows_sync,
+        _fetch_search_console_data_sync,
         site_url=str(site_url),
         service_account_json=service_account_json,
         service_account_file=service_account_file,
@@ -380,6 +515,11 @@ async def fetch_search_console_rows(
         lookback_days=lookback_days,
         row_limit=row_limit,
     )
+
+
+async def fetch_search_console_rows(**kwargs) -> list[dict[str, Any]]:
+    """Backward-compatible list-only wrapper."""
+    return list((await fetch_search_console_data(**kwargs)).get("rows") or [])
 
 
 def submit_sitemap_sync(

@@ -72,6 +72,26 @@ _CANNA_TREND_HINTS = {
     "light dep", "light deps", "light deprivation", "moonrocks", "snowcaps", "infused", "solventless",
     "static", "statico", "estatico", "estático", "filtered", "filter", "filt", "filtr",
     "filtre", "filtré", "filtree", "filtrée", "filtrado",
+    "thc", "cbd", "cbg", "terp", "terps", "terpene", "terpenes", "strain", "strains",
+    "kush", "haze", "runtz", "gelato", "sherb", "sherbet", "zkittlez", "zkittles",
+    "dabs", "joint", "joints", "blunt", "blunts", "wax", "shatter", "budder", "badder",
+    "hasch", "haschisch", "hasj", "beuh", "herbe", "résine", "resine", "hachís",
+    "hachis", "haschich", "marihuana", "marijuana", "hierba",
+}
+
+# One of these terms on its own is too broad for a public Trends headline.
+# They remain useful when combined with another cannabis signal or when a user
+# searches the catalog directly.
+_AMBIGUOUS_CANNA_TREND_HINTS = {
+    "flower", "bud", "buds", "hybrid", "cart", "carts", "edible", "edibles",
+    "gummy", "gummies", "premium", "static", "filtered", "filter", "filt",
+    "filtr", "filtre", "filtré", "filtree", "filtrée", "filtrado",
+}
+
+_MUSHROOM_TREND_HINTS = {
+    "mushroom", "mushrooms", "shroom", "shrooms", "magic mushroom", "magic mushrooms",
+    "psilocybin", "microdose", "microdosing", "mycology", "spores", "amanita",
+    "cubensis", "golden teacher", "penis envy",
 }
 
 _COMMUNITY_INTENT_HINTS = _CANNA_TREND_HINTS | {
@@ -99,7 +119,35 @@ def has_search_audience_intent(term: str) -> bool:
     normalized = normalize_term(term)
     if not normalized:
         return False
-    return any(hint in normalized for hint in _COMMUNITY_INTENT_HINTS)
+    padded = f" {normalized} "
+    return any(f" {normalize_term(hint)} " in padded for hint in _COMMUNITY_INTENT_HINTS)
+
+
+def has_cannabis_search_intent(term: str) -> bool:
+    """Return true for strong cannabis intent suitable for external trend data."""
+    normalized = normalize_term(term)
+    if not normalized:
+        return False
+    padded = f" {normalized} "
+    matches = {
+        hint
+        for hint in _CANNA_TREND_HINTS
+        if f" {normalize_term(hint)} " in padded
+    }
+    if not matches:
+        return False
+    if any(hint not in _AMBIGUOUS_CANNA_TREND_HINTS for hint in matches):
+        return True
+    return len(matches) >= 2
+
+
+def has_mushroom_search_intent(term: str) -> bool:
+    """Return true for explicit mushroom or psychedelic-mushroom vocabulary."""
+    normalized = normalize_term(term)
+    if not normalized:
+        return False
+    padded = f" {normalized} "
+    return any(f" {normalize_term(hint)} " in padded for hint in _MUSHROOM_TREND_HINTS)
 
 
 def is_bad_auto_seo_term(term: str) -> bool:

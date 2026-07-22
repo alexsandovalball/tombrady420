@@ -255,12 +255,24 @@ def _format_search_console_status(snapshot: dict) -> list[str]:
     last_candidates = runtime.get("seo_auto_learn_last_candidates", 0)
     last_suppressed = runtime.get("seo_auto_learn_last_suppressed", 0)
     last_retired_noise = runtime.get("seo_auto_learn_last_retired_noise", 0)
+    import_status = runtime.get("search_console_import_last_status") or "pending"
+    import_property = runtime.get("search_console_import_last_property") or setup.get("site_url") or "not set"
+    import_requests = runtime.get("search_console_import_last_requests", 0)
+    import_media_rows = runtime.get("search_console_import_last_media_rows", 0)
+    import_aggregates = runtime.get("search_console_import_last_aggregates", 0)
+    import_mismatches = runtime.get("search_console_import_last_page_mismatches", 0)
+    import_error = runtime.get("search_console_import_last_error") or ""
 
     return [
         "",
         "Google Search Console",
         f"• Status: {status}",
         f"• Auth: {auth_source}",
+        f"• Last import health: {import_status}",
+        f"• Property used: {import_property}",
+        f"• API requests/aggregates: {_fmt_count(import_requests)}/{_fmt_count(import_aggregates)}",
+        f"• Image/video rows: {_fmt_count(import_media_rows)}",
+        f"• Page mismatches rejected: {_fmt_count(import_mismatches)}",
         f"• Latest Google data date: {latest_source_date}",
         f"• Last saved import: {latest_imported_at}",
         f"• Sitemap submit: {sitemap_status}",
@@ -269,6 +281,7 @@ def _format_search_console_status(snapshot: dict) -> list[str]:
         f"• Sitemap URL: {sitemap.get('sitemap_url') or Config.SEARCH_CONSOLE_SITEMAP_URL or 'not set'}",
         f"• Note: {note}",
         *( [f"• Sitemap note: {sitemap_error[:120]}"] if sitemap_error else [] ),
+        *( [f"• Import note: {import_error[:120]}"] if import_error else [] ),
         "",
         "Auto-Learning Settings",
         f"• Runs every: {_fmt_count(interval_minutes)} min",
@@ -305,6 +318,7 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Made automatically: {_fmt_count(snapshot.get('auto_mappings'))}",
             f"• Google queries imported ({search_console_days}d): {_fmt_count(snapshot.get('search_console_queries_window'))}",
             f"• Google clicks/impressions ({search_console_days}d): {_fmt_count(snapshot.get('search_console_clicks_window'))}/{_fmt_count(snapshot.get('search_console_impressions_window'))}",
+            f"• Google image/video impressions: {_fmt_count(snapshot.get('search_console_image_impressions_window'))}/{_fmt_count(snapshot.get('search_console_video_impressions_window'))}",
             f"• Google Trends signals: {_fmt_count(google_trends_signals)}",
             f"• Google Trends latest seen: {google_trends_latest_seen}",
             f"• Approved external signals: {_fmt_count(snapshot.get('external_signals'))}",
@@ -327,6 +341,15 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append(
                     f"• {item.get('query')}: {_fmt_count(item.get('clicks'))} click(s), "
                     f"{_fmt_count(item.get('impressions'))} impression(s), avg position {item.get('avg_position')}"
+                )
+
+        opportunities = snapshot.get("search_console_opportunities") or []
+        if opportunities:
+            lines.extend(["", "Google Ranking Opportunities"])
+            for item in opportunities[:5]:
+                lines.append(
+                    f"• {item.get('query')}: {_fmt_count(item.get('impressions'))} impression(s), "
+                    f"{_fmt_count(item.get('clicks'))} click(s), avg position {item.get('avg_position')}"
                 )
 
         recent_mappings = snapshot.get("recent_mappings") or []

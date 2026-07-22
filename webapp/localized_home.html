@@ -364,10 +364,10 @@
                 if (!data) return;
 
                 var summary = data.summary || {};
-                var cache = data.cache_state || {};
                 var seo = data.seo || {};
                 var indexnow = data.indexnow || {};
                 var process = data.process || {};
+                var searchConsoleSetup = seo.search_console_setup || {};
                 var mediaRuntime = data.media_runtime || {};
                 var resourceUsage = data.resource_usage || {};
                 var tmpUsage = resourceUsage.tmp || {};
@@ -401,59 +401,31 @@
                 grid.className = 'admin-metric-grid';
                 appendMetric(grid, 'Bots online', formatCount(activeBots.length) + '/' + formatCount(data.configured_bot_count));
                 appendMetric(grid, 'Products', formatCount(summary.products));
-                appendMetric(grid, 'Categories/Subcats', formatCount(summary.categories) + '/' + formatCount(summary.subcategories));
                 appendMetric(grid, 'Total users', formatCount(summary.bot_users));
                 appendMetric(grid, 'Users 24h', formatCount(summary.active_users_24h));
                 appendMetric(grid, 'Subscribed users', formatCount(summary.subscribed_users));
                 appendMetric(grid, 'Blocked users', formatCount(summary.blocked_users));
-                appendMetric(grid, 'Blocked entities/IPs', formatCount(summary.blocked_entities) + '/' + formatCount(summary.blocked_ips));
                 appendMetric(grid, 'Unique visitors 24h', formatCount(summary.unique_visitors_24h));
                 appendMetric(grid, 'Website visits 24h', formatCount(summary.website_visits_24h));
                 appendMetric(grid, 'WebApp opens 24h', formatCount(summary.webapp_visits_24h));
-                appendMetric(grid, 'Known visitors 24h', formatCount(summary.known_visitor_users_24h));
-                appendMetric(grid, 'Crawler samples 24h', formatCount(summary.crawler_events_24h));
-                appendMetric(grid, 'Search crawler samples', formatCount(summary.search_crawler_events_24h));
                 appendMetric(grid, 'Pending notifications', formatCount(summary.pending_notifications));
                 appendMetric(grid, 'Queued custom msgs', formatCount(summary.queued_custom_messages));
-                appendMetric(grid, 'WebApp events 24h', formatCount(summary.webapp_events_24h));
-                appendMetric(grid, 'Inline queries 24h', formatCount(summary.inline_queries_24h));
-                appendMetric(grid, 'Inline chosen 24h', formatCount(summary.inline_chosen_24h));
                 appendMetric(grid, 'Searches 24h', formatCount(summary.search_queries_24h));
                 appendMetric(grid, 'No-result searches', formatCount(summary.search_no_result_24h));
                 appendMetric(grid, 'SEO mappings', formatCount(summary.seo_query_mappings));
-                appendMetric(grid, 'Google queries ' + googleWindowDays + 'd', formatCount(seo.search_console_queries_window));
                 appendMetric(grid, 'Google pages ' + googleWindowDays + 'd', formatCount(seo.search_console_pages_window));
                 appendMetric(grid, 'Google clicks/impr.', formatCount(seo.search_console_clicks_window) + '/' + formatCount(seo.search_console_impressions_window));
-                appendMetric(grid, 'Google Trends signals', formatCount(seo.google_trends_signals));
+                appendMetric(grid, 'Image/video impressions', formatCount(seo.search_console_image_impressions_window) + '/' + formatCount(seo.search_console_video_impressions_window));
                 appendMetric(grid, 'SEO auto last run', seoRuntime.seo_auto_learn_last_run_at || 'pending');
-                appendMetric(grid, 'SEO auto changed', formatCount(seoRuntime.seo_auto_learn_last_changed));
-                appendMetric(grid, 'SEO candidates checked', formatCount(seoRuntime.seo_auto_learn_last_candidates));
-                appendMetric(grid, 'SEO terms paused', formatCount(seoRuntime.seo_auto_learn_last_suppressed));
-                appendMetric(grid, 'SEO noise retired', formatCount(seoRuntime.seo_auto_learn_last_retired_noise));
-                appendMetric(grid, 'Trends last run', seoRuntime.seo_trends_last_run_at || 'pending');
+                appendMetric(grid, 'Trends learner', (seoRuntime.seo_trends_last_status || 'pending') + (seoRuntime.seo_trends_last_run_at ? ' · ' + seoRuntime.seo_trends_last_run_at : ''));
                 appendMetric(grid, 'Google import last', seoRuntime.search_console_import_last_attempt_at || 'pending');
-                appendMetric(grid, 'Google import rows', formatCount(seoRuntime.search_console_import_last_rows));
+                appendMetric(grid, 'Google connection', searchConsoleSetup.configured ? (seoRuntime.search_console_import_last_status || 'configured') : 'not connected');
                 appendMetric(grid, 'Google sitemap', googleSitemap.status || 'never');
                 appendMetric(grid, 'IndexNow pending', formatCount(indexnow.pending));
-                appendMetric(grid, 'IndexNow sent', formatCount(indexnow.submitted));
                 appendMetric(grid, 'IndexNow failed', formatCount(indexnow.failed));
-                appendMetric(grid, 'IndexNow key', indexnow.key_file_available ? 'Ready' : (indexnow.enabled === false ? 'Off' : 'Pending'));
                 appendMetric(grid, 'Webhook 401 total', formatCount(data.webhook_401_total));
-                appendMetric(grid, 'File ID cache', formatCount(summary.file_id_cache_entries));
-                appendMetric(grid, 'Canonical media', formatCount(summary.canonical_media));
-                appendMetric(grid, 'Bot media mappings', formatCount(summary.bot_media_mappings));
-                appendMetric(grid, 'Media objects', formatCount(summary.media_objects_active));
-                appendMetric(grid, 'Translation cache', formatCount(summary.translation_cache_entries));
-                appendMetric(grid, 'Memory cache', formatCount(cache.api_results));
-                appendMetric(grid, 'Media info cache', formatCount(cache.media_info));
-                appendMetric(grid, 'SEO page cache', formatCount(process.seo_response_cache_entries));
-                appendMetric(grid, 'WebApp search cache', formatCount(process.webapp_search_cache_entries));
                 appendMetric(grid, 'Uptime', formatDuration(process.uptime_seconds));
-                appendMetric(grid, 'Visitor queue', formatCount(process.visitor_queue_size) + '/' + formatCount(process.visitor_queue_max));
-                appendMetric(grid, 'Visitor writes/drops', formatCount(process.visitor_events_written) + '/' + formatCount(process.visitor_events_dropped));
-                appendMetric(grid, 'Media cache mode', (mediaRuntime.storage_mode || '-') + (mediaRuntime.video_cache_enabled ? ' + video' : ''));
                 appendMetric(grid, 'Active media streams', formatCount(mediaRuntime.active_streams));
-                appendMetric(grid, 'Media cache limit', formatCount(mediaRuntime.cache_max_mb) + ' MB');
                 appendMetric(grid, 'Temp app usage', formatBytes(tmpUsage.used_bytes));
                 appendMetric(grid, 'Persistent cache used', formatBytes(cacheUsage.app_cache_bytes));
                 panel.appendChild(grid);
@@ -477,63 +449,36 @@
                     return '#' + item.index + ' ' + username + ': ' + (item.running ? 'running' : 'stopped') + ', ' + slot + ', id ' + (item.telegram_bot_id || '-');
                 }, 20);
 
-                appendList(panel, 'Registered Bot Slots', data.bot_instances || [], function (item) {
-                    var username = item.telegram_username || item.bot_username || 'unknown';
-                    return (item.slot_name || ('slot ' + (item.slot_id || '-'))) + ': @' + username + ', telegram id ' + (item.bot_id || '-') + ', last seen ' + (item.last_seen || '-');
-                }, 20);
-
-                appendList(panel, 'Bot Registry', data.bots || [], function (item) {
-                    return '@' + (item.bot_username || 'unknown') + ': ' + (item.status || '-') + ', telegram id ' + (item.telegram_bot_id || '-') + ', updated ' + (item.updated_at || '-');
-                }, 20);
-
                 appendList(panel, 'Pending Notifications By Bot', data.pending_notifications_by_bot || [], function (item) {
-                    return '@' + String(item.bot_username || '_untracked_') + ': ' + formatCount(item.pending) + ' pending';
-                }, 12);
-
-                appendList(panel, 'Pending Custom Messages By Bot', data.pending_custom_messages_by_bot || [], function (item) {
-                    return '@' + String(item.bot_username || '_untracked_') + ': ' + formatCount(item.pending) + ' pending';
-                }, 12);
-
-                appendList(panel, 'Inline Activity 24h', data.inline_activity || [], function (item) {
-                    return '@' + String(item.bot_username || '_unknown_') + ': ' + formatCount(item.queries) + ' queries, avg ' + formatMs(item.avg_latency_ms) + ', results ' + Number(item.avg_results || 0).toFixed(1);
-                }, 12);
-
-                appendList(panel, 'Recent Products', data.recent_products || [], function (item) {
-                    var title = String(item.caption || '').split('\n')[0] || ('Product ' + item.id);
-                    return '#' + item.id + ' ' + title + ' - ' + (item.category || '-') + (item.subcategory ? ' / ' + item.subcategory : '') + ', ' + (item.file_type || 'media') + ', ' + (item.created_at || '-');
-                }, 12);
+                    return '@' + String(item.bot_username || 'bot') + ': ' + formatCount(item.pending) + ' pending';
+                }, 10);
 
                 appendList(panel, 'Recent Users', data.recent_users || [], function (item) {
-                    var name = item.username ? '@' + item.username : (item.first_name || String(item.user_id || 'user'));
-                    return name + ' (' + (item.user_id || '-') + '): ' + (item.bot_username || '_untracked_') + ', ' + String(item.language || 'en').toUpperCase() + ', seen ' + (item.last_seen || '-') + (item.is_blocked ? ', blocked' : '');
-                }, 12);
-
-                appendList(panel, 'Recent Visitors', data.recent_visitor_events || [], function (item) {
-                    var who = item.username ? '@' + item.username : (item.telegram_user_id || 'unknown');
-                    var place = [item.city, item.region, item.country].filter(function (part) {
-                        return part && part !== 'Unknown';
-                    }).join(', ') || 'Unknown';
-                    return who + ': ' + (item.source || '-') + '/' + (item.page_type || '-') + ' ' + formatPagePath(item.path || '/') + ', ' + place + ', ' + (item.device_type || '-') + ', ' + (item.created_at || '-');
-                }, 12);
-
-                appendList(panel, 'Recent WebApp Events', data.recent_webapp_events || [], function (item) {
-                    var who = item.username ? '@' + item.username : (item.user_id || 'unknown');
-                    return who + ': ' + (item.event_type || 'event') + '/' + (item.action || 'action') + ', ' + (item.status || '-') + (item.error ? ', ' + item.error : '') + ', ' + (item.created_at || '-');
-                }, 12);
+                    var identity = item.username ? '@' + item.username : String(item.first_name || 'User') + ' ' + String(item.last_name || '');
+                    return identity.trim() + ': @' + String(item.bot_username || 'bot') + ', last ' + (item.last_seen || '-');
+                }, 8);
 
                 appendList(panel, 'Top Google Searches', seo.top_search_console_queries || [], function (item) {
                     return String(item.query || 'query') + ': ' + formatCount(item.clicks) + ' clicks, ' + formatCount(item.impressions) + ' impressions, avg pos ' + (item.avg_position || '-');
                 }, 10);
 
-                if (googleSitemap.status) {
-                    appendList(panel, 'Google Sitemap Submission', [googleSitemap], function (item) {
-                        var submitted = item.last_submitted_at ? 'accepted ' + item.last_submitted_at : 'attempt ' + (item.last_attempt_at || 'none yet');
-                        var target = item.sitemap_url || 'sitemap not set';
-                        var note = item.last_error ? ', ' + item.last_error : '';
-                        return item.status + ': ' + submitted + ', ' + target + note;
-                    }, 1);
-                }
+                appendList(panel, 'Google Ranking Opportunities', seo.search_console_opportunities || [], function (item) {
+                    return String(item.query || 'query') + ': ' + formatCount(item.impressions) + ' impressions, ' + formatCount(item.clicks) + ' clicks, avg pos ' + (item.avg_position || '-') + ' · ' + String(item.page || '/');
+                }, 10);
 
+                appendList(panel, 'Google Image & Video Pages', seo.top_search_console_media_pages || [], function (item) {
+                    return String(item.search_type || 'media') + ': ' + formatCount(item.impressions) + ' impressions, ' + formatCount(item.clicks) + ' clicks · ' + String(item.page || '/');
+                }, 8);
+
+                appendList(panel, 'Google Search Changes (7d vs prior 7d)', seo.search_console_changes || [], function (item) {
+                    return String(item.query || 'query') + ': impressions ' + formatCount(item.previous_impressions) + ' → ' + formatCount(item.recent_impressions) + ', clicks ' + formatCount(item.previous_clicks) + ' → ' + formatCount(item.recent_clicks);
+                }, 8);
+
+                appendList(panel, 'Recent Search Mappings', seo.recent_mappings || [], function (item) {
+                    var taxonomy = item.category || 'catalog';
+                    if (item.subcategory) taxonomy += ' / ' + item.subcategory;
+                    return String(item.term || 'term') + ' -> ' + taxonomy;
+                }, 8);
                 appendList(panel, 'Top Visitor Locations', data.top_visitor_locations || [], function (item) {
                     var place = [item.city, item.region, item.country].filter(function (part) {
                         return part && part !== 'Unknown';
@@ -545,43 +490,9 @@
                     return (item.page_type || item.source) + ' ' + String(item.path || '/') + ': ' + formatCount(item.visits) + ' visits, ' + formatCount(item.visitors) + ' visitors';
                 }, 10);
 
-                appendList(panel, 'Visitor Devices', data.visitor_devices || [], function (item) {
-                    return String(item.device_type || 'unknown') + ': ' + formatCount(item.visitors) + ' visitors, ' + formatCount(item.visits) + ' visits';
-                }, 10);
-
-                appendList(panel, 'Crawler Activity (sampled)', data.crawler_activity || [], function (item) {
-                    return String(item.crawler_name || 'crawler') + ': ' + formatCount(item.requests) + ' requests across ' + formatCount(item.pages) + ' pages, last ' + (item.last_seen || '-');
-                }, 12);
-
-                appendList(panel, 'Recent Search Mappings', seo.recent_mappings || [], function (item) {
-                    var language = String(item.language || 'en').toUpperCase();
-                    var taxonomy = item.category || 'catalog';
-                    if (item.subcategory) taxonomy += ' / ' + item.subcategory;
-                    return '[' + language + '] ' + item.term + ' -> ' + taxonomy;
-                }, 12);
-
-                appendList(panel, 'Recent External Signals', seo.recent_external_signals || [], function (item) {
-                    var taxonomy = item.category || 'catalog';
-                    if (item.subcategory) taxonomy += ' / ' + item.subcategory;
-                    return String(item.provider || 'signal') + ': ' + item.term + ' -> ' + taxonomy;
-                }, 12);
-
-                appendList(panel, 'SEO Mapping Languages', seo.mapping_languages || [], function (item) {
-                    return String(item.language || 'en').toUpperCase() + ': ' + formatCount(item.count) + ' mappings';
-                }, 12);
-
-                appendList(panel, 'Search Languages (30 days)', seo.search_languages_30d || [], function (item) {
-                    return String(item.language || 'en').toUpperCase() + ': ' + formatCount(item.count) + ' searches';
-                }, 12);
-
                 appendList(panel, 'Top Bots By Users', data.bot_user_counts || [], function (item) {
                     return '@' + String(item.bot_username || 'bot') + ': ' + formatCount(item.users) + ' users, ' + formatCount(item.active_24h) + ' active';
                 }, 12);
-
-                appendList(panel, 'Top WebApp Events', data.webapp_event_counts || [], function (item) {
-                    return String(item.event_type || 'event') + '/' + String(item.action || 'action') + ': ' + formatCount(item.count);
-                }, 12);
-
                 appendGooglePages(panel, seo);
                 appendCrawlablePages(panel, data.crawlable_pages);
             }

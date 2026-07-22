@@ -434,6 +434,7 @@ class Database:
                     term_type TEXT NOT NULL DEFAULT 'query',
                     provider TEXT NOT NULL DEFAULT 'internal',
                     source TEXT NOT NULL DEFAULT '',
+                    language TEXT NOT NULL DEFAULT 'en',
                     category TEXT NOT NULL DEFAULT '',
                     subcategory TEXT NOT NULL DEFAULT '',
                     confidence INTEGER NOT NULL DEFAULT 0,
@@ -565,6 +566,23 @@ class Database:
             """)
 
             await db.execute("""
+                CREATE TABLE IF NOT EXISTS search_console_media_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    query TEXT NOT NULL DEFAULT '',
+                    normalized_query TEXT NOT NULL DEFAULT '',
+                    page TEXT NOT NULL DEFAULT '',
+                    search_type TEXT NOT NULL,
+                    clicks INTEGER NOT NULL DEFAULT 0,
+                    impressions INTEGER NOT NULL DEFAULT 0,
+                    ctr REAL NOT NULL DEFAULT 0,
+                    position REAL NOT NULL DEFAULT 0,
+                    source_date TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(normalized_query, page, search_type, source_date)
+                )
+            """)
+
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS admin_cache_cleanup_queue (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     bot_username TEXT NOT NULL,
@@ -642,6 +660,7 @@ class Database:
                 ("broadcast_chats", "last_delivery_error", "TEXT", True),
                 ("search_query_events", "language", "TEXT NOT NULL DEFAULT ''", True),
                 ("seo_query_mappings", "language", "TEXT NOT NULL DEFAULT ''", True),
+                ("external_seo_signals", "language", "TEXT NOT NULL DEFAULT 'en'", True),
                 ("visitor_events", "traffic_class", "TEXT NOT NULL DEFAULT 'human'", True),
                 ("visitor_events", "crawler_name", "TEXT NOT NULL DEFAULT ''", True),
                 ("visitor_events", "is_pageview", "INTEGER NOT NULL DEFAULT 1", True),
@@ -766,6 +785,9 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_auto_learn_suppression_expires ON seo_auto_learn_suppression(expires_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_console_query_events_date ON search_console_query_events(source_date DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_console_query_events_query ON search_console_query_events(normalized_query, source_date DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_search_console_query_events_page ON search_console_query_events(page, source_date DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_search_console_media_events_date ON search_console_media_events(search_type, source_date DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_search_console_media_events_page ON search_console_media_events(page, search_type, source_date DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_external_seo_signals_approved ON external_seo_signals(approved, confidence DESC, last_seen DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_external_seo_signals_taxonomy ON external_seo_signals(category, subcategory, approved)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_indexnow_submissions_status ON indexnow_submissions(status, updated_at DESC)")
@@ -4384,7 +4406,13 @@ class Database:
             await db.commit()
         return len(retired_ids)
 
-    async def upsert_search_console_query_events(self, rows: List[Dict[str, Any]]) -> int:
+    async def upsert_search_console_query_events(
+        self,
+        rows: List[Dict[str, Any]],
+        *,
+        replace_dates: bool = False,
+        replace_since: Optional[str] = None,
+    ) -> int:
         """Insert/update Search Console query snapshots."""
         from utils.seo_terms import normalize_term
 
@@ -4416,27 +4444,110 @@ class Database:
                 source_date[:20],
             ))
 
-        if not normalized_rows:
+        if not normalized_rows and not replace_since:
             return 0
 
         async with self.get_connection() as db:
-            await db.executemany(
-                """
-                INSERT INTO search_console_query_events (
-                    query, normalized_query, page, country, device,
-                    clicks, impressions, ctr, position, source_date
+            if replace_since:
+                await db.execute(
+                    "DELETE FROM search_console_query_events WHERE source_date >= ?",
+                    (str(replace_since)[:20],),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(normalized_query, page, country, device, source_date) DO UPDATE SET
-                    query = excluded.query,
-                    clicks = excluded.clicks,
-                    impressions = excluded.impressions,
-                    ctr = excluded.ctr,
-                    position = excluded.position,
-                    created_at = CURRENT_TIMESTAMP
-                """,
-                normalized_rows,
-            )
+            elif replace_dates:
+                source_dates = sorted({row[-1] for row in normalized_rows})
+                placeholders = ",".join("?" * len(source_dates))
+                await db.execute(
+                    f"DELETE FROM search_console_query_events WHERE source_date IN ({placeholders})",
+                    tuple(source_dates),
+                )
+            if normalized_rows:
+                await db.executemany(
+                    """
+                    INSERT INTO search_console_query_events (
+                        query, normalized_query, page, country, device,
+                        clicks, impressions, ctr, position, source_date
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(normalized_query, page, country, device, source_date) DO UPDATE SET
+                        query = excluded.query,
+                        clicks = excluded.clicks,
+                        impressions = excluded.impressions,
+                        ctr = excluded.ctr,
+                        position = excluded.position,
+                        created_at = CURRENT_TIMESTAMP
+                    """,
+                    normalized_rows,
+                )
+            await db.commit()
+        return len(normalized_rows)
+
+    async def replace_search_console_media_events(
+        self,
+        rows: List[Dict[str, Any]],
+        *,
+        replace_since: Optional[str] = None,
+    ) -> int:
+        """Replace imported image/video Search Console rows for returned dates."""
+        from utils.seo_terms import normalize_term
+
+        normalized_rows = []
+        seen = set()
+        for row in rows or []:
+            search_type = str(row.get("search_type") or "").strip().lower()
+            source_date = str(row.get("date") or row.get("source_date") or "").strip()
+            if search_type not in {"image", "video"} or not source_date:
+                continue
+            query = str(row.get("query") or "").strip()
+            normalized_query = normalize_term(query)
+            page = str(row.get("page") or "")[:500]
+            key = (normalized_query, page, search_type, source_date)
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized_rows.append((
+                query[:300],
+                normalized_query[:300],
+                page,
+                search_type,
+                max(0, int(row.get("clicks") or 0)),
+                max(0, int(row.get("impressions") or 0)),
+                float(row.get("ctr") or 0),
+                float(row.get("position") or 0),
+                source_date[:20],
+            ))
+        if not normalized_rows and not replace_since:
+            return 0
+
+        async with self.get_connection() as db:
+            if replace_since:
+                await db.execute(
+                    "DELETE FROM search_console_media_events WHERE source_date >= ?",
+                    (str(replace_since)[:20],),
+                )
+            else:
+                partitions = sorted({(row[3], row[8]) for row in normalized_rows})
+                await db.executemany(
+                    "DELETE FROM search_console_media_events WHERE search_type = ? AND source_date = ?",
+                    partitions,
+                )
+            if normalized_rows:
+                await db.executemany(
+                    """
+                    INSERT INTO search_console_media_events (
+                        query, normalized_query, page, search_type,
+                        clicks, impressions, ctr, position, source_date
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(normalized_query, page, search_type, source_date) DO UPDATE SET
+                        query = excluded.query,
+                        clicks = excluded.clicks,
+                        impressions = excluded.impressions,
+                        ctr = excluded.ctr,
+                        position = excluded.position,
+                        created_at = CURRENT_TIMESTAMP
+                    """,
+                    normalized_rows,
+                )
             await db.commit()
         return len(normalized_rows)
 
@@ -4475,6 +4586,7 @@ class Database:
                 str(signal.get("term_type") or "query").strip()[:40],
                 row_provider,
                 str(signal.get("source") or source or "").strip()[:120],
+                str(signal.get("language") or "en").strip().lower()[:12],
                 category,
                 subcategory,
                 max(0, min(100, int(signal.get("confidence") or 0))),
@@ -4491,13 +4603,14 @@ class Database:
                 """
                 INSERT INTO external_seo_signals (
                     term, normalized_term, term_type, provider, source,
-                    category, subcategory, confidence, approved, evidence_count, notes_json
+                    language, category, subcategory, confidence, approved, evidence_count, notes_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(provider, normalized_term, category, subcategory) DO UPDATE SET
                     term = excluded.term,
                     term_type = excluded.term_type,
                     source = excluded.source,
+                    language = excluded.language,
                     confidence = max(external_seo_signals.confidence, excluded.confidence),
                     approved = CASE
                         WHEN external_seo_signals.approved = 1 OR excluded.approved = 1 THEN 1
@@ -4524,7 +4637,7 @@ class Database:
             async with db.execute(
                 """
                 SELECT
-                    s.term, s.normalized_term, s.provider, s.source,
+                    s.term, s.normalized_term, s.provider, s.source, s.language,
                     s.category, s.subcategory, s.confidence, s.evidence_count
                 FROM external_seo_signals s
                 LEFT JOIN seo_query_mappings m
@@ -4547,7 +4660,7 @@ class Database:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
-                SELECT term, provider, source, category, subcategory, confidence,
+                SELECT term, provider, source, language, category, subcategory, confidence,
                        evidence_count, last_seen
                 FROM external_seo_signals
                 WHERE approved = 1
@@ -4825,6 +4938,8 @@ class Database:
         since_24h = datetime.now() - timedelta(hours=24)
         search_console_days = Config.SEARCH_CONSOLE_LOOKBACK_DAYS
         search_console_since = (datetime.now() - timedelta(days=search_console_days)).date().isoformat()
+        search_console_recent_since = (datetime.now() - timedelta(days=7)).date().isoformat()
+        search_console_previous_since = (datetime.now() - timedelta(days=14)).date().isoformat()
         low_result_threshold = Config.SEO_AUTO_LEARN_MAX_MATCHED_COUNT
         async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
@@ -4857,6 +4972,7 @@ class Database:
                 "seo_trends_last_run_at",
                 "seo_trends_last_status",
                 "seo_trends_last_rows",
+                "seo_trends_last_candidates",
                 "seo_trends_last_imported",
                 "seo_trends_last_promoted",
                 "seo_trends_last_duration_ms",
@@ -4866,6 +4982,12 @@ class Database:
                 "search_console_import_last_rows",
                 "search_console_import_last_signals",
                 "search_console_import_last_auth_source",
+                "search_console_import_last_property",
+                "search_console_import_last_requests",
+                "search_console_import_last_media_rows",
+                "search_console_import_last_aggregates",
+                "search_console_import_last_page_mismatches",
+                "search_console_import_last_error",
             ]
             runtime_placeholders = ",".join("?" * len(runtime_status_keys))
             runtime_rows = await rows(
@@ -4910,6 +5032,18 @@ class Database:
                     (search_console_since,),
                 ),
                 "search_console_total_rows": await scalar("SELECT COUNT(*) FROM search_console_query_events"),
+                "search_console_media_rows_window": await scalar(
+                    "SELECT COUNT(*) FROM search_console_media_events WHERE source_date >= ?",
+                    (search_console_since,),
+                ),
+                "search_console_image_impressions_window": await scalar(
+                    "SELECT COALESCE(SUM(impressions), 0) FROM search_console_media_events WHERE source_date >= ? AND search_type = 'image'",
+                    (search_console_since,),
+                ),
+                "search_console_video_impressions_window": await scalar(
+                    "SELECT COALESCE(SUM(impressions), 0) FROM search_console_media_events WHERE source_date >= ? AND search_type = 'video'",
+                    (search_console_since,),
+                ),
                 "search_console_latest_source_date": await value(
                     "SELECT MAX(source_date) FROM search_console_query_events"
                 ),
@@ -4987,7 +5121,13 @@ class Database:
                         query,
                         SUM(clicks) AS clicks,
                         SUM(impressions) AS impressions,
-                        ROUND(AVG(position), 1) AS avg_position,
+                        ROUND(
+                            CASE WHEN SUM(impressions) > 0
+                                THEN SUM(position * impressions) / SUM(impressions)
+                                ELSE AVG(position)
+                            END,
+                            1
+                        ) AS avg_position,
                         MAX(source_date) AS last_seen
                     FROM search_console_query_events
                     WHERE source_date >= ?
@@ -5003,7 +5143,13 @@ class Database:
                         page,
                         SUM(clicks) AS clicks,
                         SUM(impressions) AS impressions,
-                        ROUND(AVG(position), 1) AS avg_position,
+                        ROUND(
+                            CASE WHEN SUM(impressions) > 0
+                                THEN SUM(position * impressions) / SUM(impressions)
+                                ELSE AVG(position)
+                            END,
+                            1
+                        ) AS avg_position,
                         MAX(source_date) AS last_seen,
                         COUNT(DISTINCT normalized_query) AS query_count
                     FROM search_console_query_events
@@ -5013,6 +5159,71 @@ class Database:
                     LIMIT ?
                     """,
                     (search_console_since, limit),
+                ),
+                "search_console_opportunities": await rows(
+                    """
+                    SELECT
+                        query,
+                        page,
+                        SUM(clicks) AS clicks,
+                        SUM(impressions) AS impressions,
+                        ROUND(1.0 * SUM(clicks) / NULLIF(SUM(impressions), 0), 3) AS ctr,
+                        ROUND(SUM(position * impressions) / NULLIF(SUM(impressions), 0), 1) AS avg_position,
+                        COUNT(DISTINCT source_date) AS active_days
+                    FROM search_console_query_events
+                    WHERE source_date >= ?
+                    GROUP BY normalized_query, page
+                    HAVING SUM(impressions) >= 2
+                       AND SUM(position * impressions) / NULLIF(SUM(impressions), 0) BETWEEN 4 AND 40
+                       AND 1.0 * SUM(clicks) / NULLIF(SUM(impressions), 0) < 0.15
+                    ORDER BY SUM(impressions) DESC, avg_position ASC
+                    LIMIT ?
+                    """,
+                    (search_console_since, min(limit, 25)),
+                ),
+                "top_search_console_media_pages": await rows(
+                    """
+                    SELECT
+                        search_type,
+                        page,
+                        SUM(clicks) AS clicks,
+                        SUM(impressions) AS impressions,
+                        ROUND(SUM(position * impressions) / NULLIF(SUM(impressions), 0), 1) AS avg_position
+                    FROM search_console_media_events
+                    WHERE source_date >= ?
+                    GROUP BY search_type, page
+                    ORDER BY clicks DESC, impressions DESC
+                    LIMIT ?
+                    """,
+                    (search_console_since, min(limit, 20)),
+                ),
+                "search_console_changes": await rows(
+                    """
+                    SELECT
+                        query,
+                        page,
+                        SUM(CASE WHEN source_date >= ? THEN clicks ELSE 0 END) AS recent_clicks,
+                        SUM(CASE WHEN source_date >= ? THEN impressions ELSE 0 END) AS recent_impressions,
+                        SUM(CASE WHEN source_date >= ? AND source_date < ? THEN clicks ELSE 0 END) AS previous_clicks,
+                        SUM(CASE WHEN source_date >= ? AND source_date < ? THEN impressions ELSE 0 END) AS previous_impressions
+                    FROM search_console_query_events
+                    WHERE source_date >= ?
+                    GROUP BY normalized_query, page
+                    HAVING recent_impressions > 0 OR previous_impressions > 0
+                    ORDER BY ABS(recent_impressions - previous_impressions) DESC,
+                             recent_impressions DESC
+                    LIMIT ?
+                    """,
+                    (
+                        search_console_recent_since,
+                        search_console_recent_since,
+                        search_console_previous_since,
+                        search_console_recent_since,
+                        search_console_previous_since,
+                        search_console_recent_since,
+                        search_console_previous_since,
+                        min(limit, 20),
+                    ),
                 ),
             }
 
@@ -5389,6 +5600,29 @@ class Database:
                 (key, str(value or "")),
             )
             await db.commit()
+
+    async def set_bot_settings(self, values: Dict[str, Any]) -> int:
+        """Persist several settings in one transaction."""
+        rows = [
+            (str(key).strip(), str(value if value is not None else ""))
+            for key, value in (values or {}).items()
+            if str(key or "").strip()
+        ]
+        if not rows:
+            return 0
+        async with self.get_connection() as db:
+            await db.executemany(
+                """
+                INSERT INTO bot_settings (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                rows,
+            )
+            await db.commit()
+        return len(rows)
 
     async def get_search_console_sitemap_snapshot(self) -> Dict[str, Any]:
         """Return the latest Google Search Console sitemap submission status."""

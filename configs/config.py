@@ -60,7 +60,7 @@ class ConfigClass:
         self.SEARCH_CONSOLE_OAUTH_TOKEN_JSON: Optional[str] = None
         self.SEARCH_CONSOLE_OAUTH_TOKEN_FILE: Optional[str] = None
         self.SEARCH_CONSOLE_LOOKBACK_DAYS: int = 30
-        self.SEARCH_CONSOLE_ROW_LIMIT: int = 250
+        self.SEARCH_CONSOLE_ROW_LIMIT: int = 2500
         self.SEARCH_CONSOLE_SITEMAP_SUBMIT_ENABLED: bool = False
         self.SEARCH_CONSOLE_SITEMAP_URL: Optional[str] = None
         self.SEARCH_CONSOLE_SITEMAP_INTERVAL_SECONDS: int = 21600
@@ -263,7 +263,7 @@ class ConfigClass:
         )
         self.SEARCH_CONSOLE_ROW_LIMIT = max(
             10,
-            min(2500, config('SEARCH_CONSOLE_ROW_LIMIT', default=250, cast=int)),
+            min(10000, config('SEARCH_CONSOLE_ROW_LIMIT', default=2500, cast=int)),
         )
         self.EXTERNAL_SEO_SIGNALS_FILE = config('EXTERNAL_SEO_SIGNALS_FILE', default=None)
         

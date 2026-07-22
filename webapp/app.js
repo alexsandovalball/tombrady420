@@ -1644,10 +1644,10 @@
         if (!panel || !data) return;
 
         const summary = data.summary || {};
-        const cache = data.cache_state || {};
         const seo = data.seo || {};
         const indexnow = data.indexnow || {};
         const googleSitemap = seo.search_console_sitemap || {};
+        const searchConsoleSetup = seo.search_console_setup || {};
         const seoRuntime = seo.runtime_status || {};
         const metrics = data.metrics?.endpoints || {};
         const activeBots = (data.runtime_bots || []).filter(bot => bot.username);
@@ -1672,39 +1672,29 @@
         grid.className = 'admin-metric-grid';
         appendAdminMetric(grid, 'Bots online', `${formatAdminCount(activeBots.length)}/${formatAdminCount(data.configured_bot_count)}`);
         appendAdminMetric(grid, 'Products', formatAdminCount(summary.products));
+        appendAdminMetric(grid, 'Total users', formatAdminCount(summary.bot_users));
         appendAdminMetric(grid, 'Users 24h', formatAdminCount(summary.active_users_24h));
+        appendAdminMetric(grid, 'Subscribed users', formatAdminCount(summary.subscribed_users));
         appendAdminMetric(grid, 'Blocked users', formatAdminCount(summary.blocked_users));
         appendAdminMetric(grid, 'Unique visitors 24h', formatAdminCount(summary.unique_visitors_24h));
         appendAdminMetric(grid, 'Website visits 24h', formatAdminCount(summary.website_visits_24h));
         appendAdminMetric(grid, 'WebApp opens 24h', formatAdminCount(summary.webapp_visits_24h));
-        appendAdminMetric(grid, 'Known visitors 24h', formatAdminCount(summary.known_visitor_users_24h));
-        appendAdminMetric(grid, 'Crawler samples 24h', formatAdminCount(summary.crawler_events_24h));
-        appendAdminMetric(grid, 'Search crawler samples', formatAdminCount(summary.search_crawler_events_24h));
         appendAdminMetric(grid, 'Pending notifications', formatAdminCount(summary.pending_notifications));
-        appendAdminMetric(grid, 'WebApp events 24h', formatAdminCount(summary.webapp_events_24h));
-        appendAdminMetric(grid, 'Inline queries 24h', formatAdminCount(summary.inline_queries_24h));
+        appendAdminMetric(grid, 'Queued custom msgs', formatAdminCount(summary.queued_custom_messages));
+        appendAdminMetric(grid, 'Searches 24h', formatAdminCount(summary.search_queries_24h));
         appendAdminMetric(grid, 'No-result searches', formatAdminCount(summary.search_no_result_24h));
-        appendAdminMetric(grid, `Google queries ${googleWindowDays}d`, formatAdminCount(seo.search_console_queries_window));
         appendAdminMetric(grid, `Google performance pages ${googleWindowDays}d`, formatAdminCount(seo.search_console_pages_window));
         appendAdminMetric(grid, 'Google clicks/impr.', `${formatAdminCount(seo.search_console_clicks_window)}/${formatAdminCount(seo.search_console_impressions_window)}`);
-        appendAdminMetric(grid, 'Google Trends signals', formatAdminCount(seo.google_trends_signals));
+        appendAdminMetric(grid, 'Image/video impressions', `${formatAdminCount(seo.search_console_image_impressions_window)}/${formatAdminCount(seo.search_console_video_impressions_window)}`);
         appendAdminMetric(grid, 'SEO auto last run', seoRuntime.seo_auto_learn_last_run_at || 'pending');
-        appendAdminMetric(grid, 'SEO auto changed', formatAdminCount(seoRuntime.seo_auto_learn_last_changed));
-        appendAdminMetric(grid, 'SEO candidates checked', formatAdminCount(seoRuntime.seo_auto_learn_last_candidates));
-        appendAdminMetric(grid, 'SEO terms paused', formatAdminCount(seoRuntime.seo_auto_learn_last_suppressed));
-        appendAdminMetric(grid, 'SEO noise retired', formatAdminCount(seoRuntime.seo_auto_learn_last_retired_noise));
-        appendAdminMetric(grid, 'Trends last run', seoRuntime.seo_trends_last_run_at || 'pending');
+        appendAdminMetric(grid, 'Trends learner', `${seoRuntime.seo_trends_last_status || 'pending'}${seoRuntime.seo_trends_last_run_at ? ` · ${seoRuntime.seo_trends_last_run_at}` : ''}`);
         appendAdminMetric(grid, 'Google import last', seoRuntime.search_console_import_last_attempt_at || 'pending');
-        appendAdminMetric(grid, 'Google import rows', formatAdminCount(seoRuntime.search_console_import_last_rows));
+        appendAdminMetric(grid, 'Google connection', searchConsoleSetup.configured ? (seoRuntime.search_console_import_last_status || 'configured') : 'not connected');
         appendAdminMetric(grid, 'Google sitemap', googleSitemap.status || 'never');
         appendAdminMetric(grid, 'SEO mappings', formatAdminCount(summary.seo_query_mappings));
         appendAdminMetric(grid, 'IndexNow pending', formatAdminCount(indexnow.pending));
-        appendAdminMetric(grid, 'IndexNow sent', formatAdminCount(indexnow.submitted));
         appendAdminMetric(grid, 'IndexNow failed', formatAdminCount(indexnow.failed));
-        appendAdminMetric(grid, 'IndexNow key', indexnow.key_file_available ? 'Ready' : (indexnow.enabled === false ? 'Off' : 'Pending'));
         appendAdminMetric(grid, 'Webhook 401 total', formatAdminCount(data.webhook_401_total));
-        appendAdminMetric(grid, 'File ID cache', formatAdminCount(summary.file_id_cache_entries));
-        appendAdminMetric(grid, 'Memory cache', formatAdminCount(cache.api_results));
         panel.appendChild(grid);
 
         const latency = document.createElement('div');
@@ -1717,6 +1707,18 @@
             latency.appendChild(chip);
         });
         if (latency.childElementCount) panel.appendChild(latency);
+
+        appendAdminList(panel, 'Runtime Bots', data.runtime_bots || [], item => {
+            const username = item.username ? `@${item.username}` : 'not started';
+            return `#${item.index} ${username}: ${item.running ? 'running' : 'stopped'}`;
+        });
+        appendAdminList(panel, 'Pending Notifications By Bot', data.pending_notifications_by_bot || [], item =>
+            `@${item.bot_username || 'bot'}: ${formatAdminCount(item.pending)} pending`
+        );
+        appendAdminList(panel, 'Recent Users', data.recent_users || [], item => {
+            const identity = item.username ? `@${item.username}` : `${item.first_name || 'User'} ${item.last_name || ''}`.trim();
+            return `${identity}: @${item.bot_username || 'bot'}, last ${item.last_seen || '-'}`;
+        });
 
         appendAdminList(panel, 'Top Google Searches', seo.top_search_console_queries || [], item =>
             `${item.query}: ${formatAdminCount(item.clicks)} clicks, ${formatAdminCount(item.impressions)} impressions, avg pos ${item.avg_position || '-'}`
@@ -1736,29 +1738,21 @@
         appendAdminList(panel, 'Top Public Pages', data.top_public_pages || [], item =>
             `${item.page_type || item.source} ${item.path}: ${formatAdminCount(item.visits)} visits, ${formatAdminCount(item.visitors)} visitors`
         );
-        appendAdminList(panel, 'Visitor Devices', data.visitor_devices || [], item =>
-            `${item.device_type}: ${formatAdminCount(item.visitors)} visitors, ${formatAdminCount(item.visits)} visits`
+        appendAdminList(panel, 'Google Ranking Opportunities', seo.search_console_opportunities || [], item =>
+            `${item.query || 'query'}: ${formatAdminCount(item.impressions)} impressions, ${formatAdminCount(item.clicks)} clicks, avg pos ${item.avg_position || '-'} · ${item.page || '/'}`
         );
-        appendAdminList(panel, 'Crawler Activity (sampled)', data.crawler_activity || [], item =>
-            `${item.crawler_name}: ${formatAdminCount(item.requests)} requests across ${formatAdminCount(item.pages)} pages, last ${item.last_seen || '-'}`
+        appendAdminList(panel, 'Google Image & Video Pages', seo.top_search_console_media_pages || [], item =>
+            `${item.search_type || 'media'}: ${formatAdminCount(item.impressions)} impressions, ${formatAdminCount(item.clicks)} clicks · ${item.page || '/'}`
         );
+        appendAdminList(panel, 'Google Search Changes (7d vs prior 7d)', seo.search_console_changes || [], item =>
+            `${item.query || 'query'}: impressions ${formatAdminCount(item.previous_impressions)} → ${formatAdminCount(item.recent_impressions)}, clicks ${formatAdminCount(item.previous_clicks)} → ${formatAdminCount(item.recent_clicks)}`
+        );
+
         appendAdminList(panel, 'Recent Search Mappings', seo.recent_mappings || [], item =>
-            `[${String(item.language || 'en').toUpperCase()}] ${item.term} -> ${item.category || 'catalog'}${item.subcategory ? ` / ${item.subcategory}` : ''}`
-        );
-        appendAdminList(panel, 'Recent External Signals', seo.recent_external_signals || [], item =>
-            `${item.provider || 'signal'}: ${item.term} -> ${item.category || 'catalog'}${item.subcategory ? ` / ${item.subcategory}` : ''}`
-        );
-        appendAdminList(panel, 'SEO Mapping Languages', seo.mapping_languages || [], item =>
-            `${String(item.language || 'en').toUpperCase()}: ${formatAdminCount(item.count)} mappings`
-        );
-        appendAdminList(panel, 'Search Languages (30 days)', seo.search_languages_30d || [], item =>
-            `${String(item.language || 'en').toUpperCase()}: ${formatAdminCount(item.count)} searches`
+            `${item.term} -> ${item.category || 'catalog'}${item.subcategory ? ` / ${item.subcategory}` : ''}`
         );
         appendAdminList(panel, 'Top Bots By Users', data.bot_user_counts || [], item =>
             `@${item.bot_username}: ${formatAdminCount(item.users)} users, ${formatAdminCount(item.active_24h)} active`
-        );
-        appendAdminList(panel, 'Top WebApp Events', data.webapp_event_counts || [], item =>
-            `${item.event_type}/${item.action}: ${formatAdminCount(item.count)}`
         );
         appendAdminGooglePages(panel, seo);
         appendAdminCrawlablePages(panel, data.crawlable_pages);
