@@ -44,11 +44,10 @@ def _dedupe(items: Iterable[str], *, limit: Optional[int] = None) -> list[str]:
 @lru_cache(maxsize=1)
 def load_seo_terms() -> dict[str, Any]:
     if not SEO_TERMS_PATH.exists():
-        return {"version": 1, "mappings": [], "learn_pages": []}
+        return {"version": 1, "mappings": []}
     with SEO_TERMS_PATH.open("r", encoding="utf-8") as fh:
         data = json.load(fh)
     data.setdefault("mappings", [])
-    data.setdefault("learn_pages", [])
     return data
 
 
@@ -67,7 +66,6 @@ def _iter_file_mappings() -> Iterable[dict[str, Any]]:
             "category": mapping.get("category") or "",
             "subcategory": mapping.get("subcategory") or "",
             "source": "file",
-            "learn_slug": mapping.get("learn_slug") or "",
         }
 
 
@@ -82,7 +80,6 @@ def _iter_db_mappings(db_mappings: Optional[Iterable[dict[str, Any]]]) -> Iterab
             "category": row.get("category") or "",
             "subcategory": row.get("subcategory") or "",
             "source": row.get("source") or "db",
-            "learn_slug": row.get("learn_slug") or "",
         }
 
 
@@ -183,21 +180,3 @@ def build_taxonomy_intro(category: str, subcategory: str = "", *, total: int = 0
             f"{', '.join(terms[:5])}."
         )
     return f"Browse {total} {label} listing{'s' if total != 1 else ''}."
-
-
-def get_learn_pages() -> list[dict[str, Any]]:
-    pages = []
-    for page in load_seo_terms().get("learn_pages", []):
-        if not page.get("slug") or not page.get("title"):
-            continue
-        pages.append(page)
-    return pages
-
-
-def get_learn_page(slug: str) -> Optional[dict[str, Any]]:
-    slug_norm = normalize_term(slug).replace(" ", "-")
-    for page in get_learn_pages():
-        if normalize_term(page.get("slug", "")).replace(" ", "-") == slug_norm:
-            return page
-    return None
-

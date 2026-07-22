@@ -4,7 +4,6 @@
     {
       "category": "FLOWER",
       "subcategory": "EXOTICS",
-      "learn_slug": "exotic-flower",
       "terms": [
         "exotic flower",
         "exotic weed",
@@ -38,7 +37,6 @@
     {
       "category": "FLOWER",
       "subcategory": "LIGHTDEPS",
-      "learn_slug": "light-deps",
       "terms": [
         "light dep",
         "light deps",
@@ -62,7 +60,6 @@
     {
       "category": "FLOWER",
       "subcategory": "MOONROCKS AND SNOWCAPS",
-      "learn_slug": "moonrocks-snowcaps",
       "terms": [
         "moonrocks",
         "moon rocks",
@@ -83,7 +80,6 @@
     {
       "category": "CONCENTRATES",
       "subcategory": "SOLVENTLESS",
-      "learn_slug": "hash-rosin",
       "terms": [
         "hash rosin",
         "rosin",
@@ -108,7 +104,6 @@
     {
       "category": "CONCENTRATES",
       "subcategory": "LIVE RESIN AND EXTRACTS",
-      "learn_slug": "live-resin",
       "terms": [
         "live resin",
         "resin",
@@ -136,7 +131,6 @@
     {
       "category": "CONCENTRATES",
       "subcategory": "HASH AND KIEF",
-      "learn_slug": "hash-kief",
       "terms": [
         "hash",
         "kief",
@@ -166,7 +160,6 @@
     {
       "category": "CARTRIDGES",
       "subcategory": "AUTHENTICS",
-      "learn_slug": "cartridges-vapes",
       "terms": [
         "cartridge",
         "cartridges",
@@ -194,7 +187,6 @@
     {
       "category": "EDIBLES",
       "subcategory": "FLOWER EDIBLES",
-      "learn_slug": "edibles",
       "terms": [
         "edibles",
         "gummies",
@@ -221,7 +213,6 @@
     {
       "category": "PREROLLS",
       "subcategory": "FLOWER PREROLLS",
-      "learn_slug": "pre-rolls",
       "terms": [
         "pre rolls",
         "pre-rolls",
@@ -246,7 +237,6 @@
     {
       "category": "SHROOMS",
       "subcategory": "",
-      "learn_slug": "mushrooms",
       "terms": [
         "mushrooms",
         "shrooms",
@@ -262,7 +252,6 @@
     {
       "category": "EDIBLES",
       "subcategory": "SHROOM EDIBLES",
-      "learn_slug": "mushroom-edibles",
       "terms": [
         "shroom edibles",
         "mushroom gummies",
@@ -270,144 +259,6 @@
         "psilocybin edibles",
         "magic mushroom chocolate",
         "mushroom candy"
-      ]
-    }
-  ],
-  "learn_pages": [
-    {
-      "slug": "exotic-flower",
-      "title": "Exotic Flower Guide",
-      "summary": "A quick guide to exotic flower, premium buds, top shelf cannabis, and related menu terms.",
-      "category": "FLOWER",
-      "subcategory": "EXOTICS",
-      "terms": [
-        "exotic flower",
-        "top shelf flower",
-        "premium exotics",
-        "za",
-        "designer flower",
-        "top shelf cannabis",
-        "designer weed",
-        "craft cannabis",
-        "sticky flower"
-      ],
-      "sections": [
-        "Exotic flower usually refers to premium cannabis flower selected for appearance, aroma, freshness, and uncommon strain profiles.",
-        "On the menu, related searches can include top shelf bud, premium flower, designer flower, za, fresh buds, and indoor flower.",
-        "Use the Flower category and Exotics subcategory to browse matching products currently available."
-      ]
-    },
-    {
-      "slug": "hash-rosin",
-      "title": "Hash Rosin and Solventless Guide",
-      "summary": "Learn common solventless concentrate terms such as hash rosin, live rosin, cold cure, fresh press, full melt, and bubble hash.",
-      "category": "CONCENTRATES",
-      "subcategory": "SOLVENTLESS",
-      "terms": [
-        "hash rosin",
-        "live rosin",
-        "cold cure rosin",
-        "fresh press",
-        "full melt",
-        "bubble hash",
-        "dry sift hash",
-        "ice water hash",
-        "premium rosin"
-      ],
-      "sections": [
-        "Solventless products are concentrates made without hydrocarbon solvents, often using pressure, heat, ice, water, or mechanical separation.",
-        "Common search terms include hash rosin, live rosin, cold cure, fresh press, full melt, bubble hash, and water hash.",
-        "Use the Concentrates category and Solventless subcategory for currently available solventless products."
-      ]
-    },
-    {
-      "slug": "live-resin",
-      "title": "Live Resin and Extracts Guide",
-      "summary": "Learn how live resin, badder, sauce, diamonds, wax, shatter, and terp sauce relate to concentrate products.",
-      "category": "CONCENTRATES",
-      "subcategory": "LIVE RESIN AND EXTRACTS",
-      "terms": [
-        "live resin",
-        "badder",
-        "budder",
-        "sauce",
-        "diamonds",
-        "wax",
-        "shatter",
-        "dabs"
-      ],
-      "sections": [
-        "Live resin and extract terms describe different concentrate textures, source material, and processing styles.",
-        "Related searches often include badder, budder, sauce, diamonds, wax, shatter, terp sauce, extracts, and dabs.",
-        "Use the Concentrates category and Live Resin and Extracts subcategory to browse matching listings."
-      ]
-    },
-    {
-      "slug": "cartridges-vapes",
-      "title": "Cartridges and Vape Products Guide",
-      "summary": "A simple guide to carts, cartridges, disposable vapes, vape pens, live resin carts, and rosin carts.",
-      "category": "CARTRIDGES",
-      "subcategory": "AUTHENTICS",
-      "terms": [
-        "cartridge",
-        "cart",
-        "vape cart",
-        "disposable vape",
-        "vape pen",
-        "live resin cart",
-        "rosin cart",
-        "510 cart",
-        "weed cartridge",
-        "thc cartridge"
-      ],
-      "sections": [
-        "Cartridge and vape searches usually refer to portable oil, resin, or rosin formats intended for compatible batteries or disposable devices.",
-        "Related search terms include cart, carts, cartridge, disposable vape, vape pen, live resin cart, and rosin cart.",
-        "Use the Cartridges category to browse current vape-related products."
-      ]
-    },
-    {
-      "slug": "edibles",
-      "title": "Edibles Guide",
-      "summary": "Learn common edible search terms including gummies, chocolate edibles, infused candy, cookies, and brownies.",
-      "category": "EDIBLES",
-      "subcategory": "FLOWER EDIBLES",
-      "terms": [
-        "edibles",
-        "gummies",
-        "chocolate edibles",
-        "infused candy",
-        "weed gummies",
-        "cookies",
-        "brownies",
-        "thc gummies",
-        "soft chews",
-        "sour gummies"
-      ],
-      "sections": [
-        "Edibles are menu items commonly searched by format, flavor, or product type rather than strain name.",
-        "Related searches include gummies, gummy, chocolate edibles, infused candy, cookies, brownies, and cannabis edibles.",
-        "Use the Edibles category to browse current edible listings."
-      ]
-    },
-    {
-      "slug": "mushrooms",
-      "title": "Mushroom Terms Guide",
-      "summary": "Learn common mushroom-related search terms and how they connect to the Shrooms category.",
-      "category": "SHROOMS",
-      "subcategory": "",
-      "terms": [
-        "mushrooms",
-        "shrooms",
-        "magic mushrooms",
-        "psilocybin mushrooms",
-        "microdose",
-        "microdosing"
-      ],
-      "sections": [
-        "Mushroom-related menu searches often use terms such as shrooms, mushrooms, magic mushrooms, psilocybin mushrooms, microdose, and microdosing.",
-        "Use the Shrooms category for any currently available mushroom-related listings.",
-        "Information on this page is for catalog navigation and terminology only."
       ]
     }
   ]

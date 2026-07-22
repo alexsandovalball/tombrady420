@@ -102,8 +102,6 @@ def _format_admin_status_message(snapshot: dict) -> str:
         f"• WebApp searches 24h: {_fmt_count(summary.get('search_queries_24h'))}",
         f"• No-result searches 24h: {_fmt_count(summary.get('search_no_result_24h'))}",
         f"• SEO mappings: {_fmt_count(summary.get('seo_query_mappings'))}",
-        f"• Guides published/draft: {_fmt_count(summary.get('seo_guides_published'))}/"
-        f"{_fmt_count(summary.get('seo_guides_draft'))}",
         f"• Google queries {search_console_days}d: {_fmt_count(google_queries)}",
         f"• Google clicks/impressions {search_console_days}d: {_fmt_count(google_clicks)}/{_fmt_count(google_impressions)}",
         f"• IndexNow: {'on' if indexnow.get('enabled', True) else 'off'} "

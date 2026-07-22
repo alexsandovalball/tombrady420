@@ -123,9 +123,6 @@
                     {{ item.label }}
                 </a>
                 {% endfor %}
-                {% if localized_learn_url %}
-                <a class="secondary" href="{{ localized_learn_url }}">{{ ui.guides }}</a>
-                {% endif %}
             </div>
         </section>
         <section id="admin-panel" class="admin-panel" hidden aria-live="polite"></section>
@@ -362,56 +359,6 @@
                 );
             }
 
-            function appendGuideDrafts(section, drafts) {
-                if (!Array.isArray(drafts) || !drafts.length) return;
-                var group = document.createElement('div');
-                group.className = 'admin-list-group';
-                var heading = document.createElement('h4');
-                heading.textContent = 'Guide Drafts Awaiting Review (' + drafts.length + ')';
-                var list = document.createElement('ul');
-                drafts.forEach(function (item) {
-                    var li = document.createElement('li');
-                    var label = document.createElement('span');
-                    label.textContent = item.title + ' -> ' + (item.category || 'catalog') + (item.subcategory ? ' / ' + item.subcategory : '') + ' (quality ' + (item.quality_score || 0) + ')';
-                    var preview = document.createElement('details');
-                    var previewTitle = document.createElement('summary');
-                    previewTitle.textContent = 'Review draft';
-                    var previewText = document.createElement('p');
-                    var sections = [];
-                    try { sections = JSON.parse(item.body_json || '[]'); } catch (err) {}
-                    previewText.textContent = [item.summary].concat(sections.map(function (section) {
-                        return typeof section === 'string' ? section : String(section.heading || '') + ': ' + String(section.text || '');
-                    })).filter(Boolean).join('\n\n');
-                    preview.append(previewTitle, previewText);
-                    var actions = document.createElement('span');
-                    actions.className = 'admin-page-meta';
-                    ['approve', 'reject'].forEach(function (action) {
-                        var button = document.createElement('button');
-                        button.type = 'button';
-                        button.textContent = action === 'approve' ? 'Publish' : 'Reject';
-                        button.addEventListener('click', async function () {
-                            button.disabled = true;
-                            var context = await waitForTelegramInitData();
-                            var headers = context.initData ? {'X-Telegram-Init-Data': context.initData} : {};
-                            try {
-                                var response = await fetch('/api/admin/guides/' + item.id + '/' + action, {
-                                    method: 'POST', headers: headers, credentials: 'same-origin', cache: 'no-store'
-                                });
-                                if (!response.ok) throw new Error('Review failed (' + response.status + ')');
-                                adminState.loaded = false;
-                                await loadAdminPanel(true);
-                            } catch (err) {
-                                button.disabled = false;
-                            }
-                        });
-                        actions.appendChild(button);
-                    });
-                    li.append(label, preview, actions);
-                    list.appendChild(li);
-                });
-                group.append(heading, list);
-                section.appendChild(group);
-            }
 
             function renderAdminPanel(data) {
                 if (!data) return;
@@ -474,8 +421,6 @@
                 appendMetric(grid, 'Searches 24h', formatCount(summary.search_queries_24h));
                 appendMetric(grid, 'No-result searches', formatCount(summary.search_no_result_24h));
                 appendMetric(grid, 'SEO mappings', formatCount(summary.seo_query_mappings));
-                appendMetric(grid, 'Published guides', formatCount(summary.seo_guides_published));
-                appendMetric(grid, 'Guide drafts', formatCount(summary.seo_guides_draft));
                 appendMetric(grid, 'Google queries ' + googleWindowDays + 'd', formatCount(seo.search_console_queries_window));
                 appendMetric(grid, 'Google pages ' + googleWindowDays + 'd', formatCount(seo.search_console_pages_window));
                 appendMetric(grid, 'Google clicks/impr.', formatCount(seo.search_console_clicks_window) + '/' + formatCount(seo.search_console_impressions_window));
@@ -486,8 +431,6 @@
                 appendMetric(grid, 'SEO terms paused', formatCount(seoRuntime.seo_auto_learn_last_suppressed));
                 appendMetric(grid, 'SEO noise retired', formatCount(seoRuntime.seo_auto_learn_last_retired_noise));
                 appendMetric(grid, 'Trends last run', seoRuntime.seo_trends_last_run_at || 'pending');
-                appendMetric(grid, 'Guide research last', seoRuntime.seo_content_research_last_run_at || 'pending');
-                appendMetric(grid, 'Guide drafts created', formatCount(seoRuntime.seo_content_research_last_drafts));
                 appendMetric(grid, 'Google import last', seoRuntime.search_console_import_last_attempt_at || 'pending');
                 appendMetric(grid, 'Google import rows', formatCount(seoRuntime.search_console_import_last_rows));
                 appendMetric(grid, 'Google sitemap', googleSitemap.status || 'never');
@@ -609,7 +552,6 @@
                 appendList(panel, 'Crawler Activity (sampled)', data.crawler_activity || [], function (item) {
                     return String(item.crawler_name || 'crawler') + ': ' + formatCount(item.requests) + ' requests across ' + formatCount(item.pages) + ' pages, last ' + (item.last_seen || '-');
                 }, 12);
-                appendGuideDrafts(panel, data.seo_guide_drafts || []);
 
                 appendList(panel, 'Recent Search Mappings', seo.recent_mappings || [], function (item) {
                     var language = String(item.language || 'en').toUpperCase();

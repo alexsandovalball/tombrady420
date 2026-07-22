@@ -52,8 +52,6 @@ from utils.fuzzy_search import normalize_text, rank_products_for_query
 from utils.seo_terms import (
     build_query_variants,
     build_taxonomy_intro,
-    get_learn_page,
-    get_learn_pages,
     get_terms_for_taxonomy,
     match_query_mappings,
     normalize_term,
@@ -65,7 +63,6 @@ from utils.seo_autolearn import (
     is_bad_auto_seo_term,
 )
 from utils.google_trends import fetch_trending_queries_for_supported_locales
-from utils.guide_research import build_guide_draft, enrich_seed_guide
 from utils.external_seo_signals import load_external_seo_signal_file
 from utils.search_console import describe_search_console_setup, fetch_search_console_rows, submit_sitemap
 from translations.language_config import SUPPORTED_LANGUAGES
@@ -158,9 +155,6 @@ _SEO_AUTO_LEARN_STARTUP_DELAY_SECONDS = _bounded_int_env(
 _SEO_TRANSLATION_WARMUP_STARTUP_SECONDS = 240
 _SEO_TRANSLATION_WARMUP_INTERVAL_SECONDS = 1800
 _SEO_TRANSLATION_WARMUP_BATCH_SIZE = 4
-_SEO_CONTENT_RESEARCH_STARTUP_SECONDS = _bounded_int_env("SEO_CONTENT_RESEARCH_STARTUP_SECONDS", 180, 60, 3600)
-_SEO_CONTENT_RESEARCH_INTERVAL_SECONDS = _bounded_int_env("SEO_CONTENT_RESEARCH_INTERVAL_SECONDS", 21600, 3600, 86400)
-_SEO_CONTENT_RESEARCH_MAX_DRAFTS = _bounded_int_env("SEO_CONTENT_RESEARCH_MAX_DRAFTS", 2, 1, 10)
 _SEO_ROBOTS_CACHE_SECONDS = _bounded_int_env("SEO_ROBOTS_CACHE_SECONDS", 3600, 60, 86400)
 _SEO_SITEMAP_CACHE_SECONDS = _bounded_int_env("SEO_SITEMAP_CACHE_SECONDS", 300, 60, 3600)
 _SEO_PAGE_CACHE_SECONDS = _bounded_int_env("SEO_PAGE_CACHE_SECONDS", 300, 30, 3600)
@@ -173,8 +167,6 @@ _ADMIN_CACHE_CLEANUP_RETRY_BASE_SECONDS = _bounded_int_env("ADMIN_CACHE_CLEANUP_
 _SEO_PUBLIC_MEDIA_RATE_LIMIT_WINDOW = _bounded_int_env("SEO_PUBLIC_MEDIA_RATE_LIMIT_WINDOW", 60, 10, 3600)
 _SEO_RESPONSE_CACHE_MAX = _bounded_int_env("SEO_RESPONSE_CACHE_MAX", 256, 16, 2000)
 _seo_response_cache: OrderedDict[str, tuple[float, bytes, str, str, int]] = OrderedDict()
-_published_guide_cache: Dict[str, tuple[float, list[dict]]] = {}
-_PUBLISHED_GUIDE_CACHE_SECONDS = 300
 _seo_auto_learn_lock: Optional[asyncio.Lock] = None
 _seo_trends_lock: Optional[asyncio.Lock] = None
 _webapp_search_cache: OrderedDict[str, tuple[float, dict]] = OrderedDict()
@@ -851,14 +843,13 @@ def _remember_media_registry_write(bot_identifier: str, file_unique_id: str, res
 
 def clear_in_memory_caches() -> int:
     """Clear all in-memory caches. Returns total entries cleared."""
-    global _resolved_file_id_cache, _media_info_cache, _api_result_cache, _media_registry_write_cache, _seo_query_mapping_cache, _admin_status_cache, _published_guide_cache
+    global _resolved_file_id_cache, _media_info_cache, _api_result_cache, _media_registry_write_cache, _seo_query_mapping_cache, _admin_status_cache
 
     total = (
         len(_resolved_file_id_cache)
         + len(_media_info_cache)
         + len(_api_result_cache)
         + len(_media_registry_write_cache)
-        + len(_published_guide_cache)
         + (len(_seo_query_mapping_cache[1]) if _seo_query_mapping_cache else 0)
     )
 
@@ -866,7 +857,6 @@ def clear_in_memory_caches() -> int:
     _media_info_cache.clear()
     _api_result_cache.clear()
     _media_registry_write_cache.clear()
-    _published_guide_cache.clear()
     _seo_query_mapping_cache = None
     _admin_status_cache.clear()
 
@@ -2782,93 +2772,6 @@ async def _seo_auto_learn_loop():
         await asyncio.sleep(Config.SEO_AUTO_LEARN_INTERVAL_SECONDS)
 
 
-async def _seo_content_research_once() -> int:
-    """Turn qualified first-party demand into cited admin-review drafts."""
-    products = await _catalog_db.get_all_products_for_search()
-    profiles = build_taxonomy_profiles(products)
-    candidates = await _catalog_db.get_seo_content_topic_candidates(limit=20)
-    created = 0
-    reviewed = 0
-
-    for item in candidates:
-        if created >= _SEO_CONTENT_RESEARCH_MAX_DRAFTS:
-            break
-        topic = str(item.get("topic") or "").strip()
-        normalized = normalize_term(topic)
-        if not topic or not has_search_audience_intent(topic):
-            await _catalog_db.record_seo_content_topic(
-                topic=topic,
-                normalized_topic=normalized,
-                source=str(item.get("source") or ""),
-                demand_score=float(item.get("demand_score") or 0),
-                status_value="off_audience",
-            )
-            reviewed += 1
-            continue
-
-        inferred = infer_seo_query_mapping(topic, products, min_score=88, profiles=profiles)
-        if not inferred:
-            await _catalog_db.record_seo_content_topic(
-                topic=topic,
-                normalized_topic=normalized,
-                source=str(item.get("source") or ""),
-                demand_score=float(item.get("demand_score") or 0),
-                status_value="unmapped",
-            )
-            reviewed += 1
-            continue
-
-        profile = profiles.get((inferred["category"], inferred.get("subcategory") or ""), {})
-        draft = build_guide_draft(
-            topic,
-            category=inferred["category"],
-            subcategory=inferred.get("subcategory") or "",
-            source=str(item.get("source") or "first_party_demand"),
-            demand_score=float(item.get("demand_score") or 0),
-            related_terms=profile.get("terms") or (),
-        )
-        guide_id = await _catalog_db.create_seo_guide_draft(draft or {}) if draft else None
-        await _catalog_db.record_seo_content_topic(
-            topic=topic,
-            normalized_topic=normalized,
-            category=inferred["category"],
-            subcategory=inferred.get("subcategory") or "",
-            source=str(item.get("source") or ""),
-            demand_score=float(item.get("demand_score") or 0),
-            status_value="draft" if guide_id else "duplicate",
-        )
-        reviewed += 1
-        if guide_id:
-            created += 1
-
-    await _set_runtime_settings({
-        "seo_content_research_last_run_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
-        "seo_content_research_last_status": "ok",
-        "seo_content_research_last_candidates": len(candidates),
-        "seo_content_research_last_reviewed": reviewed,
-        "seo_content_research_last_drafts": created,
-    })
-    if created:
-        _invalidate_admin_status_cache()
-    return created
-
-
-async def _seo_content_research_loop():
-    await asyncio.sleep(_SEO_CONTENT_RESEARCH_STARTUP_SECONDS)
-    while True:
-        try:
-            created = await _seo_content_research_once()
-            logger.info("[seo_content] research_complete drafts=%d", created)
-        except Exception as exc:
-            logger.warning("[seo_content] research_error error=%s", exc)
-            await _set_runtime_settings({
-                "seo_content_research_last_run_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
-                "seo_content_research_last_status": "error",
-                "seo_content_research_last_error": str(exc)[:300],
-            })
-        await asyncio.sleep(_SEO_CONTENT_RESEARCH_INTERVAL_SECONDS)
-
-
 async def _seo_trends_loop():
     """Background task: ingest a small batch of Google Trends signals."""
     if not Config.SEO_TRENDS_ENABLED:
@@ -3102,15 +3005,6 @@ async def lifespan(app: FastAPI):
 
     await _log_setup_check()
 
-    try:
-        seed_pages = []
-        for seed_page in get_learn_pages():
-            seed_pages.append(enrich_seed_guide(seed_page))
-        seeded_guides = await _catalog_db.sync_seed_seo_guides(seed_pages)
-        logger.info("[seo_content] seed_sync changed=%d", seeded_guides)
-    except Exception as exc:
-        logger.warning("[seo_content] seed_sync_failed error=%s", exc)
-
     # Start background maintenance tasks
     _visitor_event_queue = asyncio.Queue(maxsize=_VISITOR_EVENT_QUEUE_MAX)
     _bg_tasks = [
@@ -3120,7 +3014,6 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_admin_cache_cleanup_loop(), name="admin_cache_cleanup"),
         asyncio.create_task(_wal_checkpoint_loop(), name="wal_checkpoint"),
         asyncio.create_task(_seo_auto_learn_loop(), name="seo_auto_learn"),
-        asyncio.create_task(_seo_content_research_loop(), name="seo_content_research"),
         asyncio.create_task(_seo_trends_loop(), name="seo_trends"),
         asyncio.create_task(_seo_translation_warmup_loop(), name="seo_translation_warmup"),
         asyncio.create_task(_indexnow_loop(), name="indexnow"),
@@ -3407,7 +3300,7 @@ _SEO_OG_LOCALES = {
 
 _SEO_UI = {
     "en": {
-        "home": "Home", "menu": "Tom Brady Menu", "guides": "Product Guides",
+        "home": "Home", "menu": "Tom Brady Menu",
         "products_available": "products available", "order_via": "Order via Telegram",
         "dm_order": "DM to Order", "open_bot": "Open Product in Bot",
         "browse_bot": "Browse Full Catalog in Telegram", "related_products": "Related products",
@@ -3418,11 +3311,10 @@ _SEO_UI = {
         "open_video": "Open video", "open_media": "Open media", "media": "media",
         "catalog_title": "Premium Cannabis Storefront",
         "catalog_desc": "Browse our premium cannabis catalog and current product listings.",
-        "guides_desc": "Browse product terminology guides connected to current menu categories.",
         "browse_related": "Browse Related Products", "related": "Related",
     },
     "de": {
-        "home": "Startseite", "menu": "Tom Brady Menü", "guides": "Produktleitfäden",
+        "home": "Startseite", "menu": "Tom Brady Menü",
         "products_available": "Produkte verfügbar", "order_via": "Bestellung über Telegram",
         "dm_order": "Zum Bestellen schreiben", "open_bot": "Produkt im Bot öffnen",
         "browse_bot": "Vollständigen Katalog in Telegram öffnen", "related_products": "Ähnliche Produkte",
@@ -3432,11 +3324,10 @@ _SEO_UI = {
         "media_preview": "Produktmedien", "all_media": "Alle Produktmedien",
         "open_video": "Video öffnen", "open_media": "Medium öffnen", "media": "Medium",
         "catalog_title": "Premium-Cannabis-Katalog", "catalog_desc": "Entdecke unseren aktuellen Premium-Cannabis-Katalog.",
-        "guides_desc": "Produktbegriffe und Leitfäden zu den aktuellen Menükategorien.",
         "browse_related": "Ähnliche Produkte ansehen", "related": "Verwandt",
     },
     "nl": {
-        "home": "Home", "menu": "Tom Brady Menu", "guides": "Productgidsen",
+        "home": "Home", "menu": "Tom Brady Menu",
         "products_available": "producten beschikbaar", "order_via": "Bestellen via Telegram",
         "dm_order": "Stuur bericht om te bestellen", "open_bot": "Open product in bot",
         "browse_bot": "Volledige catalogus in Telegram", "related_products": "Vergelijkbare producten",
@@ -3446,11 +3337,10 @@ _SEO_UI = {
         "media_preview": "Productmedia", "all_media": "Alle productmedia",
         "open_video": "Video openen", "open_media": "Media openen", "media": "media",
         "catalog_title": "Premium cannabiscatalogus", "catalog_desc": "Bekijk onze actuele premium cannabiscatalogus.",
-        "guides_desc": "Producttermen en gidsen voor de actuele menucategorieën.",
         "browse_related": "Gerelateerde producten bekijken", "related": "Gerelateerd",
     },
     "it": {
-        "home": "Home", "menu": "Menu Tom Brady", "guides": "Guide ai prodotti",
+        "home": "Home", "menu": "Menu Tom Brady",
         "products_available": "prodotti disponibili", "order_via": "Ordina tramite Telegram",
         "dm_order": "Messaggio per ordinare", "open_bot": "Apri prodotto nel bot",
         "browse_bot": "Apri il catalogo completo su Telegram", "related_products": "Prodotti correlati",
@@ -3460,11 +3350,10 @@ _SEO_UI = {
         "media_preview": "Media del prodotto", "all_media": "Tutti i media del prodotto",
         "open_video": "Apri video", "open_media": "Apri media", "media": "media",
         "catalog_title": "Catalogo cannabis premium", "catalog_desc": "Esplora il nostro catalogo cannabis premium aggiornato.",
-        "guides_desc": "Guide e termini dei prodotti collegati alle categorie attuali.",
         "browse_related": "Sfoglia prodotti correlati", "related": "Correlato",
     },
     "es": {
-        "home": "Inicio", "menu": "Menú Tom Brady", "guides": "Guías de productos",
+        "home": "Inicio", "menu": "Menú Tom Brady",
         "products_available": "productos disponibles", "order_via": "Pedidos por Telegram",
         "dm_order": "Mensaje para pedir", "open_bot": "Abrir producto en el bot",
         "browse_bot": "Abrir catálogo completo en Telegram", "related_products": "Productos relacionados",
@@ -3474,11 +3363,10 @@ _SEO_UI = {
         "media_preview": "Contenido del producto", "all_media": "Todo el contenido del producto",
         "open_video": "Abrir vídeo", "open_media": "Abrir contenido", "media": "contenido",
         "catalog_title": "Catálogo de cannabis premium", "catalog_desc": "Explora nuestro catálogo actualizado de cannabis premium.",
-        "guides_desc": "Guías y términos de productos vinculados a las categorías actuales.",
         "browse_related": "Ver productos relacionados", "related": "Relacionado",
     },
     "fr": {
-        "home": "Accueil", "menu": "Menu Tom Brady", "guides": "Guides produits",
+        "home": "Accueil", "menu": "Menu Tom Brady",
         "products_available": "produits disponibles", "order_via": "Commander via Telegram",
         "dm_order": "Message pour commander", "open_bot": "Ouvrir le produit dans le bot",
         "browse_bot": "Ouvrir le catalogue complet sur Telegram", "related_products": "Produits similaires",
@@ -3488,7 +3376,6 @@ _SEO_UI = {
         "media_preview": "Médias du produit", "all_media": "Tous les médias du produit",
         "open_video": "Ouvrir la vidéo", "open_media": "Ouvrir le média", "media": "média",
         "catalog_title": "Catalogue de cannabis premium", "catalog_desc": "Découvrez notre catalogue actuel de cannabis premium.",
-        "guides_desc": "Guides et termes produits liés aux catégories actuelles du menu.",
         "browse_related": "Voir les produits associés", "related": "Associé",
     },
 }
@@ -3623,14 +3510,6 @@ def _public_product_bot_url(product_id: int) -> Optional[str]:
 
 def _public_catalog_bot_url() -> str:
     return build_bot_start_url(_public_product_bot_username(), "start") or f"https://t.me/{_STOREFRONT_BOT_USERNAME}"
-
-
-def _learn_page_path(slug: str) -> str:
-    return f"/learn/{_generate_slug(slug)}"
-
-
-def _learn_page_url(slug: str) -> str:
-    return _absolute_storefront_url(_learn_page_path(slug))
 
 
 def _caption_parts(caption: str) -> tuple[str, str, list[str]]:
@@ -4064,13 +3943,6 @@ async def _indexnow_bootstrap_once() -> int:
         urls.append(_indexnow_public_url(_canonical_category_path(category)))
         for subcategory in get_subcategories(category):
             urls.append(_indexnow_public_url(_canonical_subcategory_path(category, subcategory)))
-    for page in await _published_learn_pages("en"):
-        learn_path = _learn_page_path(page.get("slug", ""))
-        urls.extend(
-            _indexnow_public_url(_localized_path(learn_path, language))
-            for language in SUPPORTED_LANGUAGES
-        )
-
     if Config.INDEXNOW_BOOTSTRAP_LIMIT:
         products = await _catalog_db.get_all_products_excluding_categories(
             EXCLUDED_FROM_ALL_PRODUCTS,
@@ -5001,18 +4873,6 @@ async def serve_sitemap_xml(request: Request):
                     f"    <priority>0.85</priority>\n"
                     f"  </url>"
                 )
-    for page in await _published_learn_pages("en"):
-        learn_path = _learn_page_path(page.get('slug', ''))
-        for language in SUPPORTED_LANGUAGES:
-            urls.append(
-                f"  <url>\n"
-                f"    <loc>{html.escape(_localized_url(learn_path, language))}</loc>\n"
-                f"{_sitemap_alternate_xml(learn_path)}"
-            f"    <lastmod>{str(page.get('updated_at') or page.get('published_at') or static_seo_lastmod)[:10]}</lastmod>\n"
-                f"    <changefreq>monthly</changefreq>\n"
-                f"    <priority>0.7</priority>\n"
-                f"  </url>"
-            )
     for p in products:
         pid = p.get("id") or p.get("product_id")
         if pid is None:
@@ -5152,15 +5012,6 @@ async def _crawlable_page_snapshot(limit: int = 5000) -> Dict[str, Any]:
                 subcategory_lastmod,
             )
 
-    for page in await _published_learn_pages("en"):
-        slug = page.get("slug", "")
-        append_localized(
-            _learn_page_path(slug),
-            "learn",
-            page.get("title") or slug or "Learn",
-            str(page.get("updated_at") or page.get("published_at") or static_seo_lastmod)[:10],
-        )
-
     for product in products:
         pid = product.get("id") or product.get("product_id")
         if pid is None:
@@ -5287,7 +5138,6 @@ async def _build_storefront_index_context(
         except Exception as exc:
             logger.debug("Failed to build homepage SEO ItemList schema: %s", exc)
     ctx["localized_home_url"] = _localized_path("/", language)
-    ctx["localized_learn_url"] = _localized_path("/learn", language)
     return ctx, recent_products
 
 
@@ -5453,272 +5303,35 @@ async def serve_webapp(request: Request):
 
 @app.get("/learn", response_class=HTMLResponse)
 async def serve_learn_index(request: Request):
-    return await _serve_learn_index(request, "en")
-
-
-async def _published_learn_pages(language: str = "en") -> list[dict]:
-    now = _time.monotonic()
-    cached = _published_guide_cache.get(language)
-    if cached and now - cached[0] < _PUBLISHED_GUIDE_CACHE_SECONDS:
-        return cached[1]
-    try:
-        pages = await _catalog_db.get_published_seo_guides(language=language)
-        if pages:
-            _published_guide_cache[language] = (now, pages)
-            return pages
-    except Exception as exc:
-        logger.warning("[seo_content] published_guides_fallback error=%s", exc)
-    pages = get_learn_pages()
-    _published_guide_cache[language] = (now, pages)
-    return pages
-
-
-async def _published_learn_page(slug: str, language: str = "en") -> Optional[dict]:
-    try:
-        page = await _catalog_db.get_published_seo_guide(slug, language=language)
-        if page:
-            return page
-    except Exception as exc:
-        logger.warning("[seo_content] published_guide_fallback slug=%s error=%s", slug, exc)
-    return get_learn_page(slug)
-
-
-async def _related_learn_guides(category: str, subcategory: str = "", language: str = "en", limit: int = 4) -> list[dict]:
-    matches = []
-    for page in await _published_learn_pages(language):
-        if str(page.get("category") or "").upper() != str(category or "").upper():
-            continue
-        page_subcategory = str(page.get("subcategory") or "").upper()
-        if subcategory and page_subcategory and page_subcategory != str(subcategory).upper():
-            continue
-        matches.append({
-            **page,
-            "url": _localized_path(_learn_page_path(page.get("slug") or ""), language),
-        })
-        if len(matches) >= limit:
-            break
-    return matches
-
-
-async def _serve_learn_index(request: Request, language: str):
-    """Serve an index of approved educational/navigation glossary pages."""
-    language = _normalize_seo_language(language)
-    _queue_visitor_event(request, source="website", page_type="learn_index", language=language)
-    pages = []
-    for page in await _published_learn_pages(language):
-        category = page.get("category") or ""
-        subcategory = page.get("subcategory") or ""
-        localized_values = [page.get("title") or "", page.get("summary") or ""]
-        if language != "en" and page.get("translation_language") != language:
-            localized_values = await _translate_seo_lines(localized_values, language)
-        title = localized_values[0] if localized_values else page.get("title") or ""
-        summary = localized_values[1] if len(localized_values) > 1 else page.get("summary") or ""
-        pages.append({
-            **page,
-            "title": title,
-            "summary": summary,
-            "url": _localized_path(_learn_page_path(page.get("slug", "")), language),
-            "category_url": _localized_path(_canonical_category_path(category), language) if category else "",
-            "subcategory_url": _localized_path(_canonical_subcategory_path(category, subcategory), language) if category and subcategory else "",
-            "category_display": get_category_display_name(category, language) if category else "",
-            "subcategory_display": get_subcategory_display_name(subcategory, language) if subcategory else "",
-        })
-
-    ui = _seo_ui(language)
-    ctx = _build_seo_context(
-        title=f"{ui['guides']} | Top Shelf Cali Plug",
-        desc=ui["guides_desc"],
-        url=_localized_url("/learn", language),
-        keywords=", ".join(page.get("title", "") for page in pages[:12]),
-        language=language,
-        alternate_path="/learn",
-    )
-    ctx["request"] = request
-    ctx["learn_pages"] = pages
-    ctx["localized_home_url"] = _localized_path("/", language)
-    ctx["seo_schema"] = json.dumps({
-        "@context": "https://schema.org",
-        "@type": "ItemList",
-        "name": ui["guides"],
-        "numberOfItems": len(pages),
-        "itemListElement": [
-            {
-                "@type": "ListItem",
-                "position": index + 1,
-                "name": page.get("title") or "Guide",
-                "url": _absolute_storefront_url(page.get("url") or "/learn"),
-            }
-            for index, page in enumerate(pages)
-        ],
-    }, ensure_ascii=False)
-    return _render_seo_template(
-        request,
-        "learn_index.html",
-        ctx,
-        cache_key=f"learn-index:{language}:{_static_seo_lastmod(datetime.now().date().isoformat())}",
-    )
+    return RedirectResponse(url="/", status_code=status.HTTP_301_MOVED_PERMANENTLY)
 
 
 @app.get("/{language}/learn", response_class=HTMLResponse)
 async def serve_localized_learn_index(language: str, request: Request):
     language = _require_localized_language(language)
-    if language == "en":
-        return RedirectResponse(url="/learn", status_code=301)
-    return await _serve_learn_index(request, language)
+    return RedirectResponse(
+        url=_localized_path("/", language),
+        status_code=status.HTTP_301_MOVED_PERMANENTLY,
+    )
 
 
 @app.get("/learn/{slug}", response_class=HTMLResponse)
 async def serve_learn_page(slug: str, request: Request):
-    return await _serve_learn_page(slug, request, "en")
-
-
-async def _serve_learn_page(slug: str, request: Request, language: str):
-    """Serve one approved glossary/content page for search-friendly navigation."""
-    language = _normalize_seo_language(language)
-    page = await _published_learn_page(slug, language)
-    if not page:
-        return RedirectResponse(url=_localized_path("/learn", language), status_code=status.HTTP_302_FOUND)
-
-    base_path = _learn_page_path(page.get("slug", ""))
-    canonical_path = _localized_path(base_path, language)
-    if request.url.path != canonical_path:
-        return RedirectResponse(url=canonical_path, status_code=status.HTTP_301_MOVED_PERMANENTLY)
-    _queue_visitor_event(
-        request,
-        source="website",
-        page_type="learn_page",
-        category=page.get("category") or "",
-        subcategory=page.get("subcategory") or "",
-        language=language,
-    )
-
-    category = page.get("category") or ""
-    subcategory = page.get("subcategory") or ""
-    raw_sections = list(page.get("sections") or [])
-    section_lines = []
-    for section in raw_sections:
-        if isinstance(section, dict):
-            section_lines.extend([str(section.get("heading") or ""), str(section.get("text") or "")])
-        else:
-            section_lines.append(str(section or ""))
-    localized_values = [page.get("title") or "", page.get("summary") or "", *section_lines]
-    if language != "en" and page.get("translation_language") != language:
-        localized_values = await _translate_seo_lines(localized_values, language)
-    localized_title = localized_values[0] if localized_values else page.get("title") or ""
-    localized_summary = localized_values[1] if len(localized_values) > 1 else page.get("summary") or ""
-    translated_lines = iter(localized_values[2:])
-    localized_sections = []
-    for section in raw_sections:
-        if isinstance(section, dict):
-            localized_sections.append({
-                "heading": next(translated_lines, str(section.get("heading") or "")),
-                "text": next(translated_lines, str(section.get("text") or "")),
-            })
-        else:
-            localized_sections.append(next(translated_lines, str(section or "")))
-    localized_terms = await _translate_seo_lines(page.get("terms") or [], language)
-    localized_page = {
-        **page,
-        "title": localized_title,
-        "summary": localized_summary,
-        "sections": localized_sections,
-        "terms": localized_terms,
-    }
-    page_url = _localized_url(base_path, language)
-    ctx = _build_seo_context(
-        title=f"{localized_title} | Top Shelf Cali Plug",
-        desc=localized_summary,
-        url=page_url,
-        keywords=", ".join(localized_terms[:12]),
-        category=category,
-        language=language,
-        alternate_path=base_path,
-    )
-    ctx["seo_schema"] = json.dumps({
-        "@context": "https://schema.org",
-        "@type": "Article",
-        "headline": localized_title,
-        "description": localized_summary,
-        "url": page_url,
-        "mainEntityOfPage": page_url,
-        "about": localized_terms[:10],
-        "inLanguage": language,
-        "datePublished": str(page.get("published_at") or page.get("created_at") or "")[:10] or None,
-        "dateModified": str(page.get("updated_at") or page.get("published_at") or "")[:10] or None,
-        "author": {
-            "@type": "Organization",
-            "name": page.get("author_name") or "Top Shelf Editorial Team",
-        },
-        "citation": [source.get("url") for source in page.get("sources") or [] if source.get("url")],
-        "publisher": {
-            "@type": "Organization",
-            "name": "Top Shelf Cali Plug",
-            "url": _absolute_storefront_url("/"),
-        },
-    }, ensure_ascii=False)
-    ctx["request"] = request
-    ctx["page"] = localized_page
-    ctx["category_display"] = get_category_display_name(category, language) if category else ""
-    ctx["subcategory_display"] = get_subcategory_display_name(subcategory, language) if subcategory else ""
-    ctx["category_url"] = _localized_path(_canonical_category_path(category), language) if category else ""
-    ctx["subcategory_url"] = _localized_path(_canonical_subcategory_path(category, subcategory), language) if category and subcategory else ""
-    ctx["localized_home_url"] = _localized_path("/", language)
-    ctx["localized_learn_url"] = _localized_path("/learn", language)
-    if category and subcategory:
-        guide_products = await _catalog_db.get_products_by_category_and_subcategory(category, subcategory, limit=6)
-    elif category:
-        guide_products = await _catalog_db.get_products_by_category(category, limit=6)
-    else:
-        guide_products = []
-    ctx["related_products"] = [
-        {
-            "title": _caption_parts(product.get("caption") or "")[0],
-            "url": _localized_path(
-                _canonical_product_path(product.get("id") or product.get("product_id"), product.get("caption") or ""),
-                language,
-            ),
-            "preview": _product_card_preview_media(product, absolute=False),
-        }
-        for product in guide_products
-    ]
-    return _render_seo_template(
-        request,
-        "learn.html",
-        ctx,
-        cache_key=f"learn:{language}:{page.get('slug')}:{page.get('updated_at') or 'seed'}",
-    )
+    return RedirectResponse(url="/", status_code=status.HTTP_301_MOVED_PERMANENTLY)
 
 
 @app.get("/guides-feed.xml", response_class=Response)
 async def serve_learn_feed():
-    pages = await _published_learn_pages("en")
-    items = []
-    for page in pages[:30]:
-        url = _absolute_storefront_url(_learn_page_path(page.get("slug") or ""))
-        items.append(
-            "<item><title>{}</title><link>{}</link><guid>{}</guid>"
-            "<description>{}</description><pubDate>{}</pubDate></item>".format(
-                html.escape(str(page.get("title") or "")),
-                html.escape(url),
-                html.escape(url),
-                html.escape(str(page.get("summary") or "")),
-                html.escape(str(page.get("published_at") or page.get("updated_at") or "")),
-            )
-        )
-    xml = (
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><rss version=\"2.0\"><channel>"
-        f"<title>Top Shelf Catalog Guides</title><link>{html.escape(_absolute_storefront_url('/learn'))}</link>"
-        f"{''.join(items)}</channel></rss>"
-    )
-    return Response(xml, media_type="application/rss+xml", headers={"Cache-Control": "public, max-age=900"})
+    return RedirectResponse(url="/", status_code=status.HTTP_301_MOVED_PERMANENTLY)
 
 
 @app.get("/{language}/learn/{slug}", response_class=HTMLResponse)
 async def serve_localized_learn_page(language: str, slug: str, request: Request):
     language = _require_localized_language(language)
-    if language == "en":
-        return RedirectResponse(url=_learn_page_path(slug), status_code=301)
-    return await _serve_learn_page(slug, request, language)
+    return RedirectResponse(
+        url=_localized_path("/", language),
+        status_code=status.HTTP_301_MOVED_PERMANENTLY,
+    )
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -5814,29 +5427,6 @@ async def webapp_admin_status(request: Request):
     return _json_no_store(payload)
 
 
-@app.post("/api/admin/guides/{guide_id}/{action}")
-async def review_seo_guide(guide_id: int, action: str, request: Request):
-    """Publish or reject an automatically prepared guide after admin review."""
-    user, _, init_data = _get_authenticated_webapp_user(request)
-    await _check_user_not_blocked(init_data, get_client_ip(request))
-    if int(user.id) not in {int(admin_id) for admin_id in Config.ADMIN_IDS}:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    status_value = {"approve": "published", "reject": "rejected"}.get(str(action or "").lower())
-    if not status_value:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid action")
-    guide = await _catalog_db.set_seo_guide_status(guide_id, status_value, user.id)
-    if not guide:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Guide not found")
-
-    _seo_response_cache.clear()
-    _published_guide_cache.clear()
-    _invalidate_admin_status_cache()
-    queued = 0
-    if status_value == "published" and _indexnow_enabled():
-        path = _learn_page_path(guide.get("slug") or "")
-        urls = [_indexnow_public_url(_localized_path(path, language)) for language in SUPPORTED_LANGUAGES]
-        queued = await _catalog_db.enqueue_indexnow_urls(urls, reason="guide_publish")
-    return _json_no_store({"ok": True, "status": status_value, "guide": guide, "indexnow_queued": queued})
 
 
 @app.get("/product/{product_id}", response_class=HTMLResponse)
@@ -5994,7 +5584,6 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
     ctx["telegram_bot_url"] = deep_link
     ctx["webapp_product_url"] = webapp_link
     ctx["related_products"] = related_products
-    ctx["related_guides"] = await _related_learn_guides(category, subcategory, language)
     ctx["seo_side_notes"] = visible_search_terms
     ctx["product_search_phrases"] = product_search_phrases
     ctx["localized_home_url"] = _localized_path("/", language)
@@ -6136,7 +5725,6 @@ async def _serve_category_page(category_name: str, request: Request, language: s
     ctx["telegram_bot_url"] = public_catalog_bot_url
     ctx["storefront_domain"] = _STOREFRONT_DOMAIN
     ctx["localized_home_url"] = _localized_path("/", language)
-    ctx["related_guides"] = await _related_learn_guides(matched_category, "", language)
     ctx["current_page"] = current_page
     ctx["total_pages"] = total_pages
     ctx["previous_url"] = _localized_path(_paginated_path(base_path, current_page - 1), language) if current_page > 1 else ""
@@ -6295,7 +5883,6 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
     ctx["current_subcategory"] = matched_subcategory
     ctx["current_subcategory_display"] = subcategory_display
     ctx["parent_category_url"] = _localized_path(_canonical_category_path(matched_category), language)
-    ctx["related_guides"] = await _related_learn_guides(matched_category, matched_subcategory, language)
     ctx["seo_intro"] = await _translate_seo_text(build_taxonomy_intro(matched_category, matched_subcategory, total=total), language)
     ctx["seo_terms"] = seo_terms
     ctx["telegram_bot_url"] = public_catalog_bot_url

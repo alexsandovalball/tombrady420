@@ -201,12 +201,6 @@
             </div>
         </section>
 
-        {% if related_guides %}
-        <section class="cat-search-footer" aria-label="Related guides">
-            <h2>{{ ui.guides }}</h2>
-            <ul class="term-list">{% for guide in related_guides %}<li><a href="{{ guide.url }}">{{ guide.title }}</a></li>{% endfor %}</ul>
-        </section>
-        {% endif %}
 
         {% if seo_terms %}
         <section class="cat-search-footer" aria-label="Related search terms">
