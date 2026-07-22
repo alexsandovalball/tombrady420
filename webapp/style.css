@@ -515,7 +515,9 @@ h1 {
 }
 
 .admin-google-pages,
-.admin-crawlable-pages {
+.admin-crawlable-pages,
+.admin-public-pages,
+.admin-media-pages {
     border-top: 1px solid rgba(0, 0, 0, 0.08);
     margin-top: 16px;
     padding-top: 12px;
@@ -542,8 +544,19 @@ h1 {
 }
 
 .admin-list-group details { margin: 5px 0; }
-.admin-list-group details summary { cursor: pointer; color: var(--tg-theme-link-color, #2481cc); }
+.admin-list-group details summary {
+    cursor: pointer;
+    color: var(--tg-theme-link-color, #2481cc);
+    font-size: 13px;
+    font-weight: 700;
+    padding: 8px 0;
+}
 .admin-list-group details p { white-space: pre-line; line-height: 1.45; }
+.admin-list-group details ul {
+    max-height: 320px;
+    overflow-y: auto;
+    padding-right: 6px;
+}
 .admin-page-meta button {
     margin: 4px 6px 0 0;
     padding: 5px 9px;
@@ -686,6 +699,15 @@ img[loading="lazy"].loaded {
 .card-media.placeholder {
     font-size: 32px;
     color: var(--tg-theme-hint-color);
+}
+
+.brand-media-fallback {
+    display: block;
+    width: min(46%, 96px);
+    height: min(46%, 96px);
+    margin: auto;
+    object-fit: contain;
+    opacity: 0.9;
 }
 
 .media-count-badge {
@@ -1273,6 +1295,14 @@ a.btn {
 .media-error-icon {
     font-size: 48px;
     margin-bottom: 12px;
+}
+
+.media-error-brand-icon {
+    display: block;
+    width: 72px;
+    height: 72px;
+    margin: 0 auto 12px;
+    object-fit: contain;
 }
 
 .media-error-title {

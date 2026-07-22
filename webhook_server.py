@@ -3476,10 +3476,11 @@ else:
         "Set WEBHOOK_URL or STOREFRONT_DOMAIN to enable absolute URLs."
     )
 
-# Default Open Graph image with the same standalone football mark used by the home page.
+# Default Open Graph image with the same standalone football emoji used by the home page.
 # Must be an absolute HTTPS URL — data: URIs are rejected by all social media crawlers
 # (WhatsApp, iMessage, Twitter/X, Facebook, Discord, Slack, Telegram, etc.).
-_DEFAULT_OG_IMAGE = f"{_STOREFRONT_DOMAIN}/og-image.png"
+_SITE_ICON_VERSION = "20260722-football-emoji-v4"
+_DEFAULT_OG_IMAGE = f"{_STOREFRONT_DOMAIN}/og-image.png?v={_SITE_ICON_VERSION}"
 _OG_IMAGE_WIDTH = 600
 _OG_IMAGE_HEIGHT = 315
 
@@ -4884,7 +4885,8 @@ def _log_seo_public_request(request: Request, route: str, **fields: Any) -> None
 
 
 def _read_brand_icon_png() -> bytes:
-    image_path = Path(__file__).parent / "webapp" / "assets" / "site-icon-512.png"
+    # Raster counterpart of site-icon.svg for consumers that reject SVG images.
+    image_path = Path(__file__).parent / "webapp" / "assets" / "site-icon-emoji.png"
     if not image_path.exists():
         raise HTTPException(status_code=404, detail="Brand image not found")
     return image_path.read_bytes()
@@ -4939,7 +4941,7 @@ async def serve_og_image(request: Request):
     a real HTTP/HTTPS URL — data: URIs are never fetched by these crawlers.
     """
     _log_seo_public_request(request, "og_image")
-    cache_key = "og-image-v3-football"
+    cache_key = f"og-image:{_SITE_ICON_VERSION}"
     cached = _seo_cached_response(request, cache_key)
     if cached:
         return cached
@@ -4956,8 +4958,8 @@ async def serve_og_image(request: Request):
 @app.get("/favicon.ico", response_class=Response)
 @app.head("/favicon.ico", response_class=Response)
 async def serve_favicon(request: Request):
-    """Serve a fallback favicon for browsers and crawlers that probe /favicon.ico."""
-    return _png_response(_read_brand_icon_png(), max_age=604800, request=request)
+    """Serve the canonical SVG football for clients that probe /favicon.ico."""
+    return _svg_response(_read_site_icon_svg(), max_age=604800, request=request)
 
 
 @app.get("/apple-touch-icon.png", response_class=Response)
@@ -6789,9 +6791,9 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
 
 
 def _seo_media_fallback_response(request: Request, reason: str, *, image_url: str = "") -> Response:
-    fallback_body = _read_brand_icon_png()
-    fallback_type = "image/png"
-    fallback_etag_key = f"seo-media-fallback:{reason}:v1"
+    fallback_body = _read_site_icon_svg()
+    fallback_type = "image/svg+xml"
+    fallback_etag_key = f"seo-media-fallback:{reason}:{_SITE_ICON_VERSION}"
     if image_url:
         fallback_etag_key = f"seo-media-fallback:{reason}:{hashlib.sha256(image_url.encode('utf-8')).hexdigest()[:12]}"
     return _seo_content_response(

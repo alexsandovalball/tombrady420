@@ -36,10 +36,10 @@
 
     <script type="application/ld+json">{{ seo_schema | safe }}</script>
 
-    <link rel="icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260722-football-emoji-v3">
-    <link rel="shortcut icon" href="/favicon.ico?v=20260722-football-emoji-v3">
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260722-football-emoji-v3">
-    <link rel="manifest" href="/assets/manifest.json?v=20260722-football-emoji-v3">
+    <link rel="icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260722-football-emoji-v4">
+    <link rel="shortcut icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260722-football-emoji-v4">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260722-football-emoji-v4">
+    <link rel="manifest" href="/assets/manifest.json?v=20260722-football-emoji-v4">
     <script src="/assets/telegram-miniapp-bridge.js?v=20260717-botfather-bridge-v1"></script>
     <link rel="stylesheet" href="/assets/style.css?v=20260717-ios-dark-text-v1">
     <style>
@@ -222,13 +222,13 @@
                                 <a href="{{ media.url }}">{{ ui.open_video }}</a>
                             </video>
                             {% elif loop.first %}
-                            <img src="{{ media.url }}" alt="{{ product_title }}" loading="eager" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
+                            <img src="{{ media.url }}" alt="{{ product_title }}" loading="eager" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260722-football-emoji-v4';">
                             {% endif %}
                         {% endfor %}
                     {% elif product_image %}
-                    <img src="{{ product_image }}" alt="{{ product_title }}" loading="eager" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
+                    <img src="{{ product_image }}" alt="{{ product_title }}" loading="eager" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260722-football-emoji-v4';">
                     {% else %}
-                    <img src="/og-image.png" alt="{{ product_title }}" loading="eager" decoding="async">
+                    <img src="/assets/site-icon.svg?v=20260722-football-emoji-v4" alt="{{ product_title }}" loading="eager" decoding="async">
                     {% endif %}
                 </div>
 
@@ -245,7 +245,7 @@
                         aria-label="{{ media.label }}"
                     >
                         {% if media.type == "photo" %}
-                        <img class="seo-thumb-image" src="{{ media.url }}" alt="{{ media.label }}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
+                        <img class="seo-thumb-image" src="{{ media.url }}" alt="{{ media.label }}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260722-football-emoji-v4';">
                         {% elif media.type == "video" %}
                         <video class="seo-thumb-preview" muted playsinline preload="metadata" src="{{ media.url }}"></video>
                         <span class="seo-thumb-video">▶</span>
@@ -308,7 +308,7 @@
                 {% for item in related_products %}
                 <li class="related-card">
                     <a href="{{ item.url }}">
-                        <img class="related-thumb" src="{{ item.image_url or '/og-image.png' }}" alt="{{ item.title }}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
+                        <img class="related-thumb" src="{{ item.image_url or '/assets/site-icon.svg?v=20260722-football-emoji-v4' }}" alt="{{ item.title }}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260722-football-emoji-v4';">
                         <span class="related-title">{{ item.title }}</span>
                     </a>
                 </li>
@@ -361,7 +361,7 @@
                     node.decoding = 'async';
                     node.onerror = () => {
                         node.onerror = null;
-                        node.src = '/og-image.png';
+                        node.src = '/assets/site-icon.svg?v=20260722-football-emoji-v4';
                     };
                 } else {
                     node = document.createElement('a');

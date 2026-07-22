@@ -16,10 +16,10 @@
     <meta property="og:url" content="{{ seo_url }}">
     <meta property="og:locale" content="{{ seo_locale or 'en_US' }}">
     <script type="application/ld+json">{{ seo_schema | safe }}</script>
-    <link rel="icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260722-football-emoji-v3">
-    <link rel="shortcut icon" href="/favicon.ico?v=20260722-football-emoji-v3">
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260722-football-emoji-v3">
-    <link rel="manifest" href="/assets/manifest.json?v=20260722-football-emoji-v3">
+    <link rel="icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260722-football-emoji-v4">
+    <link rel="shortcut icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260722-football-emoji-v4">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260722-football-emoji-v4">
+    <link rel="manifest" href="/assets/manifest.json?v=20260722-football-emoji-v4">
     <link rel="stylesheet" href="/assets/style.css?v=20260717-ios-dark-text-v1">
     <link rel="preconnect" href="https://telegram.org" crossorigin>
     <link rel="dns-prefetch" href="https://telegram.org">
@@ -98,9 +98,9 @@
                     {% if item.media_type == 'video' and item.media_url %}
                     <video class="seo-card-video" muted playsinline preload="metadata" src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
                     {% elif item.image_url %}
-                    <img src="{{ item.image_url }}" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async" onerror="this.onerror=null;this.src='/og-image.png';">
+                    <img src="{{ item.image_url }}" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260722-football-emoji-v4';">
                     {% else %}
-                    <img src="/og-image.png" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async">
+                    <img src="/assets/site-icon.svg?v=20260722-football-emoji-v4" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async">
                     {% endif %}
                     <span>{{ item.title }}</span>
                 </a></li>
@@ -193,29 +193,6 @@
                 var number = Number(value || 0);
                 if (!Number.isFinite(number)) return '0ms';
                 return String(Math.round(number)) + 'ms';
-            }
-
-            function formatBytes(value) {
-                var number = Number(value || 0);
-                if (!Number.isFinite(number) || number <= 0) return '0 B';
-                var units = ['B', 'KB', 'MB', 'GB'];
-                var unit = 0;
-                while (number >= 1024 && unit < units.length - 1) {
-                    number /= 1024;
-                    unit += 1;
-                }
-                return (unit === 0 ? Math.round(number) : number.toFixed(number >= 10 ? 1 : 2)) + ' ' + units[unit];
-            }
-
-            function formatDuration(seconds) {
-                var total = Math.max(0, Number(seconds || 0));
-                if (!Number.isFinite(total)) return '0m';
-                var days = Math.floor(total / 86400);
-                var hours = Math.floor((total % 86400) / 3600);
-                var minutes = Math.floor((total % 3600) / 60);
-                if (days > 0) return days + 'd ' + hours + 'h';
-                if (hours > 0) return hours + 'h ' + minutes + 'm';
-                return minutes + 'm';
             }
 
             function formatPagePath(page) {
@@ -366,12 +343,7 @@
                 var summary = data.summary || {};
                 var seo = data.seo || {};
                 var indexnow = data.indexnow || {};
-                var process = data.process || {};
                 var searchConsoleSetup = seo.search_console_setup || {};
-                var mediaRuntime = data.media_runtime || {};
-                var resourceUsage = data.resource_usage || {};
-                var tmpUsage = resourceUsage.tmp || {};
-                var cacheUsage = resourceUsage.cache || {};
                 var googleSitemap = seo.search_console_sitemap || {};
                 var seoRuntime = seo.runtime_status || {};
                 var metrics = data.metrics && data.metrics.endpoints ? data.metrics.endpoints : {};
@@ -401,33 +373,22 @@
                 grid.className = 'admin-metric-grid';
                 appendMetric(grid, 'Bots online', formatCount(activeBots.length) + '/' + formatCount(data.configured_bot_count));
                 appendMetric(grid, 'Products', formatCount(summary.products));
-                appendMetric(grid, 'Total users', formatCount(summary.bot_users));
-                appendMetric(grid, 'Users 24h', formatCount(summary.active_users_24h));
-                appendMetric(grid, 'Subscribed users', formatCount(summary.subscribed_users));
-                appendMetric(grid, 'Blocked users', formatCount(summary.blocked_users));
-                appendMetric(grid, 'Unique visitors 24h', formatCount(summary.unique_visitors_24h));
-                appendMetric(grid, 'Website visits 24h', formatCount(summary.website_visits_24h));
+                appendMetric(grid, 'Users 24h / total', formatCount(summary.active_users_24h) + ' / ' + formatCount(summary.bot_users));
+                appendMetric(grid, 'Subscribed / blocked', formatCount(summary.subscribed_users) + ' / ' + formatCount(summary.blocked_users));
+                appendMetric(grid, 'Visitors / visits 24h', formatCount(summary.unique_visitors_24h) + ' / ' + formatCount(summary.website_visits_24h));
                 appendMetric(grid, 'WebApp opens 24h', formatCount(summary.webapp_visits_24h));
-                appendMetric(grid, 'Pending notifications', formatCount(summary.pending_notifications));
-                appendMetric(grid, 'Queued custom msgs', formatCount(summary.queued_custom_messages));
-                appendMetric(grid, 'Searches 24h', formatCount(summary.search_queries_24h));
-                appendMetric(grid, 'No-result searches', formatCount(summary.search_no_result_24h));
-                appendMetric(grid, 'SEO mappings', formatCount(summary.seo_query_mappings));
+                appendMetric(grid, 'Pending notif. / messages', formatCount(summary.pending_notifications) + ' / ' + formatCount(summary.queued_custom_messages));
+                appendMetric(grid, 'Searches / no-result 24h', formatCount(summary.search_queries_24h) + ' / ' + formatCount(summary.search_no_result_24h));
                 appendMetric(grid, 'Google pages ' + googleWindowDays + 'd', formatCount(seo.search_console_pages_window));
                 appendMetric(grid, 'Google clicks/impr.', formatCount(seo.search_console_clicks_window) + '/' + formatCount(seo.search_console_impressions_window));
                 appendMetric(grid, 'Image/video impressions', formatCount(seo.search_console_image_impressions_window) + '/' + formatCount(seo.search_console_video_impressions_window));
-                appendMetric(grid, 'SEO auto last run', seoRuntime.seo_auto_learn_last_run_at || 'pending');
-                appendMetric(grid, 'Trends learner', (seoRuntime.seo_trends_last_status || 'pending') + (seoRuntime.seo_trends_last_run_at ? ' · ' + seoRuntime.seo_trends_last_run_at : ''));
-                appendMetric(grid, 'Google import last', seoRuntime.search_console_import_last_attempt_at || 'pending');
-                appendMetric(grid, 'Google connection', searchConsoleSetup.configured ? (seoRuntime.search_console_import_last_status || 'configured') : 'not connected');
+                appendMetric(grid, 'SEO learners', (seoRuntime.seo_auto_learn_last_status || 'pending') + ' / ' + (seoRuntime.seo_trends_last_status || 'pending'));
+                appendMetric(grid, 'Google import', (searchConsoleSetup.configured ? (seoRuntime.search_console_import_last_status || 'configured') : 'not connected') + (seoRuntime.search_console_import_last_attempt_at ? ' · ' + seoRuntime.search_console_import_last_attempt_at : ''));
                 appendMetric(grid, 'Google sitemap', googleSitemap.status || 'never');
-                appendMetric(grid, 'IndexNow pending', formatCount(indexnow.pending));
-                appendMetric(grid, 'IndexNow failed', formatCount(indexnow.failed));
-                appendMetric(grid, 'Webhook 401 total', formatCount(data.webhook_401_total));
-                appendMetric(grid, 'Uptime', formatDuration(process.uptime_seconds));
-                appendMetric(grid, 'Active media streams', formatCount(mediaRuntime.active_streams));
-                appendMetric(grid, 'Temp app usage', formatBytes(tmpUsage.used_bytes));
-                appendMetric(grid, 'Persistent cache used', formatBytes(cacheUsage.app_cache_bytes));
+                appendMetric(grid, 'IndexNow pending / failed', formatCount(indexnow.pending) + ' / ' + formatCount(indexnow.failed));
+                if (Number(data.webhook_401_total || 0) > 0) {
+                    appendMetric(grid, 'Webhook 401 total', formatCount(data.webhook_401_total));
+                }
                 panel.appendChild(grid);
 
                 var latency = document.createElement('div');
@@ -466,14 +427,6 @@
                     return String(item.query || 'query') + ': ' + formatCount(item.impressions) + ' impressions, ' + formatCount(item.clicks) + ' clicks, avg pos ' + (item.avg_position || '-') + ' · ' + String(item.page || '/');
                 }, 10);
 
-                appendList(panel, 'Google Image & Video Pages', seo.top_search_console_media_pages || [], function (item) {
-                    return String(item.search_type || 'media') + ': ' + formatCount(item.impressions) + ' impressions, ' + formatCount(item.clicks) + ' clicks · ' + String(item.page || '/');
-                }, 8);
-
-                appendList(panel, 'Google Search Changes (7d vs prior 7d)', seo.search_console_changes || [], function (item) {
-                    return String(item.query || 'query') + ': impressions ' + formatCount(item.previous_impressions) + ' → ' + formatCount(item.recent_impressions) + ', clicks ' + formatCount(item.previous_clicks) + ' → ' + formatCount(item.recent_clicks);
-                }, 8);
-
                 appendList(panel, 'Recent Search Mappings', seo.recent_mappings || [], function (item) {
                     var taxonomy = item.category || 'catalog';
                     if (item.subcategory) taxonomy += ' / ' + item.subcategory;
@@ -486,13 +439,17 @@
                     return place + ': ' + formatCount(item.visitors) + ' visitors, ' + formatCount(item.visits) + ' visits';
                 }, 10);
 
-                appendList(panel, 'Top Public Pages', data.top_public_pages || [], function (item) {
-                    return (item.page_type || item.source) + ' ' + String(item.path || '/') + ': ' + formatCount(item.visits) + ' visits, ' + formatCount(item.visitors) + ' visitors';
-                }, 10);
+                appendDetailsList(panel, 'admin-public-pages', 'Top Public Pages', 'Real visitor activity; crawler traffic is excluded.', data.top_public_pages || [], function (item) {
+                    var li = document.createElement('li');
+                    li.textContent = (item.page_type || item.source) + ' ' + String(item.path || '/') + ': ' + formatCount(item.visits) + ' visits, ' + formatCount(item.visitors) + ' visitors';
+                    return li;
+                });
 
-                appendList(panel, 'Top Bots By Users', data.bot_user_counts || [], function (item) {
-                    return '@' + String(item.bot_username || 'bot') + ': ' + formatCount(item.users) + ' users, ' + formatCount(item.active_24h) + ' active';
-                }, 12);
+                appendDetailsList(panel, 'admin-media-pages', 'Google Image & Video Pages', 'Pages appearing in Google image or video search.', seo.top_search_console_media_pages || [], function (item) {
+                    var li = document.createElement('li');
+                    li.textContent = String(item.search_type || 'media') + ': ' + formatCount(item.impressions) + ' impressions, ' + formatCount(item.clicks) + ' clicks · ' + String(item.page || '/');
+                    return li;
+                });
                 appendGooglePages(panel, seo);
                 appendCrawlablePages(panel, data.crawlable_pages);
             }

@@ -4938,8 +4938,6 @@ class Database:
         since_24h = datetime.now() - timedelta(hours=24)
         search_console_days = Config.SEARCH_CONSOLE_LOOKBACK_DAYS
         search_console_since = (datetime.now() - timedelta(days=search_console_days)).date().isoformat()
-        search_console_recent_since = (datetime.now() - timedelta(days=7)).date().isoformat()
-        search_console_previous_since = (datetime.now() - timedelta(days=14)).date().isoformat()
         low_result_threshold = Config.SEO_AUTO_LEARN_MAX_MATCHED_COUNT
         async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
@@ -5196,34 +5194,6 @@ class Database:
                     LIMIT ?
                     """,
                     (search_console_since, min(limit, 20)),
-                ),
-                "search_console_changes": await rows(
-                    """
-                    SELECT
-                        query,
-                        page,
-                        SUM(CASE WHEN source_date >= ? THEN clicks ELSE 0 END) AS recent_clicks,
-                        SUM(CASE WHEN source_date >= ? THEN impressions ELSE 0 END) AS recent_impressions,
-                        SUM(CASE WHEN source_date >= ? AND source_date < ? THEN clicks ELSE 0 END) AS previous_clicks,
-                        SUM(CASE WHEN source_date >= ? AND source_date < ? THEN impressions ELSE 0 END) AS previous_impressions
-                    FROM search_console_query_events
-                    WHERE source_date >= ?
-                    GROUP BY normalized_query, page
-                    HAVING recent_impressions > 0 OR previous_impressions > 0
-                    ORDER BY ABS(recent_impressions - previous_impressions) DESC,
-                             recent_impressions DESC
-                    LIMIT ?
-                    """,
-                    (
-                        search_console_recent_since,
-                        search_console_recent_since,
-                        search_console_previous_since,
-                        search_console_recent_since,
-                        search_console_previous_since,
-                        search_console_recent_since,
-                        search_console_previous_since,
-                        min(limit, 20),
-                    ),
                 ),
             }
 
