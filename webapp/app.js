@@ -1647,6 +1647,7 @@
         const seo = data.seo || {};
         const indexnow = data.indexnow || {};
         const googleSitemap = seo.search_console_sitemap || {};
+        const seoRuntime = seo.runtime_status || {};
         const metrics = data.metrics?.endpoints || {};
         const activeBots = (data.runtime_bots || []).filter(bot => bot.username);
         const googleWindowDays = seo.search_console_window_days || 30;
@@ -1684,6 +1685,13 @@
         appendAdminMetric(grid, `Google performance pages ${googleWindowDays}d`, formatAdminCount(seo.search_console_pages_window));
         appendAdminMetric(grid, 'Google clicks/impr.', `${formatAdminCount(seo.search_console_clicks_window)}/${formatAdminCount(seo.search_console_impressions_window)}`);
         appendAdminMetric(grid, 'Google Trends signals', formatAdminCount(seo.google_trends_signals));
+        appendAdminMetric(grid, 'SEO auto last run', seoRuntime.seo_auto_learn_last_run_at || 'pending');
+        appendAdminMetric(grid, 'SEO auto changed', formatAdminCount(seoRuntime.seo_auto_learn_last_changed));
+        appendAdminMetric(grid, 'SEO candidates checked', formatAdminCount(seoRuntime.seo_auto_learn_last_candidates));
+        appendAdminMetric(grid, 'SEO terms paused', formatAdminCount(seoRuntime.seo_auto_learn_last_suppressed));
+        appendAdminMetric(grid, 'Trends last run', seoRuntime.seo_trends_last_run_at || 'pending');
+        appendAdminMetric(grid, 'Google import last', seoRuntime.search_console_import_last_attempt_at || 'pending');
+        appendAdminMetric(grid, 'Google import rows', formatAdminCount(seoRuntime.search_console_import_last_rows));
         appendAdminMetric(grid, 'Google sitemap', googleSitemap.status || 'never');
         appendAdminMetric(grid, 'SEO mappings', formatAdminCount(summary.seo_query_mappings));
         appendAdminMetric(grid, 'IndexNow pending', formatAdminCount(indexnow.pending));
@@ -1758,9 +1766,10 @@
             if (tg.initData) {
                 headers['X-Telegram-Init-Data'] = tg.initData;
             }
-            const response = await fetch('/api/admin/status', {
+            const response = await fetch(`/api/admin/status?ts=${Date.now()}`, {
                 headers,
-                credentials: 'same-origin'
+                credentials: 'same-origin',
+                cache: 'no-store'
             });
             if (!response.ok) {
                 state.adminStatusLoaded = response.status === 403 || response.status === 404;

@@ -375,6 +375,21 @@ class Database:
             """)
 
             await db.execute("""
+                CREATE TABLE IF NOT EXISTS seo_auto_learn_suppression (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    normalized_query TEXT NOT NULL UNIQUE,
+                    query TEXT NOT NULL,
+                    reason TEXT NOT NULL DEFAULT '',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_count INTEGER NOT NULL DEFAULT 0,
+                    best_matched_count INTEGER,
+                    expires_at TIMESTAMP NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS search_console_query_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     query TEXT NOT NULL,
@@ -722,6 +737,7 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_query_mappings_taxonomy ON seo_query_mappings(category, subcategory)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_query_mappings_language ON seo_query_mappings(language, category, subcategory, approved)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_query_events_language ON search_query_events(language, created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_auto_learn_suppression_expires ON seo_auto_learn_suppression(expires_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_console_query_events_date ON search_console_query_events(source_date DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_console_query_events_query ON search_console_query_events(normalized_query, source_date DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_external_seo_signals_approved ON external_seo_signals(approved, confidence DESC, last_seen DESC)")
@@ -4175,6 +4191,63 @@ class Database:
             await db.commit()
         return len(normalized_terms)
 
+    async def suppress_seo_auto_learning_candidates(
+        self,
+        candidates: List[Dict[str, Any]],
+        *,
+        cooldown_hours: int = 72,
+    ) -> int:
+        """Temporarily pause weak/ambiguous SEO auto-learn candidates.
+
+        The raw search events are kept. Suppression only prevents the background
+        learner from repeatedly re-evaluating the same phrase every run.
+        """
+        from utils.seo_terms import normalize_term
+
+        cooldown_hours = max(1, min(int(cooldown_hours or 72), 24 * 30))
+        expires_at = (datetime.now() + timedelta(hours=cooldown_hours)).isoformat(sep=" ", timespec="seconds")
+        rows = []
+        seen = set()
+        for item in candidates or []:
+            query = str(item.get("query") or item.get("normalized_query") or "").strip()
+            normalized = normalize_term(query)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            rows.append((
+                normalized[:300],
+                query[:300],
+                str(item.get("reason") or "no_confident_mapping")[:120],
+                max(0, int(item.get("count") or 0)),
+                item.get("best_matched_count"),
+                expires_at,
+            ))
+
+        if not rows:
+            return 0
+
+        async with self.get_connection() as db:
+            await db.executemany(
+                """
+                INSERT INTO seo_auto_learn_suppression (
+                    normalized_query, query, reason, attempt_count, last_count,
+                    best_matched_count, expires_at, updated_at
+                )
+                VALUES (?, ?, ?, 1, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(normalized_query) DO UPDATE SET
+                    query = excluded.query,
+                    reason = excluded.reason,
+                    attempt_count = seo_auto_learn_suppression.attempt_count + 1,
+                    last_count = excluded.last_count,
+                    best_matched_count = excluded.best_matched_count,
+                    expires_at = excluded.expires_at,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                rows,
+            )
+            await db.commit()
+        return len(rows)
+
     async def upsert_search_console_query_events(self, rows: List[Dict[str, Any]]) -> int:
         """Insert/update Search Console query snapshots."""
         from utils.seo_terms import normalize_term
@@ -4538,9 +4611,13 @@ class Database:
                 FROM search_query_events e
                 LEFT JOIN seo_query_mappings m
                     ON m.normalized_term = e.normalized_query AND m.approved = 1
+                LEFT JOIN seo_auto_learn_suppression s
+                    ON s.normalized_query = e.normalized_query
+                   AND datetime(s.expires_at) > datetime('now')
                 WHERE e.matched_count <= ?
                   AND e.created_at >= ?
                   AND m.id IS NULL
+                  AND s.id IS NULL
                 GROUP BY e.normalized_query
                 HAVING COUNT(*) >= ?
                 ORDER BY no_result_count DESC, count DESC, last_seen DESC
@@ -4630,6 +4707,35 @@ class Database:
                     result = await cursor.fetchall()
                     return [dict(row) for row in result]
 
+            runtime_status_keys = [
+                "seo_auto_learn_last_run_at",
+                "seo_auto_learn_last_status",
+                "seo_auto_learn_last_changed",
+                "seo_auto_learn_last_duration_ms",
+                "seo_auto_learn_last_candidates",
+                "seo_auto_learn_last_skipped",
+                "seo_auto_learn_last_suppressed",
+                "seo_auto_learn_last_error",
+                "seo_trends_last_run_at",
+                "seo_trends_last_status",
+                "seo_trends_last_rows",
+                "seo_trends_last_imported",
+                "seo_trends_last_promoted",
+                "seo_trends_last_duration_ms",
+                "seo_trends_last_error",
+                "search_console_import_last_attempt_at",
+                "search_console_import_last_status",
+                "search_console_import_last_rows",
+                "search_console_import_last_signals",
+                "search_console_import_last_auth_source",
+            ]
+            runtime_placeholders = ",".join("?" * len(runtime_status_keys))
+            runtime_rows = await rows(
+                f"SELECT key, value, updated_at FROM bot_settings WHERE key IN ({runtime_placeholders})",
+                tuple(runtime_status_keys),
+            )
+            runtime_status = {row["key"]: row["value"] for row in runtime_rows}
+
             return {
                 "queries_24h": await scalar(
                     "SELECT COUNT(*) FROM search_query_events WHERE created_at >= ?",
@@ -4677,6 +4783,8 @@ class Database:
                 "seo_auto_learn_score": Config.SEO_AUTO_LEARN_SCORE,
                 "seo_auto_learn_max_matched_count": Config.SEO_AUTO_LEARN_MAX_MATCHED_COUNT,
                 "seo_auto_learn_max_per_run": Config.SEO_AUTO_LEARN_MAX_PER_RUN,
+                "seo_auto_learn_suppression_hours": Config.SEO_AUTO_LEARN_SUPPRESSION_HOURS,
+                "runtime_status": runtime_status,
                 "external_signals": await scalar("SELECT COUNT(*) FROM external_seo_signals WHERE approved = 1"),
                 "top_queries": await rows(
                     """

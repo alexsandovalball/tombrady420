@@ -44,6 +44,7 @@ class ConfigClass:
         self.SEO_AUTO_LEARN_SCORE: int = 84
         self.SEO_AUTO_LEARN_MAX_PER_RUN: int = 60
         self.SEO_AUTO_LEARN_MAX_MATCHED_COUNT: int = 5
+        self.SEO_AUTO_LEARN_SUPPRESSION_HOURS: int = 72
         self.SEO_EXTERNAL_SIGNAL_SCORE: int = 86
         self.SEO_SIDE_NOTE_LIMIT: int = 10
         self.SEO_TRENDS_ENABLED: bool = True
@@ -195,6 +196,10 @@ class ConfigClass:
         self.SEO_AUTO_LEARN_MAX_MATCHED_COUNT = max(
             0,
             min(25, config('SEO_AUTO_LEARN_MAX_MATCHED_COUNT', default=5, cast=int)),
+        )
+        self.SEO_AUTO_LEARN_SUPPRESSION_HOURS = max(
+            1,
+            min(24 * 30, config('SEO_AUTO_LEARN_SUPPRESSION_HOURS', default=72, cast=int)),
         )
         self.SEO_EXTERNAL_SIGNAL_SCORE = max(
             75,

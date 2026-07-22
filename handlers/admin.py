@@ -247,6 +247,11 @@ def _format_search_console_status(snapshot: dict) -> list[str]:
     max_matched = snapshot.get("seo_auto_learn_max_matched_count", Config.SEO_AUTO_LEARN_MAX_MATCHED_COUNT)
     max_per_run = snapshot.get("seo_auto_learn_max_per_run", Config.SEO_AUTO_LEARN_MAX_PER_RUN)
     score = snapshot.get("seo_auto_learn_score", Config.SEO_AUTO_LEARN_SCORE)
+    suppression_hours = snapshot.get("seo_auto_learn_suppression_hours", Config.SEO_AUTO_LEARN_SUPPRESSION_HOURS)
+    runtime = snapshot.get("runtime_status") or {}
+    last_run = runtime.get("seo_auto_learn_last_run_at") or "pending"
+    last_candidates = runtime.get("seo_auto_learn_last_candidates", 0)
+    last_suppressed = runtime.get("seo_auto_learn_last_suppressed", 0)
 
     return [
         "",
@@ -267,6 +272,9 @@ def _format_search_console_status(snapshot: dict) -> list[str]:
         f"• Match score: {score}",
         f"• Learns low-result searches: 0-{max_matched} result(s)",
         f"• Max new checks per run: {_fmt_count(max_per_run)}",
+        f"• Weak-term cooldown: {_fmt_count(suppression_hours)}h",
+        f"• Last learner run: {last_run}",
+        f"• Last checked/paused: {_fmt_count(last_candidates)}/{_fmt_count(last_suppressed)}",
     ]
 
 

@@ -134,7 +134,7 @@ _visitor_events_written = 0
 _visitor_events_dropped = 0
 _SEO_AUTO_LEARN_STARTUP_DELAY_SECONDS = _bounded_int_env(
     "SEO_AUTO_LEARN_STARTUP_DELAY_SECONDS",
-    300,
+    60,
     60,
     3600,
 )
@@ -854,6 +854,23 @@ def _invalidate_seo_query_mapping_cache() -> None:
     global _seo_query_mapping_cache, _admin_status_cache
     _seo_query_mapping_cache = None
     _admin_status_cache.clear()
+
+
+def _invalidate_admin_status_cache() -> None:
+    _admin_status_cache.clear()
+
+
+async def _set_runtime_setting(key: str, value: Any) -> None:
+    try:
+        await _catalog_db.set_bot_setting(key, str(value if value is not None else ""))
+        _invalidate_admin_status_cache()
+    except Exception as exc:
+        logger.debug("[runtime_status] setting_write_failed key=%s error=%s", key, exc)
+
+
+async def _set_runtime_settings(values: dict[str, Any]) -> None:
+    for key, value in values.items():
+        await _set_runtime_setting(key, value)
 
 
 async def _get_cached_approved_seo_query_mappings() -> List[Dict[str, Any]]:
@@ -2141,6 +2158,7 @@ async def _publish_seo_mapping_changes(mappings: List[Dict[str, Any]]) -> int:
     if not mappings:
         return 0
     _seo_response_cache.clear()
+    _invalidate_admin_status_cache()
     if not _indexnow_enabled():
         return 0
     urls: List[str] = []
@@ -2206,6 +2224,11 @@ async def _import_google_trends_signals(
     )
     if not trend_rows:
         logger.info("[seo_trends] rows=0 imported=0 promoted=0")
+        await _set_runtime_settings({
+            "seo_trends_last_fetch_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+            "seo_trends_last_rows": 0,
+            "seo_trends_last_imported": 0,
+        })
         return 0
 
     signals = []
@@ -2245,6 +2268,11 @@ async def _import_google_trends_signals(
 
     if not signals:
         logger.info("[seo_trends] rows=%d imported=0 promoted=0", len(trend_rows))
+        await _set_runtime_settings({
+            "seo_trends_last_fetch_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+            "seo_trends_last_rows": len(trend_rows),
+            "seo_trends_last_imported": 0,
+        })
         return 0
 
     imported = await _catalog_db.upsert_external_seo_signals(
@@ -2253,7 +2281,14 @@ async def _import_google_trends_signals(
         source="google_trends",
         approved=True,
     )
+    if imported:
+        _invalidate_admin_status_cache()
     logger.info("[seo_trends] rows=%d imported=%d", len(trend_rows), imported)
+    await _set_runtime_settings({
+        "seo_trends_last_fetch_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+        "seo_trends_last_rows": len(trend_rows),
+        "seo_trends_last_imported": imported,
+    })
     return imported
 
 
@@ -2347,6 +2382,7 @@ async def _import_external_signal_file(
         approved=False,
     )
     if imported:
+        _invalidate_admin_status_cache()
         logger.info("[seo_external] file_signals_imported=%d", imported)
     return imported
 
@@ -2390,6 +2426,12 @@ async def _import_search_console_signals(
             setup["oauth_token_file_exists"],
             setup["service_account_file_exists"],
         )
+        await _set_runtime_settings({
+            "search_console_import_last_attempt_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+            "search_console_import_last_status": "not_configured",
+            "search_console_import_last_rows": 0,
+            "search_console_import_last_signals": 0,
+        })
         return 0
 
     _search_console_import_last_attempt = now
@@ -2414,9 +2456,18 @@ async def _import_search_console_signals(
             Config.SEARCH_CONSOLE_LOOKBACK_DAYS,
             Config.SEARCH_CONSOLE_ROW_LIMIT,
         )
+        await _set_runtime_settings({
+            "search_console_import_last_attempt_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+            "search_console_import_last_status": "ok_empty",
+            "search_console_import_last_rows": 0,
+            "search_console_import_last_signals": 0,
+            "search_console_import_last_auth_source": setup["auth_source"],
+        })
         return 0
 
     imported_rows = await _catalog_db.upsert_search_console_query_events(rows)
+    if imported_rows:
+        _invalidate_admin_status_cache()
     signals = []
     for row in rows:
         query = str(row.get("query") or "").strip()
@@ -2462,6 +2513,8 @@ async def _import_search_console_signals(
         source="search_console",
         approved=True,
     )
+    if imported_signals:
+        _invalidate_admin_status_cache()
     logger.info(
         "[search_console] rows=%d stored=%d approved_signals=%d site_url=%s auth=%s",
         len(rows),
@@ -2470,6 +2523,13 @@ async def _import_search_console_signals(
         setup["site_url"],
         setup["auth_source"],
     )
+    await _set_runtime_settings({
+        "search_console_import_last_attempt_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+        "search_console_import_last_status": "ok",
+        "search_console_import_last_rows": imported_rows,
+        "search_console_import_last_signals": imported_signals,
+        "search_console_import_last_auth_source": setup["auth_source"],
+    })
     return imported_signals
 
 
@@ -2502,9 +2562,15 @@ async def _seo_auto_learn_once() -> int:
             external_imports,
             external_promoted,
         )
+        await _set_runtime_settings({
+            "seo_auto_learn_last_candidates": 0,
+            "seo_auto_learn_last_skipped": 0,
+            "seo_auto_learn_last_suppressed": 0,
+        })
         return external_imports + external_promoted
 
     approvals = []
+    suppressed = []
     skipped = 0
 
     for item in candidates:
@@ -2519,12 +2585,14 @@ async def _seo_auto_learn_once() -> int:
         )
         if not inferred:
             skipped += 1
+            suppressed.append({**item, "query": query, "reason": "no_confident_mapping"})
             continue
 
         # One-off queries are approved only if they match the explicit SEO
         # vocabulary. Catalog-only fuzzy guesses need repeated evidence.
         if int(item.get("count") or 0) < 2 and inferred.get("reason") == "catalog":
             skipped += 1
+            suppressed.append({**item, "query": query, "reason": "single_catalog_guess"})
             continue
 
         learned_terms = await _expand_auto_learn_mapping_variants(query, item.get("language") or "en")
@@ -2549,12 +2617,22 @@ async def _seo_auto_learn_once() -> int:
 
     if not approvals:
         if skipped:
+            suppressed_count = await _catalog_db.suppress_seo_auto_learning_candidates(
+                suppressed,
+                cooldown_hours=Config.SEO_AUTO_LEARN_SUPPRESSION_HOURS,
+            )
             logger.info(
-                "[seo_auto_learn] skipped=%d reason=no_confident_mapping external_imports=%d external_promoted=%d",
+                "[seo_auto_learn] skipped=%d suppressed=%d reason=no_confident_mapping external_imports=%d external_promoted=%d",
                 skipped,
+                suppressed_count,
                 external_imports,
                 external_promoted,
             )
+            await _set_runtime_settings({
+                "seo_auto_learn_last_candidates": len(candidates),
+                "seo_auto_learn_last_skipped": skipped,
+                "seo_auto_learn_last_suppressed": suppressed_count,
+            })
         return external_imports + external_promoted
 
     approved = await _catalog_db.upsert_seo_query_mappings(
@@ -2565,15 +2643,27 @@ async def _seo_auto_learn_once() -> int:
     if approved:
         _invalidate_seo_query_mapping_cache()
         await _publish_seo_mapping_changes(approvals)
+    suppressed_count = 0
+    if suppressed:
+        suppressed_count = await _catalog_db.suppress_seo_auto_learning_candidates(
+            suppressed,
+            cooldown_hours=Config.SEO_AUTO_LEARN_SUPPRESSION_HOURS,
+        )
     logger.info(
-        "[seo_auto_learn] approved=%d candidates=%d skipped=%d max_matched=%d external_imports=%d external_promoted=%d",
+        "[seo_auto_learn] approved=%d candidates=%d skipped=%d suppressed=%d max_matched=%d external_imports=%d external_promoted=%d",
         approved,
         len(candidates),
         skipped,
+        suppressed_count,
         Config.SEO_AUTO_LEARN_MAX_MATCHED_COUNT,
         external_imports,
         external_promoted,
     )
+    await _set_runtime_settings({
+        "seo_auto_learn_last_candidates": len(candidates),
+        "seo_auto_learn_last_skipped": skipped,
+        "seo_auto_learn_last_suppressed": suppressed_count,
+    })
     return approved + external_imports + external_promoted
 
 
@@ -2610,8 +2700,19 @@ async def _seo_auto_learn_loop():
                     Config.SEO_AUTO_LEARN_MAX_MATCHED_COUNT,
                     Config.SEO_EXTERNAL_SIGNAL_SCORE,
                 )
+                await _set_runtime_settings({
+                    "seo_auto_learn_last_run_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+                    "seo_auto_learn_last_status": "ok",
+                    "seo_auto_learn_last_changed": learned,
+                    "seo_auto_learn_last_duration_ms": round(duration_ms, 1),
+                })
         except Exception as e:
             logger.warning("[seo_auto_learn] loop_error error=%s", e)
+            await _set_runtime_settings({
+                "seo_auto_learn_last_run_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+                "seo_auto_learn_last_status": "error",
+                "seo_auto_learn_last_error": str(e)[:300],
+            })
         await asyncio.sleep(Config.SEO_AUTO_LEARN_INTERVAL_SECONDS)
 
 
@@ -2643,8 +2744,20 @@ async def _seo_trends_loop():
                     Config.SEO_TRENDS_LIMIT_PER_GEO,
                     Config.SEO_TRENDS_MAX_TERMS_PER_RUN,
                 )
+                await _set_runtime_settings({
+                    "seo_trends_last_run_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+                    "seo_trends_last_status": "ok",
+                    "seo_trends_last_imported": imported,
+                    "seo_trends_last_promoted": promoted,
+                    "seo_trends_last_duration_ms": round(duration_ms, 1),
+                })
         except Exception as exc:
             logger.warning("[seo_trends] loop_error error=%s", exc)
+            await _set_runtime_settings({
+                "seo_trends_last_run_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+                "seo_trends_last_status": "error",
+                "seo_trends_last_error": str(exc)[:300],
+            })
         await asyncio.sleep(Config.SEO_TRENDS_INTERVAL_SECONDS)
 
 
@@ -3048,7 +3161,7 @@ else:
         "Set WEBHOOK_URL or STOREFRONT_DOMAIN to enable absolute URLs."
     )
 
-# Default Open Graph image with football emoji 🏈 for link previews.
+# Default Open Graph image with the same standalone football mark used by the home page.
 # Must be an absolute HTTPS URL — data: URIs are rejected by all social media crawlers
 # (WhatsApp, iMessage, Twitter/X, Facebook, Discord, Slack, Telegram, etc.).
 _DEFAULT_OG_IMAGE = f"{_STOREFRONT_DOMAIN}/og-image.png"
@@ -3964,6 +4077,7 @@ async def _record_search_console_sitemap_result(result: dict[str, Any], *, attem
             "search_console_sitemap_last_submitted_at",
             attempted_at.isoformat(sep=" ", timespec="seconds"),
         )
+    _invalidate_admin_status_cache()
 
 
 async def _search_console_submit_sitemap_once(*, reason: str = "scheduled", force: bool = False) -> bool:
@@ -4535,7 +4649,7 @@ async def serve_og_image(request: Request):
     a real HTTP/HTTPS URL — data: URIs are never fetched by these crawlers.
     """
     _log_seo_public_request(request, "og_image")
-    cache_key = "og-image-v2"
+    cache_key = "og-image-v3-football"
     cached = _seo_cached_response(request, cache_key)
     if cached:
         return cached
