@@ -27,6 +27,20 @@ _SEARCH_CRAWLERS = (
     ("yandexbot", "YandexBot"),
     ("baiduspider", "Baiduspider"),
     ("petalbot", "PetalBot"),
+    ("oai-searchbot", "OpenAI SearchBot"),
+)
+
+_AI_CRAWLERS = (
+    ("meta-externalagent", "Meta External Agent"),
+    ("meta-externalfetcher", "Meta External Fetcher"),
+    ("gptbot", "OpenAI GPTBot"),
+    ("chatgpt-user", "ChatGPT User Fetcher"),
+    ("claudebot", "ClaudeBot"),
+    ("claude-web", "Claude Web"),
+    ("perplexitybot", "PerplexityBot"),
+    ("bytespider", "ByteSpider"),
+    ("amazonbot", "Amazonbot"),
+    ("cohere-ai", "Cohere AI"),
 )
 
 _SOCIAL_PREVIEWS = (
@@ -76,6 +90,9 @@ def classify_user_agent(user_agent: str) -> TrafficIdentity:
     for token, name in _SEARCH_CRAWLERS:
         if token in ua:
             return TrafficIdentity("search_crawler", name)
+    for token, name in _AI_CRAWLERS:
+        if token in ua:
+            return TrafficIdentity("ai_crawler", name)
     for token, name in _SOCIAL_PREVIEWS:
         if token in ua:
             return TrafficIdentity("social_preview", name)

@@ -5288,23 +5288,6 @@ async def _build_storefront_index_context(
             logger.debug("Failed to build homepage SEO ItemList schema: %s", exc)
     ctx["localized_home_url"] = _localized_path("/", language)
     ctx["localized_learn_url"] = _localized_path("/learn", language)
-    if category and subcategory:
-        guide_products = await _catalog_db.get_products_by_category_and_subcategory(category, subcategory, limit=6)
-    elif category:
-        guide_products = await _catalog_db.get_products_by_category(category, limit=6)
-    else:
-        guide_products = []
-    ctx["related_products"] = [
-        {
-            "title": _caption_parts(product.get("caption") or "")[0],
-            "url": _localized_path(
-                _canonical_product_path(product.get("id") or product.get("product_id"), product.get("caption") or ""),
-                language,
-            ),
-            "preview": _product_card_preview_media(product, absolute=False),
-        }
-        for product in guide_products
-    ]
     return ctx, recent_products
 
 
@@ -5681,6 +5664,23 @@ async def _serve_learn_page(slug: str, request: Request, language: str):
     ctx["subcategory_url"] = _localized_path(_canonical_subcategory_path(category, subcategory), language) if category and subcategory else ""
     ctx["localized_home_url"] = _localized_path("/", language)
     ctx["localized_learn_url"] = _localized_path("/learn", language)
+    if category and subcategory:
+        guide_products = await _catalog_db.get_products_by_category_and_subcategory(category, subcategory, limit=6)
+    elif category:
+        guide_products = await _catalog_db.get_products_by_category(category, limit=6)
+    else:
+        guide_products = []
+    ctx["related_products"] = [
+        {
+            "title": _caption_parts(product.get("caption") or "")[0],
+            "url": _localized_path(
+                _canonical_product_path(product.get("id") or product.get("product_id"), product.get("caption") or ""),
+                language,
+            ),
+            "preview": _product_card_preview_media(product, absolute=False),
+        }
+        for product in guide_products
+    ]
     return _render_seo_template(
         request,
         "learn.html",
