@@ -22,7 +22,7 @@
         ERROR_DISPLAY_MS: 4000,  // Duration to show error messages on buttons
         INITIAL_DATA_TIMEOUT_MS: 10000,  // Timeout for initial data load to prevent infinite loading
         MAX_VIDEO_PREVIEW_CACHE_SIZE: 24,  // Captured video preview frames kept in memory
-        SITE_ICON_URL: '/assets/site-icon.svg?v=20260722-football-emoji-v4',
+        SITE_ICON_URL: '/assets/site-icon.svg?v=20260723-football-emoji-v5',
         MAX_CACHE_SIZE: 20  // Maximum number of cached API responses to prevent memory leaks
     };
 
@@ -1693,6 +1693,7 @@
         appendAdminMetric(grid, 'Google clicks/impr.', `${formatAdminCount(seo.search_console_clicks_window)}/${formatAdminCount(seo.search_console_impressions_window)}`);
         appendAdminMetric(grid, 'Image/video impressions', `${formatAdminCount(seo.search_console_image_impressions_window)}/${formatAdminCount(seo.search_console_video_impressions_window)}`);
         appendAdminMetric(grid, 'SEO learners', `${seoRuntime.seo_auto_learn_last_status || 'pending'} / ${seoRuntime.seo_trends_last_status || 'pending'}`);
+        appendAdminMetric(grid, 'Mapping changes 24h / 7d', `${formatAdminCount(seo.mappings_updated_24h)} / ${formatAdminCount(seo.mappings_updated_7d)}`);
         appendAdminMetric(grid, 'Google import', `${searchConsoleSetup.configured ? (seoRuntime.search_console_import_last_status || 'configured') : 'not connected'}${seoRuntime.search_console_import_last_attempt_at ? ` · ${seoRuntime.search_console_import_last_attempt_at}` : ''}`);
         appendAdminMetric(grid, 'Google sitemap', googleSitemap.status || 'never');
         appendAdminMetric(grid, 'IndexNow pending / failed', `${formatAdminCount(indexnow.pending)} / ${formatAdminCount(indexnow.failed)}`);
@@ -1743,8 +1744,79 @@
             `${item.query || 'query'}: ${formatAdminCount(item.impressions)} impressions, ${formatAdminCount(item.clicks)} clicks, avg pos ${item.avg_position || '-'} · ${item.page || '/'}`
         );
 
-        appendAdminList(panel, 'Recent Search Mappings', seo.recent_mappings || [], item =>
-            `${item.term} -> ${item.category || 'catalog'}${item.subcategory ? ` / ${item.subcategory}` : ''}`
+        appendAdminDetailsList(
+            panel,
+            'admin-seo-mapping-changes',
+            'SEO Mapping Changes',
+            'Newest approved mapping edits. Search usage increases the hit count without changing the edit timestamp.',
+            (seo.recent_mappings || []).slice(0, 50),
+            item => {
+                const li = document.createElement('li');
+                const taxonomy = `${item.category || 'catalog'}${item.subcategory ? ` / ${item.subcategory}` : ''}`;
+                li.textContent = `${item.term || 'term'} -> ${taxonomy}`;
+
+                const meta = document.createElement('span');
+                meta.className = 'admin-page-meta';
+                meta.textContent = `source ${item.source || 'unknown'} · language ${item.language || 'en'} · ${formatAdminCount(item.hits)} uses · changed ${item.updated_at || '-'}`;
+                li.appendChild(meta);
+                return li;
+            }
+        );
+        appendAdminDetailsList(
+            panel,
+            'admin-seo-mapping-sources',
+            'SEO Mapping Sources',
+            'Current approved mapping coverage grouped by the worker or source that created it.',
+            seo.mapping_sources || [],
+            item => {
+                const li = document.createElement('li');
+                li.textContent = `${item.source || 'unknown'}: ${formatAdminCount(item.count)} mappings, ${formatAdminCount(item.hits)} uses`;
+
+                const meta = document.createElement('span');
+                meta.className = 'admin-page-meta';
+                meta.textContent = `latest change ${item.latest_change || '-'}`;
+                li.appendChild(meta);
+                return li;
+            }
+        );
+        appendAdminDetailsList(
+            panel,
+            'admin-seo-worker-activity',
+            'SEO Worker Activity',
+            'Latest completed background runs and the number of changes each one made.',
+            [
+                {
+                    name: 'Auto learner',
+                    status: seoRuntime.seo_auto_learn_last_status,
+                    changed: seoRuntime.seo_auto_learn_last_changed,
+                    at: seoRuntime.seo_auto_learn_last_run_at,
+                    extra: `${formatAdminCount(seoRuntime.seo_auto_learn_last_candidates)} candidates, ${formatAdminCount(seoRuntime.seo_auto_learn_last_suppressed)} suppressed`
+                },
+                {
+                    name: 'Google Trends',
+                    status: seoRuntime.seo_trends_last_status,
+                    changed: seoRuntime.seo_trends_last_promoted,
+                    at: seoRuntime.seo_trends_last_run_at,
+                    extra: `${formatAdminCount(seoRuntime.seo_trends_last_candidates)} candidates, ${formatAdminCount(seoRuntime.seo_trends_last_imported)} imported`
+                },
+                {
+                    name: 'Search Console',
+                    status: seoRuntime.search_console_import_last_status,
+                    changed: seoRuntime.search_console_import_last_signals,
+                    at: seoRuntime.search_console_import_last_attempt_at,
+                    extra: `${formatAdminCount(seoRuntime.search_console_import_last_rows)} rows, ${formatAdminCount(seoRuntime.search_console_import_last_aggregates)} aggregates`
+                }
+            ],
+            item => {
+                const li = document.createElement('li');
+                li.textContent = `${item.name}: ${item.status || 'pending'} · ${formatAdminCount(item.changed)} changes`;
+
+                const meta = document.createElement('span');
+                meta.className = 'admin-page-meta';
+                meta.textContent = `${item.extra} · last ${item.at || '-'}`;
+                li.appendChild(meta);
+                return li;
+            }
         );
         appendAdminDetailsList(panel, 'admin-public-pages', 'Top Public Pages', 'Real visitor activity; crawler traffic is excluded.', data.top_public_pages || [], item => {
             const li = document.createElement('li');

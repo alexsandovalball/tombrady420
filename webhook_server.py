@@ -3479,7 +3479,7 @@ else:
 # Default Open Graph image with the same standalone football emoji used by the home page.
 # Must be an absolute HTTPS URL — data: URIs are rejected by all social media crawlers
 # (WhatsApp, iMessage, Twitter/X, Facebook, Discord, Slack, Telegram, etc.).
-_SITE_ICON_VERSION = "20260722-football-emoji-v4"
+_SITE_ICON_VERSION = "20260723-football-emoji-v5"
 _DEFAULT_OG_IMAGE = f"{_STOREFRONT_DOMAIN}/og-image.png?v={_SITE_ICON_VERSION}"
 _OG_IMAGE_WIDTH = 600
 _OG_IMAGE_HEIGHT = 315
@@ -4893,7 +4893,7 @@ def _read_brand_icon_png() -> bytes:
 
 
 def _read_site_icon_svg() -> bytes:
-    image_path = Path(__file__).parent / "webapp" / "assets" / "site-icon.svg"
+    image_path = Path(__file__).parent / "webapp" / "site-icon.svg"
     if not image_path.exists():
         raise HTTPException(status_code=404, detail="Site icon not found")
     return image_path.read_bytes()

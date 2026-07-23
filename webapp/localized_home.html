@@ -16,10 +16,10 @@
     <meta property="og:url" content="{{ seo_url }}">
     <meta property="og:locale" content="{{ seo_locale or 'en_US' }}">
     <script type="application/ld+json">{{ seo_schema | safe }}</script>
-    <link rel="icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260722-football-emoji-v4">
-    <link rel="shortcut icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260722-football-emoji-v4">
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260722-football-emoji-v4">
-    <link rel="manifest" href="/assets/manifest.json?v=20260722-football-emoji-v4">
+    <link rel="icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260723-football-emoji-v5">
+    <link rel="shortcut icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260723-football-emoji-v5">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260723-football-emoji-v5">
+    <link rel="manifest" href="/assets/manifest.json?v=20260723-football-emoji-v5">
     <link rel="stylesheet" href="/assets/style.css?v=20260717-ios-dark-text-v1">
     <link rel="preconnect" href="https://telegram.org" crossorigin>
     <link rel="dns-prefetch" href="https://telegram.org">
@@ -98,9 +98,9 @@
                     {% if item.media_type == 'video' and item.media_url %}
                     <video class="seo-card-video" muted playsinline preload="metadata" src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
                     {% elif item.image_url %}
-                    <img src="{{ item.image_url }}" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260722-football-emoji-v4';">
+                    <img src="{{ item.image_url }}" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260723-football-emoji-v5';">
                     {% else %}
-                    <img src="/assets/site-icon.svg?v=20260722-football-emoji-v4" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async">
+                    <img src="/assets/site-icon.svg?v=20260723-football-emoji-v5" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async">
                     {% endif %}
                     <span>{{ item.title }}</span>
                 </a></li>
@@ -383,6 +383,7 @@
                 appendMetric(grid, 'Google clicks/impr.', formatCount(seo.search_console_clicks_window) + '/' + formatCount(seo.search_console_impressions_window));
                 appendMetric(grid, 'Image/video impressions', formatCount(seo.search_console_image_impressions_window) + '/' + formatCount(seo.search_console_video_impressions_window));
                 appendMetric(grid, 'SEO learners', (seoRuntime.seo_auto_learn_last_status || 'pending') + ' / ' + (seoRuntime.seo_trends_last_status || 'pending'));
+                appendMetric(grid, 'Mapping changes 24h / 7d', formatCount(seo.mappings_updated_24h) + ' / ' + formatCount(seo.mappings_updated_7d));
                 appendMetric(grid, 'Google import', (searchConsoleSetup.configured ? (seoRuntime.search_console_import_last_status || 'configured') : 'not connected') + (seoRuntime.search_console_import_last_attempt_at ? ' · ' + seoRuntime.search_console_import_last_attempt_at : ''));
                 appendMetric(grid, 'Google sitemap', googleSitemap.status || 'never');
                 appendMetric(grid, 'IndexNow pending / failed', formatCount(indexnow.pending) + ' / ' + formatCount(indexnow.failed));
@@ -427,11 +428,90 @@
                     return String(item.query || 'query') + ': ' + formatCount(item.impressions) + ' impressions, ' + formatCount(item.clicks) + ' clicks, avg pos ' + (item.avg_position || '-') + ' · ' + String(item.page || '/');
                 }, 10);
 
-                appendList(panel, 'Recent Search Mappings', seo.recent_mappings || [], function (item) {
-                    var taxonomy = item.category || 'catalog';
-                    if (item.subcategory) taxonomy += ' / ' + item.subcategory;
-                    return String(item.term || 'term') + ' -> ' + taxonomy;
-                }, 8);
+                appendDetailsList(
+                    panel,
+                    'admin-seo-mapping-changes',
+                    'SEO Mapping Changes (' + formatCount((seo.recent_mappings || []).length) + ')',
+                    'Newest approved mapping edits. Search usage increases the hit count without changing the edit timestamp.',
+                    (seo.recent_mappings || []).slice(0, 50),
+                    function (item) {
+                        var li = document.createElement('li');
+                        var taxonomy = item.category || 'catalog';
+                        if (item.subcategory) taxonomy += ' / ' + item.subcategory;
+                        li.textContent = String(item.term || 'term') + ' -> ' + taxonomy;
+
+                        var mappingMeta = document.createElement('span');
+                        mappingMeta.className = 'admin-page-meta';
+                        mappingMeta.textContent =
+                            'source ' + String(item.source || 'unknown') +
+                            ' · language ' + String(item.language || 'en') +
+                            ' · ' + formatCount(item.hits) + ' uses' +
+                            ' · changed ' + String(item.updated_at || '-');
+                        li.appendChild(mappingMeta);
+                        return li;
+                    }
+                );
+                appendDetailsList(
+                    panel,
+                    'admin-seo-mapping-sources',
+                    'SEO Mapping Sources (' + formatCount((seo.mapping_sources || []).length) + ')',
+                    'Current approved mapping coverage grouped by the worker or source that created it.',
+                    seo.mapping_sources || [],
+                    function (item) {
+                        var li = document.createElement('li');
+                        li.textContent =
+                            String(item.source || 'unknown') + ': ' +
+                            formatCount(item.count) + ' mappings, ' +
+                            formatCount(item.hits) + ' uses';
+
+                        var sourceMeta = document.createElement('span');
+                        sourceMeta.className = 'admin-page-meta';
+                        sourceMeta.textContent = 'latest change ' + String(item.latest_change || '-');
+                        li.appendChild(sourceMeta);
+                        return li;
+                    }
+                );
+                appendDetailsList(
+                    panel,
+                    'admin-seo-worker-activity',
+                    'SEO Worker Activity (3)',
+                    'Latest completed background runs and the number of changes each one made.',
+                    [
+                        {
+                            name: 'Auto learner',
+                            status: seoRuntime.seo_auto_learn_last_status,
+                            changed: seoRuntime.seo_auto_learn_last_changed,
+                            at: seoRuntime.seo_auto_learn_last_run_at,
+                            extra: formatCount(seoRuntime.seo_auto_learn_last_candidates) + ' candidates, ' + formatCount(seoRuntime.seo_auto_learn_last_suppressed) + ' suppressed'
+                        },
+                        {
+                            name: 'Google Trends',
+                            status: seoRuntime.seo_trends_last_status,
+                            changed: seoRuntime.seo_trends_last_promoted,
+                            at: seoRuntime.seo_trends_last_run_at,
+                            extra: formatCount(seoRuntime.seo_trends_last_candidates) + ' candidates, ' + formatCount(seoRuntime.seo_trends_last_imported) + ' imported'
+                        },
+                        {
+                            name: 'Search Console',
+                            status: seoRuntime.search_console_import_last_status,
+                            changed: seoRuntime.search_console_import_last_signals,
+                            at: seoRuntime.search_console_import_last_attempt_at,
+                            extra: formatCount(seoRuntime.search_console_import_last_rows) + ' rows, ' + formatCount(seoRuntime.search_console_import_last_aggregates) + ' aggregates'
+                        }
+                    ],
+                    function (item) {
+                        var li = document.createElement('li');
+                        li.textContent =
+                            item.name + ': ' + String(item.status || 'pending') +
+                            ' · ' + formatCount(item.changed) + ' changes';
+
+                        var workerMeta = document.createElement('span');
+                        workerMeta.className = 'admin-page-meta';
+                        workerMeta.textContent = item.extra + ' · last ' + String(item.at || '-');
+                        li.appendChild(workerMeta);
+                        return li;
+                    }
+                );
                 appendList(panel, 'Top Visitor Locations', data.top_visitor_locations || [], function (item) {
                     var place = [item.city, item.region, item.country].filter(function (part) {
                         return part && part !== 'Unknown';

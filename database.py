@@ -4252,6 +4252,7 @@ class Database:
             return 0
 
         async with self.get_connection() as db:
+            changes_before = db.total_changes
             await db.executemany(
                 """
                 INSERT INTO seo_query_mappings (
@@ -4266,11 +4267,16 @@ class Database:
                     language = seo_query_mappings.language,
                     approved = excluded.approved,
                     updated_at = CURRENT_TIMESTAMP
+                WHERE seo_query_mappings.term IS NOT excluded.term
+                   OR seo_query_mappings.category IS NOT excluded.category
+                   OR seo_query_mappings.subcategory IS NOT excluded.subcategory
+                   OR seo_query_mappings.source IS NOT excluded.source
+                   OR seo_query_mappings.approved IS NOT excluded.approved
                 """,
                 rows,
             )
             await db.commit()
-        return len(rows)
+            return db.total_changes - changes_before
 
     async def increment_seo_mapping_hits(self, terms: List[str]) -> int:
         """Increment usage counters for approved SEO mappings matched by search."""
@@ -4292,9 +4298,7 @@ class Database:
             await db.executemany(
                 """
                 UPDATE seo_query_mappings
-                SET
-                    hits = COALESCE(hits, 0) + 1,
-                    updated_at = CURRENT_TIMESTAMP
+                SET hits = COALESCE(hits, 0) + 1
                 WHERE approved = 1 AND normalized_term = ?
                 """,
                 normalized_terms,
@@ -5012,6 +5016,12 @@ class Database:
                 "auto_mappings": await scalar(
                     "SELECT COUNT(*) FROM seo_query_mappings WHERE approved = 1 AND source = 'auto_learn'"
                 ),
+                "mappings_updated_24h": await scalar(
+                    "SELECT COUNT(*) FROM seo_query_mappings WHERE approved = 1 AND updated_at >= datetime('now', '-1 day')"
+                ),
+                "mappings_updated_7d": await scalar(
+                    "SELECT COUNT(*) FROM seo_query_mappings WHERE approved = 1 AND updated_at >= datetime('now', '-7 days')"
+                ),
                 "search_console_window_days": search_console_days,
                 "search_console_queries_window": await scalar(
                     "SELECT COUNT(DISTINCT normalized_query) FROM search_console_query_events WHERE source_date >= ?",
@@ -5083,6 +5093,19 @@ class Database:
                     lookback_hours=Config.SEO_AUTO_LEARN_LOOKBACK_HOURS,
                 ),
                 "recent_mappings": await self.get_recent_seo_query_mappings(limit=limit),
+                "mapping_sources": await rows(
+                    """
+                    SELECT
+                        source,
+                        COUNT(*) AS count,
+                        COALESCE(SUM(hits), 0) AS hits,
+                        MAX(updated_at) AS latest_change
+                    FROM seo_query_mappings
+                    WHERE approved = 1
+                    GROUP BY source
+                    ORDER BY count DESC, source ASC
+                    """
+                ),
                 "mapping_languages": await rows(
                     """
                     SELECT
