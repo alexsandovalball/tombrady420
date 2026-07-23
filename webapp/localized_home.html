@@ -59,6 +59,24 @@
         .language-switch a[aria-current="page"] { border-color: #2481cc; color: #2481cc; }
         .localized-home h1 { margin: .4rem 0; font-size: 2rem; }
         .localized-home header p { color: #666; line-height: 1.5; }
+        .public-tools { display: flex; gap: .65rem; margin: 1rem 0; }
+        .public-tool-btn, .public-search-form button {
+            min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: .4rem;
+            padding: .65rem .9rem; border: 1px solid rgba(0,0,0,.14); border-radius: 8px;
+            color: #111; background: rgba(255,255,255,.96); font: inherit; font-weight: 700; cursor: pointer;
+        }
+        .public-tool-btn[aria-expanded="true"] { border-color: #2481cc; color: #2481cc; }
+        .public-search { margin: 0 0 1.5rem; padding: .85rem; border: 1px solid rgba(0,0,0,.12); border-radius: 8px; background: rgba(255,255,255,.96); }
+        .public-search[hidden] { display: none; }
+        .public-search-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .55rem; }
+        .public-search-form input {
+            min-width: 0; min-height: 44px; padding: .65rem .75rem; border: 1px solid rgba(0,0,0,.2);
+            border-radius: 8px; color: #111; background: #fff; font: inherit;
+        }
+        .public-search-form button { color: #fff; background: #2481cc; border-color: #2481cc; }
+        .public-search-status { min-height: 1.25rem; margin: .65rem 0 0; color: #555; }
+        .public-search-results { margin-top: .75rem; }
+        .public-search-results:empty { display: none; }
         .category-grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin: 1.25rem 0 2rem; }
         .category-grid a { min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: .5rem; padding: .8rem 1rem; border: 1px solid rgba(0,0,0,.14); border-radius: 8px; color: #111; background: rgba(255,255,255,.94); text-decoration: none; font-weight: 700; }
         .product-grid { list-style: none; padding: 0; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
@@ -86,6 +104,17 @@
             <h1>🏈 {{ ui.menu }}</h1>
             <p>{{ ui.catalog_desc }}</p>
         </header>
+        <div class="public-tools">
+            <button id="public-search-toggle" class="public-tool-btn" type="button" aria-expanded="false" aria-controls="catalog-search">🔍 {{ ui.search }}</button>
+        </div>
+        <section id="catalog-search" class="public-search" hidden aria-labelledby="public-search-toggle">
+            <form id="public-search-form" class="public-search-form" role="search">
+                <input id="public-search-input" name="q" type="search" minlength="2" autocomplete="off" placeholder="{{ ui.search_placeholder }}" aria-label="{{ ui.search_placeholder }}">
+                <button type="submit">🔍 {{ ui.search }}</button>
+            </form>
+            <p id="public-search-status" class="public-search-status" role="status" aria-live="polite"></p>
+            <ul id="public-search-results" class="product-grid public-search-results" aria-label="{{ ui.search_results }}"></ul>
+        </section>
         <nav class="category-grid" aria-label="Catalog categories">
             {% for item in seo_categories %}<a href="{{ item.url }}"><span>{{ item.label }}</span><strong>{{ item.count }}</strong></a>{% endfor %}
         </nav>
@@ -128,6 +157,125 @@
         <section id="admin-panel" class="admin-panel" hidden aria-live="polite"></section>
     </main>
     <script>
+        (function () {
+            var toggle = document.getElementById('public-search-toggle');
+            var panel = document.getElementById('catalog-search');
+            var form = document.getElementById('public-search-form');
+            var input = document.getElementById('public-search-input');
+            var status = document.getElementById('public-search-status');
+            var results = document.getElementById('public-search-results');
+            if (!toggle || !panel || !form || !input || !status || !results) return;
+
+            var activeRequest = null;
+            var labels = {
+                searching: {{ ui.searching | tojson }},
+                noResults: {{ ui.no_results | tojson }},
+                error: {{ ui.search_error | tojson }},
+                results: {{ ui.search_results | tojson }}
+            };
+
+            function setOpen(open, focusInput) {
+                panel.hidden = !open;
+                toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+                if (open && focusInput) input.focus();
+            }
+
+            function mediaPreview(item) {
+                var media = Array.isArray(item.media_info) ? item.media_info : [];
+                var photoIndex = media.findIndex(function (entry) { return entry && entry.type === 'photo'; });
+                var videoIndex = media.findIndex(function (entry) { return entry && entry.type === 'video'; });
+                var index = photoIndex >= 0 ? photoIndex : videoIndex;
+                if (index < 0) return null;
+
+                if (photoIndex >= 0) {
+                    var image = document.createElement('img');
+                    image.src = '/media/products/' + encodeURIComponent(item.id) + '/' + photoIndex;
+                    image.alt = String(item.caption || '').split('\n')[0] || 'Product';
+                    image.loading = 'lazy';
+                    image.decoding = 'async';
+                    image.addEventListener('error', function () {
+                        image.src = '/assets/site-icon.svg?v=20260723-football-emoji-v5';
+                    }, { once: true });
+                    return image;
+                }
+
+                var video = document.createElement('video');
+                video.className = 'seo-card-video';
+                video.muted = true;
+                video.playsInline = true;
+                video.preload = 'metadata';
+                video.src = '/api/catalog/' + encodeURIComponent(item.id) + '/media/' + videoIndex + '#t=0.2';
+                video.setAttribute('aria-label', String(item.caption || '').split('\n')[0] || 'Product');
+                return video;
+            }
+
+            function renderItems(items) {
+                var nodes = [];
+                items.forEach(function (item) {
+                    var li = document.createElement('li');
+                    var link = document.createElement('a');
+                    link.href = item.url || '/product/' + encodeURIComponent(item.id);
+
+                    var preview = mediaPreview(item);
+                    if (preview) link.appendChild(preview);
+
+                    var title = document.createElement('span');
+                    title.textContent = String(item.caption || '').split('\n')[0] || String(item.category || 'Product');
+                    link.appendChild(title);
+                    li.appendChild(link);
+                    nodes.push(li);
+                });
+                results.replaceChildren.apply(results, nodes);
+            }
+
+            async function runSearch(query) {
+                if (activeRequest) activeRequest.abort();
+                activeRequest = new AbortController();
+                status.textContent = labels.searching;
+                results.replaceChildren();
+
+                try {
+                    var response = await fetch(
+                        '/api/search?q=' + encodeURIComponent(query) + '&limit=24&lang={{ seo_lang or "en" }}',
+                        { signal: activeRequest.signal, credentials: 'same-origin', headers: { Accept: 'application/json' } }
+                    );
+                    if (!response.ok) throw new Error('search failed');
+                    var payload = await response.json();
+                    var items = Array.isArray(payload.items) ? payload.items : [];
+                    renderItems(items);
+                    status.textContent = items.length ? String(payload.total || items.length) + ' ' + labels.results : labels.noResults;
+                } catch (err) {
+                    if (err && err.name === 'AbortError') return;
+                    status.textContent = labels.error;
+                } finally {
+                    activeRequest = null;
+                }
+            }
+
+            toggle.addEventListener('click', function () {
+                setOpen(panel.hidden, panel.hidden);
+            });
+            form.addEventListener('submit', function (event) {
+                event.preventDefault();
+                var query = input.value.trim();
+                if (query.length < 2) {
+                    input.focus();
+                    return;
+                }
+                runSearch(query);
+            });
+
+            var params = new URLSearchParams(window.location.search);
+            var initialQuery = (params.get('q') || '').trim();
+            if (params.get('search') === '1' || initialQuery) {
+                setOpen(true, !initialQuery);
+                if (initialQuery.length >= 2) {
+                    input.value = initialQuery;
+                    runSearch(initialQuery);
+                }
+            }
+        })();
+
         (function () {
             document.querySelectorAll('video.seo-card-video').forEach(function (video) {
                 video.addEventListener('loadedmetadata', function () {

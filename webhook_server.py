@@ -3557,6 +3557,9 @@ _SEO_UI = {
         "catalog_title": "Premium Cannabis Storefront",
         "catalog_desc": "Browse our premium cannabis catalog and current product listings.",
         "browse_related": "Browse Related Products", "related": "Related",
+        "search": "Search", "search_placeholder": "Search products",
+        "search_results": "Search results", "searching": "Searching...",
+        "no_results": "No matching products found.", "search_error": "Search is temporarily unavailable.",
     },
     "de": {
         "home": "Startseite", "menu": "Tom Brady Menü",
@@ -3570,6 +3573,9 @@ _SEO_UI = {
         "open_video": "Video öffnen", "open_media": "Medium öffnen", "media": "Medium",
         "catalog_title": "Premium-Cannabis-Katalog", "catalog_desc": "Entdecke unseren aktuellen Premium-Cannabis-Katalog.",
         "browse_related": "Ähnliche Produkte ansehen", "related": "Verwandt",
+        "search": "Suchen", "search_placeholder": "Produkte suchen",
+        "search_results": "Suchergebnisse", "searching": "Suche...",
+        "no_results": "Keine passenden Produkte gefunden.", "search_error": "Die Suche ist vorübergehend nicht verfügbar.",
     },
     "nl": {
         "home": "Home", "menu": "Tom Brady Menu",
@@ -3583,6 +3589,9 @@ _SEO_UI = {
         "open_video": "Video openen", "open_media": "Media openen", "media": "media",
         "catalog_title": "Premium cannabiscatalogus", "catalog_desc": "Bekijk onze actuele premium cannabiscatalogus.",
         "browse_related": "Gerelateerde producten bekijken", "related": "Gerelateerd",
+        "search": "Zoeken", "search_placeholder": "Producten zoeken",
+        "search_results": "Zoekresultaten", "searching": "Zoeken...",
+        "no_results": "Geen overeenkomende producten gevonden.", "search_error": "Zoeken is tijdelijk niet beschikbaar.",
     },
     "it": {
         "home": "Home", "menu": "Menu Tom Brady",
@@ -3596,6 +3605,9 @@ _SEO_UI = {
         "open_video": "Apri video", "open_media": "Apri media", "media": "media",
         "catalog_title": "Catalogo cannabis premium", "catalog_desc": "Esplora il nostro catalogo cannabis premium aggiornato.",
         "browse_related": "Sfoglia prodotti correlati", "related": "Correlato",
+        "search": "Cerca", "search_placeholder": "Cerca prodotti",
+        "search_results": "Risultati di ricerca", "searching": "Ricerca...",
+        "no_results": "Nessun prodotto corrispondente trovato.", "search_error": "La ricerca non è temporaneamente disponibile.",
     },
     "es": {
         "home": "Inicio", "menu": "Menú Tom Brady",
@@ -3609,6 +3621,9 @@ _SEO_UI = {
         "open_video": "Abrir vídeo", "open_media": "Abrir contenido", "media": "contenido",
         "catalog_title": "Catálogo de cannabis premium", "catalog_desc": "Explora nuestro catálogo actualizado de cannabis premium.",
         "browse_related": "Ver productos relacionados", "related": "Relacionado",
+        "search": "Buscar", "search_placeholder": "Buscar productos",
+        "search_results": "Resultados de búsqueda", "searching": "Buscando...",
+        "no_results": "No se encontraron productos coincidentes.", "search_error": "La búsqueda no está disponible temporalmente.",
     },
     "fr": {
         "home": "Accueil", "menu": "Menu Tom Brady",
@@ -3622,6 +3637,9 @@ _SEO_UI = {
         "open_video": "Ouvrir la vidéo", "open_media": "Ouvrir le média", "media": "média",
         "catalog_title": "Catalogue de cannabis premium", "catalog_desc": "Découvrez notre catalogue actuel de cannabis premium.",
         "browse_related": "Voir les produits associés", "related": "Associé",
+        "search": "Rechercher", "search_placeholder": "Rechercher des produits",
+        "search_results": "Résultats de recherche", "searching": "Recherche...",
+        "no_results": "Aucun produit correspondant trouvé.", "search_error": "La recherche est temporairement indisponible.",
     },
 }
 
@@ -5422,7 +5440,7 @@ async def _serve_storefront_index(
         request,
         "localized_home.html",
         ctx,
-        cache_key=f"localized-home-card-media-v2:{language}:{len(ctx['seo_recent_products'])}:{_newest_lastmod(recent_products, datetime.now().date().isoformat())}",
+        cache_key=f"localized-home-public-search-v3:{language}:{len(ctx['seo_recent_products'])}:{_newest_lastmod(recent_products, datetime.now().date().isoformat())}",
     )
 
 
@@ -7328,6 +7346,13 @@ async def search_products(
                 "created_at": product.get("created_at"),
                 "media_count": len(media_info),
                 "media_info": media_info,
+                "url": _localized_path(
+                    _canonical_product_path(
+                        product.get("id"),
+                        product.get("caption") or "",
+                    ),
+                    lang,
+                ),
             })
         
         payload = {

@@ -132,6 +132,7 @@
         <header>
             <nav aria-label="Breadcrumb">
                 <a class="cat-nav-btn" href="{{ localized_home_url }}">🏈 {{ ui.menu }}</a>
+                <a class="cat-nav-btn" href="{{ localized_home_url }}?search=1#catalog-search">🔍 {{ ui.search }}</a>
                 {% if current_subcategory and parent_category_url %}
                 <span>/</span><a class="cat-nav-btn" href="{{ parent_category_url }}">{{ category_display }}</a>
                 {% endif %}
