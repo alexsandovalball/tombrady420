@@ -250,6 +250,7 @@
         loadingInProgress: false,  // Prevent duplicate requests
         pendingRequests: new Map(),  // Track pending requests for deduplication
         webappSessionReady: false,
+        webappSessionToken: "",
         initialDataLoadFailed: false,  // Track if initial data load failed/timed out
         browserRouteRestoring: false
     };
@@ -1407,6 +1408,13 @@
             state.webappSessionReady = response.ok;
             if (!response.ok) {
                 logger.apiCall('webapp_session', 'error', { status: response.status });
+            } else {
+                try {
+                    const payload = await response.json();
+                    state.webappSessionToken = typeof payload.session === 'string' ? payload.session : '';
+                } catch (parseErr) {
+                    state.webappSessionToken = '';
+                }
             }
         } catch (err) {
             state.webappSessionReady = false;
@@ -3205,7 +3213,10 @@
 
     function buildMediaUrl(item, mediaIndex) {
         if (!item.media_count || !item.id) return null;
-        return `/api/catalog/${item.id}/media/${mediaIndex}`;
+        const baseUrl = `/api/catalog/${item.id}/media/${mediaIndex}`;
+        if (!state.webappSessionToken) return baseUrl;
+        const joiner = baseUrl.includes('?') ? '&' : '?';
+        return `${baseUrl}${joiner}session=${encodeURIComponent(state.webappSessionToken)}`;
     }
 
     function formatDate(dateString) {

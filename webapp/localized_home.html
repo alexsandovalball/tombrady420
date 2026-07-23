@@ -297,6 +297,7 @@
 
             var adminState = {
                 sessionReady: false,
+                sessionToken: '',
                 loading: false,
                 loaded: false,
                 refreshTimer: null
@@ -694,6 +695,14 @@
                         headers: { 'X-Telegram-Init-Data': initData }
                     });
                     adminState.sessionReady = response.ok;
+                    if (response.ok) {
+                        try {
+                            var payload = await response.json();
+                            adminState.sessionToken = payload && typeof payload.session === 'string' ? payload.session : '';
+                        } catch (parseErr) {
+                            adminState.sessionToken = '';
+                        }
+                    }
                 } catch (err) {
                     adminState.sessionReady = false;
                 }
@@ -713,7 +722,11 @@
                     if (context.initData) {
                         headers['X-Telegram-Init-Data'] = context.initData;
                     }
-                    var response = await fetch('/api/admin/status?ts=' + Date.now(), {
+                    var statusUrl = '/api/admin/status?ts=' + Date.now();
+                    if (!context.initData && adminState.sessionToken) {
+                        statusUrl += '&session=' + encodeURIComponent(adminState.sessionToken);
+                    }
+                    var response = await fetch(statusUrl, {
                         headers: headers,
                         credentials: 'same-origin',
                         cache: 'no-store'

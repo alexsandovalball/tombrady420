@@ -7375,7 +7375,7 @@ async def search_products(
 
 @app.post("/api/webapp-session")
 async def create_webapp_session(request: Request):
-    """Exchange signed Telegram initData for a short same-origin media session."""
+    """Exchange signed Telegram initData for a short-lived session token."""
     init_data, _ = _get_validated_init_data(request, allow_preview=False)
     await _check_user_not_blocked(init_data, get_client_ip(request))
     _queue_visitor_event(
@@ -7387,23 +7387,10 @@ async def create_webapp_session(request: Request):
     )
 
     token = _remember_webapp_session(init_data)
-    secure_cookie = (
-        request.url.scheme == "https"
-        or request.headers.get("X-Forwarded-Proto", "").split(",")[0].strip() == "https"
-    )
     response = Response(
-        content=json.dumps({"ok": True, "expires_in": WEBAPP_SESSION_TTL_SECONDS}),
+        content=json.dumps({"ok": True, "expires_in": WEBAPP_SESSION_TTL_SECONDS, "session": token}),
         media_type="application/json",
         headers={"Cache-Control": "no-store"},
-    )
-    response.set_cookie(
-        WEBAPP_SESSION_COOKIE,
-        token,
-        max_age=WEBAPP_SESSION_TTL_SECONDS,
-        httponly=True,
-        secure=secure_cookie,
-        samesite="lax",
-        path="/",
     )
     return response
 
