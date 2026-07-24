@@ -4054,8 +4054,8 @@ def _product_card_preview_media(product: dict, *, absolute: bool = False) -> dic
     """Return the best lightweight media URL for product cards.
 
     Cards should show a real photo when possible. For video-only products, use
-    the Mini App media stream directly so the browser can render a video frame
-    instead of falling back to the brand icon.
+    the Mini App media stream directly so the browser can render the media
+    instead of caching a crawler-oriented fallback image as the card preview.
     """
     product_id = product.get("id") or product.get("product_id")
     if product_id is None:
@@ -4064,7 +4064,7 @@ def _product_card_preview_media(product: dict, *, absolute: bool = False) -> dic
     media_info = _collect_media_info(product)
     for idx, media in enumerate(media_info):
         if media.get("type") == "photo":
-            path = _product_public_media_path(product_id, idx)
+            path = f"/api/catalog/{product_id}/media/{idx}"
             return {"type": "photo", "url": _absolute_storefront_url(path) if absolute else path}
 
     for idx, media in enumerate(media_info):
@@ -5393,7 +5393,7 @@ async def _build_storefront_index_context(
             "url": _localized_path(_canonical_product_path(product.get("id") or product.get("product_id"), product.get("caption") or ""), language),
             "category": get_category_display_name(product.get("category"), language) if product.get("category") else "",
             "subcategory": get_subcategory_display_name(product.get("subcategory"), language) if product.get("subcategory") else "",
-            "image_url": preview_media.get("url") if preview_media.get("type") == "photo" else "",
+            "image_url": _product_primary_image_url(product, absolute=True),
             "media_url": preview_media.get("url") or "",
             "media_type": preview_media.get("type") or "",
             "media_count": len(media_info),
@@ -6028,7 +6028,7 @@ async def _serve_category_page(category_name: str, request: Request, language: s
             "subcategory_display": get_subcategory_display_name(p.get("subcategory"), language) if p.get("subcategory") else "",
             "slug": _generate_slug(p.get("caption") or ""),
             "url": _localized_path(_canonical_product_path(p.get("id") or p.get("product_id"), p.get("caption") or ""), language),
-            "image_url": preview_media.get("url") if preview_media.get("type") == "photo" else "",
+            "image_url": _product_primary_image_url(p, absolute=False),
             "media_url": preview_media.get("url") or "",
             "media_type": preview_media.get("type") or "",
         }
@@ -6191,7 +6191,7 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
             "subcategory_display": subcategory_display,
             "slug": _generate_slug(p.get("caption") or ""),
             "url": _localized_path(_canonical_product_path(p.get("id") or p.get("product_id"), p.get("caption") or ""), language),
-            "image_url": preview_media.get("url") if preview_media.get("type") == "photo" else "",
+            "image_url": _product_primary_image_url(p, absolute=False),
             "media_url": preview_media.get("url") or "",
             "media_type": preview_media.get("type") or "",
         }

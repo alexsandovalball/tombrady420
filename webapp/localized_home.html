@@ -126,10 +126,10 @@
                 <li><a href="{{ item.url }}">
                     {% if item.media_type == 'video' and item.media_url %}
                     <video class="seo-card-video" muted playsinline preload="metadata" src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
-                    {% elif item.image_url %}
-                    <img src="{{ item.image_url }}" alt="{{ item.title }}" loading="{% if loop.index <= 2 %}eager{% else %}lazy{% endif %}" fetchpriority="{% if loop.index <= 2 %}high{% else %}auto{% endif %}" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260723-football-emoji-v5';">
+                    {% elif item.media_url %}
+                    <img src="{{ item.media_url }}" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260723-football-emoji-v5';">
                     {% else %}
-                    <img src="/assets/site-icon.svg?v=20260723-football-emoji-v5" alt="{{ item.title }}" loading="{% if loop.index <= 2 %}eager{% else %}lazy{% endif %}" fetchpriority="{% if loop.index <= 2 %}high{% else %}auto{% endif %}" decoding="async">
+                    <img src="/assets/site-icon.svg?v=20260723-football-emoji-v5" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async">
                     {% endif %}
                     <span>{{ item.title }}</span>
                 </a></li>

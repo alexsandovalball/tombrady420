@@ -47,6 +47,21 @@
     <link rel="manifest" href="/assets/manifest.json?v=20260723-football-emoji-v5">
 
     <script src="/assets/telegram-miniapp-bridge.js?v=20260717-botfather-bridge-v1"></script>
+    <script>
+        window.retryProductPreview = function (image) {
+            if (!image || image.dataset.previewRetried === '1') {
+                if (image) {
+                    image.onerror = null;
+                    image.src = '/assets/site-icon.svg?v=20260723-football-emoji-v5';
+                }
+                return;
+            }
+            image.dataset.previewRetried = '1';
+            var retryUrl = new URL(image.dataset.mediaSrc || image.src, window.location.origin);
+            retryUrl.searchParams.set('preview_retry', Date.now().toString());
+            image.src = retryUrl.toString();
+        };
+    </script>
     <link rel="stylesheet" href="/assets/style.css?v=20260717-ios-dark-text-v1">
     <style>
         html { background: #ffffff; }
@@ -160,8 +175,8 @@
                     <a href="{{ p.url }}">
                         {% if p.media_type == 'video' and p.media_url %}
                         <video class="product-thumb seo-card-video" muted playsinline preload="metadata" src="{{ p.media_url }}#t=0.2" aria-label="{{ p.title }}"></video>
-                        {% elif p.image_url %}
-                        <img class="product-thumb" src="{{ p.image_url }}" alt="{{ p.title }}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260723-football-emoji-v5';">
+                        {% elif p.media_url %}
+                        <img class="product-thumb" src="{{ p.media_url }}" data-media-src="{{ p.media_url }}" alt="{{ p.title }}" loading="eager" fetchpriority="auto" decoding="async" onerror="retryProductPreview(this);">
                         {% else %}
                         <span class="product-thumb placeholder" aria-hidden="true"></span>
                         {% endif %}
