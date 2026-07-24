@@ -124,7 +124,15 @@
         .cat-page img.product-thumb, .cat-page video.product-thumb, .product-thumb { display: block; width: 100%; aspect-ratio: 4 / 3; border-radius: 0; object-fit: cover; background: rgba(0, 0, 0, .04); border: 0; opacity: 1; }
         .product-thumb.placeholder { display: block; }
         .product-card-body { padding: 12px; display: flex; flex-direction: column; gap: 6px; }
-        .product-title { font-weight: 600; }
+        .product-title {
+            font-weight: 600;
+            line-height: 1.25;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            min-height: 2.5em;
+        }
         .product-badge { font-size: 0.8rem; color: var(--text-secondary, #666); margin-top: 0.2rem; }
         .cat-actions { display: grid; gap: .75rem; margin: 1.5rem 0; padding: 1rem; border-radius: 12px; background: rgba(0, 0, 0, .04); }
         .cat-action-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .75rem; }
@@ -181,7 +189,7 @@
                         <span class="product-thumb placeholder" aria-hidden="true"></span>
                         {% endif %}
                         <div class="product-card-body">
-                            <div class="product-title">{{ p.title }}</div>
+                            <div class="product-title" title="{{ p.title }}">{{ p.title }}</div>
                             <div class="product-badge">
                                 {% if p.subcategory %}{{ p.category }} &rsaquo; {{ p.subcategory_display }}{% else %}{{ p.category }}{% endif %}
                             </div>

@@ -3830,6 +3830,17 @@ def _caption_parts(caption: str) -> tuple[str, str, list[str]]:
     return title, desc, body_lines
 
 
+def _card_preview_title(caption: str, *, limit: int = 54) -> str:
+    """Shorten grid-card labels without changing product detail copy."""
+    title = _caption_parts(caption or "")[0].strip()
+    if not title:
+        return "Product"
+    if len(title) <= limit:
+        return title
+    cut = title[:limit].rsplit(" ", 1)[0].strip()
+    return f"{cut or title[:limit].rstrip()}..."
+
+
 def _dedupe_seo_phrases(values: Iterable[str], limit: int = 12) -> list[str]:
     seen = set()
     phrases: list[str] = []
@@ -6022,7 +6033,7 @@ async def _serve_category_page(category_name: str, request: Request, language: s
         {
             "id": p.get("id") or p.get("product_id"),
             "caption": p.get("caption") or "",
-            "title": _caption_parts(p.get("caption") or "")[0],
+            "title": _card_preview_title(p.get("caption") or ""),
             "category": get_category_display_name(p.get("category"), language) if p.get("category") else "",
             "subcategory": p.get("subcategory") or "",
             "subcategory_display": get_subcategory_display_name(p.get("subcategory"), language) if p.get("subcategory") else "",
@@ -6185,7 +6196,7 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
         {
             "id": p.get("id") or p.get("product_id"),
             "caption": p.get("caption") or "",
-            "title": _caption_parts(p.get("caption") or "")[0],
+            "title": _card_preview_title(p.get("caption") or ""),
             "category": get_category_display_name(p.get("category"), language) if p.get("category") else "",
             "subcategory": p.get("subcategory") or "",
             "subcategory_display": subcategory_display,
