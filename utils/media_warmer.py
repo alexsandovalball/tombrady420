@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import weakref
 from typing import Iterable, Optional
 
 from telegram.ext import Application
@@ -12,7 +13,10 @@ from utils.media_resolver import MediaResolver, collect_product_media
 
 logger = logging.getLogger(__name__)
 
-_warm_locks: dict[tuple[int, str], asyncio.Lock] = {}
+_warm_locks: weakref.WeakValueDictionary[
+    tuple[int, str], asyncio.Lock
+] = weakref.WeakValueDictionary()
+_active_warm_tasks: dict[int, asyncio.Task] = {}
 _warm_semaphore = asyncio.Semaphore(2)
 
 
@@ -135,11 +139,18 @@ def schedule_product_media_warm(
     apps = list(bot_apps or [])
     if not apps:
         return None
+    product_key = int(product_id)
+    existing_task = _active_warm_tasks.get(product_key)
+    if existing_task is not None and not existing_task.done():
+        logger.info("[media_warm] coalesced product=%s", product_key)
+        return existing_task
+    if existing_task is not None:
+        _active_warm_tasks.pop(product_key, None)
 
     async def _runner() -> None:
         try:
             stats = await warm_product_media_for_bots(
-                product_id,
+                product_key,
                 apps,
                 db=db,
                 max_bots=max_bots,
@@ -147,12 +158,20 @@ def schedule_product_media_warm(
             )
             logger.info(
                 "[media_warm] complete product=%s bots=%s warmed=%s failed=%s",
-                product_id,
+                product_key,
                 stats.get("bots", 0),
                 stats.get("warmed", 0),
                 stats.get("failed", 0),
             )
         except Exception as exc:
-            logger.warning("[media_warm] failed product=%s error=%s", product_id, exc, exc_info=True)
+            logger.warning("[media_warm] failed product=%s error=%s", product_key, exc, exc_info=True)
 
-    return asyncio.create_task(_runner())
+    task = asyncio.create_task(_runner(), name=f"media_warm:{product_key}")
+    _active_warm_tasks[product_key] = task
+
+    def _release_task(completed_task: asyncio.Task) -> None:
+        if _active_warm_tasks.get(product_key) is completed_task:
+            _active_warm_tasks.pop(product_key, None)
+
+    task.add_done_callback(_release_task)
+    return task

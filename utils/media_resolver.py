@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import time as _time
+import weakref
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -26,7 +27,9 @@ _VALIDATED_FILE_ID_TTL_SECONDS = 60 * 60
 _VALIDATED_FILE_ID_MAX = 5000
 _VALIDATION_TIMEOUT_SECONDS = 3.0
 _validated_file_ids: OrderedDict[tuple[str, str], tuple[float, Optional[str]]] = OrderedDict()
-_resolve_locks: dict[tuple[str, int, int, int, str], asyncio.Lock] = {}
+_resolve_locks: weakref.WeakValueDictionary[
+    tuple[str, int, int, int, str], asyncio.Lock
+] = weakref.WeakValueDictionary()
 
 
 def _normalize_media_type(file_type: Any, fallback: str = "photo") -> str:

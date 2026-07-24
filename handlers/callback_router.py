@@ -779,7 +779,6 @@ async def _handle_send_notif_yes(update, context, query, user_id, parts):
             parse_mode="Markdown",
         )
         svc = get_notification_service()
-        _schedule_media_warm_for_current_bots(product_id)
         asyncio.create_task(svc.notify_users_about_product(context, product_id))
         logger.info(f"Notification service triggered for product {product_id}")
     else:

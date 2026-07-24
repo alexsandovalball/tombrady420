@@ -15,6 +15,7 @@ import secrets
 import shutil
 import time as _time
 import urllib.parse
+import weakref
 from collections import OrderedDict
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -133,14 +134,14 @@ _WEBHOOK_UPDATE_CONCURRENCY = _bounded_int_env("WEBHOOK_UPDATE_CONCURRENCY", 4, 
 _webhook_processing_semaphores: Dict[str, asyncio.Semaphore] = {}
 _bot_applications_by_registry_id: Dict[str, Application] = {}
 _runtime_index_to_registry_id: Dict[int, str] = {}
-_VISITOR_EVENT_QUEUE_MAX = _bounded_int_env("VISITOR_EVENT_QUEUE_MAX", 2048, 100, 20000)
+_VISITOR_EVENT_QUEUE_MAX = _bounded_int_env("VISITOR_EVENT_QUEUE_MAX", 512, 100, 5000)
 _VISITOR_EVENT_LOG_EVERY = _bounded_int_env("VISITOR_EVENT_LOG_EVERY", 500, 50, 10000)
 _visitor_event_queue: Optional[asyncio.Queue] = None
 _visitor_events_written = 0
 _visitor_events_dropped = 0
 _crawler_event_sample: OrderedDict[tuple[str, str, str], float] = OrderedDict()
 _CRAWLER_EVENT_SAMPLE_SECONDS = 3600
-_CRAWLER_EVENT_SAMPLE_MAX = 4096
+_CRAWLER_EVENT_SAMPLE_MAX = 1024
 _VISITOR_ANALYTICS_RETENTION_DAYS = _bounded_int_env("VISITOR_ANALYTICS_RETENTION_DAYS", 45, 7, 365)
 _VISITOR_ANALYTICS_PRUNE_INTERVAL_SECONDS = _bounded_int_env(
     "VISITOR_ANALYTICS_PRUNE_INTERVAL_SECONDS",
@@ -167,13 +168,13 @@ _ADMIN_CACHE_CLEANUP_BATCH_SIZE = _bounded_int_env("ADMIN_CACHE_CLEANUP_BATCH_SI
 _ADMIN_CACHE_CLEANUP_MAX_ATTEMPTS = _bounded_int_env("ADMIN_CACHE_CLEANUP_MAX_ATTEMPTS", 12, 1, 100)
 _ADMIN_CACHE_CLEANUP_RETRY_BASE_SECONDS = _bounded_int_env("ADMIN_CACHE_CLEANUP_RETRY_BASE_SECONDS", 60, 10, 3600)
 _SEO_PUBLIC_MEDIA_RATE_LIMIT_WINDOW = _bounded_int_env("SEO_PUBLIC_MEDIA_RATE_LIMIT_WINDOW", 60, 10, 3600)
-_SEO_RESPONSE_CACHE_MAX = _bounded_int_env("SEO_RESPONSE_CACHE_MAX", 256, 16, 2000)
+_SEO_RESPONSE_CACHE_MAX = _bounded_int_env("SEO_RESPONSE_CACHE_MAX", 128, 16, 1000)
 _seo_response_cache: OrderedDict[str, tuple[float, bytes, str, str, int]] = OrderedDict()
 _seo_auto_learn_lock: Optional[asyncio.Lock] = None
 _seo_trends_lock: Optional[asyncio.Lock] = None
 _webapp_search_cache: OrderedDict[str, tuple[float, dict]] = OrderedDict()
 _WEBAPP_SEARCH_CACHE_TTL_SECONDS = _bounded_int_env("WEBAPP_SEARCH_CACHE_TTL_SECONDS", 90, 15, 600)
-_WEBAPP_SEARCH_CACHE_MAX = _bounded_int_env("WEBAPP_SEARCH_CACHE_MAX", 256, 32, 2000)
+_WEBAPP_SEARCH_CACHE_MAX = _bounded_int_env("WEBAPP_SEARCH_CACHE_MAX", 128, 32, 1000)
 _ADMIN_STATUS_CACHE_SECONDS = _bounded_int_env("ADMIN_STATUS_CACHE_SECONDS", 15, 5, 120)
 _ADMIN_STATUS_CACHE_MAX = _bounded_int_env("ADMIN_STATUS_CACHE_MAX", 16, 1, 64)
 _admin_status_cache: OrderedDict[int, tuple[float, dict[str, Any]]] = OrderedDict()
@@ -202,7 +203,11 @@ _INACTIVE_WEBHOOK_LOG_INTERVAL_SECONDS = 15 * 60
 WEBAPP_SESSION_COOKIE = "brady_webapp_session"
 WEBAPP_SESSION_TTL_SECONDS = _bounded_int_env("WEBAPP_SESSION_TTL_SECONDS", 3600, 300, 24 * 3600)
 _webapp_session_tokens: OrderedDict[str, tuple[str, float]] = OrderedDict()
-_WEBAPP_SESSION_MAX = 8192
+_WEBAPP_SESSION_MAX = _bounded_int_env("WEBAPP_SESSION_MAX", 2048, 128, 8192)
+_PRIMARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("PRIMARY_BOT_CONNECTION_POOL_SIZE", 6, 2, 16)
+_SECONDARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("SECONDARY_BOT_CONNECTION_POOL_SIZE", 3, 1, 8)
+_MEDIA_STREAM_CONCURRENCY = _bounded_int_env("MEDIA_STREAM_CONCURRENCY", 8, 2, 32)
+_media_stream_semaphore = asyncio.Semaphore(_MEDIA_STREAM_CONCURRENCY)
 
 # Media cache configuration. Disk cache is app-owned, bounded, and self-pruning.
 _DEFAULT_MEDIA_STORAGE_MODE = "persistent" if Path("/data").exists() else "temp"
@@ -243,7 +248,7 @@ class WebhookIPRateLimiter:
     to prevent unbounded memory growth.
     """
 
-    _MAX_BUCKETS = 10_000  # evict oldest entries beyond this count
+    _MAX_BUCKETS = 2_048  # evict oldest entries beyond this count
     # Default: 100 requests per 60-second window per IP
     _DEFAULT_MAX_REQUESTS = 100
     _DEFAULT_WINDOW_SECONDS = 60
@@ -320,6 +325,9 @@ class MediaCache:
             if file_age > self.ttl_seconds:
                 # File is expired, delete it
                 cache_path.unlink()
+                forget_tracking = globals().get("_forget_media_tracking")
+                if callable(forget_tracking):
+                    forget_tracking(cache_path)
                 logger.debug(f"Cache expired for file_id {file_id[:20]}...")
                 return None
         except (OSError, FileNotFoundError):
@@ -391,6 +399,9 @@ class MediaCache:
 
                 try:
                     file_path.unlink()
+                    forget_tracking = globals().get("_forget_media_tracking")
+                    if callable(forget_tracking):
+                        forget_tracking(file_path)
                     total_size -= size
                     logger.info("[resource] cache_evicted path=%s bytes=%d", file_path.name, size)
                 except (OSError, FileNotFoundError):
@@ -424,6 +435,9 @@ class MediaCache:
                                 continue
                             if now - file_path.stat().st_mtime > self.ttl_seconds:
                                 file_path.unlink()
+                                forget_tracking = globals().get("_forget_media_tracking")
+                                if callable(forget_tracking):
+                                    forget_tracking(file_path)
                                 pruned += 1
                         except (OSError, FileNotFoundError):
                             pass
@@ -441,12 +455,12 @@ _media_cache = MediaCache(MEDIA_CACHE_DIR, MEDIA_CACHE_MAX_SIZE_MB, MEDIA_CACHE_
 # Avoids repeated DB lookups across consecutive HTTP Range 206 requests for the same media.
 # Bounded to _RESOLVED_FILE_ID_CACHE_MAX entries with LRU eviction.
 _resolved_file_id_cache: OrderedDict = OrderedDict()
-_RESOLVED_FILE_ID_CACHE_MAX = 500
+_RESOLVED_FILE_ID_CACHE_MAX = 300
 
 # In-memory cache for parsed media info, keyed by product id.
 # Avoids repeated json.loads() on additional_file_ids across requests.
 _media_info_cache: OrderedDict = OrderedDict()
-_MEDIA_INFO_CACHE_MAX = 500
+_MEDIA_INFO_CACHE_MAX = 300
 
 # In-memory result cache for expensive API list responses.
 # Keyed by a string describing the request parameters.
@@ -464,7 +478,7 @@ _SEO_QUERY_MAPPING_CACHE_TTL = 300  # seconds
 # Keep an in-process LRU of media registry mappings we have already written so
 # repeated range requests do not generate identical SQLite writes.
 _media_registry_write_cache: OrderedDict = OrderedDict()
-_MEDIA_REGISTRY_WRITE_CACHE_MAX = 5000
+_MEDIA_REGISTRY_WRITE_CACHE_MAX = 2000
 
 
 def _media_temp_path(file_id: str, suffix: str) -> Path:
@@ -473,9 +487,16 @@ def _media_temp_path(file_id: str, suffix: str) -> Path:
 
 
 _media_temp_lock = asyncio.Lock()
-_media_generation_locks: Dict[str, asyncio.Lock] = {}
+_media_generation_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 _media_active_streams: Dict[Path, int] = {}
 _media_last_access: Dict[Path, float] = {}
+
+
+def _forget_media_tracking(path: Path) -> None:
+    """Release bookkeeping after an owned media file is removed."""
+    if _media_active_streams.get(path, 0) <= 0:
+        _media_active_streams.pop(path, None)
+    _media_last_access.pop(path, None)
 
 
 async def _get_media_generation_lock(cache_key: str) -> asyncio.Lock:
@@ -631,32 +652,33 @@ def _build_media_range_response(
     content_length: int,
 ) -> StreamingResponse:
     async def stream_range():
-        active = await _stream_started(file_path)
-        logger.info(
-            "[media_cache] active_streams path=%s count=%d range=%s-%s",
-            file_path.name,
-            active,
-            start,
-            end,
-        )
-        try:
-            with open(file_path, "rb") as file_handle:
-                file_handle.seek(start)
-                remaining = end - start + 1
-                chunk_size = 8192
-                while remaining > 0:
-                    chunk = file_handle.read(min(chunk_size, remaining))
-                    if not chunk:
-                        break
-                    yield chunk
-                    remaining -= len(chunk)
-        finally:
-            remaining_streams = await _stream_finished(file_path)
+        async with _media_stream_semaphore:
+            active = await _stream_started(file_path)
             logger.info(
-                "[media_cache] active_streams path=%s count=%d event=finished",
+                "[media_cache] active_streams path=%s count=%d range=%s-%s",
                 file_path.name,
-                remaining_streams,
+                active,
+                start,
+                end,
             )
+            try:
+                with open(file_path, "rb") as file_handle:
+                    file_handle.seek(start)
+                    remaining = end - start + 1
+                    chunk_size = 8192
+                    while remaining > 0:
+                        chunk = file_handle.read(min(chunk_size, remaining))
+                        if not chunk:
+                            break
+                        yield chunk
+                        remaining -= len(chunk)
+            finally:
+                remaining_streams = await _stream_finished(file_path)
+                logger.info(
+                    "[media_cache] active_streams path=%s count=%d event=finished",
+                    file_path.name,
+                    remaining_streams,
+                )
 
     return StreamingResponse(
         stream_range(),
@@ -673,19 +695,20 @@ def _build_media_range_response(
 
 def _build_media_full_response(*, file_path: Path, media_type: str, content_length: int) -> StreamingResponse:
     async def stream_file():
-        active = await _stream_started(file_path)
-        logger.info("[media_cache] active_streams path=%s count=%d range=full", file_path.name, active)
-        try:
-            with open(file_path, "rb") as file_handle:
-                while chunk := file_handle.read(8192):
-                    yield chunk
-        finally:
-            remaining_streams = await _stream_finished(file_path)
-            logger.info(
-                "[media_cache] active_streams path=%s count=%d event=finished",
-                file_path.name,
-                remaining_streams,
-            )
+        async with _media_stream_semaphore:
+            active = await _stream_started(file_path)
+            logger.info("[media_cache] active_streams path=%s count=%d range=full", file_path.name, active)
+            try:
+                with open(file_path, "rb") as file_handle:
+                    while chunk := file_handle.read(8192):
+                        yield chunk
+            finally:
+                remaining_streams = await _stream_finished(file_path)
+                logger.info(
+                    "[media_cache] active_streams path=%s count=%d event=finished",
+                    file_path.name,
+                    remaining_streams,
+                )
 
     return StreamingResponse(
         stream_file(),
@@ -766,6 +789,7 @@ async def media_gc_worker() -> tuple[int, int]:
             size = path.stat().st_size if path.exists() else 0
             if path.exists() and not _is_media_temp_in_use(path):
                 path.unlink()
+                _forget_media_tracking(path)
                 removed += 1
                 freed += size
             await _catalog_db.mark_media_object_deleted(row["media_id"])
@@ -781,6 +805,7 @@ def _cleanup_path(path: Optional[Path]) -> None:
         return
     try:
         path.unlink()
+        _forget_media_tracking(path)
         logger.info("[resource] temp_deleted path=%s", path.name)
     except FileNotFoundError:
         pass
@@ -1484,7 +1509,7 @@ def _cache_state_snapshot() -> Dict[str, int]:
 
 def _runtime_process_snapshot() -> Dict[str, object]:
     uptime_seconds = max(0, int(_time.monotonic() - _PROCESS_STARTED_MONOTONIC))
-    return {
+    snapshot: Dict[str, object] = {
         "started_at": _PROCESS_STARTED_AT.isoformat(timespec="seconds") + "Z",
         "uptime_seconds": uptime_seconds,
         "uptime_minutes": round(uptime_seconds / 60, 1),
@@ -1495,6 +1520,21 @@ def _runtime_process_snapshot() -> Dict[str, object]:
         "seo_response_cache_entries": len(_seo_response_cache),
         "webapp_search_cache_entries": len(_webapp_search_cache),
     }
+    try:
+        status_text = Path("/proc/self/status").read_text(encoding="utf-8")
+        memory_fields = {}
+        for line in status_text.splitlines():
+            key, _, value = line.partition(":")
+            if key in {"VmRSS", "VmHWM", "VmSize"}:
+                memory_fields[key] = int(value.strip().split()[0]) * 1024
+        snapshot.update({
+            "memory_rss_bytes": memory_fields.get("VmRSS"),
+            "memory_peak_rss_bytes": memory_fields.get("VmHWM"),
+            "memory_virtual_bytes": memory_fields.get("VmSize"),
+        })
+    except (OSError, ValueError, IndexError):
+        pass
+    return snapshot
 
 
 def _media_runtime_snapshot() -> Dict[str, object]:
@@ -1677,8 +1717,13 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     )
     
     # Create application with optimized timeout settings
+    pool_size = (
+        _PRIMARY_BOT_CONNECTION_POOL_SIZE
+        if bot_index == 0
+        else _SECONDARY_BOT_CONNECTION_POOL_SIZE
+    )
     request = HTTPXRequest(
-        connection_pool_size=8,
+        connection_pool_size=pool_size,
         connect_timeout=10.0,
         read_timeout=10.0,
         write_timeout=10.0,

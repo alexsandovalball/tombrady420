@@ -46,8 +46,13 @@ logger = logging.getLogger(__name__)
 # How long (seconds) an identical request is considered a duplicate.
 _DEDUP_TTL: float = float(os.getenv("REQUEST_DEDUP_TTL", "5"))
 
-# Maximum number of entries tracked before LRU eviction.
-_MAX_ENTRIES: int = 50_000
+# The TTL is only five seconds, so a very large ceiling wastes RAM without
+# improving normal duplicate suppression.
+try:
+    _MAX_ENTRIES: int = int(os.getenv("REQUEST_DEDUP_MAX_ENTRIES", "5000"))
+except (TypeError, ValueError):
+    _MAX_ENTRIES = 5000
+_MAX_ENTRIES = max(500, min(_MAX_ENTRIES, 50_000))
 
 
 class RequestDeduplicator:
