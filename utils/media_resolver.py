@@ -19,6 +19,7 @@ from utils.helpers import (
     is_invalid_telegram_file_id_error,
     is_transient_telegram_error,
 )
+from utils.telegram_fetch import fetch_telegram_file
 
 logger = logging.getLogger(__name__)
 
@@ -354,9 +355,12 @@ class MediaResolver:
             return MediaResolutionResult(True, file_id, "validated_cache", file_unique_id=cached_unique_id)
 
         try:
-            tg_file = await asyncio.wait_for(
-                self.bot.get_file(file_id),
-                timeout=_VALIDATION_TIMEOUT_SECONDS,
+            tg_file = await fetch_telegram_file(
+                self.bot,
+                file_id,
+                context="media_resolver_validate",
+                retries=1,
+                timeout_seconds=_VALIDATION_TIMEOUT_SECONDS,
             )
             file_unique_id = getattr(tg_file, "file_unique_id", None)
             self._remember_validated_file_id(file_id, file_unique_id)

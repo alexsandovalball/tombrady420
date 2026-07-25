@@ -13,6 +13,7 @@ from telegram.error import Forbidden, BadRequest, RetryAfter, TelegramError
 from configs.config import Config
 from database import Database
 import emojis
+from utils.telegram_fetch import fetch_telegram_file
 
 logger = logging.getLogger(__name__)
 
@@ -480,7 +481,13 @@ async def get_bot_specific_file_id(
         mapped_file_id = await _db.get_bot_media_file_id(bot_identifier, canonical["file_unique_id"])
         if mapped_file_id:
             try:
-                tg_file = await bot.get_file(mapped_file_id)
+                tg_file = await fetch_telegram_file(
+                    bot,
+                    mapped_file_id,
+                    context="get_bot_specific_file_id:mapped",
+                    retries=1,
+                    timeout_seconds=8.0,
+                )
                 mapped_unique_id = getattr(tg_file, "file_unique_id", None)
                 expected_unique_id = canonical.get("file_unique_id")
                 if expected_unique_id and mapped_unique_id and mapped_unique_id != expected_unique_id:
@@ -519,7 +526,13 @@ async def get_bot_specific_file_id(
     
     if cached_file_id:
         try:
-            tg_file = await bot.get_file(cached_file_id)
+            tg_file = await fetch_telegram_file(
+                bot,
+                cached_file_id,
+                context="get_bot_specific_file_id:cached",
+                retries=1,
+                timeout_seconds=8.0,
+            )
             file_unique_id = getattr(tg_file, "file_unique_id", None)
             expected_unique_id = canonical.get("file_unique_id") if canonical else None
             if expected_unique_id and file_unique_id and file_unique_id != expected_unique_id:

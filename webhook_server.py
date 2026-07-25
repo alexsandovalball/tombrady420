@@ -92,6 +92,7 @@ from utils.webhook_identity import BotSlot, build_bot_slot, build_registry_webho
 from middleware.request_deduplicator import RequestDeduplicator
 from configs.telegram_ip_whitelist import is_telegram_ip
 from utils.deeplinks import build_bot_product_url, build_bot_start_url, build_webapp_product_url
+from utils.telegram_fetch import fetch_telegram_file
 from utils.access_control import (
     is_user_blocked_cached,
     record_user_ip_debounced,
@@ -204,8 +205,8 @@ WEBAPP_SESSION_COOKIE = "brady_webapp_session"
 WEBAPP_SESSION_TTL_SECONDS = _bounded_int_env("WEBAPP_SESSION_TTL_SECONDS", 3600, 300, 24 * 3600)
 _webapp_session_tokens: OrderedDict[str, tuple[str, float]] = OrderedDict()
 _WEBAPP_SESSION_MAX = _bounded_int_env("WEBAPP_SESSION_MAX", 2048, 128, 8192)
-_PRIMARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("PRIMARY_BOT_CONNECTION_POOL_SIZE", 6, 2, 16)
-_SECONDARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("SECONDARY_BOT_CONNECTION_POOL_SIZE", 3, 1, 8)
+_PRIMARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("PRIMARY_BOT_CONNECTION_POOL_SIZE", 10, 2, 16)
+_SECONDARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("SECONDARY_BOT_CONNECTION_POOL_SIZE", 4, 1, 8)
 _MEDIA_STREAM_CONCURRENCY = _bounded_int_env("MEDIA_STREAM_CONCURRENCY", 8, 2, 32)
 _media_stream_semaphore = asyncio.Semaphore(_MEDIA_STREAM_CONCURRENCY)
 
@@ -1727,7 +1728,7 @@ async def setup_application(bot_token: str, bot_index: int = 0):
         connect_timeout=10.0,
         read_timeout=10.0,
         write_timeout=10.0,
-        pool_timeout=5.0
+        pool_timeout=10.0
     )
     
     bot_app = Application.builder().token(bot_token).request(request).build()
@@ -7077,7 +7078,13 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
         try:
             # Try to get file info - this can fail for files >20MB
             try:
-                tg_file = await bot.get_file(file_id)
+                tg_file = await fetch_telegram_file(
+                    bot,
+                    file_id,
+                    context=f"stream_catalog_media:{product_id}:{media_index}",
+                    retries=1,
+                    timeout_seconds=8.0,
+                )
                 file_size = tg_file.file_size or 0
                 file_unique_id = getattr(tg_file, "file_unique_id", None)
                 if file_unique_id:
