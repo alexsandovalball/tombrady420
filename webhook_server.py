@@ -4165,6 +4165,60 @@ def _schema_date(value: Any, fallback: str = "") -> str:
     return fallback
 
 
+_VISIBLE_PRICE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?<![\w.])€\s*([0-9]+(?:[.,][0-9]{1,2})?)"), "EUR"),
+    (re.compile(r"(?<![\w.])£\s*([0-9]+(?:[.,][0-9]{1,2})?)"), "GBP"),
+    (re.compile(r"(?<![\w.])\$\s*([0-9]+(?:[.,][0-9]{1,2})?)"), "USD"),
+    (re.compile(r"(?<![\w.])([0-9]+(?:[.,][0-9]{1,2})?)\s*(?:eur|euro|euros)\b", re.IGNORECASE), "EUR"),
+    (re.compile(r"(?<![\w.])([0-9]+(?:[.,][0-9]{1,2})?)\s*(?:gbp|pounds?)\b", re.IGNORECASE), "GBP"),
+    (re.compile(r"(?<![\w.])([0-9]+(?:[.,][0-9]{1,2})?)\s*(?:usd|dollars?)\b", re.IGNORECASE), "USD"),
+)
+
+
+def _extract_visible_schema_price(product: dict) -> Optional[tuple[str, str]]:
+    """Extract a schema-safe price only when a currency price is visible."""
+    for field_name in ("price", "amount"):
+        raw_value = product.get(field_name)
+        if raw_value in (None, ""):
+            continue
+        currency = str(product.get("currency") or product.get("price_currency") or "").upper()
+        if currency in {"EUR", "GBP", "USD"}:
+            try:
+                return (f"{float(str(raw_value).replace(',', '.')):.2f}", currency)
+            except (TypeError, ValueError):
+                pass
+
+    caption = str(product.get("caption") or "")
+    for pattern, currency in _VISIBLE_PRICE_PATTERNS:
+        match = pattern.search(caption)
+        if not match:
+            continue
+        raw_price = match.group(1).replace(",", ".")
+        try:
+            price_value = float(raw_price)
+        except ValueError:
+            continue
+        if price_value <= 0:
+            continue
+        return (f"{price_value:.2f}", currency)
+    return None
+
+
+def _schema_offer_for_product(product: dict, product_url: str) -> Optional[dict]:
+    visible_price = _extract_visible_schema_price(product)
+    if not visible_price:
+        return None
+    price, currency = visible_price
+    return {
+        "@type": "Offer",
+        "url": product_url,
+        "price": price,
+        "priceCurrency": currency,
+        "availability": "https://schema.org/InStock",
+        "itemCondition": "https://schema.org/NewCondition",
+    }
+
+
 def _indexnow_enabled() -> bool:
     return bool(Config.INDEXNOW_ENABLED and _STOREFRONT_DOMAIN)
 
@@ -4647,6 +4701,7 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
     if product:
         product_url = url or _STOREFRONT_DOMAIN
         schema_name = schema_title or title
+        product_schema_id = f"{product_url}#product"
         product_category = category or product.get("category", "")
         product_subcategory = product.get("subcategory") or ""
         product_images = _product_photo_image_urls(product, absolute=True)
@@ -4659,10 +4714,11 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
         product_schema: dict = {
             "@context": "https://schema.org/",
             "@type": "Product",
+            "@id": product_schema_id,
             "name": schema_name,
             "description": desc,
             "url": product_url,
-            "mainEntityOfPage": product_url,
+            "mainEntityOfPage": {"@id": product_url},
             "sku": str(product.get("id") or product.get("product_id") or ""),
             "category": product_category,
             "inLanguage": language,
@@ -4702,23 +4758,29 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
             product_schema["image"] = product_images
         product_schema["primaryImageOfPage"] = {
             "@type": "ImageObject",
+            "@id": f"{product_url}#primaryimage",
             "url": primary_image,
             "contentUrl": primary_image,
             "caption": schema_name,
             "representativeOfPage": True,
         }
+        offer = _schema_offer_for_product(product, product_url)
+        if offer:
+            product_schema["offers"] = offer
         video_nodes = []
         if product_videos:
             thumbnail_url = _product_video_thumbnail_url(product)
             for idx, video_url in product_videos:
                 video_node: dict = {
                     "@type": "VideoObject",
+                    "@id": f"{product_url}#video-{idx + 1}",
                     "name": f"{schema_name} video {idx + 1}",
                     "description": desc,
                     "thumbnailUrl": [thumbnail_url],
                     "embedUrl": product_url,
                     "url": video_url,
                     "isPartOf": {"@id": product_url},
+                    "about": {"@id": product_schema_id},
                 }
                 if date_published:
                     video_node["uploadDate"] = date_published
@@ -4765,11 +4827,12 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
             "inLanguage": language,
             "primaryImageOfPage": {
                 "@type": "ImageObject",
+                "@id": f"{product_url}#primaryimage",
                 "url": primary_image,
                 "contentUrl": primary_image,
                 "caption": schema_name,
             },
-            "mainEntity": {"@id": product_url, "@type": "Product"},
+            "mainEntity": {"@id": product_schema_id},
         }
         schema = json.dumps({
             "@context": "https://schema.org/",
@@ -5868,10 +5931,12 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
                     "id": p.get("id") or p.get("product_id"),
                     "title": _caption_parts(p.get("caption") or "")[0],
                     "url": _localized_path(_canonical_product_path(p.get("id") or p.get("product_id"), p.get("caption") or ""), language),
-                    "image_url": _product_primary_image_url(p, absolute=True) or _DEFAULT_OG_IMAGE,
+                    "media_type": preview_media.get("type") or "",
+                    "media_url": preview_media.get("url") or "",
                 }
                 for p in candidates
                 if (p.get("id") or p.get("product_id")) != product_id
+                for preview_media in [_product_card_preview_media(p, absolute=True)]
             ][:6]
         except Exception as exc:
             logger.debug("Failed to load related products for SEO page: %s", exc)

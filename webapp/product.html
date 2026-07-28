@@ -193,7 +193,23 @@
             border-radius: 8px;
             box-shadow: 0 8px 18px rgba(0, 0, 0, .08);
         }
-        .seo-page img.related-thumb { display: block; width: 100%; min-height: 112px; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 6px; background: rgba(0, 0, 0, .04); border: 1px solid var(--border, #ddd); opacity: 1; }
+        .seo-page img.related-thumb,
+        .seo-page video.related-thumb,
+        .seo-page .related-thumb-placeholder {
+            display: block;
+            width: 100%;
+            min-height: 112px;
+            aspect-ratio: 4 / 3;
+            object-fit: cover;
+            border-radius: 6px;
+            background: rgba(0, 0, 0, .04);
+            border: 1px solid var(--border, #ddd);
+            opacity: 1;
+        }
+        .seo-page video.related-thumb { background: #000; }
+        .seo-page .related-thumb-placeholder {
+            background: linear-gradient(135deg, rgba(0, 0, 0, .06), rgba(0, 0, 0, .1));
+        }
         .related-title { display: block; margin-top: .55rem; font-size: .94rem; line-height: 1.25; color: var(--text-primary, #111); }
         .related-card a:hover .related-title { color: var(--accent, #2481cc); }
         .language-switch { display: flex; flex-wrap: wrap; gap: .45rem; margin: 0 0 1rem; }
@@ -309,7 +325,13 @@
                 {% for item in related_products %}
                 <li class="related-card">
                     <a href="{{ item.url }}">
-                        <img class="related-thumb" src="{{ item.image_url or '/assets/site-icon.svg?v=20260723-football-emoji-v5' }}" alt="{{ item.title }}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260723-football-emoji-v5';">
+                        {% if item.media_type == 'video' and item.media_url %}
+                        <video class="related-thumb related-thumb-video" muted playsinline preload="metadata" src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
+                        {% elif item.media_url %}
+                        <img class="related-thumb" src="{{ item.media_url }}" alt="{{ item.title }}" loading="lazy" decoding="async">
+                        {% else %}
+                        <span class="related-thumb related-thumb-placeholder" aria-hidden="true"></span>
+                        {% endif %}
                         <span class="related-title">{{ item.title }}</span>
                     </a>
                 </li>
@@ -462,6 +484,7 @@
 
             const initialMainVideo = viewer.querySelector('video.seo-main-video');
             if (initialMainVideo) captureMainVideoPoster(initialMainVideo);
+            document.querySelectorAll('video.related-thumb-video').forEach((video) => captureMainVideoPoster(video));
         })();
     </script>
 </body>
