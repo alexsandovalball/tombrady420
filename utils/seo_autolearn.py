@@ -165,6 +165,23 @@ def is_bad_auto_seo_term(term: str) -> bool:
     return bool(tokens & family_noise) and bool(tokens <= (family_noise | qualifier_noise))
 
 
+def is_explicit_short_seo_term(term: str) -> bool:
+    """Allow a two-character term only when it is explicitly curated.
+
+    Short fuzzy matches are too ambiguous to auto-approve safely. This keeps
+    useful catalog vocabulary such as a configured two-letter term available
+    without turning every two-letter search into an SEO mapping candidate.
+    """
+    normalized = normalize_term(term)
+    if len(normalized) != 2:
+        return False
+    return any(
+        normalize_term(candidate) == normalized
+        for mapping in iter_mappings()
+        for candidate in mapping.get("terms", [])
+    )
+
+
 def _plain_label(value: str) -> str:
     return normalize_term(value)
 
@@ -202,8 +219,9 @@ def _build_taxonomy_profiles(products: Iterable[dict[str, Any]]) -> dict[tuple[s
             continue
         category_terms = [category, get_category_display_name(category)]
         category_terms.extend(get_category_display_name(category, lang) for lang in language_codes)
-        if category in _CANNA_VARIANT_FAMILIES:
-            category_terms.extend(_CANNA_VARIANT_FAMILIES[normalize_term(category)])
+        category_key = normalize_term(category)
+        if category_key in _CANNA_VARIANT_FAMILIES:
+            category_terms.extend(_CANNA_VARIANT_FAMILIES[category_key])
         if not subcategories:
             profiles[_taxonomy_key(category)] = {
                 "category": category,
@@ -265,13 +283,36 @@ def infer_seo_query_mapping(
 ) -> Optional[dict[str, Any]]:
     """Infer a safe category/subcategory mapping for one no-result query."""
     query_norm = normalize_term(query)
-    if len(query_norm) < 3:
+    if len(query_norm) < 2:
         return None
 
     profiles = profiles or _build_taxonomy_profiles(products)
+    if len(query_norm) == 2:
+        if not is_explicit_short_seo_term(query_norm):
+            return None
+        exact_profiles = [
+            profile
+            for profile in profiles.values()
+            if any(normalize_term(term) == query_norm for term in profile.get("terms", []))
+        ]
+        exact_taxonomies = {
+            (profile["category"], profile["subcategory"])
+            for profile in exact_profiles
+        }
+        if len(exact_taxonomies) != 1:
+            return None
+        profile = exact_profiles[0]
+        return {
+            "term": query.strip()[:300],
+            "category": profile["category"],
+            "subcategory": profile["subcategory"],
+            "score": 100.0,
+            "reason": "explicit_short_term",
+        }
+
     scored: list[dict[str, Any]] = []
     query_tokens = set(query_norm.split())
-    cannabisish = any(token in query_norm for token in _CANNA_TREND_HINTS)
+    cannabisish = has_cannabis_search_intent(query_norm)
 
     for profile in profiles.values():
         best_score = 0.0

@@ -726,13 +726,21 @@
                     if (!context.initData && adminState.sessionToken) {
                         statusUrl += '&session=' + encodeURIComponent(adminState.sessionToken);
                     }
-                    var response = await fetch(statusUrl, {
+                    var fetchOptions = {
                         headers: headers,
                         credentials: 'same-origin',
                         cache: 'no-store'
-                    });
+                    };
+                    var response = await fetch(statusUrl, fetchOptions);
+                    if (response.status === 404) {
+                        var fallbackStatusUrl = '/api/webapp-admin/status?ts=' + Date.now();
+                        if (!context.initData && adminState.sessionToken) {
+                            fallbackStatusUrl += '&session=' + encodeURIComponent(adminState.sessionToken);
+                        }
+                        response = await fetch(fallbackStatusUrl, fetchOptions);
+                    }
                     if (!response.ok) {
-                        if (response.status === 403 || response.status === 404) {
+                        if (response.status === 403) {
                             adminState.loaded = true;
                         }
                         return;

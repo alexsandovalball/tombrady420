@@ -4264,13 +4264,17 @@ class Database:
                     category = excluded.category,
                     subcategory = excluded.subcategory,
                     source = excluded.source,
-                    language = seo_query_mappings.language,
+                    language = CASE
+                        WHEN excluded.language != '' THEN excluded.language
+                        ELSE seo_query_mappings.language
+                    END,
                     approved = excluded.approved,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE seo_query_mappings.term IS NOT excluded.term
                    OR seo_query_mappings.category IS NOT excluded.category
                    OR seo_query_mappings.subcategory IS NOT excluded.subcategory
                    OR seo_query_mappings.source IS NOT excluded.source
+                   OR (excluded.language != '' AND seo_query_mappings.language IS NOT excluded.language)
                    OR seo_query_mappings.approved IS NOT excluded.approved
                 """,
                 rows,
@@ -4708,13 +4712,25 @@ class Database:
             params.append(limit)
             async with db.execute(
                 f"""
-                SELECT term, source, 'mapping' AS signal_type, hits AS evidence_count
+                SELECT
+                    term,
+                    source,
+                    'mapping' AS signal_type,
+                    max(
+                        COALESCE(hits, 0),
+                        COALESCE((
+                            SELECT MAX(signal.evidence_count)
+                            FROM external_seo_signals signal
+                            WHERE signal.approved = 1
+                              AND signal.normalized_term = seo_query_mappings.normalized_term
+                        ), 0)
+                    ) AS evidence_count
                 FROM seo_query_mappings
                 WHERE approved = 1
                   AND LOWER(TRIM(COALESCE(category, ''))) = LOWER(TRIM(?))
                   {subcategory_filter}
                   {language_filter}
-                ORDER BY hits DESC, updated_at DESC
+                ORDER BY evidence_count DESC, hits DESC, updated_at DESC
                 LIMIT ?
                 """,
                 tuple(params),

@@ -505,11 +505,12 @@ async def get_bot_specific_file_id(
             except (TelegramError, asyncio.TimeoutError) as e:
                 if is_transient_telegram_error(e):
                     logger.warning(
-                        "[media_registry] bot_media_mapping_validation_deferred_refreshing bot=%s msg=%s error=%s",
+                        "[media_registry] bot_media_mapping_validation_deferred_using_cached bot=%s msg=%s error=%s",
                         bot_identifier,
                         source_message_id,
                         e,
                     )
+                    return mapped_file_id
                 else:
                     await _db.invalidate_bot_media_file_id(bot_identifier, canonical["file_unique_id"])
                     logger.warning("[media_registry] stale_mapping_invalidated bot=%s msg=%s error=%s", bot_identifier, source_message_id, e)
@@ -572,12 +573,13 @@ async def get_bot_specific_file_id(
         except (TelegramError, asyncio.TimeoutError) as e:
             if is_transient_telegram_error(e):
                 logger.warning(
-                    "[media_registry] cached_file_id_validation_deferred_refreshing bot=%s msg=%s idx=%s error=%s",
+                    "[media_registry] cached_file_id_validation_deferred_using_cached bot=%s msg=%s idx=%s error=%s",
                     bot_username,
                     source_message_id,
                     file_index,
                     e,
                 )
+                return cached_file_id
             else:
                 logger.warning(
                     f"Cached file ID invalid for bot {bot_username}, msg {source_message_id}: {e}. "

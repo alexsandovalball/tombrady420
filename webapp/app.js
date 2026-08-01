@@ -1849,13 +1849,17 @@
             if (tg.initData) {
                 headers['X-Telegram-Init-Data'] = tg.initData;
             }
-            const response = await fetch(`/api/admin/status?ts=${Date.now()}`, {
+            const fetchOptions = {
                 headers,
                 credentials: 'same-origin',
                 cache: 'no-store'
-            });
+            };
+            let response = await fetch(`/api/admin/status?ts=${Date.now()}`, fetchOptions);
+            if (response.status === 404) {
+                response = await fetch(`/api/webapp-admin/status?ts=${Date.now()}`, fetchOptions);
+            }
             if (!response.ok) {
-                state.adminStatusLoaded = response.status === 403 || response.status === 404;
+                state.adminStatusLoaded = response.status === 403;
                 return;
             }
             const data = await response.json();

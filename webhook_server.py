@@ -64,6 +64,7 @@ from utils.seo_autolearn import (
     has_search_audience_intent,
     infer_seo_query_mapping,
     is_bad_auto_seo_term,
+    is_explicit_short_seo_term,
 )
 from utils.google_trends import fetch_trending_queries_for_supported_locales
 from utils.external_seo_signals import load_external_seo_signal_file
@@ -2186,7 +2187,9 @@ async def _ensure_database_initialized() -> None:
 
 def _is_useful_auto_seo_term(term: str) -> bool:
     normalized = normalize_term(term)
-    if len(normalized) < 3 or len(normalized) > 80:
+    if len(normalized) < 2 or len(normalized) > 80:
+        return False
+    if len(normalized) == 2 and not is_explicit_short_seo_term(normalized):
         return False
     if normalized.isdigit():
         return False
@@ -2627,7 +2630,12 @@ def _build_search_console_signals(
         active_days = len(item["dates"])
         score = float(inferred.get("score") or 0)
         reason = str(inferred.get("reason") or "")
-        strong_catalog_match = reason in {"catalog", "seo_term", "category"} and score >= 94
+        strong_catalog_match = reason in {
+            "catalog",
+            "seo_term",
+            "category",
+            "explicit_short_term",
+        } and score >= 94
         if not (clicks > 0 or impressions >= 3 or active_days >= 2 or (impressions > 0 and strong_catalog_match)):
             continue
 
@@ -4107,22 +4115,16 @@ def _product_photo_image_urls(product: dict, *, absolute: bool = True, limit: in
 
 
 def _product_video_urls(product: dict, *, absolute: bool = True, limit: int = 8) -> list[tuple[int, str]]:
-    """Return product-page URLs for VideoObject schema without exposing heavy API streams.
-
-    Crawlers only need a stable page URL plus thumbnail metadata here. Pointing
-    them at /api/catalog video streams causes unnecessary Telegram/file-cache
-    work on small Render instances.
-    """
+    """Return stable, public video content URLs for structured data."""
     product_id = product.get("id")
     if product_id is None:
         return []
 
     urls: list[tuple[int, str]] = []
-    product_path = _canonical_product_path(product_id, product.get("caption") or "")
     for idx, media in enumerate(_collect_media_info(product)):
         if media.get("type") != "video":
             continue
-        path = product_path
+        path = _product_public_media_path(product_id, idx)
         urls.append((idx, _absolute_storefront_url(path) if absolute else path))
         if len(urls) >= limit:
             break
@@ -4586,18 +4588,52 @@ async def _seo_side_note_terms(category: str, subcategory: str = "", language: s
     if not category:
         return []
 
-    file_terms = list(get_terms_for_taxonomy(category, subcategory, limit=Config.SEO_SIDE_NOTE_LIMIT))
-    terms = file_terms if language == "en" else await _translate_seo_lines(file_terms, language)
+    limit = max(1, Config.SEO_SIDE_NOTE_LIMIT)
+    file_terms = list(get_terms_for_taxonomy(category, subcategory, limit=limit))
+    static_terms = file_terms if language == "en" else await _translate_seo_lines(file_terms, language)
+    notes: list[dict[str, Any]] = []
     try:
         notes = await _catalog_db.get_seo_side_notes(
             category,
             subcategory,
             language=language,
-            limit=Config.SEO_SIDE_NOTE_LIMIT,
+            limit=min(25, limit * 2),
         )
-        terms.extend(str(item.get("term") or "").strip() for item in notes)
     except Exception as exc:
         logger.debug("Failed to load SEO side notes for %s/%s: %s", category, subcategory, exc)
+
+    # Static vocabulary provides a stable topical baseline. Reserve roughly
+    # half of the visible slots for concise, evidence-backed learned terms so
+    # Search Console and internal-search learning can actually change HTML.
+    dynamic_limit = min(5, max(2, limit // 2)) if limit > 2 else 1
+    primary_static_count = min(3, max(1, limit - dynamic_limit))
+    static_normalized = {normalize_term(term) for term in static_terms}
+    dynamic_rows = []
+    for item in notes:
+        term = str(item.get("term") or "").strip()
+        normalized = normalize_term(term)
+        if (
+            not normalized
+            or normalized in static_normalized
+            or len(normalized.split()) > 5
+            or not _is_useful_auto_seo_term(term)
+        ):
+            continue
+        dynamic_rows.append(item)
+    dynamic_rows.sort(
+        key=lambda item: (
+            0 if len(normalize_term(item.get("term") or "").split()) <= 3 else 1,
+            -max(0, int(item.get("evidence_count") or 0)),
+            len(normalize_term(item.get("term") or "").split()),
+            len(normalize_term(item.get("term") or "")),
+        )
+    )
+    dynamic_terms = [str(item.get("term") or "").strip() for item in dynamic_rows[:dynamic_limit]]
+    terms = [
+        *static_terms[:primary_static_count],
+        *dynamic_terms,
+        *static_terms[primary_static_count:],
+    ]
 
     seen = set()
     cleaned: list[str] = []
@@ -4607,9 +4643,38 @@ async def _seo_side_note_terms(category: str, subcategory: str = "", language: s
             continue
         seen.add(normalized)
         cleaned.append(term)
-        if len(cleaned) >= Config.SEO_SIDE_NOTE_LIMIT:
+        if len(cleaned) >= limit:
             break
     return cleaned
+
+
+def _build_visible_taxonomy_intro(
+    category: str,
+    subcategory: str,
+    *,
+    total: int,
+    terms: Iterable[str],
+    language: str,
+) -> str:
+    """Build a short, localized intro from the terms visible on this page."""
+    language = _normalize_seo_language(language)
+    category_display = get_category_display_name(category, language) if category else "products"
+    subcategory_display = get_subcategory_display_name(subcategory, language) if subcategory else ""
+    label = " ".join(part for part in (subcategory_display, category_display) if part).strip()
+    concise_terms = _dedupe_seo_phrases(
+        [term for term in terms if len(normalize_term(term).split()) <= 4],
+        limit=4,
+    )
+    joined = ", ".join(concise_terms)
+    templates = {
+        "en": f"Browse {total} {label} listing{'s' if total != 1 else ''}" + (f", including {joined}." if joined else "."),
+        "de": f"Entdecke {total} Angebote für {label}" + (f", darunter {joined}." if joined else "."),
+        "nl": f"Bekijk {total} aanbiedingen voor {label}" + (f", waaronder {joined}." if joined else "."),
+        "it": f"Scopri {total} prodotti {label}" + (f", tra cui {joined}." if joined else "."),
+        "es": f"Explora {total} productos de {label}" + (f", incluidos {joined}." if joined else "."),
+        "fr": f"Découvrez {total} produits {label}" + (f", notamment {joined}." if joined else "."),
+    }
+    return templates[language]
 
 
 def _resolve_category_name(category_slug: str) -> Optional[str]:
@@ -4690,7 +4755,7 @@ async def _infer_missing_product_redirect_path(slug: str) -> str:
 def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
                         product: Optional[dict] = None, deep_link: str = "",
                         keywords: str = "", category: str = "", og_type: str = "website",
-                        schema_title: str = "", search_phrases: Optional[Iterable[str]] = None,
+                        schema_title: str = "",
                         language: str = "en", alternate_path: str = "") -> dict:
     """Build template context dict for SSR SEO pages."""
     language = _normalize_seo_language(language)
@@ -4745,13 +4810,6 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
                 "name": "Media count",
                 "value": str(media_count),
             })
-        phrase_values = _dedupe_seo_phrases(search_phrases or [], limit=8)
-        if phrase_values:
-            additional_properties.append({
-                "@type": "PropertyValue",
-                "name": "Search phrases",
-                "value": ", ".join(phrase_values),
-            })
         if additional_properties:
             product_schema["additionalProperty"] = additional_properties
         if product_images:
@@ -4777,8 +4835,8 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
                     "name": f"{schema_name} video {idx + 1}",
                     "description": desc,
                     "thumbnailUrl": [thumbnail_url],
-                    "embedUrl": product_url,
-                    "url": video_url,
+                    "contentUrl": video_url,
+                    "url": product_url,
                     "isPartOf": {"@id": product_url},
                     "about": {"@id": product_schema_id},
                 }
@@ -5285,7 +5343,6 @@ async def serve_sitemap_xml(request: Request):
                 f"      <video:title>{html.escape(title[:100])}</video:title>\n"
                 f"      <video:description>{html.escape((_caption_parts(p.get('caption') or '')[1] or title)[:2048])}</video:description>\n"
                 f"      <video:content_loc>{html.escape(video_url)}</video:content_loc>\n"
-                f"      <video:player_loc>{html.escape(loc)}</video:player_loc>\n"
                 f"      <video:publication_date>{html.escape(_product_lastmod(p, today))}</video:publication_date>\n"
                 f"    </video:video>\n"
                 for _idx, video_url in _product_video_urls(p, absolute=True, limit=4)
@@ -5759,6 +5816,7 @@ async def admin_dashboard_overview(request: Request):
 
 
 @app.get("/api/admin/status")
+@app.get("/api/webapp-admin/status")
 async def webapp_admin_status(request: Request):
     """Return admin monitoring data only to signed Telegram WebApp admins."""
     user, _, init_data = _get_authenticated_webapp_user(request)
@@ -5950,7 +6008,6 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
         deep_link=deep_link,
         og_type="product",
         schema_title=product_title,
-        search_phrases=product_search_phrases,
         keywords=", ".join(filter(None, [
             product_title,
             ", ".join(product_search_phrases),
@@ -6116,7 +6173,13 @@ async def _serve_category_page(category_name: str, request: Request, language: s
     ctx["current_subcategory"] = ""
     ctx["current_subcategory_display"] = ""
     ctx["parent_category_url"] = ""
-    ctx["seo_intro"] = await _translate_seo_text(build_taxonomy_intro(matched_category, total=total), language)
+    ctx["seo_intro"] = _build_visible_taxonomy_intro(
+        matched_category,
+        "",
+        total=total,
+        terms=seo_terms,
+        language=language,
+    )
     ctx["seo_terms"] = seo_terms
     ctx["telegram_bot_url"] = public_catalog_bot_url
     ctx["storefront_domain"] = _STOREFRONT_DOMAIN
@@ -6279,7 +6342,13 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
     ctx["current_subcategory"] = matched_subcategory
     ctx["current_subcategory_display"] = subcategory_display
     ctx["parent_category_url"] = _localized_path(_canonical_category_path(matched_category), language)
-    ctx["seo_intro"] = await _translate_seo_text(build_taxonomy_intro(matched_category, matched_subcategory, total=total), language)
+    ctx["seo_intro"] = _build_visible_taxonomy_intro(
+        matched_category,
+        matched_subcategory,
+        total=total,
+        terms=seo_terms,
+        language=language,
+    )
     ctx["seo_terms"] = seo_terms
     ctx["telegram_bot_url"] = public_catalog_bot_url
     ctx["storefront_domain"] = _STOREFRONT_DOMAIN
@@ -6953,10 +7022,8 @@ def _seo_media_fallback_response(request: Request, reason: str, *, image_url: st
 async def stream_public_product_media(request: Request, product_id: int, media_index: int):
     """Public crawlable media URL used by SSR SEO/social preview pages.
 
-    This route is intentionally safer and narrower than the Mini App media API:
-    it only serves photo media. Videos, missing media, Telegram errors, and bursts
-    fall back to the lightweight brand image so crawlers cannot starve normal
-    WebApp media delivery.
+    Photos and videos use the same bounded cache/streaming path as the Mini App.
+    Bursts are rate-limited so crawlers cannot starve normal WebApp delivery.
     """
     _log_seo_public_request(request, "public_media", product_id=product_id, media_index=media_index)
 
@@ -6979,7 +7046,8 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
             return _seo_media_fallback_response(request, "media_missing", image_url=product_fallback_image)
 
         media_type_info = media_info[media_index]
-        if media_type_info.get("type") != "photo":
+        media_kind = str(media_type_info.get("type") or "document")
+        if media_kind not in {"photo", "video"}:
             fallback_index = _seo_preferred_fallback_media_index(product, media_index)
             if fallback_index is not None and fallback_index != media_index:
                 fallback_response = await stream_catalog_media(request, product_id, fallback_index)
@@ -7004,8 +7072,9 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
                     etag,
                     _SEO_PUBLIC_MEDIA_CACHE_SECONDS,
                     extra={
-                        "Content-Type": "image/jpeg",
+                        "Content-Type": "video/mp4" if media_kind == "video" else "image/jpeg",
                         "X-Robots-Tag": "index, follow",
+                        "Accept-Ranges": "bytes" if media_kind == "video" else "none",
                         "Vary": "Accept",
                     },
                 ),
@@ -7013,6 +7082,8 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
 
         response = await stream_catalog_media(request, product_id, media_index)
         if getattr(response, "status_code", 200) >= 400:
+            if media_kind == "video":
+                return response
             fallback_index = _seo_preferred_fallback_media_index(product, media_index)
             if fallback_index is not None and fallback_index != media_index:
                 fallback_response = await stream_catalog_media(request, product_id, fallback_index)
