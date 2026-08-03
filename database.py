@@ -4702,7 +4702,7 @@ class Database:
             async with db.execute(
                 """
                 SELECT
-                    s.term, s.normalized_term, s.provider, s.source, s.language,
+                    s.term, s.normalized_term, s.term_type, s.provider, s.source, s.language,
                     s.category, s.subcategory, s.confidence, s.evidence_count
                 FROM external_seo_signals s
                 LEFT JOIN seo_query_mappings m
@@ -4710,7 +4710,11 @@ class Database:
                 WHERE s.approved = 1
                   AND s.category != ''
                   AND m.id IS NULL
-                ORDER BY s.confidence DESC, s.evidence_count DESC, s.last_seen DESC
+                ORDER BY
+                    CASE WHEN s.term_type = 'ctr_opportunity' THEN 0 ELSE 1 END,
+                    s.confidence DESC,
+                    s.evidence_count DESC,
+                    s.last_seen DESC
                 LIMIT ?
                 """,
                 (limit,),
@@ -5274,6 +5278,31 @@ class Database:
                     LIMIT ?
                     """,
                     (search_console_since, min(limit, 25)),
+                ),
+                "search_console_ctr_terms": await rows(
+                    """
+                    SELECT
+                        term AS query,
+                        category,
+                        subcategory,
+                        confidence,
+                        evidence_count,
+                        CAST(COALESCE(json_extract(notes_json, '$.clicks'), 0) AS INTEGER) AS clicks,
+                        CAST(COALESCE(json_extract(notes_json, '$.impressions'), 0) AS INTEGER) AS impressions,
+                        ROUND(CAST(COALESCE(json_extract(notes_json, '$.ctr'), 0) AS REAL), 4) AS ctr,
+                        ROUND(CAST(COALESCE(json_extract(notes_json, '$.position'), 0) AS REAL), 1) AS avg_position,
+                        last_seen
+                    FROM external_seo_signals
+                    WHERE approved = 1
+                      AND provider = 'google_search_console'
+                      AND (
+                        term_type = 'ctr_opportunity'
+                        OR json_extract(notes_json, '$.ctr_opportunity') = 1
+                      )
+                    ORDER BY impressions DESC, confidence DESC, last_seen DESC
+                    LIMIT ?
+                    """,
+                    (min(limit, 25),),
                 ),
                 "top_search_console_media_pages": await rows(
                     """

@@ -606,7 +606,7 @@ def _validate_bot_commands(commands):
     return valid
 
 
-async def setup_bot_commands(bot):
+async def setup_bot_commands(bot, issue_recorder=None):
     """
     Set up bot commands that appear in the Telegram command menu.
     
@@ -623,6 +623,20 @@ async def setup_bot_commands(bot):
         bot: The Telegram bot instance
     """
     bot_label = getattr(bot, "username", None) or "unknown"
+
+    def record_issue(stage: str, error: Exception, admin_id=None) -> None:
+        if not issue_recorder:
+            return
+        try:
+            issue_recorder({
+                "stage": stage,
+                "admin_id": admin_id,
+                "error_type": error.__class__.__name__,
+                "error": str(error)[:300],
+            })
+        except Exception:
+            logger.debug("Command setup issue recorder failed", exc_info=True)
+
     # Configure Menu Button to open webapp (if WEB_APP_URL is configured)
     launch_url = build_webapp_shell_url(Config.WEB_APP_URL)
     if launch_url:
@@ -636,8 +650,10 @@ async def setup_bot_commands(bot):
             logger.info("Menu button configured for bot=%s", bot_label)
         except TelegramError as e:
             logger.warning("Skipping menu button setup for bot=%s: %s", bot_label, e)
+            record_issue("menu_button", e)
         except Exception as e:
             logger.warning("Skipping menu button setup for bot=%s: %s", bot_label, e)
+            record_issue("menu_button", e)
     
     # Define user commands (available to all users)
     # These appear in the command menu for all users
@@ -683,8 +699,10 @@ async def setup_bot_commands(bot):
             logger.info("Set %d user command(s) globally for bot=%s", len(user_commands), bot_label)
         except TelegramError as e:
             logger.warning("Skipping global command setup for bot=%s: %s", bot_label, e)
+            record_issue("global_commands", e)
         except Exception as e:
             logger.warning("Skipping global command setup for bot=%s: %s", bot_label, e)
+            record_issue("global_commands", e)
     else:
         logger.warning("Skipping global command setup for bot=%s: no valid commands", bot_label)
     
@@ -705,9 +723,11 @@ async def setup_bot_commands(bot):
                 return True
             except TelegramError as e:
                 logger.warning("Skipping admin command setup for admin=%s bot=%s: %s", admin_id, bot_label, e)
+                record_issue("admin_commands", e, admin_id=admin_id)
                 return False
             except Exception as e:
                 logger.warning("Skipping admin command setup for admin=%s bot=%s: %s", admin_id, bot_label, e)
+                record_issue("admin_commands", e, admin_id=admin_id)
                 return False
         
         for admin_id in admin_ids:

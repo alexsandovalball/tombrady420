@@ -44,14 +44,20 @@ def _build_media_unavailable_text(product: dict, caption: str) -> str:
     )
 
 
-def _build_admin_action_buttons(product_id: int, user_id: int) -> list[list[InlineKeyboardButton]]:
+def _build_admin_action_buttons(
+    product_id: int,
+    user_id: int,
+    stock_status: str = "active",
+) -> list[list[InlineKeyboardButton]]:
     if not is_admin(user_id):
         return []
+    normalized_stock_status = (stock_status or "active").strip().lower()
+    if normalized_stock_status == "out_of_stock":
+        stock_button = InlineKeyboardButton("Restocked", callback_data=f"stock|{product_id}|active")
+    else:
+        stock_button = InlineKeyboardButton("Sold out", callback_data=f"stock|{product_id}|out_of_stock")
     return [
-        [
-            InlineKeyboardButton("Sold out", callback_data=f"stock|{product_id}|out_of_stock"),
-            InlineKeyboardButton("Restocked", callback_data=f"stock|{product_id}|active"),
-        ],
+        [stock_button],
         [
             InlineKeyboardButton(
                 "🔄 Recategorize",
@@ -83,12 +89,13 @@ def _build_media_fallback_keyboard(
     bot_username: str,
     navigation_buttons: list[list[InlineKeyboardButton]],
     user_id: int,
+    stock_status: str = "active",
 ):
     buttons = []
     if bot_username:
         buttons.append([InlineKeyboardButton("Open inline search", switch_inline_query_current_chat=str(product_id))])
     buttons.append([InlineKeyboardButton("Retry media", callback_data=f"product|{product_id}")])
-    buttons.extend(_build_admin_action_buttons(product_id, user_id))
+    buttons.extend(_build_admin_action_buttons(product_id, user_id, stock_status))
     buttons.extend(navigation_buttons)
     return InlineKeyboardMarkup(buttons)
 
@@ -220,6 +227,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     context.bot.username or "",
                     navigation_buttons,
                     user_id,
+                    product.get("stock_status") or "active",
                 ),
             )
             return
@@ -294,6 +302,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         current_bot,
                         navigation_buttons,
                         user_id,
+                        product.get("stock_status") or "active",
                     ),
                 )
                 return
@@ -327,7 +336,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         keyboard_buttons.extend(navigation_buttons)
         
         # Add delete and recategorize buttons for admins
-        keyboard_buttons.extend(_build_admin_action_buttons(product_id, user_id))
+        keyboard_buttons.extend(_build_admin_action_buttons(product_id, user_id, stock_status))
         
         keyboard = InlineKeyboardMarkup(keyboard_buttons)
         

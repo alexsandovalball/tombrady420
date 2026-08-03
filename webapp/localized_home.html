@@ -514,6 +514,9 @@
                 var webhookWarningBots = runtimeBots.filter(function (bot) {
                     return bot && bot.telegram_health === 'webhook_warning';
                 });
+                var setupWarningBots = runtimeBots.filter(function (bot) {
+                    return bot && Number(bot.startup_issue_count || 0) > 0;
+                });
                 var googleWindowDays = seo.search_console_window_days || 30;
 
                 panel.replaceChildren();
@@ -536,7 +539,7 @@
                 var grid = document.createElement('div');
                 grid.className = 'admin-metric-grid';
                 appendMetric(grid, 'Bots online', formatCount(activeBots.length) + '/' + formatCount(data.configured_bot_count));
-                appendMetric(grid, 'Bot warnings', formatCount(unhealthyBots.length) + ' unhealthy / ' + formatCount(webhookWarningBots.length) + ' webhook');
+                appendMetric(grid, 'Bot warnings', formatCount(unhealthyBots.length) + ' unhealthy / ' + formatCount(webhookWarningBots.length) + ' webhook / ' + formatCount(setupWarningBots.length) + ' setup');
                 appendMetric(grid, 'Products', formatCount(summary.products));
                 appendMetric(grid, 'Users 24h / total', formatCount(summary.active_users_24h) + ' / ' + formatCount(summary.bot_users));
                 appendMetric(grid, 'Subscribed / blocked', formatCount(summary.subscribed_users) + ' / ' + formatCount(summary.blocked_users));
@@ -583,8 +586,36 @@
                     } else if (item.telegram_error) {
                         detail += ', Telegram error: ' + String(item.telegram_error).slice(0, 90);
                     }
+                    if (Number(item.startup_issue_count || 0) > 0) {
+                        var issues = Array.isArray(item.startup_issues) ? item.startup_issues : [];
+                        var issue = issues[0] || {};
+                        detail += ', setup warnings ' + formatCount(item.startup_issue_count);
+                        if (issue.stage || issue.error) {
+                            detail += ': ' + String(issue.stage || 'setup') + ' ' + String(issue.error || '').slice(0, 70);
+                        }
+                    }
                     return detail;
                 }, 20);
+
+                var setupIssues = [];
+                runtimeBots.forEach(function (bot) {
+                    var issues = Array.isArray(bot.startup_issues) ? bot.startup_issues : [];
+                    issues.forEach(function (issue) {
+                        setupIssues.push({
+                            index: bot.index,
+                            username: bot.username,
+                            stage: issue.stage,
+                            admin_id: issue.admin_id,
+                            error: issue.error,
+                            recorded_at: issue.recorded_at
+                        });
+                    });
+                });
+                appendList(panel, 'Bot Setup Warnings', setupIssues, function (item) {
+                    var label = '#' + item.index + ' ' + (item.username ? '@' + item.username : 'not started');
+                    var admin = item.admin_id ? ' admin ' + item.admin_id : '';
+                    return label + ': ' + String(item.stage || 'setup') + admin + ' · ' + String(item.error || '').slice(0, 120);
+                }, 15);
 
                 appendList(panel, 'Pending Notifications By Bot', data.pending_notifications_by_bot || [], function (item) {
                     return '@' + String(item.bot_username || 'bot') + ': ' + formatCount(item.pending) + ' pending';
@@ -600,7 +631,13 @@
                 }, 10);
 
                 appendList(panel, 'Google Ranking Opportunities', seo.search_console_opportunities || [], function (item) {
-                    return String(item.query || 'query') + ': ' + formatCount(item.impressions) + ' impressions, ' + formatCount(item.clicks) + ' clicks, avg pos ' + (item.avg_position || '-') + ' · ' + String(item.page || '/');
+                    var ctr = Number(item.ctr || 0);
+                    return String(item.query || 'query') + ': ' + formatCount(item.impressions) + ' impressions, ' + formatCount(item.clicks) + ' clicks, CTR ' + Math.round(ctr * 1000) / 10 + '%, avg pos ' + (item.avg_position || '-') + ' · ' + String(item.page || '/');
+                }, 10);
+
+                appendList(panel, 'CTR Terms Being Learned', seo.search_console_ctr_terms || [], function (item) {
+                    var ctr = Number(item.ctr || 0);
+                    return String(item.query || 'query') + ': ' + formatCount(item.impressions) + ' impressions, CTR ' + Math.round(ctr * 1000) / 10 + '%, ' + String(item.category || '') + (item.subcategory ? ' / ' + item.subcategory : '');
                 }, 10);
 
                 appendDetailsList(

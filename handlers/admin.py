@@ -72,6 +72,10 @@ def _format_admin_status_message(snapshot: dict) -> str:
         bot for bot in runtime_bots
         if bot.get("telegram_health") == "webhook_warning"
     ]
+    setup_warning_bots = [
+        bot for bot in runtime_bots
+        if int(bot.get("startup_issue_count") or 0) > 0
+    ]
     missing_bots = [bot for bot in runtime_bots if not bot.get("username")]
 
     lines = [
@@ -87,10 +91,20 @@ def _format_admin_status_message(snapshot: dict) -> str:
         lines.append(f"• Unhealthy: {_fmt_count(len(unhealthy_bots))}")
     if webhook_warning_bots:
         lines.append(f"• Webhook warnings: {_fmt_count(len(webhook_warning_bots))}")
+    if setup_warning_bots:
+        lines.append(f"• Setup warnings: {_fmt_count(len(setup_warning_bots))}")
 
-    if unhealthy_bots or webhook_warning_bots:
+    if unhealthy_bots or webhook_warning_bots or setup_warning_bots:
         lines.extend(["", "🤖 Bot Health Details"])
-        for bot in (unhealthy_bots + webhook_warning_bots)[:10]:
+        seen_bot_keys = set()
+        detail_bots = []
+        for bot in (unhealthy_bots + webhook_warning_bots + setup_warning_bots):
+            key = bot.get("index")
+            if key in seen_bot_keys:
+                continue
+            seen_bot_keys.add(key)
+            detail_bots.append(bot)
+        for bot in detail_bots[:10]:
             username = f"@{bot.get('username')}" if bot.get("username") else "not started"
             health = bot.get("telegram_health") or "unknown"
             error = bot.get("telegram_error") or bot.get("webhook_last_error") or ""
@@ -101,6 +115,16 @@ def _format_admin_status_message(snapshot: dict) -> str:
             if error:
                 detail += f", {str(error)[:90]}"
             lines.append(detail)
+            for issue in (bot.get("startup_issues") or [])[:3]:
+                stage = issue.get("stage") or "setup"
+                admin_id = issue.get("admin_id")
+                issue_error = str(issue.get("error") or "")[:90]
+                issue_line = f"  - {stage}"
+                if admin_id:
+                    issue_line += f" admin={admin_id}"
+                if issue_error:
+                    issue_line += f": {issue_error}"
+                lines.append(issue_line)
 
     lines.extend([
         "",
@@ -373,9 +397,20 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if opportunities:
             lines.extend(["", "Google Ranking Opportunities"])
             for item in opportunities[:5]:
+                ctr_percent = round(float(item.get("ctr") or 0) * 100, 1)
                 lines.append(
                     f"• {item.get('query')}: {_fmt_count(item.get('impressions'))} impression(s), "
-                    f"{_fmt_count(item.get('clicks'))} click(s), avg position {item.get('avg_position')}"
+                    f"{_fmt_count(item.get('clicks'))} click(s), CTR {ctr_percent}%, avg position {item.get('avg_position')}"
+                )
+
+        ctr_terms = snapshot.get("search_console_ctr_terms") or []
+        if ctr_terms:
+            lines.extend(["", "CTR Terms Being Learned"])
+            for item in ctr_terms[:5]:
+                ctr_percent = round(float(item.get("ctr") or 0) * 100, 1)
+                lines.append(
+                    f"• {item.get('query')} → {_format_seo_target(item)} "
+                    f"({_fmt_count(item.get('impressions'))} impression(s), CTR {ctr_percent}%)"
                 )
 
         recent_mappings = snapshot.get("recent_mappings") or []

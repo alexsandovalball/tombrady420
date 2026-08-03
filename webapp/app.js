@@ -1673,6 +1673,7 @@
         const activeBots = runtimeBots.filter(bot => bot.username && bot.telegram_ok !== false);
         const unhealthyBots = runtimeBots.filter(bot => bot.telegram_health && !['ok', 'webhook_warning'].includes(bot.telegram_health));
         const webhookWarningBots = runtimeBots.filter(bot => bot.telegram_health === 'webhook_warning');
+        const setupWarningBots = runtimeBots.filter(bot => Number(bot.startup_issue_count || 0) > 0);
         const googleWindowDays = seo.search_console_window_days || 30;
 
         panel.replaceChildren();
@@ -1693,7 +1694,7 @@
         const grid = document.createElement('div');
         grid.className = 'admin-metric-grid';
         appendAdminMetric(grid, 'Bots online', `${formatAdminCount(activeBots.length)}/${formatAdminCount(data.configured_bot_count)}`);
-        appendAdminMetric(grid, 'Bot warnings', `${formatAdminCount(unhealthyBots.length)} unhealthy / ${formatAdminCount(webhookWarningBots.length)} webhook`);
+        appendAdminMetric(grid, 'Bot warnings', `${formatAdminCount(unhealthyBots.length)} unhealthy / ${formatAdminCount(webhookWarningBots.length)} webhook / ${formatAdminCount(setupWarningBots.length)} setup`);
         appendAdminMetric(grid, 'Products', formatAdminCount(summary.products));
         appendAdminMetric(grid, 'Users 24h / total', `${formatAdminCount(summary.active_users_24h)} / ${formatAdminCount(summary.bot_users)}`);
         appendAdminMetric(grid, 'Subscribed / blocked', `${formatAdminCount(summary.subscribed_users)} / ${formatAdminCount(summary.blocked_users)}`);
@@ -1737,8 +1738,35 @@
             } else if (item.telegram_error) {
                 detail += `, Telegram error: ${String(item.telegram_error).slice(0, 90)}`;
             }
+            if (Number(item.startup_issue_count || 0) > 0) {
+                const issues = Array.isArray(item.startup_issues) ? item.startup_issues : [];
+                const issue = issues[0] || {};
+                detail += `, setup warnings ${formatAdminCount(item.startup_issue_count)}`;
+                if (issue.stage || issue.error) {
+                    detail += `: ${String(issue.stage || 'setup')} ${String(issue.error || '').slice(0, 70)}`;
+                }
+            }
             return detail;
         });
+        const setupIssues = [];
+        runtimeBots.forEach(bot => {
+            const issues = Array.isArray(bot.startup_issues) ? bot.startup_issues : [];
+            issues.forEach(issue => {
+                setupIssues.push({
+                    index: bot.index,
+                    username: bot.username,
+                    stage: issue.stage,
+                    admin_id: issue.admin_id,
+                    error: issue.error,
+                    recorded_at: issue.recorded_at
+                });
+            });
+        });
+        appendAdminList(panel, 'Bot Setup Warnings', setupIssues, item => {
+            const label = `#${item.index} ${item.username ? `@${item.username}` : 'not started'}`;
+            const admin = item.admin_id ? ` admin ${item.admin_id}` : '';
+            return `${label}: ${String(item.stage || 'setup')}${admin} · ${String(item.error || '').slice(0, 120)}`;
+        }, 15);
         appendAdminList(panel, 'Pending Notifications By Bot', data.pending_notifications_by_bot || [], item =>
             `@${item.bot_username || 'bot'}: ${formatAdminCount(item.pending)} pending`
         );
@@ -1763,7 +1791,11 @@
             return `${place}: ${formatAdminCount(item.visitors)} visitors, ${formatAdminCount(item.visits)} visits`;
         });
         appendAdminList(panel, 'Google Ranking Opportunities', seo.search_console_opportunities || [], item =>
-            `${item.query || 'query'}: ${formatAdminCount(item.impressions)} impressions, ${formatAdminCount(item.clicks)} clicks, avg pos ${item.avg_position || '-'} · ${item.page || '/'}`
+            `${item.query || 'query'}: ${formatAdminCount(item.impressions)} impressions, ${formatAdminCount(item.clicks)} clicks, CTR ${Math.round(Number(item.ctr || 0) * 1000) / 10}%, avg pos ${item.avg_position || '-'} · ${item.page || '/'}`
+        );
+
+        appendAdminList(panel, 'CTR Terms Being Learned', seo.search_console_ctr_terms || [], item =>
+            `${item.query || 'query'}: ${formatAdminCount(item.impressions)} impressions, CTR ${Math.round(Number(item.ctr || 0) * 1000) / 10}%, ${item.category || ''}${item.subcategory ? ` / ${item.subcategory}` : ''}`
         );
 
         appendAdminDetailsList(

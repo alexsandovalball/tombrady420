@@ -131,6 +131,7 @@ def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int
 _bot_applications = []
 _webhook_secret_tokens: List[Optional[str]] = []
 _bot_slots: Dict[int, BotSlot] = {}
+_bot_startup_issues: Dict[int, List[Dict[str, object]]] = {}
 _catalog_db = Database()
 _WEBHOOK_UPDATE_CONCURRENCY = _bounded_int_env("WEBHOOK_UPDATE_CONCURRENCY", 4, 1, 16)
 _webhook_processing_semaphores: Dict[str, asyncio.Semaphore] = {}
@@ -908,6 +909,27 @@ def _invalidate_admin_status_cache() -> None:
     _bot_health_cache = (0.0, [])
 
 
+def _record_bot_startup_issue(
+    bot_index: int,
+    stage: str,
+    error: Any,
+    *,
+    admin_id: Any = None,
+    error_type: str | None = None,
+) -> None:
+    issue = {
+        "stage": str(stage or "startup"),
+        "error": str(error or "")[:300],
+        "error_type": str(error_type or getattr(error, "__class__", type(error)).__name__)[:80],
+        "recorded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+    }
+    if admin_id is not None:
+        issue["admin_id"] = str(admin_id)
+    _bot_startup_issues.setdefault(bot_index, []).append(issue)
+    del _bot_startup_issues[bot_index][20:]
+    _invalidate_admin_status_cache()
+
+
 async def _set_runtime_setting(key: str, value: Any) -> None:
     try:
         await _catalog_db.set_bot_setting(key, str(value if value is not None else ""))
@@ -954,6 +976,7 @@ def clear_bot_runtime_state() -> None:
     _webhook_secret_tokens.clear()
     _webhook_secret_history.clear()
     _bot_slots.clear()
+    _bot_startup_issues.clear()
     _webhook_processing_semaphores.clear()
     _bot_applications_by_registry_id.clear()
     _runtime_index_to_registry_id.clear()
@@ -1498,6 +1521,9 @@ def _runtime_bot_snapshots() -> List[Dict[str, object]]:
             "slot_name": slot.slot_name if slot else None,
             "identity_hash": slot.identity_hash if slot else None,
             "webhook_secret_fp": _secret_fingerprint(slot.webhook_secret if slot else None),
+            "startup_issues": [dict(item) for item in _bot_startup_issues.get(idx, [])],
+            "startup_issue_count": len(_bot_startup_issues.get(idx, [])),
+            "setup_ok": len(_bot_startup_issues.get(idx, [])) == 0,
         })
     return snapshots
 
@@ -2007,20 +2033,42 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     if bot_index == 0:
         # post_init() handles DB init and cleanup tasks; command setup is guarded below.
         await post_init(bot_app, skip_commands=True)
+        def record_command_issue(issue: Dict[str, object]) -> None:
+            _record_bot_startup_issue(
+                bot_index,
+                str(issue.get("stage") or "command_setup"),
+                issue.get("error") or "",
+                admin_id=issue.get("admin_id"),
+                error_type=str(issue.get("error_type") or "CommandSetupError"),
+            )
+
         try:
-            await setup_bot_commands(bot_app.bot)
+            await setup_bot_commands(bot_app.bot, issue_recorder=record_command_issue)
         except telegram.error.TelegramError as e:
             logger.warning("Partial startup for bot index=%d: command setup skipped: %s", bot_index, e)
+            _record_bot_startup_issue(bot_index, "command_setup", e)
         except Exception as e:
             logger.warning("Partial startup for bot index=%d: command setup skipped: %s", bot_index, e)
+            _record_bot_startup_issue(bot_index, "command_setup", e)
     else:
         # Secondary bots only need command setup (DB already initialised by bot 0)
+        def record_command_issue(issue: Dict[str, object]) -> None:
+            _record_bot_startup_issue(
+                bot_index,
+                str(issue.get("stage") or "command_setup"),
+                issue.get("error") or "",
+                admin_id=issue.get("admin_id"),
+                error_type=str(issue.get("error_type") or "CommandSetupError"),
+            )
+
         try:
-            await setup_bot_commands(bot_app.bot)
+            await setup_bot_commands(bot_app.bot, issue_recorder=record_command_issue)
         except telegram.error.TelegramError as e:
             logger.warning("Partial startup for bot index=%d: command setup skipped: %s", bot_index, e)
+            _record_bot_startup_issue(bot_index, "command_setup", e)
         except Exception as e:
             logger.warning("Partial startup for bot index=%d: command setup skipped: %s", bot_index, e)
+            _record_bot_startup_issue(bot_index, "command_setup", e)
 
     # Set webhook with a freshly generated secret token so every deployment
     # automatically authenticates Telegram's requests without any env-var setup.
@@ -2029,6 +2077,7 @@ async def setup_application(bot_token: str, bot_index: int = 0):
     if webhook_url:
         if not registry_bot_id:
             logger.warning("Partial startup for bot index=%d: registry unavailable; webhook setup skipped", bot_index)
+            _record_bot_startup_issue(bot_index, "webhook_setup", "registry unavailable")
             return bot_app, None
         webhook_path = f"/webhook/{registry_bot_id}"
         if slot is None:
@@ -2049,12 +2098,15 @@ async def setup_application(bot_token: str, bot_index: int = 0):
             )
         except telegram.error.TelegramError as e:
             logger.warning("Partial startup for bot index=%d: webhook setup skipped: %s", bot_index, e)
+            _record_bot_startup_issue(bot_index, "webhook_setup", e)
             webhook_secret_token = None
         except Exception as e:
             logger.warning("Partial startup for bot index=%d: webhook setup skipped: %s", bot_index, e)
+            _record_bot_startup_issue(bot_index, "webhook_setup", e)
             webhook_secret_token = None
     else:
         logger.warning("WEBHOOK_URL not set. Webhook may not work properly.")
+        _record_bot_startup_issue(bot_index, "webhook_setup", "WEBHOOK_URL not set")
 
     logger.info(
         "Bot startup success index=%d username=%s rotated=%s",
@@ -2785,19 +2837,38 @@ def _build_search_console_signals(
             if impressions > 0
             else sum(item["position_samples"]) / max(1, len(item["position_samples"]))
         )
+        ctr = (clicks / impressions) if impressions > 0 else 0.0
+        ctr_opportunity = (
+            impressions >= 3
+            and ctr < 0.12
+            and 3.0 <= average_position <= 45.0
+        )
+        opportunity_bonus = 0
+        if ctr_opportunity:
+            if impressions >= 20:
+                opportunity_bonus += 4
+            elif impressions >= 8:
+                opportunity_bonus += 3
+            else:
+                opportunity_bonus += 2
+            if average_position <= 20:
+                opportunity_bonus += 2
+            elif average_position <= 35:
+                opportunity_bonus += 1
         confidence = min(
             100,
             int(score)
             + min(3, clicks)
             + min(2, max(0, active_days - 1))
-            + (1 if impressions >= 10 else 0),
+            + (1 if impressions >= 10 else 0)
+            + opportunity_bonus,
         )
         key = (normalize_term(query), category, subcategory)
         signal = signal_groups.get(key)
         if signal is None:
             signal = {
                 "term": query,
-                "term_type": "search_console_query",
+                "term_type": "ctr_opportunity" if ctr_opportunity else "search_console_query",
                 "provider": "google_search_console",
                 "source": item["page"][:120],
                 "language": language,
@@ -2809,6 +2880,8 @@ def _build_search_console_signals(
                 "notes": {
                     "clicks": 0,
                     "impressions": 0,
+                    "ctr": 0.0,
+                    "ctr_opportunity": False,
                     "active_days": 0,
                     "position": average_position,
                     "pages": [],
@@ -2817,11 +2890,16 @@ def _build_search_console_signals(
                 },
             }
             signal_groups[key] = signal
+        elif ctr_opportunity:
+            signal["term_type"] = "ctr_opportunity"
         signal["confidence"] = max(int(signal["confidence"]), confidence)
         signal["evidence_count"] += max(1, clicks * 5 + impressions + active_days * 2)
         notes = signal["notes"]
         notes["clicks"] += clicks
         notes["impressions"] += impressions
+        if int(notes["impressions"] or 0) > 0:
+            notes["ctr"] = round(float(notes["clicks"] or 0) / float(notes["impressions"] or 1), 4)
+        notes["ctr_opportunity"] = bool(notes.get("ctr_opportunity") or ctr_opportunity)
         notes["active_days"] = max(int(notes["active_days"]), active_days)
         if item["page"] and item["page"] not in notes["pages"] and len(notes["pages"]) < 5:
             notes["pages"].append(item["page"])
