@@ -3784,6 +3784,15 @@ def _canonical_product_url(product_id: int, caption: str) -> str:
     return _absolute_storefront_url(_canonical_product_path(product_id, caption))
 
 
+def _product_public_id(product: dict) -> Optional[int]:
+    """Return the compact public product number, falling back to internal ID."""
+    try:
+        value = product.get("public_id") or product.get("id") or product.get("product_id")
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _canonical_category_path(category: str) -> str:
     return f"/category/{_taxonomy_slug(category)}"
 
@@ -4273,7 +4282,7 @@ def _product_public_media_url(product_id: int, media_index: int = 0) -> str:
 
 def _product_primary_image_url(product: dict, *, absolute: bool = True) -> str:
     """Return the first photo media URL for SEO/social previews."""
-    product_id = product.get("id")
+    product_id = _product_public_id(product)
     if product_id is None:
         return ""
     for idx, media in enumerate(_collect_media_info(product)):
@@ -4309,7 +4318,7 @@ def _product_card_preview_media(product: dict, *, absolute: bool = False) -> dic
 
 def _product_photo_image_urls(product: dict, *, absolute: bool = True, limit: int = 8) -> list[str]:
     """Return crawlable photo URLs for product image sitemaps and Product schema."""
-    product_id = product.get("id")
+    product_id = _product_public_id(product)
     if product_id is None:
         return []
 
@@ -4328,7 +4337,7 @@ def _product_photo_image_urls(product: dict, *, absolute: bool = True, limit: in
 
 def _product_video_urls(product: dict, *, absolute: bool = True, limit: int = 8) -> list[tuple[int, str]]:
     """Return stable, public video content URLs for structured data."""
-    product_id = product.get("id")
+    product_id = _product_public_id(product)
     if product_id is None:
         return []
 
@@ -4512,7 +4521,7 @@ def _indexnow_taxonomy_urls(category: str = "", subcategory: str = "") -> list[s
 
 
 def _indexnow_product_urls(product: dict) -> list[str]:
-    product_id = product.get("id") or product.get("product_id")
+    product_id = _product_public_id(product)
     caption = product.get("caption") or ""
     urls = []
     if product_id is not None:
@@ -4582,7 +4591,7 @@ async def _indexnow_scan_catalog_changes_once() -> int:
         limit=Config.INDEXNOW_BATCH_SIZE * 3,
     )
     for item in deleted_products:
-        product_id = item.get("product_id")
+        product_id = item.get("public_id") or item.get("product_id")
         if product_id is not None:
             deleted_path = _canonical_product_path(int(product_id), item.get("caption") or "")
             urls.extend(
@@ -4926,6 +4935,8 @@ async def _missing_product_redirect(
             redirect_meta = await _catalog_db.get_deleted_product_redirect(product_id)
         else:
             redirect_meta = None
+        if not redirect_meta and hasattr(_catalog_db, "get_deleted_product_redirect_by_public_id"):
+            redirect_meta = await _catalog_db.get_deleted_product_redirect_by_public_id(product_id)
     except Exception as exc:
         logger.debug("Failed to load deleted product redirect for product_id=%s: %s", product_id, exc)
         redirect_meta = None
@@ -5542,7 +5553,7 @@ async def serve_sitemap_xml(request: Request):
                     f"  </url>"
                 )
     for p in products:
-        pid = p.get("id") or p.get("product_id")
+        pid = _product_public_id(p)
         if pid is None:
             continue
         product_lastmod = _product_lastmod(p, today)
@@ -5680,7 +5691,7 @@ async def _crawlable_page_snapshot(limit: int = 5000) -> Dict[str, Any]:
             )
 
     for product in products:
-        pid = product.get("id") or product.get("product_id")
+        pid = _product_public_id(product)
         if pid is None:
             continue
         caption = product.get("caption") or ""
@@ -5746,9 +5757,9 @@ async def _build_storefront_index_context(
     public_catalog_bot_url = _public_catalog_bot_url()
     ctx["seo_recent_products"] = [
         {
-            "id": product.get("id") or product.get("product_id"),
+            "id": _product_public_id(product) or product.get("id") or product.get("product_id"),
             "title": _caption_parts(product.get("caption") or "")[0],
-            "url": _localized_path(_canonical_product_path(product.get("id") or product.get("product_id"), product.get("caption") or ""), language),
+            "url": _localized_path(_canonical_product_path(_product_public_id(product) or product.get("id") or product.get("product_id"), product.get("caption") or ""), language),
             "category": get_category_display_name(product.get("category"), language) if product.get("category") else "",
             "subcategory": get_subcategory_display_name(product.get("subcategory"), language) if product.get("subcategory") else "",
             "image_url": _product_primary_image_url(product, absolute=True),
@@ -5920,10 +5931,14 @@ async def serve_homepage(request: Request):
 
     product_id = _product_id_from_query(request)
     if product_id:
-        product = await _catalog_db.get_product(product_id)
+        if hasattr(_catalog_db, "get_product_by_public_or_internal_id"):
+            product = await _catalog_db.get_product_by_public_or_internal_id(product_id)
+        else:
+            product = await _catalog_db.get_product(product_id)
         if product:
+            public_product_id = _product_public_id(product) or product_id
             return RedirectResponse(
-                url=_canonical_product_path(product_id, product.get("caption") or ""),
+                url=_canonical_product_path(public_product_id, product.get("caption") or ""),
                 status_code=status.HTTP_301_MOVED_PERMANENTLY,
             )
         return await _missing_product_redirect(product_id, permanent_when_known=True)
@@ -6117,11 +6132,15 @@ async def serve_product_page(product_id: int, request: Request):
 
 
 async def _serve_product_short(product_id: int, language: str):
-    product = await _catalog_db.get_product(product_id)
+    if hasattr(_catalog_db, "get_product_by_public_or_internal_id"):
+        product = await _catalog_db.get_product_by_public_or_internal_id(product_id)
+    else:
+        product = await _catalog_db.get_product(product_id)
     if not product:
         return await _missing_product_redirect(product_id, language=language)
+    public_id = _product_public_id(product) or product_id
     return RedirectResponse(
-        url=_localized_path(_canonical_product_path(product_id, product.get("caption") or ""), language),
+        url=_localized_path(_canonical_product_path(public_id, product.get("caption") or ""), language),
         status_code=301,
     )
 
@@ -6144,18 +6163,44 @@ async def serve_product_page_with_slug(product_id: int, slug: str, request: Requ
 
 async def _serve_product_page_with_slug(product_id: int, slug: str, request: Request, language: str):
     language = _normalize_seo_language(language)
-    product = await _catalog_db.get_product(product_id)
+    legacy_product = await _catalog_db.get_product(product_id)
+    if legacy_product and _generate_slug(legacy_product.get("caption") or "") == slug:
+        product = legacy_product
+    else:
+        product = None
+    if product is None and hasattr(_catalog_db, "get_product_by_public_id"):
+        product = await _catalog_db.get_product_by_public_id(product_id)
+    if not product:
+        product = legacy_product
     if not product:
         return await _missing_product_redirect(product_id, slug=slug, language=language)
 
     caption: str = product.get("caption") or ""
-    canonical_slug = _generate_slug(caption)
-    if slug != canonical_slug:
+    internal_product_id = int(product.get("id") or product_id)
+    public_product_id = _product_public_id(product) or internal_product_id
+    if public_product_id != product_id:
         return RedirectResponse(
-            url=_localized_path(_canonical_product_path(product_id, caption), language),
+            url=_localized_path(_canonical_product_path(public_product_id, caption), language),
             status_code=301,
         )
-    _log_seo_public_request(request, "product", product_id=product_id, slug=slug)
+
+    canonical_slug = _generate_slug(caption)
+    if slug != canonical_slug:
+        try:
+            redirect_meta = (
+                await _catalog_db.get_deleted_product_redirect_by_public_id(product_id)
+                if hasattr(_catalog_db, "get_deleted_product_redirect_by_public_id")
+                else None
+            )
+        except Exception:
+            redirect_meta = None
+        if redirect_meta and _generate_slug(redirect_meta.get("caption") or "") == slug:
+            return await _missing_product_redirect(product_id, slug=slug, language=language)
+        return RedirectResponse(
+            url=_localized_path(_canonical_product_path(public_product_id, caption), language),
+            status_code=301,
+        )
+    _log_seo_public_request(request, "product", product_id=public_product_id, slug=slug)
 
     category = product.get("category") or ""
     subcategory = product.get("subcategory") or ""
@@ -6165,16 +6210,16 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
     seo_desc = _build_product_seo_description(product_title, localized_raw_desc, category, subcategory, language)
     seo_title = _build_product_seo_title(product_title, category, subcategory, language)
     seo_image = _product_primary_image_url(product)
-    product_path = _canonical_product_path(product_id, caption)
+    product_path = _canonical_product_path(public_product_id, caption)
     product_url = _localized_url(product_path, language)
-    deep_link = _public_product_bot_url(product_id)
+    deep_link = _public_product_bot_url(public_product_id)
     public_product_bot_username = _public_product_bot_username()
-    webapp_link = build_webapp_product_url(Config.WEB_APP_URL, product_id)
+    webapp_link = build_webapp_product_url(Config.WEB_APP_URL, public_product_id)
     _queue_visitor_event(
         request,
         source="website",
         page_type="product",
-        product_id=product_id,
+        product_id=internal_product_id,
         category=category,
         subcategory=subcategory,
         language=language,
@@ -6194,8 +6239,8 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
         {
             "index": idx,
             "type": media.get("type") or "document",
-            "url": f"/api/catalog/{product_id}/media/{idx}",
-            "seo_url": _product_public_media_path(product_id, idx) if media.get("type") == "photo" else "",
+            "url": f"/api/catalog/{internal_product_id}/media/{idx}",
+            "seo_url": _product_public_media_path(public_product_id, idx) if media.get("type") == "photo" else "",
             "label": f"{product_title} {_seo_ui(language)['media']} {idx + 1}",
         }
         for idx, media in enumerate(_collect_media_info(product))
@@ -6205,7 +6250,7 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
         try:
             if hasattr(_catalog_db, "get_related_products"):
                 candidates = await _catalog_db.get_related_products(
-                    product_id,
+                    internal_product_id,
                     category,
                     subcategory=subcategory,
                     limit=6,
@@ -6214,16 +6259,16 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
                 candidates = await _catalog_db.get_products_by_category(category, limit=12)
             related_products = [
                 {
-                    "id": p.get("id") or p.get("product_id"),
+                    "id": _product_public_id(p) or p.get("id") or p.get("product_id"),
                     "title": _caption_parts(p.get("caption") or "")[0],
-                    "url": _localized_path(_canonical_product_path(p.get("id") or p.get("product_id"), p.get("caption") or ""), language),
+                    "url": _localized_path(_canonical_product_path(_product_public_id(p) or p.get("id") or p.get("product_id"), p.get("caption") or ""), language),
                     "media_type": preview_media.get("type") or "",
                     "media_url": preview_media.get("url") or "",
                     "stock_status": str(p.get("stock_status") or "active").lower(),
                     "is_available": str(p.get("stock_status") or "active").lower() == "active",
                 }
                 for p in candidates
-                if (p.get("id") or p.get("product_id")) != product_id
+                if (p.get("id") or p.get("product_id")) != internal_product_id
                 for preview_media in [_product_card_preview_media(p, absolute=True)]
             ][:6]
         except Exception as exc:
@@ -6253,7 +6298,7 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
     )
     ctx["request"] = request
     ctx["product"] = product
-    ctx["product_id"] = product_id
+    ctx["product_id"] = public_product_id
     ctx["product_title"] = product_title
     ctx["stock_status"] = str(product.get("stock_status") or "active").lower()
     ctx["is_available"] = ctx["stock_status"] == "active"
@@ -6295,7 +6340,7 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
         request,
         "product.html",
         ctx,
-        cache_key=f"product:{language}:{product_id}:{slug}:{cache_fingerprint}",
+        cache_key=f"product:{language}:{public_product_id}:{slug}:{cache_fingerprint}",
     )
 
 
@@ -6387,14 +6432,14 @@ async def _serve_category_page(category_name: str, request: Request, language: s
     ]
     ctx["products"] = [
         {
-            "id": p.get("id") or p.get("product_id"),
+            "id": _product_public_id(p) or p.get("id") or p.get("product_id"),
             "caption": p.get("caption") or "",
             "title": _card_preview_title(p.get("caption") or ""),
             "category": get_category_display_name(p.get("category"), language) if p.get("category") else "",
             "subcategory": p.get("subcategory") or "",
             "subcategory_display": get_subcategory_display_name(p.get("subcategory"), language) if p.get("subcategory") else "",
             "slug": _generate_slug(p.get("caption") or ""),
-            "url": _localized_path(_canonical_product_path(p.get("id") or p.get("product_id"), p.get("caption") or ""), language),
+            "url": _localized_path(_canonical_product_path(_product_public_id(p) or p.get("id") or p.get("product_id"), p.get("caption") or ""), language),
             "image_url": _product_primary_image_url(p, absolute=False),
             "media_url": preview_media.get("url") or "",
             "media_type": preview_media.get("type") or "",
@@ -6558,14 +6603,14 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
     ctx["subcategories"] = []
     ctx["products"] = [
         {
-            "id": p.get("id") or p.get("product_id"),
+            "id": _product_public_id(p) or p.get("id") or p.get("product_id"),
             "caption": p.get("caption") or "",
             "title": _card_preview_title(p.get("caption") or ""),
             "category": get_category_display_name(p.get("category"), language) if p.get("category") else "",
             "subcategory": p.get("subcategory") or "",
             "subcategory_display": subcategory_display,
             "slug": _generate_slug(p.get("caption") or ""),
-            "url": _localized_path(_canonical_product_path(p.get("id") or p.get("product_id"), p.get("caption") or ""), language),
+            "url": _localized_path(_canonical_product_path(_product_public_id(p) or p.get("id") or p.get("product_id"), p.get("caption") or ""), language),
             "image_url": _product_primary_image_url(p, absolute=False),
             "media_url": preview_media.get("url") or "",
             "media_type": preview_media.get("type") or "",
@@ -7190,9 +7235,14 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
             headers={"Cache-Control": "public, max-age=30"},
         )
 
-    product = await _catalog_db.get_product(product_id)
+    if hasattr(_catalog_db, "get_product_by_public_or_internal_id"):
+        product = await _catalog_db.get_product_by_public_or_internal_id(product_id)
+    else:
+        product = await _catalog_db.get_product(product_id)
     if not product:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+    internal_product_id = int(product.get("id") or product_id)
+    public_product_id = _product_public_id(product) or internal_product_id
 
     caption = product.get("caption") or ""
     if lang and lang != "en":
@@ -7207,14 +7257,15 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
     order_links = await _catalog_db.get_order_links()
 
     storefront_url = (
-        _canonical_product_url(product_id, product.get("caption") or "")
+        _canonical_product_url(public_product_id, product.get("caption") or "")
         if _STOREFRONT_DOMAIN
         else None
     )
-    bot_deep_link = _public_product_bot_url(product_id)
+    bot_deep_link = _public_product_bot_url(public_product_id)
 
     payload = json.dumps({
-        "id": product.get("id"),
+        "id": internal_product_id,
+        "public_id": public_product_id,
         "caption": caption,
         "category": product.get("category") or "",
         "subcategory": product.get("subcategory") or "",
@@ -7278,9 +7329,13 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
         return _seo_media_fallback_response(request, "rate_limited")
 
     try:
-        product = await _catalog_db.get_product(product_id)
+        if hasattr(_catalog_db, "get_product_by_public_or_internal_id"):
+            product = await _catalog_db.get_product_by_public_or_internal_id(product_id)
+        else:
+            product = await _catalog_db.get_product(product_id)
         if not product:
             return _seo_media_fallback_response(request, "product_missing")
+        internal_product_id = int(product.get("id") or product_id)
 
         media_info = _collect_media_info(product)
         product_fallback_image = _product_primary_image_url(product, absolute=True)
@@ -7292,7 +7347,7 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
         if media_kind not in {"photo", "video"}:
             fallback_index = _seo_preferred_fallback_media_index(product, media_index)
             if fallback_index is not None and fallback_index != media_index:
-                fallback_response = await stream_catalog_media(request, product_id, fallback_index)
+                fallback_response = await stream_catalog_media(request, internal_product_id, fallback_index)
                 if getattr(fallback_response, "status_code", 200) < 400:
                     fallback_response.headers["Cache-Control"] = f"public, max-age={_SEO_PUBLIC_MEDIA_CACHE_SECONDS}"
                     fallback_response.headers["X-Robots-Tag"] = "index, follow"
@@ -7322,13 +7377,13 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
                 ),
             )
 
-        response = await stream_catalog_media(request, product_id, media_index)
+        response = await stream_catalog_media(request, internal_product_id, media_index)
         if getattr(response, "status_code", 200) >= 400:
             if media_kind == "video":
                 return response
             fallback_index = _seo_preferred_fallback_media_index(product, media_index)
             if fallback_index is not None and fallback_index != media_index:
-                fallback_response = await stream_catalog_media(request, product_id, fallback_index)
+                fallback_response = await stream_catalog_media(request, internal_product_id, fallback_index)
                 if getattr(fallback_response, "status_code", 200) < 400:
                     fallback_response.headers["Cache-Control"] = f"public, max-age={_SEO_PUBLIC_MEDIA_CACHE_SECONDS}"
                     fallback_response.headers["ETag"] = _seo_etag_from_key(f"seo-media:{product_id}:{fallback_index}")
@@ -7779,8 +7834,10 @@ async def search_products(
         for product in products:
             media_info = _collect_media_info(product)
             stock_status = str(product.get("stock_status") or "active").lower()
+            public_product_id = _product_public_id(product) or product.get("id")
             items.append({
                 "id": product.get("id"),
+                "public_id": public_product_id,
                 "caption": product.get("caption") or "",
                 "category": product.get("category") or "",
                 "subcategory": product.get("subcategory") or "",
@@ -7792,7 +7849,7 @@ async def search_products(
                 "media_info": media_info,
                 "url": _localized_path(
                     _canonical_product_path(
-                        product.get("id"),
+                        public_product_id,
                         product.get("caption") or "",
                     ),
                     lang,

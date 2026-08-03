@@ -28,6 +28,9 @@ _VALIDATED_FILE_ID_TTL_SECONDS = 60 * 60
 _VALIDATED_FILE_ID_MAX = 5000
 _VALIDATION_TIMEOUT_SECONDS = 3.0
 _validated_file_ids: OrderedDict[tuple[str, str], tuple[float, Optional[str]]] = OrderedDict()
+_background_validation_tasks: set[asyncio.Task] = set()
+_background_validation_keys: set[tuple[str, str]] = set()
+_BACKGROUND_VALIDATION_MAX = 128
 _resolve_locks: weakref.WeakValueDictionary[
     tuple[str, int, int, int, str], asyncio.Lock
 ] = weakref.WeakValueDictionary()
@@ -168,13 +171,12 @@ class MediaResolver:
 
         if not source_chat_id or not source_message_id or not file_type:
             if same_bot and original_file_id:
-                validation = await self._validate_file_id(original_file_id)
-                if validation.success:
-                    logger.info(
-                        "Media resolution succeeded",
-                        extra={**log_extra, "resolution_source": "original_no_source", "fallback_used": False},
-                    )
-                    return MediaResolutionResult(True, original_file_id, "original_no_source")
+                logger.info(
+                    "Media resolution succeeded",
+                    extra={**log_extra, "resolution_source": "original_no_source", "fallback_used": False},
+                )
+                self._schedule_background_validation(original_file_id)
+                return MediaResolutionResult(True, original_file_id, "original_no_source")
             error = "missing source chat/message metadata"
             logger.warning(
                 "Bot-specific file_id resolution failed",
@@ -183,23 +185,12 @@ class MediaResolver:
             return MediaResolutionResult(False, None, "metadata", error)
 
         if same_bot and original_file_id and not force_rehydrate:
-            validation = await self._validate_file_id(original_file_id)
-            if validation.success:
-                logger.info(
-                    "Media resolution succeeded",
-                    extra={**log_extra, "resolution_source": "original", "fallback_used": False},
-                )
-                return MediaResolutionResult(True, original_file_id, "original")
-            if _transient_validation_error(validation.error):
-                logger.warning(
-                    "Original file_id validation timed out; rehydrating before delivery",
-                    extra={**log_extra, "reason": validation.error, "fallback_used": True},
-                )
-            else:
-                logger.warning(
-                    "Original bot file_id validation failed",
-                    extra={**log_extra, "reason": validation.error},
-                )
+            logger.info(
+                "Media resolution succeeded",
+                extra={**log_extra, "resolution_source": "original", "fallback_used": False},
+            )
+            self._schedule_background_validation(original_file_id)
+            return MediaResolutionResult(True, original_file_id, "original")
 
         cached = None
         if not force_rehydrate:
@@ -211,35 +202,20 @@ class MediaResolver:
                 file_type=file_type,
             )
         if cached:
-            validation = await self._validate_file_id(cached)
-            if validation.success and await self._validated_file_matches_origin(
-                validation,
-                source_chat_id,
-                source_message_id,
-                media_index,
-                current_bot,
-                file_type,
-                log_extra,
-            ):
-                logger.info(
-                    "Media resolution cache hit",
-                    extra={**log_extra, "resolution_source": "cache", "cache_hit": True},
-                )
-                return MediaResolutionResult(True, cached, "cache")
-
-            if _transient_validation_error(validation.error):
-                logger.warning(
-                    "Cached file_id validation timed out; rehydrating without evicting cache",
-                    extra={**log_extra, "reason": validation.error, "cache_hit": True},
-                )
-            else:
-                await self.db.delete_bot_file_id_cache_entry(
-                    source_chat_id, source_message_id, media_index, current_bot
-                )
-                logger.warning(
-                    "Invalid cached file_id evicted",
-                    extra={**log_extra, "reason": validation.error, "cache_hit": True},
-                )
+            logger.info(
+                "Media resolution cache hit",
+                extra={**log_extra, "resolution_source": "cache_unvalidated_fast_path", "cache_hit": True},
+            )
+            self._schedule_background_validation(
+                cached,
+                source_chat_id=source_chat_id,
+                source_message_id=source_message_id,
+                media_index=media_index,
+                current_bot=current_bot,
+                file_type=file_type,
+                log_extra=log_extra,
+            )
+            return MediaResolutionResult(True, cached, "cache")
         else:
             logger.info("Media resolution cache miss", extra={**log_extra, "cache_hit": False})
 
@@ -306,26 +282,20 @@ class MediaResolver:
                     file_type=file_type,
                 )
             if cached:
-                validation = await self._validate_file_id(cached)
-                if validation.success and await self._validated_file_matches_origin(
-                    validation,
-                    source_chat_id,
-                    source_message_id,
-                    media_index,
-                    current_bot,
-                    file_type,
-                    log_extra,
-                ):
-                    logger.info(
-                        "Media resolution cache hit after wait",
-                        extra={**log_extra, "resolution_source": "cache_after_wait", "cache_hit": True},
-                    )
-                    return cached
-                if _transient_validation_error(validation.error):
-                    logger.warning(
-                        "Cached file_id validation timed out after wait; rehydrating without evicting cache",
-                        extra={**log_extra, "reason": validation.error, "cache_hit": True},
-                    )
+                logger.info(
+                    "Media resolution cache hit after wait",
+                    extra={**log_extra, "resolution_source": "cache_after_wait_unvalidated_fast_path", "cache_hit": True},
+                )
+                self._schedule_background_validation(
+                    cached,
+                    source_chat_id=source_chat_id,
+                    source_message_id=source_message_id,
+                    media_index=media_index,
+                    current_bot=current_bot,
+                    file_type=file_type,
+                    log_extra=log_extra,
+                )
+                return cached
 
             async with _resolve_semaphore:
                 return await self._rehydrate_with_retry(
@@ -384,6 +354,71 @@ class MediaResolver:
         _validated_file_ids.move_to_end(cache_key)
         while len(_validated_file_ids) > _VALIDATED_FILE_ID_MAX:
             _validated_file_ids.popitem(last=False)
+
+    def _schedule_background_validation(
+        self,
+        file_id: str,
+        *,
+        source_chat_id: Optional[int] = None,
+        source_message_id: Optional[int] = None,
+        media_index: int = 0,
+        current_bot: str = "",
+        file_type: str = "",
+        log_extra: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Validate a cached file ID after responding to the user."""
+        if not file_id:
+            return
+
+        bot_username = (getattr(self.bot, "username", None) or "").lower()
+        cache_key = (bot_username, file_id)
+        if cache_key in _background_validation_keys:
+            return
+        if len(_background_validation_tasks) >= _BACKGROUND_VALIDATION_MAX:
+            logger.debug("Skipping background media validation; queue is full")
+            return
+        cached_at = _validated_file_ids.get(cache_key)
+        if cached_at is not None:
+            timestamp = cached_at[0] if isinstance(cached_at, tuple) else cached_at
+            if _time.monotonic() - timestamp < _VALIDATED_FILE_ID_TTL_SECONDS:
+                return
+
+        async def _runner() -> None:
+            try:
+                validation = await self._validate_file_id(file_id)
+                if validation.success:
+                    if source_chat_id and source_message_id and file_type and current_bot:
+                        await self._validated_file_matches_origin(
+                            validation,
+                            source_chat_id,
+                            source_message_id,
+                            media_index,
+                            current_bot,
+                            file_type,
+                            log_extra or {},
+                        )
+                    return
+                if _transient_validation_error(validation.error):
+                    return
+                reason = validation.error
+            except Exception as exc:
+                reason = str(exc)
+
+            if reason:
+                logger.warning(
+                    "Background media validation failed",
+                    extra={**(log_extra or {}), "reason": reason},
+                )
+
+        _background_validation_keys.add(cache_key)
+        task = asyncio.create_task(_runner(), name="media_file_id_background_validate")
+        _background_validation_tasks.add(task)
+
+        def _cleanup(completed_task: asyncio.Task) -> None:
+            _background_validation_tasks.discard(completed_task)
+            _background_validation_keys.discard(cache_key)
+
+        task.add_done_callback(_cleanup)
 
     async def _validated_file_matches_origin(
         self,

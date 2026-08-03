@@ -200,20 +200,22 @@ class NotificationService:
         cls,
         product_id: int,
         bot_username: str,
+        public_product_id: Optional[int] = None,
     ) -> tuple[Optional[InlineKeyboardMarkup], List[str]]:
         """Build group/channel product broadcast actions and log details."""
         buttons: list[InlineKeyboardButton] = []
         details: List[str] = []
+        visible_product_id = int(public_product_id or product_id)
 
-        bot_deep_link = build_bot_product_url(product_id, bot_username)
+        bot_deep_link = build_bot_product_url(visible_product_id, bot_username)
         if bot_deep_link:
             buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
             details.append(f"\n  - 🔗 View in Bot → {bot_deep_link}")
 
         webapp_bot_username = cls._preferred_product_webapp_bot_username(bot_username)
-        webapp_url = cls._build_product_webapp_url(product_id, webapp_bot_username)
+        webapp_url = cls._build_product_webapp_url(visible_product_id, webapp_bot_username)
         if not webapp_url:
-            webapp_url = build_webapp_product_url(Config.WEB_APP_URL, product_id)
+            webapp_url = build_webapp_product_url(Config.WEB_APP_URL, visible_product_id)
             logger.warning(
                 "[Broadcast] TELEGRAM_WEBAPP_SHORT_NAME missing; using public product URL for WebApp button "
                 "product_id=%s bot=%s",
@@ -1280,7 +1282,12 @@ class NotificationService:
         file_type = product.get("file_type")
 
         # Build interactive buttons (matching inline mode style)
-        reply_markup, button_detail_lines = self._build_product_broadcast_keyboard(product_id, bot_username)
+        public_product_id = product.get("public_id") or product_id
+        reply_markup, button_detail_lines = self._build_product_broadcast_keyboard(
+            product_id,
+            bot_username,
+            public_product_id=int(public_product_id),
+        )
         button_details = "".join(button_detail_lines)
         logger.info(
             f"[Broadcast] Preparing product {product_id} broadcast to {len(chats)} destination(s) "

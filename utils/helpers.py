@@ -485,8 +485,8 @@ async def get_bot_specific_file_id(
                     bot,
                     mapped_file_id,
                     context="get_bot_specific_file_id:mapped",
-                    retries=1,
-                    timeout_seconds=8.0,
+                    retries=0,
+                    timeout_seconds=2.0,
                 )
                 mapped_unique_id = getattr(tg_file, "file_unique_id", None)
                 expected_unique_id = canonical.get("file_unique_id")
@@ -531,8 +531,8 @@ async def get_bot_specific_file_id(
                 bot,
                 cached_file_id,
                 context="get_bot_specific_file_id:cached",
-                retries=1,
-                timeout_seconds=8.0,
+                retries=0,
+                timeout_seconds=2.0,
             )
             file_unique_id = getattr(tg_file, "file_unique_id", None)
             expected_unique_id = canonical.get("file_unique_id") if canonical else None

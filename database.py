@@ -128,6 +128,7 @@ class Database:
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS products (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    public_id INTEGER UNIQUE,
                     file_id TEXT NOT NULL,
                     file_type TEXT NOT NULL,
                     caption TEXT,
@@ -146,6 +147,7 @@ class Database:
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS deleted_product_redirects (
                     product_id INTEGER PRIMARY KEY,
+                    public_id INTEGER,
                     caption TEXT,
                     category TEXT,
                     subcategory TEXT,
@@ -643,6 +645,8 @@ class Database:
                 ("bot_users", "is_blocked", "INTEGER DEFAULT 0", False),
                 ("bot_users", "language", "TEXT DEFAULT 'en'", True),
                 ("bot_users", "is_subscribed", "INTEGER DEFAULT 1", True),
+                ("products", "public_id", "INTEGER", True),
+                ("deleted_product_redirects", "public_id", "INTEGER", True),
                 ("notification_queue", "claimed_at", "TIMESTAMP", True),
                 ("notification_queue", "claim_token", "TEXT", True),
                 ("notification_queue", "claimed_by", "TEXT", True),
@@ -695,6 +699,7 @@ class Database:
             except Exception as exc:
                 logger.warning("Could not normalize product stock statuses: %s", exc)
 
+            await self._backfill_product_public_ids(db)
             await self._init_product_search_index(db)
 
             # Merge retired FLOWER subcategories into their canonical buckets.
@@ -724,6 +729,7 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_created_at ON products(created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_media_group_id ON products(media_group_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_stock_status ON products(stock_status)")
+            await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_products_public_id ON products(public_id)")
             # Composite covering indexes for the most frequent sorted query patterns
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_category_created ON products(category, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_cat_subcat_created ON products(category, subcategory, created_at DESC)")
@@ -1022,6 +1028,74 @@ class Database:
             
         except Exception as e:
             logger.error(f"Error checking bot_username migration: {e}")
+
+    async def _backfill_product_public_ids(self, db) -> None:
+        """Assign compact reusable public product numbers where missing."""
+        try:
+            await db.execute("DROP TRIGGER IF EXISTS product_search_au")
+            async with db.execute("""
+                SELECT id, public_id
+                FROM products
+                ORDER BY COALESCE(created_at, ''), id
+            """) as cursor:
+                rows = await cursor.fetchall()
+
+            used: set[int] = set()
+            missing: list[int] = []
+            reset_ids: list[int] = []
+            for product_id, public_id in rows:
+                if isinstance(public_id, int) and public_id > 0 and public_id not in used:
+                    used.add(public_id)
+                elif public_id:
+                    reset_ids.append(int(product_id))
+                else:
+                    missing.append(int(product_id))
+
+            if reset_ids:
+                missing.extend(reset_ids)
+                await db.executemany(
+                    "UPDATE products SET public_id = NULL WHERE id = ?",
+                    [(product_id,) for product_id in reset_ids],
+                )
+
+            if not missing:
+                return
+
+            next_public_id = 1
+            assignments: list[tuple[int, int]] = []
+            for product_id in missing:
+                while next_public_id in used:
+                    next_public_id += 1
+                assignments.append((next_public_id, product_id))
+                used.add(next_public_id)
+                next_public_id += 1
+
+            await db.executemany(
+                "UPDATE products SET public_id = ? WHERE id = ?",
+                assignments,
+            )
+            logger.info("Assigned reusable public product numbers to %d product(s)", len(assignments))
+        except Exception as exc:
+            logger.warning("Could not backfill public product numbers: %s", exc)
+
+    async def _next_available_public_id(self, db) -> int:
+        """Return the smallest positive public product number not currently in use."""
+        async with db.execute("""
+            SELECT public_id
+            FROM products
+            WHERE public_id IS NOT NULL AND public_id > 0
+            ORDER BY public_id
+        """) as cursor:
+            rows = await cursor.fetchall()
+
+        expected = 1
+        for row in rows:
+            current = int(row[0])
+            if current > expected:
+                break
+            if current == expected:
+                expected += 1
+        return expected
     
     async def add_product(
         self,
@@ -1037,21 +1111,31 @@ class Database:
         subcategory: Optional[str] = None,
         bot_username: Optional[str] = None
     ) -> int:
-        """Add a new product and let SQLite allocate a stable product ID."""
+        """Add a new product with a stable internal ID and reusable public number."""
         async with self.get_connection() as db:
             try:
+                await db.execute("BEGIN IMMEDIATE")
+                public_id = await self._next_available_public_id(db)
                 cursor = await db.execute("""
-                    INSERT INTO products (file_id, file_type, caption, message_id, chat_id,
+                    INSERT INTO products (public_id, file_id, file_type, caption, message_id, chat_id,
                                         media_group_id, additional_file_ids, additional_message_ids, category, subcategory, bot_username, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (file_id, file_type, caption or "", message_id, chat_id,
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (public_id, file_id, file_type, caption or "", message_id, chat_id,
                       media_group_id, additional_file_ids, additional_message_ids, category, subcategory,
                       self.normalize_bot_username(bot_username), datetime.now()))
                 await db.commit()
                 product_id = int(cursor.lastrowid)
-                logger.info(f"Product added: ID={product_id}, message_id={message_id}, category={category}, bot={bot_username}")
+                logger.info(
+                    "Product added: ID=%s public_id=%s message_id=%s category=%s bot=%s",
+                    product_id,
+                    public_id,
+                    message_id,
+                    category,
+                    bot_username,
+                )
                 return product_id
             except aiosqlite.IntegrityError:
+                await db.rollback()
                 logger.warning(f"Product already exists: message_id={message_id}, chat_id={chat_id}")
                 return -1
     
@@ -1067,6 +1151,23 @@ class Database:
                     return dict(row)
                 return None
 
+    async def get_product_by_public_id(self, public_id: int) -> Optional[Dict[str, Any]]:
+        """Get a product by the compact reusable public product number."""
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM products WHERE public_id = ?
+            """, (public_id,)) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def get_product_by_public_or_internal_id(self, product_ref: int) -> Optional[Dict[str, Any]]:
+        """Resolve public product number first, then legacy internal ID."""
+        product = await self.get_product_by_public_id(product_ref)
+        if product:
+            return product
+        return await self.get_product(product_ref)
+
     async def get_deleted_product_redirect(self, product_id: int) -> Optional[Dict[str, Any]]:
         """Get redirect metadata for a product that has been deleted."""
         async with self.get_connection() as db:
@@ -1074,6 +1175,19 @@ class Database:
             async with db.execute("""
                 SELECT * FROM deleted_product_redirects WHERE product_id = ?
             """, (product_id,)) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def get_deleted_product_redirect_by_public_id(self, public_id: int) -> Optional[Dict[str, Any]]:
+        """Get deleted-product redirect metadata by former public product number."""
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM deleted_product_redirects
+                WHERE public_id = ?
+                ORDER BY deleted_at DESC
+                LIMIT 1
+            """, (public_id,)) as cursor:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
     
@@ -1332,9 +1446,9 @@ class Database:
                 await db.execute("BEGIN")
                 await db.execute("""
                     INSERT OR REPLACE INTO deleted_product_redirects (
-                        product_id, caption, category, subcategory, deleted_at
+                        product_id, public_id, caption, category, subcategory, deleted_at
                     )
-                    SELECT id, caption, category, subcategory, CURRENT_TIMESTAMP
+                    SELECT id, public_id, caption, category, subcategory, CURRENT_TIMESTAMP
                     FROM products
                     WHERE id = ?
                 """, (product_id,))
@@ -5977,7 +6091,7 @@ class Database:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 f"""
-                SELECT id, caption, category, subcategory, created_at
+                SELECT id, public_id, caption, category, subcategory, created_at
                 FROM products
                 WHERE created_at >= ?
                   AND (category IS NULL OR category = '' OR category NOT IN ({_EXCLUDED_PLACEHOLDERS}))
@@ -6001,7 +6115,7 @@ class Database:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
-                SELECT product_id, caption, category, subcategory, deleted_at
+                SELECT product_id, public_id, caption, category, subcategory, deleted_at
                 FROM deleted_product_redirects
                 WHERE deleted_at >= ?
                 ORDER BY deleted_at ASC, product_id ASC

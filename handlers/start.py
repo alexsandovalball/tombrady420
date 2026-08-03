@@ -37,7 +37,10 @@ async def _handle_product_deeplink(
         )
         return
 
-    product = await db.get_product(product_id)
+    if hasattr(db, "get_product_by_public_or_internal_id"):
+        product = await db.get_product_by_public_or_internal_id(product_id)
+    else:
+        product = await db.get_product(product_id)
     if not product:
         user_lang = await get_user_lang_async(update.effective_user.id)
         text = await get_translated_string_async("deeplink_product_not_found", user_lang)
@@ -49,7 +52,7 @@ async def _handle_product_deeplink(
 
     # Re-use the existing product view handler
     from handlers.product_view import show_product_media
-    await show_product_media(update, context, product_id)
+    await show_product_media(update, context, int(product.get("id") or product_id))
 
 
 async def _handle_inline_help(

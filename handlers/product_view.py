@@ -84,6 +84,20 @@ def _has_duplicate_file_ids(media_list: list[tuple[str, str]]) -> bool:
     return len(file_ids) != len(set(file_ids))
 
 
+def _start_product_loading_action(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> asyncio.Task:
+    """Keep Telegram showing activity while a product album is being prepared."""
+    async def _runner() -> None:
+        while True:
+            try:
+                await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
+            except Exception:
+                logger.debug("Unable to send product loading chat action", exc_info=True)
+                return
+            await asyncio.sleep(4)
+
+    return asyncio.create_task(_runner(), name=f"product_loading_action:{chat_id}")
+
+
 def _build_media_fallback_keyboard(
     product_id: int,
     bot_username: str,
@@ -102,6 +116,7 @@ def _build_media_fallback_keyboard(
 
 async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE, product_id: int):
     """Show all product media at once (as media group if multiple files)."""
+    loading_action_task: asyncio.Task | None = None
     try:
         product = await db.get_product(product_id)
         
@@ -239,6 +254,7 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
             f"raw_media_count={total_media}, "
             f"media_group_id={media_group_id}"
         )
+        loading_action_task = _start_product_loading_action(context, update.effective_chat.id)
         
         product_bot = (product.get("bot_username") or "").lower()
         current_bot = (context.bot.username or "").lower()
@@ -476,10 +492,16 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
     except Exception as e:
         logger.exception(f"Error showing product media: {e}")
         if update.callback_query:
-            await update.callback_query.answer(
-                "❌ An error occurred while loading the product.",
-                show_alert=True
-            )
+            try:
+                await update.callback_query.answer(
+                    "❌ An error occurred while loading the product.",
+                    show_alert=True
+                )
+            except Exception:
+                logger.debug("Unable to answer failed product callback", exc_info=True)
+    finally:
+        if loading_action_task:
+            loading_action_task.cancel()
 
 async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle product button callback."""

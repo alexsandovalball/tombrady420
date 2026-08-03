@@ -101,6 +101,14 @@ def _build_product_webapp_url(product_id: int) -> Optional[str]:
     return build_webapp_product_url(Config.WEB_APP_URL, product_id)
 
 
+def _product_public_id(product: Dict[str, Any]) -> int:
+    """Return the visible reusable product number for links."""
+    try:
+        return int(product.get("public_id") or product.get("id") or product.get("product_id"))
+    except (TypeError, ValueError):
+        return int(product.get("id") or 0)
+
+
 def _inline_result_rejected(exc: Exception) -> bool:
     if not isinstance(exc, BadRequest):
         return False
@@ -207,6 +215,7 @@ async def _build_product_article(
     For products without media we always return an ``InlineQueryResultArticle``.
     """
     product_id = product.get("id")
+    public_product_id = _product_public_id(product)
     caption = product.get("caption") or ""
     category = product.get("category") or "Uncategorized"
     file_type = product.get("file_type") or ""
@@ -223,8 +232,8 @@ async def _build_product_article(
     description = f"Category: {category}"
 
     # Build the inline buttons using the correct domain for deep links
-    bot_deep_link = _build_product_url(product_id, bot_username)
-    webapp_deep_link = _build_product_webapp_url(product_id)
+    bot_deep_link = _build_product_url(public_product_id, bot_username)
+    webapp_deep_link = _build_product_webapp_url(public_product_id)
 
     buttons = []
     if bot_deep_link:
