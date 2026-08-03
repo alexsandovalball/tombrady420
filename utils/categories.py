@@ -17,8 +17,8 @@ CATEGORIES = {
     "PREROLLS": ["FLOWER PREROLLS", "INFUSED FLOWER PREROLLS"],
     "SHROOMS": [],
     "FLOWER": [
-        "TOPSHELFCANDY", "PREMIUMEXOTICS", "EXOTICS", 
-        "PREMIUMLIGHTDEPS", "LIGHTDEPS", "LIGHTASSIST", "LOWS",
+        "TOPSHELFCANDY", "EXOTICS",
+        "LIGHTDEPS", "LIGHTASSIST", "LOWS",
         "MOONROCKS AND SNOWCAPS"
     ],
     "DATEDPROOFS": [],
@@ -52,13 +52,20 @@ SUBCATEGORY_DISPLAY = {
     "FLOWER PREROLLS": "Flower Pre-Rolls",
     "INFUSED FLOWER PREROLLS": "Infused Flower Pre-Rolls",
     "TOPSHELFCANDY": "Top Shelf Candy",
-    "PREMIUMEXOTICS": "Premium Exotics",
     "EXOTICS": "Exotics",
-    "PREMIUMLIGHTDEPS": "Premium Light Deps",
     "LIGHTDEPS": "Light Deps",
     "LIGHTASSIST": "Light Assist",
     "LOWS": "Lows",
     "MOONROCKS AND SNOWCAPS": "🌙 Moonrocks/Snowcaps",
+}
+
+SUBCATEGORY_ALIASES = {
+    "FLOWER": {
+        "PREMIUMEXOTICS": "EXOTICS",
+        "PREMIUM EXOTICS": "EXOTICS",
+        "PREMIUMLIGHTDEPS": "LIGHTDEPS",
+        "PREMIUM LIGHT DEPS": "LIGHTDEPS",
+    }
 }
 
 _CATEGORY_TRANSLATIONS = {
@@ -319,6 +326,15 @@ def get_all_categories() -> List[str]:
 def get_subcategories(category: str) -> List[str]:
     """Get subcategories for a given category."""
     return CATEGORIES.get(category, [])
+
+
+def canonicalize_subcategory(category: Optional[str], subcategory: Optional[str]) -> Optional[str]:
+    """Map retired subcategory names to the canonical visible subcategory."""
+    if not subcategory:
+        return subcategory
+    category_key = (category or "").strip().upper()
+    subcategory_key = str(subcategory).strip().upper()
+    return SUBCATEGORY_ALIASES.get(category_key, {}).get(subcategory_key, subcategory)
 
 
 def get_subcategory_display_name(subcategory: str, user_lang: str = "en") -> str:

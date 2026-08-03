@@ -48,7 +48,14 @@ from utils.helpers import (
     is_transient_telegram_error,
     register_bot_handlers,
 )
-from utils.categories import get_all_categories, get_category_display_name, get_subcategory_display_name, get_subcategories, EXCLUDED_FROM_ALL_PRODUCTS
+from utils.categories import (
+    EXCLUDED_FROM_ALL_PRODUCTS,
+    canonicalize_subcategory,
+    get_all_categories,
+    get_category_display_name,
+    get_subcategory_display_name,
+    get_subcategories,
+)
 from utils.fuzzy_search import normalize_text, rank_products_for_query
 from utils.seo_terms import (
     build_query_variants,
@@ -2741,10 +2748,7 @@ def _search_console_page_context(
         )
         subcategory = ""
         if category and len(segments) >= 3:
-            subcategory = next(
-                (value for value in get_subcategories(category) if _taxonomy_slug(value) == segments[2]),
-                "",
-            )
+            subcategory = _resolve_subcategory_name(category, segments[2]) or ""
         return {
             "language": language,
             "category": category,
@@ -4898,7 +4902,15 @@ def _resolve_category_name(category_slug: str) -> Optional[str]:
 
 def _resolve_subcategory_name(category: str, subcategory_slug: str) -> Optional[str]:
     subcategory_slug = _taxonomy_slug(subcategory_slug)
-    return next((subcategory for subcategory in get_subcategories(category) if _taxonomy_slug(subcategory) == subcategory_slug), None)
+    matched = next((subcategory for subcategory in get_subcategories(category) if _taxonomy_slug(subcategory) == subcategory_slug), None)
+    if matched:
+        return matched
+    for alias in ("PREMIUMEXOTICS", "PREMIUM EXOTICS", "PREMIUMLIGHTDEPS", "PREMIUM LIGHT DEPS"):
+        if _taxonomy_slug(alias) == subcategory_slug:
+            canonical = canonicalize_subcategory(category, alias)
+            if canonical in get_subcategories(category):
+                return canonical
+    return None
 
 
 async def _missing_product_redirect(

@@ -14,7 +14,7 @@ import json
 import hashlib
 
 from configs.config import Config
-from utils.categories import EXCLUDED_FROM_ALL_PRODUCTS
+from utils.categories import EXCLUDED_FROM_ALL_PRODUCTS, canonicalize_subcategory
 from utils.countries import country_code, country_display_name
 
 logger = logging.getLogger(__name__)
@@ -696,6 +696,11 @@ class Database:
                 logger.warning("Could not normalize product stock statuses: %s", exc)
 
             await self._init_product_search_index(db)
+
+            # Merge retired FLOWER subcategories into their canonical buckets.
+            # This keeps old databases, old callbacks, and SEO mappings aligned
+            # with the currently visible catalog taxonomy.
+            await self._migrate_canonical_subcategories(db)
             
             # Migrate existing media groups to populate additional_message_ids
             # For media groups created before this fix, infer message IDs from sequential ordering
@@ -868,6 +873,38 @@ class Database:
                 await db.execute("DROP TABLE IF EXISTS product_search")
             except aiosqlite.OperationalError:
                 pass
+
+    async def _migrate_canonical_subcategories(self, db) -> None:
+        """Normalize retired subcategory names across catalog and SEO tables."""
+        aliases = {
+            ("FLOWER", "PREMIUMEXOTICS"): "EXOTICS",
+            ("FLOWER", "PREMIUM EXOTICS"): "EXOTICS",
+            ("FLOWER", "PREMIUMLIGHTDEPS"): "LIGHTDEPS",
+            ("FLOWER", "PREMIUM LIGHT DEPS"): "LIGHTDEPS",
+        }
+        total_changed = 0
+
+        for (category, old_subcategory), new_subcategory in aliases.items():
+            for table in ("products", "deleted_product_redirects", "seo_query_mappings", "external_seo_signals", "visitor_events"):
+                try:
+                    cursor = await db.execute(
+                        f"""
+                        UPDATE {table}
+                        SET subcategory = ?
+                        WHERE UPPER(COALESCE(category, '')) = ?
+                          AND UPPER(COALESCE(subcategory, '')) = ?
+                        """,
+                        (new_subcategory, category, old_subcategory),
+                    )
+                    if cursor.rowcount and cursor.rowcount > 0:
+                        total_changed += cursor.rowcount
+                except aiosqlite.OperationalError:
+                    # Older local databases may not have every SEO/analytics table yet.
+                    continue
+
+        if total_changed:
+            await db.commit()
+            logger.info("Canonicalized retired subcategories rows=%d", total_changed)
 
     @staticmethod
     def _build_fts_query(query: str) -> Optional[str]:
@@ -1539,6 +1576,7 @@ class Database:
         """Get other products in the same category for public product pages."""
         if not category:
             return []
+        subcategory = canonicalize_subcategory(category, subcategory)
 
         async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
@@ -1623,6 +1661,7 @@ class Database:
         self, category: str, subcategory: str, limit: int = None, offset: int = 0
     ) -> List[Dict[str, Any]]:
         """Get products filtered by category and subcategory."""
+        subcategory = canonicalize_subcategory(category, subcategory)
         async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             query = f"""
@@ -1638,6 +1677,7 @@ class Database:
     
     async def count_products_by_category_and_subcategory(self, category: str, subcategory: str) -> int:
         """Count products in a category and subcategory."""
+        subcategory = canonicalize_subcategory(category, subcategory)
         async with self.get_connection() as db:
             async with db.execute(
                 f"SELECT COUNT(*) FROM products WHERE category = ? AND subcategory = ? AND {_VISIBLE_PRODUCT_STATUS_SQL}",
@@ -1730,6 +1770,7 @@ class Database:
         Updates created_at to current time so recategorized products move up in lists,
         indicating fresh or restocked inventory.
         """
+        subcategory = canonicalize_subcategory(category, subcategory)
         async with self.get_connection() as db:
             await db.execute("""
                 UPDATE products SET category = ?, subcategory = ?, created_at = ? WHERE id = ?
@@ -3719,6 +3760,7 @@ class Database:
         """Fetch a storefront product page and total count using one DB connection."""
         limit = max(1, min(limit, 50))
         offset = max(0, offset)
+        subcategory = canonicalize_subcategory(category, subcategory)
         async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             if category and subcategory:

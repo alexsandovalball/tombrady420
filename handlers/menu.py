@@ -12,6 +12,7 @@ from database import Database
 from utils.pagination import create_pagination_keyboard
 from utils.helpers import is_admin, get_user_lang_async, is_media_message
 from utils.categories import (
+    canonicalize_subcategory,
     get_all_categories,
     get_catalog_ui_text,
     get_category_display_name,
@@ -317,6 +318,7 @@ async def show_catalog_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     """Show a page of the catalog, optionally filtered by category and subcategory."""
     user_id = update.effective_user.id
     started = time.monotonic()
+    subcategory = canonicalize_subcategory(category, subcategory)
 
     try:
         # Get user's language preference

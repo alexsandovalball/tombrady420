@@ -54,9 +54,7 @@ def get_strings():
         
         # Subcategory names - FLOWER
         "subcategory_topshelfcandy": "Top Shelf Candy",
-        "subcategory_premiumexotics": "Premium Exotics",
         "subcategory_exotics": "Exotics",
-        "subcategory_premiumlightdeps": "Premium Light Deps",
         "subcategory_lightdeps": "Light Deps",
         "subcategory_lightassist": "Light Assist",
         "subcategory_lows": "Lows",
