@@ -504,9 +504,16 @@
                 var googleSitemap = seo.search_console_sitemap || {};
                 var seoRuntime = seo.runtime_status || {};
                 var metrics = data.metrics && data.metrics.endpoints ? data.metrics.endpoints : {};
-                var activeBots = Array.isArray(data.runtime_bots) ? data.runtime_bots.filter(function (bot) {
-                    return bot && bot.username;
-                }) : [];
+                var runtimeBots = Array.isArray(data.runtime_bots) ? data.runtime_bots : [];
+                var activeBots = runtimeBots.filter(function (bot) {
+                    return bot && bot.username && bot.telegram_ok !== false;
+                });
+                var unhealthyBots = runtimeBots.filter(function (bot) {
+                    return bot && bot.telegram_health && ['ok', 'webhook_warning'].indexOf(bot.telegram_health) === -1;
+                });
+                var webhookWarningBots = runtimeBots.filter(function (bot) {
+                    return bot && bot.telegram_health === 'webhook_warning';
+                });
                 var googleWindowDays = seo.search_console_window_days || 30;
 
                 panel.replaceChildren();
@@ -529,6 +536,7 @@
                 var grid = document.createElement('div');
                 grid.className = 'admin-metric-grid';
                 appendMetric(grid, 'Bots online', formatCount(activeBots.length) + '/' + formatCount(data.configured_bot_count));
+                appendMetric(grid, 'Bot warnings', formatCount(unhealthyBots.length) + ' unhealthy / ' + formatCount(webhookWarningBots.length) + ' webhook');
                 appendMetric(grid, 'Products', formatCount(summary.products));
                 appendMetric(grid, 'Users 24h / total', formatCount(summary.active_users_24h) + ' / ' + formatCount(summary.bot_users));
                 appendMetric(grid, 'Subscribed / blocked', formatCount(summary.subscribed_users) + ' / ' + formatCount(summary.blocked_users));
@@ -565,7 +573,17 @@
                 appendList(panel, 'Runtime Bots', data.runtime_bots || [], function (item) {
                     var username = item.username ? '@' + item.username : 'not started';
                     var slot = item.slot_name || (item.slot_id !== null && item.slot_id !== undefined ? 'slot ' + item.slot_id : 'slot -');
-                    return '#' + item.index + ' ' + username + ': ' + (item.running ? 'running' : 'stopped') + ', ' + slot + ', id ' + (item.telegram_bot_id || '-');
+                    var health = item.telegram_health || (item.running ? 'running' : 'stopped');
+                    var detail = '#' + item.index + ' ' + username + ': ' + health + ', ' + slot + ', id ' + (item.telegram_bot_id || '-');
+                    if (item.webhook_pending !== null && item.webhook_pending !== undefined) {
+                        detail += ', pending ' + formatCount(item.webhook_pending);
+                    }
+                    if (item.webhook_last_error) {
+                        detail += ', webhook error: ' + String(item.webhook_last_error).slice(0, 90);
+                    } else if (item.telegram_error) {
+                        detail += ', Telegram error: ' + String(item.telegram_error).slice(0, 90);
+                    }
+                    return detail;
                 }, 20);
 
                 appendList(panel, 'Pending Notifications By Bot', data.pending_notifications_by_bot || [], function (item) {

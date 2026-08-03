@@ -424,7 +424,6 @@ async def _handle_stock(update, context, query, user_id, parts):
     labels = {
         "active": "Product marked as restocked.",
         "out_of_stock": "Product marked as sold out.",
-        "hidden": "Product hidden from public catalog.",
     }
     if stock_status not in labels:
         await query.answer("Invalid stock status.", show_alert=True)

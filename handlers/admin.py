@@ -63,7 +63,15 @@ def _format_admin_status_message(snapshot: dict) -> str:
     google_trends_signals = seo.get("google_trends_signals", 0)
     google_trends_latest_seen = seo.get("google_trends_latest_seen") or "none yet"
 
-    active_bots = [bot for bot in runtime_bots if bot.get("username")]
+    active_bots = [bot for bot in runtime_bots if bot.get("username") and bot.get("telegram_ok", True)]
+    unhealthy_bots = [
+        bot for bot in runtime_bots
+        if bot.get("telegram_health") not in {None, "ok", "webhook_warning"}
+    ]
+    webhook_warning_bots = [
+        bot for bot in runtime_bots
+        if bot.get("telegram_health") == "webhook_warning"
+    ]
     missing_bots = [bot for bot in runtime_bots if not bot.get("username")]
 
     lines = [
@@ -75,6 +83,24 @@ def _format_admin_status_message(snapshot: dict) -> str:
     ]
     if missing_bots:
         lines.append(f"• Missing/unloaded: {_fmt_count(len(missing_bots))}")
+    if unhealthy_bots:
+        lines.append(f"• Unhealthy: {_fmt_count(len(unhealthy_bots))}")
+    if webhook_warning_bots:
+        lines.append(f"• Webhook warnings: {_fmt_count(len(webhook_warning_bots))}")
+
+    if unhealthy_bots or webhook_warning_bots:
+        lines.extend(["", "🤖 Bot Health Details"])
+        for bot in (unhealthy_bots + webhook_warning_bots)[:10]:
+            username = f"@{bot.get('username')}" if bot.get("username") else "not started"
+            health = bot.get("telegram_health") or "unknown"
+            error = bot.get("telegram_error") or bot.get("webhook_last_error") or ""
+            pending = bot.get("webhook_pending")
+            detail = f"• #{bot.get('index')} {username}: {health}"
+            if pending is not None:
+                detail += f", pending={_fmt_count(pending)}"
+            if error:
+                detail += f", {str(error)[:90]}"
+            lines.append(detail)
 
     lines.extend([
         "",
@@ -172,14 +198,14 @@ async def adminstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         snapshot["seo"] = await db.get_search_intelligence_snapshot(limit=5)
         try:
             from webhook_server import (
-                _runtime_bot_snapshots,
+                _runtime_bot_health_snapshots,
                 _cache_state_snapshot,
                 _webhook_401_counter,
                 _indexnow_enabled,
                 _indexnow_key,
                 metrics,
             )
-            snapshot["runtime_bots"] = _runtime_bot_snapshots()
+            snapshot["runtime_bots"] = await _runtime_bot_health_snapshots()
             snapshot["cache_state"] = _cache_state_snapshot()
             snapshot["webhook_401_total"] = _webhook_401_counter
             snapshot["metrics"] = metrics.snapshot()

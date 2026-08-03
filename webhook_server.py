@@ -180,6 +180,8 @@ _WEBAPP_SEARCH_CACHE_MAX = _bounded_int_env("WEBAPP_SEARCH_CACHE_MAX", 128, 32, 
 _ADMIN_STATUS_CACHE_SECONDS = _bounded_int_env("ADMIN_STATUS_CACHE_SECONDS", 15, 5, 120)
 _ADMIN_STATUS_CACHE_MAX = _bounded_int_env("ADMIN_STATUS_CACHE_MAX", 16, 1, 64)
 _admin_status_cache: OrderedDict[int, tuple[float, dict[str, Any]]] = OrderedDict()
+_BOT_HEALTH_CACHE_SECONDS = _bounded_int_env("BOT_HEALTH_CACHE_SECONDS", 60, 15, 600)
+_bot_health_cache: tuple[float, List[Dict[str, object]]] = (0.0, [])
 _SEARCH_CONSOLE_IMPORT_INTERVAL_SECONDS = _bounded_int_env(
     "SEARCH_CONSOLE_IMPORT_INTERVAL_SECONDS",
     3600,
@@ -872,7 +874,7 @@ def _remember_media_registry_write(bot_identifier: str, file_unique_id: str, res
 
 def clear_in_memory_caches() -> int:
     """Clear all in-memory caches. Returns total entries cleared."""
-    global _resolved_file_id_cache, _media_info_cache, _api_result_cache, _media_registry_write_cache, _seo_query_mapping_cache, _admin_status_cache
+    global _resolved_file_id_cache, _media_info_cache, _api_result_cache, _media_registry_write_cache, _seo_query_mapping_cache, _admin_status_cache, _bot_health_cache
 
     total = (
         len(_resolved_file_id_cache)
@@ -888,6 +890,7 @@ def clear_in_memory_caches() -> int:
     _media_registry_write_cache.clear()
     _seo_query_mapping_cache = None
     _admin_status_cache.clear()
+    _bot_health_cache = (0.0, [])
 
     logger.info(f"Cleared {total} in-memory cache entries")
     return total
@@ -900,7 +903,9 @@ def _invalidate_seo_query_mapping_cache() -> None:
 
 
 def _invalidate_admin_status_cache() -> None:
+    global _bot_health_cache
     _admin_status_cache.clear()
+    _bot_health_cache = (0.0, [])
 
 
 async def _set_runtime_setting(key: str, value: Any) -> None:
@@ -1497,6 +1502,130 @@ def _runtime_bot_snapshots() -> List[Dict[str, object]]:
     return snapshots
 
 
+def _classify_bot_health_error(exc: Exception) -> tuple[str, str]:
+    message = str(exc or "").strip()
+    lowered = message.lower()
+    exc_name = exc.__class__.__name__
+    if any(
+        marker in lowered
+        for marker in (
+            "invalid token",
+            "unauthorized",
+            "token",
+            "not found",
+            "deactivated",
+            "bot was blocked",
+        )
+    ):
+        return "deleted_or_invalid", message or exc_name
+    if exc_name.lower() in {"invalidtoken", "unauthorized"}:
+        return "deleted_or_invalid", message or exc_name
+    if exc_name.lower() in {"networkerror", "timedout", "timeouterror"}:
+        return "telegram_unreachable", message or exc_name
+    return "telegram_error", message or exc_name
+
+
+async def _probe_runtime_bot_health(idx: int, base: Dict[str, object]) -> Dict[str, object]:
+    apps = _bot_applications or getattr(app.state, "bot_apps", [])
+    bot_app = apps[idx] if idx < len(apps) else None
+    bot = getattr(bot_app, "bot", None) if bot_app is not None else None
+    snapshot = dict(base)
+    snapshot.update({
+        "telegram_health": "not_loaded" if bot is None else "checking",
+        "telegram_ok": False,
+        "telegram_error": None,
+        "webhook_ok": False,
+        "webhook_url": None,
+        "webhook_expected_url": None,
+        "webhook_pending": None,
+        "webhook_last_error": None,
+        "webhook_last_error_date": None,
+    })
+    if bot is None:
+        return snapshot
+
+    registry_bot_id = str(snapshot.get("registry_bot_id") or "")
+    expected_webhook_url = None
+    if Config.WEBHOOK_URL and registry_bot_id:
+        expected_webhook_url = f"{Config.WEBHOOK_URL.rstrip('/')}/webhook/{registry_bot_id}"
+    snapshot["webhook_expected_url"] = expected_webhook_url
+
+    try:
+        me, webhook_info = await asyncio.gather(
+            bot.get_me(),
+            bot.get_webhook_info(),
+        )
+        username = getattr(me, "username", None)
+        telegram_bot_id = getattr(me, "id", None)
+        if username:
+            snapshot["username"] = username
+        if telegram_bot_id:
+            snapshot["telegram_bot_id"] = telegram_bot_id
+
+        current_webhook_url = str(getattr(webhook_info, "url", "") or "")
+        last_error = str(getattr(webhook_info, "last_error_message", "") or "")
+        pending_count = int(getattr(webhook_info, "pending_update_count", 0) or 0)
+        last_error_date = getattr(webhook_info, "last_error_date", None)
+        webhook_ok = bool(current_webhook_url) and (
+            not expected_webhook_url or current_webhook_url.rstrip("/") == expected_webhook_url.rstrip("/")
+        )
+        health = "ok" if webhook_ok and not last_error else "webhook_warning"
+        if not current_webhook_url:
+            health = "webhook_missing"
+        elif expected_webhook_url and current_webhook_url.rstrip("/") != expected_webhook_url.rstrip("/"):
+            health = "webhook_mismatch"
+
+        snapshot.update({
+            "telegram_health": health,
+            "telegram_ok": True,
+            "webhook_ok": webhook_ok,
+            "webhook_url": current_webhook_url,
+            "webhook_pending": pending_count,
+            "webhook_last_error": last_error or None,
+            "webhook_last_error_date": last_error_date.isoformat() if hasattr(last_error_date, "isoformat") else last_error_date,
+        })
+    except Exception as exc:
+        health, reason = _classify_bot_health_error(exc)
+        snapshot.update({
+            "telegram_health": health,
+            "telegram_ok": False,
+            "webhook_ok": False,
+            "telegram_error": reason[:240],
+        })
+    return snapshot
+
+
+async def _runtime_bot_health_snapshots(*, force: bool = False) -> List[Dict[str, object]]:
+    global _bot_health_cache
+    now = _time.monotonic()
+    if not force and _bot_health_cache[1] and now - _bot_health_cache[0] < _BOT_HEALTH_CACHE_SECONDS:
+        return [dict(item) for item in _bot_health_cache[1]]
+
+    base_snapshots = _runtime_bot_snapshots()
+    tasks = [
+        asyncio.wait_for(_probe_runtime_bot_health(idx, snapshot), timeout=15)
+        for idx, snapshot in enumerate(base_snapshots)
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    health_snapshots: List[Dict[str, object]] = []
+    for snapshot, result in zip(base_snapshots, results):
+        if isinstance(result, Exception):
+            health, reason = _classify_bot_health_error(result)
+            failed = dict(snapshot)
+            failed.update({
+                "telegram_health": health,
+                "telegram_ok": False,
+                "telegram_error": reason[:240],
+                "webhook_ok": False,
+            })
+            health_snapshots.append(failed)
+        else:
+            health_snapshots.append(result)
+
+    _bot_health_cache = (now, [dict(item) for item in health_snapshots])
+    return health_snapshots
+
+
 def _cache_state_snapshot() -> Dict[str, int]:
     return {
         "resolved_file_ids": len(_resolved_file_id_cache),
@@ -1682,6 +1811,7 @@ async def reinitialize_bots(fastapi_app=None) -> dict:
 
     # Update module-level global so process_webhook_request always uses fresh tokens.
     _webhook_secret_tokens = new_secret_tokens
+    _invalidate_admin_status_cache()
 
     # Sync FastAPI app.state so webhook verification uses the new tokens.
     if fastapi_app is not None:
@@ -5808,7 +5938,7 @@ async def admin_dashboard_overview(request: Request):
     return _json_no_store({
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "configured_bot_count": len(Config.BOT_TOKENS),
-        "runtime_bots": _runtime_bot_snapshots(),
+        "runtime_bots": await _runtime_bot_health_snapshots(),
         "cache_state": _cache_state_snapshot(),
         "process": _runtime_process_snapshot(),
         "media_runtime": _media_runtime_snapshot(),
@@ -5864,7 +5994,7 @@ async def webapp_admin_status(request: Request):
         "admin_user_id": admin_user_id,
         "cache_age_seconds": 0,
         "configured_bot_count": len(Config.BOT_TOKENS),
-        "runtime_bots": _runtime_bot_snapshots(),
+        "runtime_bots": await _runtime_bot_health_snapshots(),
         "cache_state": _cache_state_snapshot(),
         "process": _runtime_process_snapshot(),
         "media_runtime": _media_runtime_snapshot(),
@@ -5900,8 +6030,6 @@ async def _serve_product_short(product_id: int, language: str):
     product = await _catalog_db.get_product(product_id)
     if not product:
         return await _missing_product_redirect(product_id, language=language)
-    if str(product.get("stock_status") or "active").lower() == "hidden":
-        return await _missing_product_redirect(product_id, language=language)
     return RedirectResponse(
         url=_localized_path(_canonical_product_path(product_id, product.get("caption") or ""), language),
         status_code=301,
@@ -5928,8 +6056,6 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
     language = _normalize_seo_language(language)
     product = await _catalog_db.get_product(product_id)
     if not product:
-        return await _missing_product_redirect(product_id, slug=slug, language=language)
-    if str(product.get("stock_status") or "active").lower() == "hidden":
         return await _missing_product_redirect(product_id, slug=slug, language=language)
 
     caption: str = product.get("caption") or ""
@@ -6975,7 +7101,7 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
         )
 
     product = await _catalog_db.get_product(product_id)
-    if not product or str(product.get("stock_status") or "active").lower() == "hidden":
+    if not product:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
 
     caption = product.get("caption") or ""
@@ -7065,8 +7191,6 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
         product = await _catalog_db.get_product(product_id)
         if not product:
             return _seo_media_fallback_response(request, "product_missing")
-        if str(product.get("stock_status") or "active").lower() == "hidden":
-            return _seo_media_fallback_response(request, "product_hidden")
 
         media_info = _collect_media_info(product)
         product_fallback_image = _product_primary_image_url(product, absolute=True)
@@ -7180,8 +7304,6 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
 
     product = await _catalog_db.get_product(product_id)
     if not product:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
-    if str(product.get("stock_status") or "active").lower() == "hidden":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
 
     media_info = _collect_media_info(product)
@@ -8228,6 +8350,7 @@ async def _build_setup_check() -> Dict[str, Any]:
     warnings: List[str] = []
     notes: List[str] = []
     running_bots = get_bot_usernames()
+    runtime_bot_health: List[Dict[str, object]] = []
     product_count = 0
     public_product_count = 0
     active_categories = 0
@@ -8242,10 +8365,29 @@ async def _build_setup_check() -> Dict[str, Any]:
     except Exception as exc:
         warnings.append(f"Database check failed: {exc}")
 
+    try:
+        runtime_bot_health = await _runtime_bot_health_snapshots()
+    except Exception as exc:
+        warnings.append(f"Telegram bot health check failed: {exc}")
+
     webhook_url = (Config.WEBHOOK_URL or "").rstrip("/")
     parsed_webhook = urllib.parse.urlparse(webhook_url)
     if not running_bots:
         warnings.append("No bot applications are running. Check BOT_TOKEN/BOT_TOKENS.")
+    bad_bots = [
+        bot for bot in runtime_bot_health
+        if bot.get("telegram_health") not in {"ok", "webhook_warning"} and bot.get("username")
+    ]
+    invalid_bots = [
+        bot for bot in runtime_bot_health
+        if bot.get("telegram_health") == "deleted_or_invalid"
+    ]
+    if invalid_bots:
+        warnings.append(
+            "One or more configured bots look deleted, revoked, or invalid in Telegram. Replace the matching token and redeploy/reinit."
+        )
+    elif bad_bots:
+        warnings.append("One or more bots have webhook/Telegram health warnings. Check admin monitor bot details.")
     if Config.USE_WEBHOOK and not webhook_url:
         warnings.append("USE_WEBHOOK is true but WEBHOOK_URL is missing.")
     if webhook_url and parsed_webhook.scheme != "https":
@@ -8271,6 +8413,7 @@ async def _build_setup_check() -> Dict[str, Any]:
             "configured_count": len(Config.BOT_TOKENS),
             "running_count": len(running_bots),
             "running_usernames": running_bots,
+            "health": runtime_bot_health,
         },
         "admin": {
             "configured_count": len(Config.ADMIN_IDS),

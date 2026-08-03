@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 # Pre-computed SQL placeholder string for EXCLUDED_FROM_ALL_PRODUCTS.
 # Only '?' characters are interpolated into SQL — never user data.
 _EXCLUDED_PLACEHOLDERS = ','.join('?' * len(EXCLUDED_FROM_ALL_PRODUCTS))
-_VISIBLE_PRODUCT_STATUS_SQL = "(stock_status IS NULL OR stock_status != 'hidden')"
-VALID_PRODUCT_STOCK_STATUSES = {"active", "out_of_stock", "hidden"}
+_VISIBLE_PRODUCT_STATUS_SQL = "1 = 1"
+VALID_PRODUCT_STOCK_STATUSES = {"active", "out_of_stock"}
 
 # Default values (empty — operators set these via /setcontact and /setlink)
 DEFAULT_ORDER_CONTACT = ''
@@ -683,6 +683,17 @@ class Database:
                             logger.debug(f"Column '{column}' already exists in {table} table")
                     else:
                         logger.warning(f"Could not add '{column}' column to {table}: {e}")
+
+            try:
+                cursor = await db.execute("""
+                    UPDATE products
+                    SET stock_status = 'active'
+                    WHERE COALESCE(stock_status, 'active') NOT IN ('active', 'out_of_stock')
+                """)
+                if cursor.rowcount and cursor.rowcount > 0:
+                    logger.info("Normalized %d invalid product stock status value(s)", cursor.rowcount)
+            except Exception as exc:
+                logger.warning("Could not normalize product stock statuses: %s", exc)
 
             await self._init_product_search_index(db)
             

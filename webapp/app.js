@@ -1669,7 +1669,10 @@
         const searchConsoleSetup = seo.search_console_setup || {};
         const seoRuntime = seo.runtime_status || {};
         const metrics = data.metrics?.endpoints || {};
-        const activeBots = (data.runtime_bots || []).filter(bot => bot.username);
+        const runtimeBots = Array.isArray(data.runtime_bots) ? data.runtime_bots : [];
+        const activeBots = runtimeBots.filter(bot => bot.username && bot.telegram_ok !== false);
+        const unhealthyBots = runtimeBots.filter(bot => bot.telegram_health && !['ok', 'webhook_warning'].includes(bot.telegram_health));
+        const webhookWarningBots = runtimeBots.filter(bot => bot.telegram_health === 'webhook_warning');
         const googleWindowDays = seo.search_console_window_days || 30;
 
         panel.replaceChildren();
@@ -1690,6 +1693,7 @@
         const grid = document.createElement('div');
         grid.className = 'admin-metric-grid';
         appendAdminMetric(grid, 'Bots online', `${formatAdminCount(activeBots.length)}/${formatAdminCount(data.configured_bot_count)}`);
+        appendAdminMetric(grid, 'Bot warnings', `${formatAdminCount(unhealthyBots.length)} unhealthy / ${formatAdminCount(webhookWarningBots.length)} webhook`);
         appendAdminMetric(grid, 'Products', formatAdminCount(summary.products));
         appendAdminMetric(grid, 'Users 24h / total', `${formatAdminCount(summary.active_users_24h)} / ${formatAdminCount(summary.bot_users)}`);
         appendAdminMetric(grid, 'Subscribed / blocked', `${formatAdminCount(summary.subscribed_users)} / ${formatAdminCount(summary.blocked_users)}`);
@@ -1723,7 +1727,17 @@
 
         appendAdminList(panel, 'Runtime Bots', data.runtime_bots || [], item => {
             const username = item.username ? `@${item.username}` : 'not started';
-            return `#${item.index} ${username}: ${item.running ? 'running' : 'stopped'}`;
+            const health = item.telegram_health || (item.running ? 'running' : 'stopped');
+            let detail = `#${item.index} ${username}: ${health}`;
+            if (item.webhook_pending !== null && item.webhook_pending !== undefined) {
+                detail += `, pending ${formatAdminCount(item.webhook_pending)}`;
+            }
+            if (item.webhook_last_error) {
+                detail += `, webhook error: ${String(item.webhook_last_error).slice(0, 90)}`;
+            } else if (item.telegram_error) {
+                detail += `, Telegram error: ${String(item.telegram_error).slice(0, 90)}`;
+            }
+            return detail;
         });
         appendAdminList(panel, 'Pending Notifications By Bot', data.pending_notifications_by_bot || [], item =>
             `@${item.bot_username || 'bot'}: ${formatAdminCount(item.pending)} pending`

@@ -51,7 +51,6 @@ def _build_admin_action_buttons(product_id: int, user_id: int) -> list[list[Inli
         [
             InlineKeyboardButton("Sold out", callback_data=f"stock|{product_id}|out_of_stock"),
             InlineKeyboardButton("Restocked", callback_data=f"stock|{product_id}|active"),
-            InlineKeyboardButton("Hide", callback_data=f"stock|{product_id}|hidden"),
         ],
         [
             InlineKeyboardButton(
@@ -315,8 +314,6 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         stock_status = str(product.get("stock_status") or "active").lower()
         if stock_status == "out_of_stock":
             full_caption += "\n\nSold out for now. Check related items or ask about restock."
-        elif stock_status == "hidden":
-            full_caption += "\n\nHidden from public catalog."
         if resolution_failures:
             full_caption += (
                 f"\n\n⚠️ {len(resolution_failures)} of {total_media} media file(s) "
@@ -454,12 +451,9 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         # Get order contact
         order_contact = await db.get_order_contact()
 
-        if stock_status == "hidden":
-            dm_message = "Hidden from public catalog."
-        else:
-            dm_message = _build_dm_to_order_text(user_lang, order_contact)
-            if stock_status == "out_of_stock":
-                dm_message = f"Sold out for now. Ask about restock.\n\n{dm_message}"
+        dm_message = _build_dm_to_order_text(user_lang, order_contact)
+        if stock_status == "out_of_stock":
+            dm_message = f"Sold out for now. Ask about restock.\n\n{dm_message}"
         
         # Send DM message with keyboard separately
         await safe_send_message(

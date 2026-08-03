@@ -124,8 +124,13 @@
 
   function renderSummary(data) {
     const s = data.summary || {};
+    const runtimeBots = data.runtime_bots || [];
+    const healthyBots = runtimeBots.filter(bot => bot.username && bot.telegram_ok !== false);
+    const unhealthyBots = runtimeBots.filter(bot => bot.telegram_health && !["ok", "webhook_warning"].includes(bot.telegram_health));
+    const webhookWarningBots = runtimeBots.filter(bot => bot.telegram_health === "webhook_warning");
     const items = [
-      ["Runtime Bots", (data.runtime_bots || []).filter(bot => bot.username).length],
+      ["Runtime Bots", `${healthyBots.length}/${runtimeBots.length}`],
+      ["Bot Warnings", `${unhealthyBots.length} bad / ${webhookWarningBots.length} hook`],
       ["Products", s.products],
       ["Users", s.bot_users],
       ["Active 24h", s.active_users_24h],
@@ -146,14 +151,20 @@
   function renderRuntimeBots(bots) {
     els.botCount.textContent = `${bots.length} configured`;
     els.runtimeBots.innerHTML = bots.length ? bots.map(bot => {
-      const tone = bot.username ? "good" : "warn";
-      const runtime = bot.username ? pill(bot.running ? "running" : "loaded", tone) : pill("missing", "warn");
+      const health = bot.telegram_health || (bot.running ? "running" : "stopped");
+      const tone = bot.telegram_ok === false || !bot.username ? "warn" : "good";
+      const runtime = pill(health, tone);
+      const botDetail = [
+        bot.webhook_pending !== null && bot.webhook_pending !== undefined ? `pending ${formatNumber(bot.webhook_pending)}` : "",
+        bot.webhook_last_error ? `hook: ${bot.webhook_last_error}` : "",
+        bot.telegram_error ? `tg: ${bot.telegram_error}` : ""
+      ].filter(Boolean).join(" · ");
       return row([
         text(bot.index),
         runtime,
         text(bot.username),
         text(bot.telegram_bot_id),
-        `<span class="muted">${text(bot.registry_bot_id)}</span>`,
+        `<span class="muted">${text(bot.registry_bot_id)}${botDetail ? `<br>${text(botDetail).slice(0, 180)}` : ""}</span>`,
         text(bot.webhook_secret_fp)
       ]);
     }).join("") : emptyRow(6, "No runtime bot data");
