@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 # Pre-computed SQL placeholder string for EXCLUDED_FROM_ALL_PRODUCTS.
 # Only '?' characters are interpolated into SQL — never user data.
 _EXCLUDED_PLACEHOLDERS = ','.join('?' * len(EXCLUDED_FROM_ALL_PRODUCTS))
+_VISIBLE_PRODUCT_STATUS_SQL = "(stock_status IS NULL OR stock_status != 'hidden')"
+VALID_PRODUCT_STOCK_STATUSES = {"active", "out_of_stock", "hidden"}
 
 # Default values (empty — operators set these via /setcontact and /setlink)
 DEFAULT_ORDER_CONTACT = ''
@@ -633,6 +635,9 @@ class Database:
                 ("products", "bot_username", "TEXT", False),
                 ("products", "additional_message_ids", "TEXT", True),
                 ("products", "compressed_file_id", "TEXT", True),
+                ("products", "stock_status", "TEXT NOT NULL DEFAULT 'active'", True),
+                ("products", "stock_updated_at", "TIMESTAMP", True),
+                ("products", "updated_at", "TIMESTAMP", True),
                 ("bot_users", "notifications_enabled", "INTEGER DEFAULT 1", False),
                 ("bot_users", "bot_username", "TEXT", False),
                 ("bot_users", "is_blocked", "INTEGER DEFAULT 0", False),
@@ -702,6 +707,7 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_category_subcategory ON products(category, subcategory)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_created_at ON products(created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_media_group_id ON products(media_group_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_products_stock_status ON products(stock_status)")
             # Composite covering indexes for the most frequent sorted query patterns
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_category_created ON products(category, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_products_cat_subcat_created ON products(category, subcategory, created_at DESC)")
@@ -1027,7 +1033,7 @@ class Database:
         """Get all products with pagination."""
         async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
-            query = "SELECT * FROM products ORDER BY created_at DESC"
+            query = f"SELECT * FROM products WHERE {_VISIBLE_PRODUCT_STATUS_SQL} ORDER BY created_at DESC"
             if limit:
                 query += f" LIMIT {limit} OFFSET {offset}"
             async with db.execute(query) as cursor:
@@ -1055,15 +1061,16 @@ class Database:
         async with self.get_connection() as db:
             if not excluded_categories:
                 # If no categories to exclude, count all products
-                async with db.execute("SELECT COUNT(*) FROM products") as cursor:
+                async with db.execute(f"SELECT COUNT(*) FROM products WHERE {_VISIBLE_PRODUCT_STATUS_SQL}") as cursor:
                     row = await cursor.fetchone()
                     return row[0] if row else 0
             
             # Build placeholders for SQL query
             placeholders = ','.join('?' * len(excluded_categories))
             query = f"""
-                SELECT COUNT(*) FROM products 
-                WHERE (category IS NULL OR category = '') OR category NOT IN ({placeholders})
+                SELECT COUNT(*) FROM products
+                WHERE {_VISIBLE_PRODUCT_STATUS_SQL}
+                  AND ((category IS NULL OR category = '') OR category NOT IN ({placeholders}))
             """
             
             async with db.execute(query, excluded_categories) as cursor:
@@ -1079,6 +1086,7 @@ class Database:
             sql_query = f"""
                 SELECT * FROM products 
                 WHERE caption LIKE ?
+                  AND {_VISIBLE_PRODUCT_STATUS_SQL}
                   AND (category IS NULL OR category = '' OR category NOT IN ({_EXCLUDED_PLACEHOLDERS}))
                 ORDER BY created_at DESC
             """
@@ -1112,6 +1120,7 @@ class Database:
                         FROM product_search
                         JOIN products p ON p.id = product_search.rowid
                         WHERE product_search MATCH ?
+                          AND {_VISIBLE_PRODUCT_STATUS_SQL}
                           AND (p.category IS NULL OR p.category = '' OR p.category NOT IN ({placeholders}))
                         ORDER BY p.created_at DESC
                         LIMIT ? OFFSET ?
@@ -1127,6 +1136,7 @@ class Database:
             sql = f"""
                 SELECT * FROM products
                 WHERE (LOWER(caption) LIKE ? OR LOWER(category) LIKE ? OR LOWER(subcategory) LIKE ?)
+                  AND {_VISIBLE_PRODUCT_STATUS_SQL}
                   AND (category IS NULL OR category = '' OR category NOT IN ({placeholders}))
                 ORDER BY created_at DESC
                 LIMIT ? OFFSET ?
@@ -1154,6 +1164,7 @@ class Database:
                         FROM product_search
                         JOIN products p ON p.id = product_search.rowid
                         WHERE product_search MATCH ?
+                          AND {_VISIBLE_PRODUCT_STATUS_SQL}
                           AND (p.category IS NULL OR p.category = '' OR p.category NOT IN ({placeholders}))
                     """
                     async with db.execute(sql, (fts_query, *excluded_categories)) as cursor:
@@ -1165,6 +1176,7 @@ class Database:
             sql = f"""
                 SELECT COUNT(*) FROM products
                 WHERE (LOWER(caption) LIKE ? OR LOWER(category) LIKE ? OR LOWER(subcategory) LIKE ?)
+                  AND {_VISIBLE_PRODUCT_STATUS_SQL}
                   AND (category IS NULL OR category = '' OR category NOT IN ({placeholders}))
             """
             async with db.execute(sql, (pattern, pattern, pattern, *excluded_categories)) as cursor:
@@ -1204,11 +1216,12 @@ class Database:
             db.row_factory = aiosqlite.Row
 
             query = f"""
-                SELECT id, caption, category, subcategory, file_id, file_type,
+                SELECT id, caption, category, subcategory, file_id, file_type, stock_status,
                        bot_username, chat_id, message_id, media_group_id,
                        additional_file_ids, additional_message_ids, created_at
                 FROM products
-                WHERE (category IS NULL OR category = '' OR category NOT IN ({_EXCLUDED_PLACEHOLDERS}))
+                WHERE {_VISIBLE_PRODUCT_STATUS_SQL}
+                  AND (category IS NULL OR category = '' OR category NOT IN ({_EXCLUDED_PLACEHOLDERS}))
                 ORDER BY created_at DESC
             """
 
@@ -1234,7 +1247,7 @@ class Database:
             
             if not excluded_categories:
                 # If no categories to exclude, return all products
-                query = "SELECT * FROM products ORDER BY created_at DESC"
+                query = f"SELECT * FROM products WHERE {_VISIBLE_PRODUCT_STATUS_SQL} ORDER BY created_at DESC"
                 if limit is not None:
                     query += f" LIMIT {limit} OFFSET {offset}"
                 async with db.execute(query) as cursor:
@@ -1245,7 +1258,8 @@ class Database:
             placeholders = ','.join('?' * len(excluded_categories))
             query = f"""
                 SELECT * FROM products 
-                WHERE (category IS NULL OR category = '') OR category NOT IN ({placeholders})
+                WHERE {_VISIBLE_PRODUCT_STATUS_SQL}
+                  AND ((category IS NULL OR category = '') OR category NOT IN ({placeholders}))
                 ORDER BY created_at DESC
             """
             if limit is not None:
@@ -1497,7 +1511,7 @@ class Database:
         """Get products filtered by category."""
         async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
-            query = "SELECT * FROM products WHERE category = ? ORDER BY created_at DESC"
+            query = f"SELECT * FROM products WHERE category = ? AND {_VISIBLE_PRODUCT_STATUS_SQL} ORDER BY created_at DESC"
             if limit:
                 query += f" LIMIT {limit} OFFSET {offset}"
             async with db.execute(query, (category,)) as cursor:
@@ -1529,6 +1543,7 @@ class Database:
                 FROM products
                 WHERE LOWER(TRIM(COALESCE(category, ''))) = LOWER(TRIM(?))
                   AND id != ?
+                  AND {_VISIBLE_PRODUCT_STATUS_SQL}
                 ORDER BY {same_subcategory_order}, created_at DESC, id DESC
                 LIMIT ?
             """, tuple(params)) as cursor:
@@ -1538,17 +1553,20 @@ class Database:
     async def count_products_by_category(self, category: str) -> int:
         """Count products in a category."""
         async with self.get_connection() as db:
-            async with db.execute("SELECT COUNT(*) FROM products WHERE category = ?", (category,)) as cursor:
+            async with db.execute(
+                f"SELECT COUNT(*) FROM products WHERE category = ? AND {_VISIBLE_PRODUCT_STATUS_SQL}",
+                (category,),
+            ) as cursor:
                 row = await cursor.fetchone()
                 return row[0] if row else 0
 
     async def get_subcategory_summary(self, category: str) -> tuple[List[Dict[str, Any]], int]:
         """Return subcategory counts and total category count using one connection."""
         async with self.get_connection() as db:
-            async with db.execute("""
+            async with db.execute(f"""
                 SELECT subcategory, COUNT(*) as count
                 FROM products
-                WHERE category = ? AND subcategory IS NOT NULL
+                WHERE category = ? AND subcategory IS NOT NULL AND {_VISIBLE_PRODUCT_STATUS_SQL}
                 GROUP BY subcategory
                 ORDER BY subcategory
             """, (category,)) as cursor:
@@ -1559,7 +1577,7 @@ class Database:
                 ]
 
             async with db.execute(
-                "SELECT COUNT(*) FROM products WHERE category = ?",
+                f"SELECT COUNT(*) FROM products WHERE category = ? AND {_VISIBLE_PRODUCT_STATUS_SQL}",
                 (category,),
             ) as cursor:
                 row = await cursor.fetchone()
@@ -1570,10 +1588,10 @@ class Database:
     async def get_all_category_counts(self) -> Dict[str, int]:
         """Get product counts for all categories in a single query (optimized)."""
         async with self.get_connection() as db:
-            async with db.execute("""
+            async with db.execute(f"""
                 SELECT category, COUNT(*) as count 
                 FROM products 
-                WHERE category IS NOT NULL 
+                WHERE category IS NOT NULL AND {_VISIBLE_PRODUCT_STATUS_SQL}
                 GROUP BY category
             """) as cursor:
                 rows = await cursor.fetchall()
@@ -1582,9 +1600,9 @@ class Database:
     async def get_all_categories(self) -> List[str]:
         """Get list of all unique categories."""
         async with self.get_connection() as db:
-            async with db.execute("""
+            async with db.execute(f"""
                 SELECT DISTINCT category FROM products 
-                WHERE category IS NOT NULL 
+                WHERE category IS NOT NULL AND {_VISIBLE_PRODUCT_STATUS_SQL}
                 ORDER BY category
             """) as cursor:
                 rows = await cursor.fetchall()
@@ -1596,7 +1614,11 @@ class Database:
         """Get products filtered by category and subcategory."""
         async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
-            query = "SELECT * FROM products WHERE category = ? AND subcategory = ? ORDER BY created_at DESC"
+            query = f"""
+                SELECT * FROM products
+                WHERE category = ? AND subcategory = ? AND {_VISIBLE_PRODUCT_STATUS_SQL}
+                ORDER BY created_at DESC
+            """
             if limit:
                 query += f" LIMIT {limit} OFFSET {offset}"
             async with db.execute(query, (category, subcategory)) as cursor:
@@ -1607,7 +1629,7 @@ class Database:
         """Count products in a category and subcategory."""
         async with self.get_connection() as db:
             async with db.execute(
-                "SELECT COUNT(*) FROM products WHERE category = ? AND subcategory = ?",
+                f"SELECT COUNT(*) FROM products WHERE category = ? AND subcategory = ? AND {_VISIBLE_PRODUCT_STATUS_SQL}",
                 (category, subcategory)
             ) as cursor:
                 row = await cursor.fetchone()
@@ -1616,10 +1638,10 @@ class Database:
     async def get_subcategories_with_counts(self, category: str) -> List[Dict[str, Any]]:
         """Get subcategories for a category with product counts."""
         async with self.get_connection() as db:
-            async with db.execute("""
+            async with db.execute(f"""
                 SELECT subcategory, COUNT(*) as count
                 FROM products
-                WHERE category = ? AND subcategory IS NOT NULL
+                WHERE category = ? AND subcategory IS NOT NULL AND {_VISIBLE_PRODUCT_STATUS_SQL}
                 GROUP BY subcategory
                 ORDER BY subcategory
             """, (category,)) as cursor:
@@ -1629,10 +1651,10 @@ class Database:
     async def get_all_subcategories_with_counts(self) -> Dict[str, List[Dict[str, Any]]]:
         """Get all subcategories for all categories with product counts in a single query."""
         async with self.get_connection() as db:
-            async with db.execute("""
+            async with db.execute(f"""
                 SELECT category, subcategory, COUNT(*) as count
                 FROM products
-                WHERE subcategory IS NOT NULL
+                WHERE subcategory IS NOT NULL AND {_VISIBLE_PRODUCT_STATUS_SQL}
                 GROUP BY category, subcategory
                 ORDER BY category, subcategory
             """) as cursor:
@@ -1649,19 +1671,19 @@ class Database:
     async def get_category_summary(self, excluded_categories: List[str]) -> tuple[Dict[str, int], Dict[str, List[Dict[str, Any]]], int]:
         """Return category counts, subcategory counts, and storefront total in one connection."""
         async with self.get_connection() as db:
-            async with db.execute("""
+            async with db.execute(f"""
                 SELECT category, COUNT(*) as count
                 FROM products
-                WHERE category IS NOT NULL
+                WHERE category IS NOT NULL AND {_VISIBLE_PRODUCT_STATUS_SQL}
                 GROUP BY category
             """) as cursor:
                 rows = await cursor.fetchall()
                 category_counts = {row[0]: row[1] for row in rows}
 
-            async with db.execute("""
+            async with db.execute(f"""
                 SELECT category, subcategory, COUNT(*) as count
                 FROM products
-                WHERE subcategory IS NOT NULL
+                WHERE subcategory IS NOT NULL AND {_VISIBLE_PRODUCT_STATUS_SQL}
                 GROUP BY category, subcategory
                 ORDER BY category, subcategory
             """) as cursor:
@@ -1677,11 +1699,12 @@ class Database:
                 placeholders = ",".join("?" * len(excluded_categories))
                 total_sql = f"""
                     SELECT COUNT(*) FROM products
-                    WHERE category IS NULL OR category = '' OR category NOT IN ({placeholders})
+                    WHERE {_VISIBLE_PRODUCT_STATUS_SQL}
+                      AND (category IS NULL OR category = '' OR category NOT IN ({placeholders}))
                 """
                 total_params = excluded_categories
             else:
-                total_sql = "SELECT COUNT(*) FROM products"
+                total_sql = f"SELECT COUNT(*) FROM products WHERE {_VISIBLE_PRODUCT_STATUS_SQL}"
                 total_params = []
 
             async with db.execute(total_sql, total_params) as cursor:
@@ -1707,6 +1730,29 @@ class Database:
                 DELETE FROM pending_categorization WHERE product_id = ?
             """, (product_id,))
             await db.commit()
+
+    async def update_product_stock_status(self, product_id: int, stock_status: str) -> bool:
+        """Update stock visibility without deleting the product URL/history."""
+        normalized_status = (stock_status or "active").strip().lower()
+        if normalized_status not in VALID_PRODUCT_STOCK_STATUSES:
+            raise ValueError(f"Invalid product stock status: {stock_status}")
+
+        async with self.get_connection() as db:
+            cursor = await db.execute(
+                """
+                UPDATE products
+                SET stock_status = ?,
+                    stock_updated_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (normalized_status, product_id),
+            )
+            await db.commit()
+            updated = cursor.rowcount > 0
+            if updated:
+                logger.info("Product stock status updated: ID=%s status=%s", product_id, normalized_status)
+            return updated
     
     async def add_pending_categorization(self, product_id: int):
         """Mark a product as needing categorization."""
@@ -3665,19 +3711,19 @@ class Database:
         async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
             if category and subcategory:
-                where_sql = "category = ? AND subcategory = ?"
+                where_sql = f"category = ? AND subcategory = ? AND {_VISIBLE_PRODUCT_STATUS_SQL}"
                 params: list[Any] = [category, subcategory]
             elif category:
-                where_sql = "category = ?"
+                where_sql = f"category = ? AND {_VISIBLE_PRODUCT_STATUS_SQL}"
                 params = [category]
             else:
                 excluded_categories = excluded_categories or []
                 if excluded_categories:
                     placeholders = ",".join("?" * len(excluded_categories))
-                    where_sql = f"(category IS NULL OR category = '' OR category NOT IN ({placeholders}))"
+                    where_sql = f"{_VISIBLE_PRODUCT_STATUS_SQL} AND (category IS NULL OR category = '' OR category NOT IN ({placeholders}))"
                     params = list(excluded_categories)
                 else:
-                    where_sql = "1 = 1"
+                    where_sql = _VISIBLE_PRODUCT_STATUS_SQL
                     params = []
 
             async with db.execute(

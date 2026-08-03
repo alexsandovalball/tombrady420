@@ -175,6 +175,8 @@
         .seo-btn.primary { background: #2f9e55; color: #fff; }
         .seo-btn.secondary { border: 1px solid var(--border, #ddd); color: var(--text-primary, #111); background: var(--card-bg, #fff); }
         .seo-btn svg { width: 16px; height: 16px; margin-right: .45rem; flex: 0 0 16px; }
+        .stock-notice { display: inline-flex; align-items: center; width: fit-content; margin: 0 0 .85rem; padding: .45rem .7rem; border-radius: 999px; background: #fff3cd; color: #6b4e00; border: 1px solid rgba(107, 78, 0, .18); font-weight: 800; }
+        .stock-help { margin: 0; color: var(--text-secondary, #666); line-height: 1.45; }
         .term-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: .45rem; margin: .75rem 0 1.25rem; }
         .term-list li { border: 1px solid var(--border, #ddd); border-radius: 999px; padding: .28rem .65rem; color: var(--text-secondary, #666); font-size: .84rem; background: rgba(0, 0, 0, .03); }
         .seo-search-footer { margin-top: 1.75rem; border-top: 1px solid var(--border, #ddd); padding-top: 1rem; }
@@ -212,6 +214,7 @@
         }
         .related-title { display: block; margin-top: .55rem; font-size: .94rem; line-height: 1.25; color: var(--text-primary, #111); }
         .related-card a:hover .related-title { color: var(--accent, #2481cc); }
+        .related-stock { display: inline-flex; width: fit-content; margin-top: .45rem; padding: .2rem .45rem; border-radius: 999px; background: #fff3cd; color: #6b4e00; font-size: .72rem; font-weight: 800; }
         .language-switch { display: flex; flex-wrap: wrap; gap: .45rem; margin: 0 0 1rem; }
         .language-switch a { color: var(--text-secondary, #666); text-decoration: none; font-size: .82rem; padding: .3rem .5rem; border: 1px solid var(--border, #ddd); border-radius: 6px; background: var(--card-bg, #fff); }
         .language-switch a[aria-current="page"] { color: var(--accent, #2481cc); border-color: var(--accent, #2481cc); }
@@ -282,6 +285,9 @@
                 </p>
                 {% endif %}
                 <h1 class="seo-title">{{ product_title }}</h1>
+                {% if stock_status == 'out_of_stock' %}
+                <div class="stock-notice">Sold out for now</div>
+                {% endif %}
 
                 <div class="seo-description">
                     {% for line in description_lines %}
@@ -290,6 +296,9 @@
                 </div>
 
                 <div class="seo-order-panel">
+                    {% if stock_status == 'out_of_stock' %}
+                    <p class="stock-help">This listing is currently sold out. Check related products below or ask about restock.</p>
+                    {% endif %}
                     <div class="seo-actions">
                         {% for item in contact_channels or [] %}
                         <a class="seo-btn {% if item.kind == 'telegram' or item.kind == 'bot' %}primary{% else %}secondary{% endif %}" href="{{ item.url }}">
@@ -333,6 +342,7 @@
                         <span class="related-thumb related-thumb-placeholder" aria-hidden="true"></span>
                         {% endif %}
                         <span class="related-title">{{ item.title }}</span>
+                        {% if item.stock_status == 'out_of_stock' %}<span class="related-stock">Sold out</span>{% endif %}
                     </a>
                 </li>
                 {% endfor %}

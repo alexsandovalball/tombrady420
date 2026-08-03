@@ -4211,12 +4211,18 @@ def _schema_offer_for_product(product: dict, product_url: str) -> Optional[dict]
     if not visible_price:
         return None
     price, currency = visible_price
+    stock_status = str(product.get("stock_status") or "active").lower()
+    availability = (
+        "https://schema.org/OutOfStock"
+        if stock_status == "out_of_stock"
+        else "https://schema.org/InStock"
+    )
     return {
         "@type": "Offer",
         "url": product_url,
         "price": price,
         "priceCurrency": currency,
-        "availability": "https://schema.org/InStock",
+        "availability": availability,
         "itemCondition": "https://schema.org/NewCondition",
     }
 
@@ -5530,6 +5536,8 @@ async def _build_storefront_index_context(
             "media_type": preview_media.get("type") or "",
             "media_count": len(media_info),
             "media_info": media_info,
+            "stock_status": str(product.get("stock_status") or "active").lower(),
+            "is_available": str(product.get("stock_status") or "active").lower() == "active",
         }
         for product in recent_products
         if (media_info := _collect_media_info(product)) and (product.get("id") or product.get("product_id"))
@@ -5892,6 +5900,8 @@ async def _serve_product_short(product_id: int, language: str):
     product = await _catalog_db.get_product(product_id)
     if not product:
         return await _missing_product_redirect(product_id, language=language)
+    if str(product.get("stock_status") or "active").lower() == "hidden":
+        return await _missing_product_redirect(product_id, language=language)
     return RedirectResponse(
         url=_localized_path(_canonical_product_path(product_id, product.get("caption") or ""), language),
         status_code=301,
@@ -5918,6 +5928,8 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
     language = _normalize_seo_language(language)
     product = await _catalog_db.get_product(product_id)
     if not product:
+        return await _missing_product_redirect(product_id, slug=slug, language=language)
+    if str(product.get("stock_status") or "active").lower() == "hidden":
         return await _missing_product_redirect(product_id, slug=slug, language=language)
 
     caption: str = product.get("caption") or ""
@@ -5991,6 +6003,8 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
                     "url": _localized_path(_canonical_product_path(p.get("id") or p.get("product_id"), p.get("caption") or ""), language),
                     "media_type": preview_media.get("type") or "",
                     "media_url": preview_media.get("url") or "",
+                    "stock_status": str(p.get("stock_status") or "active").lower(),
+                    "is_available": str(p.get("stock_status") or "active").lower() == "active",
                 }
                 for p in candidates
                 if (p.get("id") or p.get("product_id")) != product_id
@@ -6025,6 +6039,8 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
     ctx["product"] = product
     ctx["product_id"] = product_id
     ctx["product_title"] = product_title
+    ctx["stock_status"] = str(product.get("stock_status") or "active").lower()
+    ctx["is_available"] = ctx["stock_status"] == "active"
     ctx["description_lines"] = localized_description_lines
     ctx["category"] = category
     ctx["category_display"] = get_category_display_name(category, language) if category else ""
@@ -6049,6 +6065,7 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
                 "subcategory": subcategory,
                 "search_phrases": product_search_phrases,
                 "media": [m.get("type") for m in _collect_media_info(product)],
+                "stock_status": str(product.get("stock_status") or "active").lower(),
                 "public_product_bot": public_product_bot_username,
                 "order": order_context.get("order_fingerprint"),
                 "updated_at": product.get("updated_at") or product.get("created_at"),
@@ -6165,6 +6182,8 @@ async def _serve_category_page(category_name: str, request: Request, language: s
             "image_url": _product_primary_image_url(p, absolute=False),
             "media_url": preview_media.get("url") or "",
             "media_type": preview_media.get("type") or "",
+            "stock_status": str(p.get("stock_status") or "active").lower(),
+            "is_available": str(p.get("stock_status") or "active").lower() == "active",
         }
         for p in products
         for preview_media in [_product_card_preview_media(p, absolute=False)]
@@ -6334,6 +6353,8 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
             "image_url": _product_primary_image_url(p, absolute=False),
             "media_url": preview_media.get("url") or "",
             "media_type": preview_media.get("type") or "",
+            "stock_status": str(p.get("stock_status") or "active").lower(),
+            "is_available": str(p.get("stock_status") or "active").lower() == "active",
         }
         for p in products
         for preview_media in [_product_card_preview_media(p, absolute=False)]
@@ -6896,6 +6917,7 @@ async def get_products(
     items = []
     for product, caption in zip(products, captions):
         media_info = _collect_media_info(product)
+        stock_status = str(product.get("stock_status") or "active").lower()
         items.append({
             "id": product.get("id"),
             "caption": caption,
@@ -6903,6 +6925,8 @@ async def get_products(
             "subcategory": product.get("subcategory") or "",
             "subcategory_display": get_subcategory_display_name(product.get("subcategory"), lang) if product.get("subcategory") else "",
             "created_at": product.get("created_at"),
+            "stock_status": stock_status,
+            "is_available": stock_status == "active",
             "media_count": len(media_info),
             "media_info": media_info,  # Include full media info with types
             "image_url": _product_primary_image_url(product, absolute=True) or _DEFAULT_OG_IMAGE,
@@ -6951,7 +6975,7 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
         )
 
     product = await _catalog_db.get_product(product_id)
-    if not product:
+    if not product or str(product.get("stock_status") or "active").lower() == "hidden":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
 
     caption = product.get("caption") or ""
@@ -6980,6 +7004,8 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
         "subcategory": product.get("subcategory") or "",
         "subcategory_display": get_subcategory_display_name(product.get("subcategory"), lang) if product.get("subcategory") else "",
         "created_at": product.get("created_at"),
+        "stock_status": str(product.get("stock_status") or "active").lower(),
+        "is_available": str(product.get("stock_status") or "active").lower() == "active",
         "media_count": len(media_info),
         "media_info": media_info,
         "bot": bot.username if bot and getattr(bot, "username", None) else None,
@@ -7039,6 +7065,8 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
         product = await _catalog_db.get_product(product_id)
         if not product:
             return _seo_media_fallback_response(request, "product_missing")
+        if str(product.get("stock_status") or "active").lower() == "hidden":
+            return _seo_media_fallback_response(request, "product_hidden")
 
         media_info = _collect_media_info(product)
         product_fallback_image = _product_primary_image_url(product, absolute=True)
@@ -7152,6 +7180,8 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
 
     product = await _catalog_db.get_product(product_id)
     if not product:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+    if str(product.get("stock_status") or "active").lower() == "hidden":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
 
     media_info = _collect_media_info(product)
@@ -7536,6 +7566,7 @@ async def search_products(
         items = []
         for product in products:
             media_info = _collect_media_info(product)
+            stock_status = str(product.get("stock_status") or "active").lower()
             items.append({
                 "id": product.get("id"),
                 "caption": product.get("caption") or "",
@@ -7543,6 +7574,8 @@ async def search_products(
                 "subcategory": product.get("subcategory") or "",
                 "subcategory_display": get_subcategory_display_name(product.get("subcategory")) if product.get("subcategory") else "",
                 "created_at": product.get("created_at"),
+                "stock_status": stock_status,
+                "is_available": stock_status == "active",
                 "media_count": len(media_info),
                 "media_info": media_info,
                 "url": _localized_path(

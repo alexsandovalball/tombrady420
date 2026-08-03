@@ -744,6 +744,28 @@ img[loading="lazy"].loaded {
     color: var(--tg-theme-hint-color);
 }
 
+.stock-badge {
+    display: inline-flex;
+    width: fit-content;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: #fff3cd;
+    color: #6b4e00;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.stock-notice,
+.stock-help {
+    margin: 0 0 16px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: #fff3cd;
+    color: #6b4e00;
+    font-weight: 700;
+    line-height: 1.35;
+}
+
 .dm-btn {
     margin-top: 6px;
     text-align: center;

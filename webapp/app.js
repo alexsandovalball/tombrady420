@@ -3196,6 +3196,12 @@
 
         body.appendChild(title);
         body.appendChild(meta);
+        if ((item.stock_status || 'active') === 'out_of_stock') {
+            const stockBadge = document.createElement('div');
+            stockBadge.className = 'stock-badge';
+            stockBadge.textContent = 'Sold out';
+            body.appendChild(stockBadge);
+        }
         body.appendChild(footer);
 
         card.appendChild(media);
@@ -3286,6 +3292,14 @@
         const subcategoryText = product.subcategory_display ? ` • ${product.subcategory_display}` : '';
         category.textContent = `${categoryText}${subcategoryText}`;
         detailContent.appendChild(category);
+
+        const stockStatus = product.stock_status || 'active';
+        if (stockStatus === 'out_of_stock') {
+            const stockNotice = document.createElement('div');
+            stockNotice.className = 'stock-notice';
+            stockNotice.textContent = 'Sold out for now. Check similar products or ask about restock.';
+            detailContent.appendChild(stockNotice);
+        }
 
         const mediaCount = product.media_count || 1;
         const mediaInfo = product.media_info || [{ type: product.file_type || 'photo' }];
@@ -3714,6 +3728,12 @@
 
         // DM to order button
         const dmUrl = getOrderUrl();
+        if (stockStatus === 'out_of_stock') {
+            const restockNote = document.createElement('div');
+            restockNote.className = 'stock-help';
+            restockNote.textContent = 'Sold out for now. Message to ask about restock or similar products.';
+            actionsContainer.appendChild(restockNote);
+        }
         if (dmUrl) {
             const dmBtn = document.createElement('a');
             dmBtn.href = dmUrl;

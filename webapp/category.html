@@ -134,6 +134,7 @@
             min-height: 2.5em;
         }
         .product-badge { font-size: 0.8rem; color: var(--text-secondary, #666); margin-top: 0.2rem; }
+        .product-stock-badge { display: inline-flex; width: fit-content; margin-top: .25rem; padding: .18rem .45rem; border-radius: 999px; background: #fff3cd; color: #6b4e00; font-size: .72rem; font-weight: 800; }
         .cat-actions { display: grid; gap: .75rem; margin: 1.5rem 0; padding: 1rem; border-radius: 12px; background: rgba(0, 0, 0, .04); }
         .cat-action-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .75rem; }
         .cta-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: 0.75rem 1rem; background: #2f9e55; color: #fff; border-radius: 12px; text-decoration: none; font-weight: 700; text-align: center; }
@@ -193,6 +194,7 @@
                             <div class="product-badge">
                                 {% if p.subcategory %}{{ p.category }} &rsaquo; {{ p.subcategory_display }}{% else %}{{ p.category }}{% endif %}
                             </div>
+                            {% if p.stock_status == 'out_of_stock' %}<div class="product-stock-badge">Sold out</div>{% endif %}
                         </div>
                     </a>
                 </li>

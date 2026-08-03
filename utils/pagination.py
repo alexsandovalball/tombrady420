@@ -38,6 +38,8 @@ def create_pagination_keyboard(
         button_text = caption[:47] + "..." if len(caption) > 50 else caption
         if not button_text.strip():
             button_text = f"Product #{product['id']}"
+        if str(product.get("stock_status") or "active").lower() == "out_of_stock":
+            button_text = f"[SOLD OUT] {button_text}"
         
         callback_data = f"product|{product['id']}"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])

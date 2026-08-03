@@ -27,7 +27,7 @@ from handlers.admin import (
     handle_setlink_callback,
 )
 from handlers.menu import show_catalog_page, show_subcategory_menu, handle_catalog_pagination
-from handlers.product_view import handle_product_callback
+from handlers.product_view import handle_product_callback, show_product_media
 from handlers.language import handle_language_callback
 from translations.language_config import is_valid_language, LANGUAGE_DISPLAY
 from translations.translator import get_translated_string_async
@@ -407,6 +407,38 @@ async def _handle_cancel_delete_product(update, context, query, user_id, parts):
         reply_markup=keyboard,
         parse_mode=None,
     )
+
+
+@admin_required
+async def _handle_stock(update, context, query, user_id, parts):
+    if len(parts) < 3:
+        await query.answer("Invalid stock action.", show_alert=True)
+        return
+
+    try:
+        product_id = int(parts[1])
+    except (TypeError, ValueError):
+        await query.answer("Invalid product.", show_alert=True)
+        return
+    stock_status = parts[2]
+    labels = {
+        "active": "Product marked as restocked.",
+        "out_of_stock": "Product marked as sold out.",
+        "hidden": "Product hidden from public catalog.",
+    }
+    if stock_status not in labels:
+        await query.answer("Invalid stock status.", show_alert=True)
+        return
+
+    updated = await db.update_product_stock_status(product_id, stock_status)
+    if not updated:
+        await query.answer("Product not found.", show_alert=True)
+        return
+
+    invalidate_webapp_caches(f"product {product_id} stock status changed to {stock_status}")
+    _schedule_media_warm_for_current_bots(product_id, max_bots=3)
+    await query.answer(labels[stock_status], show_alert=False)
+    await show_product_media(update, context, product_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1346,6 +1378,7 @@ _PREFIX_HANDLERS = {
     "delete": _handle_delete,
     "confirm_delete_product": _handle_confirm_delete_product,
     "cancel_delete_product": _handle_cancel_delete_product,
+    "stock": _handle_stock,
     "recategorize": _handle_recategorize,
     "recat_cancel": _handle_recat_cancel,
     "toggle_notif": _handle_toggle_notif,
