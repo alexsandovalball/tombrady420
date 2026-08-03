@@ -35,10 +35,10 @@ def build_telegram_webapp_product_url(
 
     payload = quote(f"product_{int(product_id)}", safe="")
     short_name = (webapp_short_name or "").strip().strip("/")
-    if short_name:
-        return f"https://t.me/{username}/{quote(short_name, safe='')}?startapp={payload}"
+    if not short_name:
+        return None
 
-    return f"https://t.me/{username}?startapp={payload}"
+    return f"https://t.me/{username}/{quote(short_name, safe='')}?startapp={payload}"
 
 
 def normalize_webapp_url(web_app_url: str) -> Optional[str]:

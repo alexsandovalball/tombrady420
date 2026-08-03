@@ -20,7 +20,11 @@ from utils.helpers import get_admin_ids, get_bot_specific_file_id
 from utils.safe_send import safe_send_message, safe_send_photo, safe_send_video, safe_send_animation, safe_send_document, handle_send_exception
 from utils.rate_limiter import RateLimiter
 from utils.primary_instance import is_primary_instance
-from utils.deeplinks import build_bot_product_url, build_telegram_webapp_product_url
+from utils.deeplinks import (
+    build_bot_product_url,
+    build_telegram_webapp_product_url,
+    build_webapp_product_url,
+)
 from utils.webapp_buttons import build_webapp_button
 from translations.translator import translate_text_async
 from configs.config import Config
@@ -163,6 +167,19 @@ class NotificationService:
             getattr(Config, "TELEGRAM_WEBAPP_SHORT_NAME", None),
         )
 
+    @staticmethod
+    def _preferred_product_webapp_bot_username(fallback_bot_username: str) -> str:
+        """Use the second configured bot for public/group product Mini App links."""
+        try:
+            bot_apps = get_bot_applications()
+            if len(bot_apps) > 1:
+                username = get_bot_username(bot_apps[1])
+                if username and username != "unknown":
+                    return username
+        except Exception as exc:
+            logger.debug("Could not resolve second bot for WebApp broadcast link: %s", exc)
+        return fallback_bot_username
+
     @classmethod
     def _build_product_notification_keyboard(cls, product_id: int) -> InlineKeyboardMarkup:
         """Build private product notification actions."""
@@ -193,7 +210,16 @@ class NotificationService:
             buttons.append(InlineKeyboardButton("🔗 View in Bot", url=bot_deep_link))
             details.append(f"\n  - 🔗 View in Bot → {bot_deep_link}")
 
-        webapp_url = cls._build_product_webapp_url(product_id, bot_username)
+        webapp_bot_username = cls._preferred_product_webapp_bot_username(bot_username)
+        webapp_url = cls._build_product_webapp_url(product_id, webapp_bot_username)
+        if not webapp_url:
+            webapp_url = build_webapp_product_url(Config.WEB_APP_URL, product_id)
+            logger.warning(
+                "[Broadcast] TELEGRAM_WEBAPP_SHORT_NAME missing; using public product URL for WebApp button "
+                "product_id=%s bot=%s",
+                product_id,
+                webapp_bot_username,
+            )
         if webapp_url:
             buttons.append(InlineKeyboardButton("🛍️ View in WebApp", url=webapp_url))
             details.append(f"\n  - 🛍️ View in WebApp → {webapp_url}")
