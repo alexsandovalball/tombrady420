@@ -1818,7 +1818,7 @@
                 }
             }
             return detail;
-        });
+        }, Math.max(20, Number(data.configured_bot_count || 0), runtimeBots.length));
         const setupIssues = [];
         runtimeBots.forEach(bot => {
             const issues = Array.isArray(bot.startup_issues) ? bot.startup_issues : [];
@@ -1843,8 +1843,9 @@
         );
         appendAdminList(panel, 'Recent Users', data.recent_users || [], item => {
             const identity = item.username ? `@${item.username}` : `${item.first_name || 'User'} ${item.last_name || ''}`.trim();
-            return `${identity}: @${item.bot_username || 'bot'}, last ${item.last_seen || '-'}`;
-        });
+            const status = `${item.is_blocked ? 'blocked' : 'active'} · ${item.is_subscribed ? 'subscribed' : 'unsubscribed'} · ${item.notifications_enabled ? 'notifications on' : 'notifications off'}`;
+            return `${identity} (${item.user_id || '-'}): @${item.bot_username || 'bot'} · ${item.language || 'en'} · ${formatAdminCount(item.interaction_count)} interactions · ${status} · last ${item.last_seen || '-'}`;
+        }, 25);
 
         appendAdminList(panel, 'Top Google Searches', seo.top_search_console_queries || [], item =>
             `${item.query}: ${formatAdminCount(item.clicks)} clicks, ${formatAdminCount(item.impressions)} impressions, avg pos ${item.avg_position || '-'}`

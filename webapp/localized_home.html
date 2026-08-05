@@ -600,7 +600,7 @@
                         }
                     }
                     return detail;
-                }, 20);
+                }, Math.max(20, Number(data.configured_bot_count || 0), runtimeBots.length));
 
                 var setupIssues = [];
                 runtimeBots.forEach(function (bot) {
@@ -628,8 +628,9 @@
 
                 appendList(panel, 'Recent Users', data.recent_users || [], function (item) {
                     var identity = item.username ? '@' + item.username : String(item.first_name || 'User') + ' ' + String(item.last_name || '');
-                    return identity.trim() + ': @' + String(item.bot_username || 'bot') + ', last ' + (item.last_seen || '-');
-                }, 8);
+                    var userStatus = (item.is_blocked ? 'blocked' : 'active') + ' · ' + (item.is_subscribed ? 'subscribed' : 'unsubscribed') + ' · ' + (item.notifications_enabled ? 'notifications on' : 'notifications off');
+                    return identity.trim() + ' (' + String(item.user_id || '-') + '): @' + String(item.bot_username || 'bot') + ' · ' + String(item.language || 'en') + ' · ' + formatCount(item.interaction_count) + ' interactions · ' + userStatus + ' · last ' + (item.last_seen || '-');
+                }, 25);
 
                 appendList(panel, 'Top Google Searches', seo.top_search_console_queries || [], function (item) {
                     return String(item.query || 'query') + ': ' + formatCount(item.clicks) + ' clicks, ' + formatCount(item.impressions) + ' impressions, avg pos ' + (item.avg_position || '-');
