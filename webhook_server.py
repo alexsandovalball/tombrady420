@@ -199,6 +199,8 @@ _SEARCH_CONSOLE_IMPORT_INTERVAL_SECONDS = _bounded_int_env(
 _search_console_import_last_attempt = 0.0
 _PROCESS_STARTED_AT = datetime.utcnow()
 _PROCESS_STARTED_MONOTONIC = _time.monotonic()
+_startup_ready = False
+_startup_phase = "booting"
 
 # Per-process counter for webhook 401 rejections (in-memory, not persisted).
 # Useful for setting alerts: check logs for [WEBHOOK_401] or watch this counter
@@ -3513,14 +3515,22 @@ async def _visitor_analytics_prune_loop():
         await asyncio.sleep(_VISITOR_ANALYTICS_PRUNE_INTERVAL_SECONDS)
 
 
+async def _deferred_startup_diagnostics() -> None:
+    await asyncio.sleep(1)
+    await _log_setup_check()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan - startup and shutdown."""
     global _bot_applications, _webhook_secret_tokens
     global _bot_applications_by_registry_id, _runtime_index_to_registry_id
     global _visitor_event_queue
+    global _startup_ready, _startup_phase
 
     # Startup
+    _startup_ready = False
+    _startup_phase = "starting"
     logger.info("Starting webhook server...")
     startup_cleanup()
     clear_bot_runtime_state()
@@ -3628,11 +3638,10 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("Could not read file ID cache size during startup: %s", exc)
 
-    await _log_setup_check()
-
     # Start background maintenance tasks
     _visitor_event_queue = asyncio.Queue(maxsize=_VISITOR_EVENT_QUEUE_MAX)
     _bg_tasks = [
+        asyncio.create_task(_deferred_startup_diagnostics(), name="startup_diagnostics"),
         asyncio.create_task(_visitor_event_writer_loop(), name="visitor_event_writer"),
         asyncio.create_task(_visitor_analytics_prune_loop(), name="visitor_analytics_prune"),
         asyncio.create_task(_media_cache_prune_loop(), name="media_cache_prune"),
@@ -3654,9 +3663,13 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         logger.warning("Could not load blocked IPs from database: %s", _e)
 
+    _startup_ready = True
+    _startup_phase = "ready"
     yield
 
     # Cancel background maintenance tasks
+    _startup_ready = False
+    _startup_phase = "shutting_down"
     for task in _bg_tasks:
         task.cancel()
     await asyncio.gather(*_bg_tasks, return_exceptions=True)
@@ -3862,12 +3875,13 @@ else:
 # (WhatsApp, iMessage, Twitter/X, Facebook, Discord, Slack, Telegram, etc.).
 _SITE_ICON_VERSION = "20260805-football-emoji-svg-v1"
 _DEFAULT_SITE_ICON_PATH = f"/assets/site-icon.svg?v={_SITE_ICON_VERSION}"
+_DEFAULT_OG_IMAGE_PATH = f"/og-image.png?v={_SITE_ICON_VERSION}"
 _DEFAULT_OG_IMAGE = (
-    f"{_STOREFRONT_DOMAIN}{_DEFAULT_SITE_ICON_PATH}"
+    f"{_STOREFRONT_DOMAIN}{_DEFAULT_OG_IMAGE_PATH}"
     if _STOREFRONT_DOMAIN
-    else _DEFAULT_SITE_ICON_PATH
+    else _DEFAULT_OG_IMAGE_PATH
 )
-_DEFAULT_OG_IMAGE_TYPE = "image/svg+xml"
+_DEFAULT_OG_IMAGE_TYPE = "image/png"
 _OG_IMAGE_WIDTH = 600
 _OG_IMAGE_HEIGHT = 315
 
@@ -6056,6 +6070,9 @@ async def _maybe_serve_webapp_shell(
 @app.head("/", response_class=HTMLResponse)
 async def serve_homepage(request: Request):
     """Serve the homepage with default Storefront SEO metadata."""
+    if request.method == "HEAD":
+        return Response(status_code=_startup_status_code())
+
     webapp_response = await _maybe_serve_webapp_shell(request, include_seo_links=True)
     if webapp_response is not None:
         return webapp_response
@@ -8762,11 +8779,20 @@ async def setup_check():
     return await _build_setup_check()
 
 
+def _startup_status_code() -> int:
+    return status.HTTP_200_OK if _startup_ready else status.HTTP_503_SERVICE_UNAVAILABLE
+
+
 @app.get("/health")
 @app.head("/health")
 async def health():
     """Health check endpoint for deployment platforms."""
-    return {"status": "healthy"}
+    payload = {
+        "status": "healthy" if _startup_ready else "starting",
+        "phase": _startup_phase,
+        "uptime_seconds": round(_time.monotonic() - _PROCESS_STARTED_MONOTONIC, 1),
+    }
+    return JSONResponse(payload, status_code=_startup_status_code())
 
 
 @app.get("/_internal/metrics")

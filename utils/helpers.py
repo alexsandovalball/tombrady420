@@ -5,6 +5,8 @@ import asyncio
 import logging
 import json
 import inspect
+import time as _time
+from collections import OrderedDict
 from typing import List, Optional, Dict, Tuple
 from telegram import Bot, Update, User
 from telegram.ext import ContextTypes
@@ -19,6 +21,34 @@ logger = logging.getLogger(__name__)
 
 # Module-level database singleton — avoids creating a new connection object per call.
 _db = Database()
+_VALIDATED_HELPER_FILE_IDS: OrderedDict[tuple[str, str], tuple[float, Optional[str]]] = OrderedDict()
+_VALIDATED_HELPER_FILE_ID_TTL_SECONDS = 60 * 30
+_VALIDATED_HELPER_FILE_ID_MAX = 2000
+
+
+def _get_recent_helper_validation(bot_username: str, file_id: Optional[str]) -> tuple[bool, Optional[str]]:
+    if not bot_username or not file_id:
+        return False, None
+    cache_key = (bot_username.lower(), file_id)
+    cached = _VALIDATED_HELPER_FILE_IDS.get(cache_key)
+    if not cached:
+        return False, None
+    validated_at, file_unique_id = cached
+    if _time.monotonic() - validated_at >= _VALIDATED_HELPER_FILE_ID_TTL_SECONDS:
+        _VALIDATED_HELPER_FILE_IDS.pop(cache_key, None)
+        return False, None
+    _VALIDATED_HELPER_FILE_IDS.move_to_end(cache_key)
+    return True, file_unique_id
+
+
+def _remember_helper_validation(bot_username: str, file_id: Optional[str], file_unique_id: Optional[str] = None) -> None:
+    if not bot_username or not file_id:
+        return
+    cache_key = (bot_username.lower(), file_id)
+    _VALIDATED_HELPER_FILE_IDS[cache_key] = (_time.monotonic(), file_unique_id)
+    _VALIDATED_HELPER_FILE_IDS.move_to_end(cache_key)
+    while len(_VALIDATED_HELPER_FILE_IDS) > _VALIDATED_HELPER_FILE_ID_MAX:
+        _VALIDATED_HELPER_FILE_IDS.popitem(last=False)
 
 
 def resolve_stable_bot_identifier(bot_or_username, fallback: str = "unknown") -> str:
@@ -482,6 +512,12 @@ async def get_bot_specific_file_id(
     if canonical and not force_refresh:
         mapped_file_id = await _db.get_bot_media_file_id(bot_identifier, canonical["file_unique_id"])
         if mapped_file_id:
+            helper_validated, helper_unique_id = _get_recent_helper_validation(bot_identifier, mapped_file_id)
+            if helper_validated:
+                expected_unique_id = canonical.get("file_unique_id")
+                if not expected_unique_id or not helper_unique_id or helper_unique_id == expected_unique_id:
+                    logger.debug("[media_registry] using_recent_bot_media_mapping bot=%s msg=%s", bot_identifier, source_message_id)
+                    return mapped_file_id
             try:
                 tg_file = await fetch_telegram_file(
                     bot,
@@ -502,6 +538,7 @@ async def get_bot_specific_file_id(
                         mapped_unique_id,
                     )
                 else:
+                    _remember_helper_validation(bot_identifier, mapped_file_id, mapped_unique_id)
                     logger.debug("[media_registry] using_bot_media_mapping bot=%s msg=%s", bot_identifier, source_message_id)
                     return mapped_file_id
             except (TelegramError, asyncio.TimeoutError) as e:
@@ -528,6 +565,11 @@ async def get_bot_specific_file_id(
         )
     
     if cached_file_id:
+        helper_validated, helper_unique_id = _get_recent_helper_validation(bot_username, cached_file_id)
+        expected_unique_id = canonical.get("file_unique_id") if canonical else None
+        if helper_validated and (not expected_unique_id or not helper_unique_id or helper_unique_id == expected_unique_id):
+            logger.debug(f"Using recently validated cached file ID for bot {bot_username}, message {source_message_id}, index {file_index}")
+            return cached_file_id
         try:
             tg_file = await fetch_telegram_file(
                 bot,
@@ -537,7 +579,6 @@ async def get_bot_specific_file_id(
                 timeout_seconds=validation_timeout_seconds,
             )
             file_unique_id = getattr(tg_file, "file_unique_id", None)
-            expected_unique_id = canonical.get("file_unique_id") if canonical else None
             if expected_unique_id and file_unique_id and file_unique_id != expected_unique_id:
                 if canonical:
                     await _db.invalidate_bot_media_file_id(bot_identifier, expected_unique_id)
@@ -567,9 +608,11 @@ async def get_bot_specific_file_id(
                     file_size=getattr(tg_file, "file_size", None),
                 )
                 await _call_db_optional("upsert_bot_media_file_id", bot_identifier, file_unique_id, cached_file_id)
+                _remember_helper_validation(bot_username, cached_file_id, file_unique_id)
                 logger.debug(f"Using cached file ID for bot {bot_username}, message {source_message_id}, index {file_index}")
                 return cached_file_id
             elif not expected_unique_id:
+                _remember_helper_validation(bot_username, cached_file_id, file_unique_id)
                 logger.debug(f"Using cached file ID for bot {bot_username}, message {source_message_id}, index {file_index}")
                 return cached_file_id
         except (TelegramError, asyncio.TimeoutError) as e:
