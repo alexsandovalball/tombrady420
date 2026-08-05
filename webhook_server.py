@@ -491,7 +491,7 @@ _SEO_QUERY_MAPPING_CACHE_TTL = 300  # seconds
 # Keep an in-process LRU of media registry mappings we have already written so
 # repeated range requests do not generate identical SQLite writes.
 _media_registry_write_cache: OrderedDict = OrderedDict()
-_MEDIA_REGISTRY_WRITE_CACHE_MAX = 2000
+_MEDIA_REGISTRY_WRITE_CACHE_MAX = 1000
 
 
 def _media_temp_path(file_id: str, suffix: str) -> Path:
@@ -607,7 +607,7 @@ async def _resolve_bot_specific_media_file_id(
 
     try:
         bot_username = bot.username or ""
-        cache_key = (source_chat_id, source_message_id, 0, bot_username)
+        cache_key = (source_chat_id, source_message_id, media_index, bot_username)
         bot_specific_file_id = _resolved_file_id_cache.get(cache_key)
         if bot_specific_file_id is None:
             bot_specific_file_id = await get_bot_specific_file_id(
@@ -615,7 +615,7 @@ async def _resolve_bot_specific_media_file_id(
                 source_chat_id,
                 source_message_id,
                 file_type,
-                file_index=0,
+                file_index=media_index,
             )
             if bot_specific_file_id:
                 _cache_resolved_file_id(cache_key, bot_specific_file_id)
@@ -7594,6 +7594,52 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
     file_size = 0
     temp_file_to_cleanup: Optional[Path] = None
 
+    async def _fetch_stream_file(current_file_id: str) -> tuple[str, Any]:
+        try:
+            tg = await fetch_telegram_file(
+                bot,
+                current_file_id,
+                context=f"stream_catalog_media:{product_id}:{media_index}",
+                retries=1,
+                timeout_seconds=5.0,
+            )
+            return current_file_id, tg
+        except Exception as first_exc:
+            if not source_chat_id or not source_message_id:
+                raise first_exc
+
+            refreshed_file_id = await get_bot_specific_file_id(
+                bot,
+                source_chat_id,
+                source_message_id,
+                media_type_info.get("type", "document"),
+                file_index=media_index,
+                force_refresh=True,
+            )
+            if not refreshed_file_id or refreshed_file_id == current_file_id:
+                raise first_exc
+
+            logger.warning(
+                "[media_cache] bot_specific_refresh_retry product_id=%s media_index=%s",
+                product_id,
+                media_index,
+            )
+            refreshed_tg = await fetch_telegram_file(
+                bot,
+                refreshed_file_id,
+                context=f"stream_catalog_media_refresh:{product_id}:{media_index}",
+                retries=0,
+                timeout_seconds=3.5,
+            )
+            refreshed_cache_key = (
+                source_chat_id,
+                source_message_id,
+                media_index,
+                (getattr(bot, "username", None) or ""),
+            )
+            _cache_resolved_file_id(refreshed_cache_key, refreshed_file_id)
+            return refreshed_file_id, refreshed_tg
+
     if cached_file_path:
         age, idle, active = await _mark_media_access(cached_file_path)
         logger.info(
@@ -7618,13 +7664,8 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
         try:
             # Try to get file info - this can fail for files >20MB
             try:
-                tg_file = await fetch_telegram_file(
-                    bot,
-                    file_id,
-                    context=f"stream_catalog_media:{product_id}:{media_index}",
-                    retries=1,
-                    timeout_seconds=8.0,
-                )
+                file_id, tg_file = await _fetch_stream_file(file_id)
+                media_cache_key = hashlib.sha256(file_id.encode()).hexdigest()
                 file_size = tg_file.file_size or 0
                 file_unique_id = getattr(tg_file, "file_unique_id", None)
                 if file_unique_id:

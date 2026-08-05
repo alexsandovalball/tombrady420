@@ -44,6 +44,43 @@ def _build_media_unavailable_text(product: dict, caption: str) -> str:
     )
 
 
+def _build_media_caption(
+    caption: str,
+    category_info: str,
+    *,
+    stock_status: str = "active",
+    failure_count: int = 0,
+    total_media: int = 0,
+) -> str:
+    """Build a Telegram-safe media caption while preserving key context."""
+    max_length = 1024
+    normalized_caption = (caption or "No description").strip()
+    extra_parts = [f"📂 {category_info}"]
+    if stock_status == "out_of_stock":
+        extra_parts.append("Sold out for now. Check related items or ask about restock.")
+    if failure_count:
+        extra_parts.append(
+            f"⚠️ {failure_count} of {total_media} media file(s) could not be delivered by this bot."
+        )
+
+    suffix = "\n\n".join(part for part in extra_parts if part)
+    if not suffix:
+        return normalized_caption[:max_length]
+
+    reserve = len(suffix) + 2
+    if reserve >= max_length:
+        return suffix[:max_length]
+
+    available_for_caption = max_length - reserve
+    if len(normalized_caption) > available_for_caption:
+        trimmed = max(0, available_for_caption - 3)
+        normalized_caption = normalized_caption[:trimmed].rstrip()
+        if trimmed:
+            normalized_caption += "..."
+
+    return f"{normalized_caption}\n\n{suffix}"
+
+
 def _build_admin_action_buttons(
     product_id: int,
     user_id: int,
@@ -334,16 +371,15 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
             f"forced_refresh={force_media_refresh}"
         )
         
-        # Build full caption
-        full_caption = f"{caption}\n\n📂 {category_info}"
+        # Build full caption within Telegram's media caption limits.
         stock_status = str(product.get("stock_status") or "active").lower()
-        if stock_status == "out_of_stock":
-            full_caption += "\n\nSold out for now. Check related items or ask about restock."
-        if resolution_failures:
-            full_caption += (
-                f"\n\n⚠️ {len(resolution_failures)} of {total_media} media file(s) "
-                "could not be delivered by this bot."
-            )
+        full_caption = _build_media_caption(
+            caption,
+            category_info,
+            stock_status=stock_status,
+            failure_count=len(resolution_failures),
+            total_media=total_media,
+        )
         
         # Create keyboard with back button and admin buttons
         keyboard_buttons = []

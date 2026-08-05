@@ -424,6 +424,8 @@ async def get_bot_specific_file_id(
     Returns:
         Bot-specific file ID or None if forwarding fails
     """
+    validation_timeout_seconds = 1.0
+
     # Extract bot from context or use directly.
     # Check isinstance(Bot) first because Bot/ExtBot also exposes a `.bot` property
     # that returns a User object (from get_me()), which would cause the hasattr
@@ -486,7 +488,7 @@ async def get_bot_specific_file_id(
                     mapped_file_id,
                     context="get_bot_specific_file_id:mapped",
                     retries=0,
-                    timeout_seconds=2.0,
+                    timeout_seconds=validation_timeout_seconds,
                 )
                 mapped_unique_id = getattr(tg_file, "file_unique_id", None)
                 expected_unique_id = canonical.get("file_unique_id")
@@ -532,7 +534,7 @@ async def get_bot_specific_file_id(
                 cached_file_id,
                 context="get_bot_specific_file_id:cached",
                 retries=0,
-                timeout_seconds=2.0,
+                timeout_seconds=validation_timeout_seconds,
             )
             file_unique_id = getattr(tg_file, "file_unique_id", None)
             expected_unique_id = canonical.get("file_unique_id") if canonical else None

@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 _resolve_semaphore = asyncio.Semaphore(4)
 _VALIDATED_FILE_ID_TTL_SECONDS = 60 * 60
-_VALIDATED_FILE_ID_MAX = 5000
-_VALIDATION_TIMEOUT_SECONDS = 3.0
+_VALIDATED_FILE_ID_MAX = 2000
+_VALIDATION_TIMEOUT_SECONDS = 2.0
 _validated_file_ids: OrderedDict[tuple[str, str], tuple[float, Optional[str]]] = OrderedDict()
 _background_validation_tasks: set[asyncio.Task] = set()
 _background_validation_keys: set[tuple[str, str]] = set()
