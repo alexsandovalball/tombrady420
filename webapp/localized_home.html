@@ -16,10 +16,10 @@
     <meta property="og:url" content="{{ seo_url }}">
     <meta property="og:locale" content="{{ seo_locale or 'en_US' }}">
     <script type="application/ld+json">{{ seo_schema | safe }}</script>
-    <link rel="icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260723-football-emoji-v5">
-    <link rel="shortcut icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260723-football-emoji-v5">
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260723-football-emoji-v5">
-    <link rel="manifest" href="/assets/manifest.json?v=20260723-football-emoji-v5">
+    <link rel="icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260805-football-emoji-svg-v1">
+    <link rel="shortcut icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260805-football-emoji-svg-v1">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260805-football-emoji-svg-v1">
+    <link rel="manifest" href="/assets/manifest.json?v=20260805-football-emoji-svg-v1">
     <link rel="stylesheet" href="/assets/style.css?v=20260717-ios-dark-text-v1">
     <link rel="preconnect" href="https://telegram.org" crossorigin>
     <link rel="dns-prefetch" href="https://telegram.org">
@@ -128,9 +128,9 @@
                     {% if item.media_type == 'video' and item.media_url %}
                     <video class="seo-card-video" muted playsinline preload="metadata" src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
                     {% elif item.media_url %}
-                    <img src="{{ item.media_url }}" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260723-football-emoji-v5';">
+                    <img src="{{ item.media_url }}" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260805-football-emoji-svg-v1';">
                     {% else %}
-                    <img src="/assets/site-icon.svg?v=20260723-football-emoji-v5" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async">
+                    <img src="/assets/site-icon.svg?v=20260805-football-emoji-svg-v1" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async">
                     {% endif %}
                     <span>{{ item.title }}</span>
                     {% if item.stock_status == 'out_of_stock' %}<span class="stock-badge">Sold out</span>{% endif %}
@@ -196,7 +196,7 @@
                     image.loading = 'lazy';
                     image.decoding = 'async';
                     image.addEventListener('error', function () {
-                        image.src = '/assets/site-icon.svg?v=20260723-football-emoji-v5';
+                        image.src = '/assets/site-icon.svg?v=20260805-football-emoji-svg-v1';
                     }, { once: true });
                     return image;
                 }
@@ -518,6 +518,10 @@
                     return bot && Number(bot.startup_issue_count || 0) > 0;
                 });
                 var googleWindowDays = seo.search_console_window_days || 30;
+                var mappingOutcomes = {};
+                (seo.mapping_outcomes || []).forEach(function (item) {
+                    mappingOutcomes[String(item.status || 'pending')] = Number(item.count || 0);
+                });
 
                 panel.replaceChildren();
                 panel.hidden = false;
@@ -552,6 +556,7 @@
                 appendMetric(grid, 'Image/video impressions', formatCount(seo.search_console_image_impressions_window) + '/' + formatCount(seo.search_console_video_impressions_window));
                 appendMetric(grid, 'SEO learners', (seoRuntime.seo_auto_learn_last_status || 'pending') + ' / ' + (seoRuntime.seo_trends_last_status || 'pending'));
                 appendMetric(grid, 'Mapping changes 24h / 7d', formatCount(seo.mappings_updated_24h) + ' / ' + formatCount(seo.mappings_updated_7d));
+                appendMetric(grid, 'Mapping outcomes', formatCount(mappingOutcomes.winner) + ' winning / ' + formatCount(mappingOutcomes.monitoring) + ' monitoring / ' + formatCount(mappingOutcomes.pending) + ' pending / ' + formatCount(mappingOutcomes.retired_no_evidence) + ' retired');
                 appendMetric(grid, 'Google import', (searchConsoleSetup.configured ? (seoRuntime.search_console_import_last_status || 'configured') : 'not connected') + (seoRuntime.search_console_import_last_attempt_at ? ' · ' + seoRuntime.search_console_import_last_attempt_at : ''));
                 appendMetric(grid, 'Google sitemap', googleSitemap.status || 'never');
                 appendMetric(grid, 'IndexNow pending / failed', formatCount(indexnow.pending) + ' / ' + formatCount(indexnow.failed));
@@ -629,6 +634,23 @@
                 appendList(panel, 'Top Google Searches', seo.top_search_console_queries || [], function (item) {
                     return String(item.query || 'query') + ': ' + formatCount(item.clicks) + ' clicks, ' + formatCount(item.impressions) + ' impressions, avg pos ' + (item.avg_position || '-');
                 }, 10);
+
+                appendDetailsList(
+                    panel,
+                    'admin-google-page-scorecard',
+                    'Google Page Performance (' + formatCount((seo.search_console_page_scorecard || []).length) + ')',
+                    'Pages with the most Google visibility in the current Search Console window.',
+                    seo.search_console_page_scorecard || [],
+                    function (item) {
+                        var li = document.createElement('li');
+                        li.textContent = String(item.page || '/') + ': ' + formatCount(item.clicks) + ' clicks, ' + formatCount(item.impressions) + ' impressions';
+                        var pageMeta = document.createElement('span');
+                        pageMeta.className = 'admin-page-meta';
+                        pageMeta.textContent = 'CTR ' + String(item.ctr_percent || 0) + '% · avg position ' + String(item.avg_position || '-') + ' · last ' + String(item.last_seen || '-');
+                        li.appendChild(pageMeta);
+                        return li;
+                    }
+                );
 
                 appendList(panel, 'Google Ranking Opportunities', seo.search_console_opportunities || [], function (item) {
                     var ctr = Number(item.ctr || 0);

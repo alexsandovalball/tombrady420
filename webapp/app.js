@@ -1,4 +1,4 @@
-﻿// Tom Brady Menu - Full Bot-like WebApp Interface
+// Tom Brady Menu - Full Bot-like WebApp Interface
 (function () {
     'use strict';
 
@@ -22,7 +22,7 @@
         ERROR_DISPLAY_MS: 4000,  // Duration to show error messages on buttons
         INITIAL_DATA_TIMEOUT_MS: 10000,  // Timeout for initial data load to prevent infinite loading
         MAX_VIDEO_PREVIEW_CACHE_SIZE: 24,  // Captured video preview frames kept in memory
-        SITE_ICON_URL: '/assets/site-icon.svg?v=20260723-football-emoji-v5',
+        SITE_ICON_URL: '/assets/site-icon.svg?v=20260805-football-emoji-svg-v1',
         MAX_CACHE_SIZE: 20  // Maximum number of cached API responses to prevent memory leaks
     };
 
@@ -1675,6 +1675,10 @@
         const webhookWarningBots = runtimeBots.filter(bot => bot.telegram_health === 'webhook_warning');
         const setupWarningBots = runtimeBots.filter(bot => Number(bot.startup_issue_count || 0) > 0);
         const googleWindowDays = seo.search_console_window_days || 30;
+        const mappingOutcomes = {};
+        (seo.mapping_outcomes || []).forEach(item => {
+            mappingOutcomes[String(item.status || 'pending')] = Number(item.count || 0);
+        });
 
         panel.replaceChildren();
         panel.hidden = false;
@@ -1707,6 +1711,7 @@
         appendAdminMetric(grid, 'Image/video impressions', `${formatAdminCount(seo.search_console_image_impressions_window)}/${formatAdminCount(seo.search_console_video_impressions_window)}`);
         appendAdminMetric(grid, 'SEO learners', `${seoRuntime.seo_auto_learn_last_status || 'pending'} / ${seoRuntime.seo_trends_last_status || 'pending'}`);
         appendAdminMetric(grid, 'Mapping changes 24h / 7d', `${formatAdminCount(seo.mappings_updated_24h)} / ${formatAdminCount(seo.mappings_updated_7d)}`);
+        appendAdminMetric(grid, 'Mapping outcomes', `${formatAdminCount(mappingOutcomes.winner)} winning / ${formatAdminCount(mappingOutcomes.monitoring)} monitoring / ${formatAdminCount(mappingOutcomes.pending)} pending / ${formatAdminCount(mappingOutcomes.retired_no_evidence)} retired`);
         appendAdminMetric(grid, 'Google import', `${searchConsoleSetup.configured ? (seoRuntime.search_console_import_last_status || 'configured') : 'not connected'}${seoRuntime.search_console_import_last_attempt_at ? ` · ${seoRuntime.search_console_import_last_attempt_at}` : ''}`);
         appendAdminMetric(grid, 'Google sitemap', googleSitemap.status || 'never');
         appendAdminMetric(grid, 'IndexNow pending / failed', `${formatAdminCount(indexnow.pending)} / ${formatAdminCount(indexnow.failed)}`);
@@ -1777,6 +1782,22 @@
 
         appendAdminList(panel, 'Top Google Searches', seo.top_search_console_queries || [], item =>
             `${item.query}: ${formatAdminCount(item.clicks)} clicks, ${formatAdminCount(item.impressions)} impressions, avg pos ${item.avg_position || '-'}`
+        );
+        appendAdminDetailsList(
+            panel,
+            'admin-google-page-scorecard',
+            'Google Page Performance',
+            'Pages with the most Google visibility in the current Search Console window.',
+            seo.search_console_page_scorecard || [],
+            item => {
+                const li = document.createElement('li');
+                li.textContent = `${item.page || '/'}: ${formatAdminCount(item.clicks)} clicks, ${formatAdminCount(item.impressions)} impressions`;
+                const meta = document.createElement('span');
+                meta.className = 'admin-page-meta';
+                meta.textContent = `CTR ${item.ctr_percent || 0}% · avg position ${item.avg_position || '-'} · last ${item.last_seen || '-'}`;
+                li.appendChild(meta);
+                return li;
+            }
         );
         if (googleSitemap.status) {
             appendAdminList(panel, 'Google Sitemap Submission', [googleSitemap], item => {

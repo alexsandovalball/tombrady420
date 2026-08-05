@@ -134,7 +134,7 @@ def _inline_article_thumbnail_url(
     if not safe_only and file_type == "photo":
         return f"{storefront_base}/api/catalog/{product_id}/media/0"
 
-    return f"{storefront_base}/og-image.png"
+    return f"{storefront_base}/og-image.png?v=20260805-football-emoji-svg-v1"
 
 
 def _inline_photo_media_url(product_id: Any, media_index: int = 0) -> Optional[str]:

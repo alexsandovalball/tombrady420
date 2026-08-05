@@ -484,6 +484,7 @@ _API_RESULT_CACHE_TTL = 30  # seconds
 # Short cache for approved SEO mappings used by public search expansion.
 # Auto-learning invalidates it whenever new mappings are approved.
 _seo_query_mapping_cache: Optional[tuple[float, List[Dict[str, Any]]]] = None
+_seo_taxonomy_profiles_cache: tuple[str, dict[tuple[str, str], dict[str, Any]]] = ("", {})
 _SEO_QUERY_MAPPING_CACHE_TTL = 300  # seconds
 
 # Browser video playback can trigger several Range requests for the same file.
@@ -882,7 +883,7 @@ def _remember_media_registry_write(bot_identifier: str, file_unique_id: str, res
 
 def clear_in_memory_caches() -> int:
     """Clear all in-memory caches. Returns total entries cleared."""
-    global _resolved_file_id_cache, _media_info_cache, _api_result_cache, _media_registry_write_cache, _seo_query_mapping_cache, _admin_status_cache, _bot_health_cache
+    global _resolved_file_id_cache, _media_info_cache, _api_result_cache, _media_registry_write_cache, _seo_query_mapping_cache, _admin_status_cache, _bot_health_cache, _seo_taxonomy_profiles_cache
 
     total = (
         len(_resolved_file_id_cache)
@@ -897,6 +898,7 @@ def clear_in_memory_caches() -> int:
     _api_result_cache.clear()
     _media_registry_write_cache.clear()
     _seo_query_mapping_cache = None
+    _seo_taxonomy_profiles_cache = ("", {})
     _admin_status_cache.clear()
     _bot_health_cache = (0.0, [])
 
@@ -2415,7 +2417,12 @@ async def _expand_auto_learn_mapping_variants(term: str, source_language: str = 
     for item in terms:
         candidate = " ".join(str(item.get("term") or "").split())
         normalized = normalize_term(candidate)
-        if normalized in seen or not _is_useful_auto_seo_term(candidate):
+        is_translation = str(item.get("language") or "en") != source_language
+        if (
+            normalized in seen
+            or not _is_useful_auto_seo_term(candidate)
+            or (is_translation and not has_search_audience_intent(candidate))
+        ):
             continue
         seen.add(normalized)
         cleaned.append({"term": candidate, "language": item.get("language") or "en"})
@@ -2426,11 +2433,9 @@ async def _publish_seo_mapping_changes(mappings: List[Dict[str, Any]]) -> int:
     """Invalidate rendered SEO pages and announce every affected public URL."""
     if not mappings:
         return 0
-    _seo_response_cache.clear()
     _invalidate_admin_status_cache()
-    if not _indexnow_enabled():
-        return 0
     urls: List[str] = []
+    page_content_changed = False
     taxonomies = {
         (
             str(mapping.get("category") or "").strip(),
@@ -2440,6 +2445,45 @@ async def _publish_seo_mapping_changes(mappings: List[Dict[str, Any]]) -> int:
         if str(mapping.get("category") or "").strip()
     }
     for category, subcategory in taxonomies:
+        taxonomy_mappings = [
+            mapping
+            for mapping in mappings
+            if str(mapping.get("category") or "").strip() == category
+            and str(mapping.get("subcategory") or "").strip() == subcategory
+        ]
+        visible_change = False
+        languages = {
+            _normalize_seo_language(mapping.get("language") or "en")
+            for mapping in taxonomy_mappings
+        }
+        for language in languages or {"en"}:
+            changed_terms = {
+                normalize_term(mapping.get("term") or "")
+                for mapping in taxonomy_mappings
+                if _normalize_seo_language(mapping.get("language") or "en") == language
+            }
+            visible_rows = await _catalog_db.get_seo_side_notes(
+                category,
+                subcategory,
+                language=language,
+                limit=Config.SEO_SIDE_NOTE_LIMIT,
+            )
+            visible_terms = {
+                normalize_term(row.get("term") or "")
+                for row in visible_rows
+            }
+            if changed_terms & visible_terms:
+                visible_change = True
+                break
+        if not visible_change:
+            logger.debug(
+                "[seo_auto_learn] publish_skipped_not_visible category=%s subcategory=%s terms=%d",
+                category,
+                subcategory,
+                len(taxonomy_mappings),
+            )
+            continue
+        page_content_changed = True
         urls.extend(
             _indexnow_taxonomy_urls(category, subcategory)
         )
@@ -2460,7 +2504,11 @@ async def _publish_seo_mapping_changes(mappings: List[Dict[str, Any]]) -> int:
                 subcategory,
                 exc,
             )
+    if page_content_changed:
+        _seo_response_cache.clear()
     if not urls:
+        return 0
+    if not _indexnow_enabled():
         return 0
     return await _catalog_db.enqueue_indexnow_urls(
         list(dict.fromkeys(urls)),
@@ -2570,7 +2618,9 @@ async def _import_google_trends_signals(
             "category": inferred["category"],
             "subcategory": inferred["subcategory"],
             "confidence": confidence,
-            "approved": True,
+            # Trends is a discovery hint, not proof. The database promotes it
+            # only after the same relevant signal is observed on multiple days.
+            "approved": False,
             "evidence_count": max(1, int(row.get("evidence_count") or 1)),
             "notes": {
                 "geo": (row.get("notes") or {}).get("geo"),
@@ -2601,24 +2651,31 @@ async def _import_google_trends_signals(
         signals,
         provider="google_trends",
         source="google_trends",
-        approved=True,
+        approved=False,
+    )
+    matured = await _catalog_db.approve_mature_external_seo_signals(
+        provider="google_trends",
+        min_observations=2,
+        min_confidence=Config.SEO_EXTERNAL_SIGNAL_SCORE,
     )
     if imported:
         _invalidate_admin_status_cache()
     logger.info(
-        "[seo_trends] rows=%d candidates=%d relevant=%d imported=%d",
+        "[seo_trends] rows=%d candidates=%d relevant=%d imported=%d matured=%d",
         len(trend_rows),
         len(candidate_rows),
         len(signals),
         imported,
+        matured,
     )
     await _set_runtime_settings({
         "seo_trends_last_fetch_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
         "seo_trends_last_rows": len(trend_rows),
         "seo_trends_last_candidates": len(candidate_rows),
         "seo_trends_last_imported": imported,
+        "seo_trends_last_matured": matured,
     })
-    return imported
+    return imported + matured
 
 
 async def _promote_approved_external_signals() -> int:
@@ -2636,7 +2693,17 @@ async def _promote_approved_external_signals() -> int:
             continue
         if not has_search_audience_intent(term):
             continue
-        for variant in await _expand_auto_learn_mapping_variants(term, item.get("language") or "en"):
+        if str(item.get("provider") or "").strip().lower() == "google_trends":
+            variants = [{
+                "term": term,
+                "language": _normalize_seo_language(item.get("language") or "en"),
+            }]
+        else:
+            variants = await _expand_auto_learn_mapping_variants(
+                term,
+                item.get("language") or "en",
+            )
+        for variant in variants:
             approvals.append({
                 "term": variant["term"],
                 "language": variant["language"],
@@ -2980,6 +3047,7 @@ async def _import_search_console_signals(
         row_limit=Config.SEARCH_CONSOLE_ROW_LIMIT,
     )
     rows = list(fetch_result.get("rows") or [])
+    dimension_rows = list(fetch_result.get("dimension_rows") or [])
     media_rows = list(fetch_result.get("media_rows") or [])
     fetch_status = str(fetch_result.get("status") or "api_error")
     fetch_error = str(fetch_result.get("error") or "")[:500]
@@ -3000,6 +3068,7 @@ async def _import_search_console_signals(
             "search_console_import_last_rows": 0,
             "search_console_import_last_signals": 0,
             "search_console_import_last_media_rows": 0,
+            "search_console_import_last_dimension_rows": 0,
             "search_console_import_last_requests": fetch_requests,
             "search_console_import_last_property": fetch_property,
             "search_console_import_last_error": fetch_error,
@@ -3012,7 +3081,11 @@ async def _import_search_console_signals(
         media_rows,
         replace_since=replace_since,
     )
-    if imported_media_rows or media_rows:
+    imported_dimension_rows = await _catalog_db.replace_search_console_dimension_events(
+        dimension_rows,
+        replace_since=replace_since,
+    )
+    if imported_media_rows or media_rows or imported_dimension_rows or dimension_rows:
         _invalidate_admin_status_cache()
     if not rows:
         await _catalog_db.upsert_search_console_query_events([], replace_since=replace_since)
@@ -3029,6 +3102,7 @@ async def _import_search_console_signals(
             "search_console_import_last_rows": 0,
             "search_console_import_last_signals": 0,
             "search_console_import_last_media_rows": imported_media_rows,
+            "search_console_import_last_dimension_rows": imported_dimension_rows,
             "search_console_import_last_requests": fetch_requests,
             "search_console_import_last_property": fetch_property,
             "search_console_import_last_error": fetch_error,
@@ -3076,6 +3150,7 @@ async def _import_search_console_signals(
         "search_console_import_last_rows": imported_rows,
         "search_console_import_last_signals": imported_signals,
         "search_console_import_last_media_rows": imported_media_rows,
+        "search_console_import_last_dimension_rows": imported_dimension_rows,
         "search_console_import_last_requests": fetch_requests,
         "search_console_import_last_property": fetch_property,
         "search_console_import_last_aggregates": aggregate_count,
@@ -3086,18 +3161,49 @@ async def _import_search_console_signals(
     return imported_signals
 
 
+def _taxonomy_profiles_for_products(
+    products: list[dict[str, Any]],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Reuse taxonomy profiles until catalog content actually changes."""
+    global _seo_taxonomy_profiles_cache
+    digest = hashlib.sha256()
+    for product in sorted(
+        products,
+        key=lambda item: str(item.get("id") or item.get("product_id") or ""),
+    ):
+        digest.update(
+            "\x1f".join(
+                str(product.get(field) or "")
+                for field in ("id", "public_id", "updated_at", "category", "subcategory", "caption")
+            ).encode("utf-8", errors="ignore")
+        )
+        digest.update(b"\x1e")
+    fingerprint = digest.hexdigest()
+    cached_fingerprint, cached_profiles = _seo_taxonomy_profiles_cache
+    if fingerprint == cached_fingerprint and cached_profiles:
+        return cached_profiles
+    profiles = build_taxonomy_profiles(products)
+    _seo_taxonomy_profiles_cache = (fingerprint, profiles)
+    return profiles
+
+
 async def _seo_auto_learn_once() -> int:
     """Approve high-confidence low/no-result search mappings."""
     if not Config.SEO_AUTO_LEARN_ENABLED:
         return 0
 
     products = await _catalog_db.get_all_products_for_search()
-    profiles = build_taxonomy_profiles(products)
+    profiles = _taxonomy_profiles_for_products(products)
     external_imports = 0
     external_promoted = 0
     retired_noise = 0
+    outcome_stats = {"evaluated": 0, "winners": 0, "monitoring": 0, "retired": 0}
     try:
         retired_noise = await _catalog_db.retire_off_audience_seo_mappings()
+        outcome_stats = await _catalog_db.evaluate_seo_mapping_outcomes(
+            limit=max(100, Config.SEO_AUTO_LEARN_MAX_PER_RUN * 4),
+        )
+        retired_noise += int(outcome_stats.get("retired") or 0)
         if retired_noise:
             _invalidate_seo_query_mapping_cache()
             _invalidate_admin_status_cache()
@@ -3126,6 +3232,9 @@ async def _seo_auto_learn_once() -> int:
             "seo_auto_learn_last_skipped": 0,
             "seo_auto_learn_last_suppressed": 0,
             "seo_auto_learn_last_retired_noise": retired_noise,
+            "seo_auto_learn_last_evaluated": outcome_stats.get("evaluated", 0),
+            "seo_auto_learn_last_winners": outcome_stats.get("winners", 0),
+            "seo_auto_learn_last_monitoring": outcome_stats.get("monitoring", 0),
         })
         return external_imports + external_promoted + retired_noise
 
@@ -3197,6 +3306,9 @@ async def _seo_auto_learn_once() -> int:
                 "seo_auto_learn_last_skipped": skipped,
                 "seo_auto_learn_last_suppressed": suppressed_count,
                 "seo_auto_learn_last_retired_noise": retired_noise,
+                "seo_auto_learn_last_evaluated": outcome_stats.get("evaluated", 0),
+                "seo_auto_learn_last_winners": outcome_stats.get("winners", 0),
+                "seo_auto_learn_last_monitoring": outcome_stats.get("monitoring", 0),
             })
         return external_imports + external_promoted + retired_noise
 
@@ -3229,6 +3341,9 @@ async def _seo_auto_learn_once() -> int:
         "seo_auto_learn_last_skipped": skipped,
         "seo_auto_learn_last_suppressed": suppressed_count,
         "seo_auto_learn_last_retired_noise": retired_noise,
+        "seo_auto_learn_last_evaluated": outcome_stats.get("evaluated", 0),
+        "seo_auto_learn_last_winners": outcome_stats.get("winners", 0),
+        "seo_auto_learn_last_monitoring": outcome_stats.get("monitoring", 0),
     })
     return approved + external_imports + external_promoted + retired_noise
 
@@ -3298,7 +3413,7 @@ async def _seo_trends_loop():
                 started = _time.monotonic()
                 async with lock:
                     products = await _catalog_db.get_all_products_for_search()
-                    profiles = build_taxonomy_profiles(products)
+                    profiles = _taxonomy_profiles_for_products(products)
                     imported = await _import_google_trends_signals(products, profiles)
                     promoted = await _promote_approved_external_signals()
                 duration_ms = (_time.monotonic() - started) * 1000
@@ -3745,8 +3860,14 @@ else:
 # Default Open Graph image with the same standalone football emoji used by the home page.
 # Must be an absolute HTTPS URL — data: URIs are rejected by all social media crawlers
 # (WhatsApp, iMessage, Twitter/X, Facebook, Discord, Slack, Telegram, etc.).
-_SITE_ICON_VERSION = "20260723-football-emoji-v5"
-_DEFAULT_OG_IMAGE = f"{_STOREFRONT_DOMAIN}/og-image.png?v={_SITE_ICON_VERSION}"
+_SITE_ICON_VERSION = "20260805-football-emoji-svg-v1"
+_DEFAULT_SITE_ICON_PATH = f"/assets/site-icon.svg?v={_SITE_ICON_VERSION}"
+_DEFAULT_OG_IMAGE = (
+    f"{_STOREFRONT_DOMAIN}{_DEFAULT_SITE_ICON_PATH}"
+    if _STOREFRONT_DOMAIN
+    else _DEFAULT_SITE_ICON_PATH
+)
+_DEFAULT_OG_IMAGE_TYPE = "image/svg+xml"
 _OG_IMAGE_WIDTH = 600
 _OG_IMAGE_HEIGHT = 315
 
@@ -4738,6 +4859,14 @@ async def _search_console_submit_sitemap_once(*, reason: str = "scheduled", forc
         return False
 
     attempted_at = datetime.now()
+    fingerprint = await _search_console_sitemap_fingerprint()
+    previous_fingerprint = await _catalog_db.get_bot_setting("search_console_sitemap_last_fingerprint")
+    if previous_fingerprint and str(previous_fingerprint) == fingerprint:
+        logger.debug(
+            "[search_console] sitemap_submit_skipped reason=unchanged fingerprint=%s",
+            fingerprint[:12],
+        )
+        return False
     if not force:
         raw_last_attempt = await _catalog_db.get_bot_setting("search_console_sitemap_last_attempt_at")
         if raw_last_attempt:
@@ -4768,6 +4897,7 @@ async def _search_console_submit_sitemap_once(*, reason: str = "scheduled", forc
     await _record_search_console_sitemap_result(result, attempted_at=attempted_at)
 
     if result.get("ok"):
+        await _catalog_db.set_bot_setting("search_console_sitemap_last_fingerprint", fingerprint)
         logger.info(
             "[search_console] sitemap_submitted reason=%s site_url=%s sitemap=%s status=%s auth=%s",
             reason,
@@ -4844,6 +4974,7 @@ async def _seo_side_note_terms(category: str, subcategory: str = "", language: s
             or normalized in static_normalized
             or len(normalized.split()) > 5
             or not _is_useful_auto_seo_term(term)
+            or not has_search_audience_intent(term)
         ):
             continue
         dynamic_rows.append(item)
@@ -4873,6 +5004,34 @@ async def _seo_side_note_terms(category: str, subcategory: str = "", language: s
         if len(cleaned) >= limit:
             break
     return cleaned
+
+
+async def _search_console_sitemap_fingerprint() -> str:
+    """Fingerprint meaningful sitemap inputs so unchanged maps are not resubmitted."""
+    products = await _catalog_db.get_all_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
+    digest = hashlib.sha256()
+    digest.update(str(Config.SEARCH_CONSOLE_SITE_URL or "").encode())
+    digest.update(str(Config.SEARCH_CONSOLE_SITEMAP_URL or "").encode())
+    digest.update(_static_seo_lastmod("").encode())
+    for product in sorted(products, key=lambda item: int(item.get("id") or 0)):
+        digest.update(
+            "\x1f".join(
+                str(product.get(field) or "")
+                for field in (
+                    "id", "public_id", "updated_at", "stock_status",
+                    "category", "subcategory", "caption",
+                )
+            ).encode("utf-8", errors="ignore")
+        )
+        digest.update(b"\x1e")
+    for row in await _catalog_db.get_seo_mapping_lastmods():
+        digest.update(
+            "\x1f".join(
+                str(row.get(field) or "")
+                for field in ("category", "subcategory", "updated_at")
+            ).encode()
+        )
+    return digest.hexdigest()
 
 
 def _build_visible_taxonomy_intro(
@@ -4925,11 +5084,13 @@ def _resolve_subcategory_name(category: str, subcategory_slug: str) -> Optional[
 async def _missing_product_redirect(
     product_id: int,
     *,
+    request: Request,
     slug: str = "",
-    permanent_when_known: bool = True,
     language: str = "en",
-) -> RedirectResponse:
-    """Redirect unavailable public product links to the closest useful storefront page."""
+) -> Response:
+    """Serve a useful real 404, linking to the closest relevant catalog page."""
+    fallback_path = _localized_path("/", language)
+    fallback_label = _seo_ui(language)["home"]
     try:
         if hasattr(_catalog_db, "get_deleted_product_redirect"):
             redirect_meta = await _catalog_db.get_deleted_product_redirect(product_id)
@@ -4948,21 +5109,41 @@ async def _missing_product_redirect(
         if matched_category and subcategory:
             matched_subcategory = _resolve_subcategory_name(matched_category, subcategory)
             if matched_subcategory:
-                return RedirectResponse(
-                    url=_localized_path(_canonical_subcategory_path(matched_category, matched_subcategory), language),
-                    status_code=status.HTTP_301_MOVED_PERMANENTLY if permanent_when_known else status.HTTP_302_FOUND,
+                fallback_path = _localized_path(
+                    _canonical_subcategory_path(matched_category, matched_subcategory),
+                    language,
                 )
+                fallback_label = get_subcategory_display_name(matched_subcategory, language)
         if matched_category:
-            return RedirectResponse(
-                url=_localized_path(_canonical_category_path(matched_category), language),
-                status_code=status.HTTP_301_MOVED_PERMANENTLY if permanent_when_known else status.HTTP_302_FOUND,
-            )
+            if fallback_path == _localized_path("/", language):
+                fallback_path = _localized_path(_canonical_category_path(matched_category), language)
+                fallback_label = get_category_display_name(matched_category, language)
 
-    inferred_path = await _infer_missing_product_redirect_path(slug)
-    if inferred_path:
-        return RedirectResponse(url=_localized_path(inferred_path, language), status_code=status.HTTP_302_FOUND)
+    if fallback_path == _localized_path("/", language):
+        inferred_path = await _infer_missing_product_redirect_path(slug)
+        if inferred_path:
+            fallback_path = _localized_path(inferred_path, language)
+            fallback_label = "Related catalog"
 
-    return RedirectResponse(url=_localized_path("/", language), status_code=status.HTTP_302_FOUND)
+    ctx = _build_seo_context(
+        title="Product unavailable | Top Shelf Cali Plug",
+        desc="This product is no longer available. Browse the closest active catalog selection.",
+        url=_absolute_storefront_url(request.url.path),
+        language=language,
+        alternate_path=request.url.path,
+    )
+    ctx.update({
+        "request": request,
+        "fallback_url": fallback_path,
+        "fallback_label": fallback_label,
+        "home_url": _localized_path("/", language),
+    })
+    content = templates.env.get_template("not_found.html").render(ctx)
+    return HTMLResponse(
+        content=content,
+        status_code=status.HTTP_404_NOT_FOUND,
+        headers={"Cache-Control": "public, max-age=300"},
+    )
 
 
 async def _infer_missing_product_redirect_path(slug: str) -> str:
@@ -4991,7 +5172,7 @@ async def _infer_missing_product_redirect_path(slug: str) -> str:
 
 def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
                         product: Optional[dict] = None, deep_link: str = "",
-                        keywords: str = "", category: str = "", og_type: str = "website",
+                        category: str = "", og_type: str = "website",
                         schema_title: str = "",
                         language: str = "en", alternate_path: str = "") -> dict:
     """Build template context dict for SSR SEO pages."""
@@ -5003,7 +5184,7 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
     if product:
         product_url = url or _STOREFRONT_DOMAIN
         schema_name = schema_title or title
-        product_schema_id = f"{product_url}#product"
+        catalog_item_schema_id = f"{product_url}#catalog-item"
         product_category = category or product.get("category", "")
         product_subcategory = product.get("subcategory") or ""
         product_images = _product_photo_image_urls(product, absolute=True)
@@ -5013,55 +5194,15 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
         product_videos = _product_video_urls(product, absolute=True, limit=6)
         date_published = _schema_date(product.get("created_at"))
         date_modified = _schema_date(product.get("updated_at") or product.get("created_at"), date_published)
-        product_schema: dict = {
-            "@context": "https://schema.org/",
-            "@type": "Product",
-            "@id": product_schema_id,
+        catalog_item_schema: dict = {
+            "@type": "Thing",
+            "@id": catalog_item_schema_id,
             "name": schema_name,
             "description": desc,
             "url": product_url,
-            "mainEntityOfPage": {"@id": product_url},
-            "sku": str(product.get("id") or product.get("product_id") or ""),
-            "category": product_category,
-            "inLanguage": language,
-            "brand": {
-                "@type": "Brand",
-                "name": "Top Shelf Cali Plug",
-            },
         }
-        if date_published:
-            product_schema["datePublished"] = date_published
-        if date_modified:
-            product_schema["dateModified"] = date_modified
-        additional_properties = []
-        if product_subcategory:
-            additional_properties.append({
-                "@type": "PropertyValue",
-                "name": "Subcategory",
-                "value": product_subcategory,
-            })
-        media_count = len(_collect_media_info(product))
-        if media_count:
-            additional_properties.append({
-                "@type": "PropertyValue",
-                "name": "Media count",
-                "value": str(media_count),
-            })
-        if additional_properties:
-            product_schema["additionalProperty"] = additional_properties
         if product_images:
-            product_schema["image"] = product_images
-        product_schema["primaryImageOfPage"] = {
-            "@type": "ImageObject",
-            "@id": f"{product_url}#primaryimage",
-            "url": primary_image,
-            "contentUrl": primary_image,
-            "caption": schema_name,
-            "representativeOfPage": True,
-        }
-        offer = _schema_offer_for_product(product, product_url)
-        if offer:
-            product_schema["offers"] = offer
+            catalog_item_schema["image"] = product_images
         video_nodes = []
         if product_videos:
             thumbnail_url = _product_video_thumbnail_url(product)
@@ -5075,12 +5216,12 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
                     "contentUrl": video_url,
                     "url": product_url,
                     "isPartOf": {"@id": product_url},
-                    "about": {"@id": product_schema_id},
+                    "about": {"@id": catalog_item_schema_id},
                 }
                 if date_published:
                     video_node["uploadDate"] = date_published
                 video_nodes.append(video_node)
-            product_schema["subjectOf"] = video_nodes
+            catalog_item_schema["subjectOf"] = video_nodes
         breadcrumb_items = [
             {
                 "@type": "ListItem",
@@ -5127,44 +5268,42 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
                 "contentUrl": primary_image,
                 "caption": schema_name,
             },
-            "mainEntity": {"@id": product_schema_id},
+            "mainEntity": {"@id": catalog_item_schema_id},
         }
+        if date_published:
+            webpage_schema["datePublished"] = date_published
+        if date_modified:
+            webpage_schema["dateModified"] = date_modified
         schema = json.dumps({
             "@context": "https://schema.org/",
-            "@graph": [webpage_schema, product_schema, *video_nodes, breadcrumb],
+            "@graph": [webpage_schema, catalog_item_schema, *video_nodes, breadcrumb],
         }, ensure_ascii=False)
     else:
+        website_schema = {
+            "@type": "WebSite",
+            "name": "Top Shelf Cali Plug",
+            "url": _STOREFRONT_DOMAIN,
+            "description": desc,
+            "inLanguage": language,
+        }
+        organization_schema = {
+            "@type": "Organization",
+            "name": "Top Shelf Cali Plug",
+            "description": desc,
+            "url": _STOREFRONT_DOMAIN,
+        }
+        if image:
+            organization_schema["image"] = image
+        if _STOREFRONT_BOT_USERNAME:
+            organization_schema["contactPoint"] = {
+                "@type": "ContactPoint",
+                "contactType": "customer service",
+                "url": f"https://t.me/{_STOREFRONT_BOT_USERNAME}",
+            }
         schema = json.dumps({
             "@context": "https://schema.org",
-            "@graph": [
-                {
-                    "@type": "WebSite",
-                    "name": "Top Shelf Cali Plug",
-                    "url": _STOREFRONT_DOMAIN,
-                    "description": desc,
-                    "inLanguage": language,
-                    "potentialAction": {
-                        "@type": "SearchAction",
-                        "target": f"{_STOREFRONT_DOMAIN}/?search={{search_term_string}}",
-                        "query-input": "required name=search_term_string",
-                    },
-                },
-                {
-                    "@type": "Store",
-                    "name": title,
-                    "description": desc,
-                    "url": _STOREFRONT_DOMAIN,
-                    "inLanguage": language,
-                    "image": image,
-                    "contactPoint": {
-                        "@type": "ContactPoint",
-                        "contactType": "customer service",
-                        "url": f"https://t.me/{_STOREFRONT_BOT_USERNAME}",
-                    },
-                },
-            ],
+            "@graph": [website_schema, organization_schema],
         })
-    default_keywords = "premium catalog, online shop, Telegram store, Top Shelf Cali Plug, buy online, product catalog"
     resolved_image = image or _DEFAULT_OG_IMAGE
     # Include image dimensions only for the default OG image (product images have unknown dimensions)
     is_default_image = not image
@@ -5174,9 +5313,9 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
         "seo_image": resolved_image,
         "seo_image_width": _OG_IMAGE_WIDTH if is_default_image else 1200,
         "seo_image_height": _OG_IMAGE_HEIGHT if is_default_image else 630,
+        "seo_image_type": _DEFAULT_OG_IMAGE_TYPE if is_default_image else "image/png",
         "seo_url": url,
         "seo_schema": schema,
-        "seo_keywords": keywords or default_keywords,
         "og_type": og_type,
         "telegram_deep_link": deep_link or f"https://t.me/{_STOREFRONT_BOT_USERNAME}",
         "seo_lang": language,
@@ -5505,8 +5644,6 @@ async def serve_sitemap_xml(request: Request):
             f"    <loc>{html.escape(_localized_url('/', language))}</loc>\n"
             f"{_sitemap_alternate_xml('/')}"
             f"    <lastmod>{home_lastmod}</lastmod>\n"
-            f"    <changefreq>weekly</changefreq>\n"
-            f"    <priority>1.0</priority>\n"
             f"  </url>"
         )
     for category in get_all_categories():
@@ -5524,8 +5661,6 @@ async def serve_sitemap_xml(request: Request):
                 f"    <loc>{html.escape(_localized_url(category_path, language))}</loc>\n"
                 f"{_sitemap_alternate_xml(category_path)}"
                 f"    <lastmod>{category_lastmod}</lastmod>\n"
-                f"    <changefreq>weekly</changefreq>\n"
-                f"    <priority>0.9</priority>\n"
                 f"  </url>"
             )
         for subcategory in get_subcategories(category):
@@ -5548,8 +5683,6 @@ async def serve_sitemap_xml(request: Request):
                     f"    <loc>{html.escape(_localized_url(subcategory_path, language))}</loc>\n"
                     f"{_sitemap_alternate_xml(subcategory_path)}"
                     f"    <lastmod>{subcategory_lastmod}</lastmod>\n"
-                    f"    <changefreq>weekly</changefreq>\n"
-                    f"    <priority>0.85</priority>\n"
                     f"  </url>"
                 )
     for p in products:
@@ -5591,8 +5724,6 @@ async def serve_sitemap_xml(request: Request):
                 f"    <lastmod>{lastmod}</lastmod>\n"
                 f"{image_xml}"
                 f"{video_xml}"
-                f"    <changefreq>monthly</changefreq>\n"
-                f"    <priority>0.8</priority>\n"
                 f"  </url>"
             )
 
@@ -5804,7 +5935,7 @@ async def _build_storefront_index_context(
                             "@type": "ListItem",
                             "position": idx + 1,
                             "item": {
-                                "@type": "Product",
+                                "@type": "WebPage",
                                 "name": item["title"],
                                 "url": _absolute_storefront_url(item["url"]),
                                 **({"image": _absolute_storefront_url(item["image_url"])} if item.get("image_url") else {}),
@@ -5941,7 +6072,7 @@ async def serve_homepage(request: Request):
                 url=_canonical_product_path(public_product_id, product.get("caption") or ""),
                 status_code=status.HTTP_301_MOVED_PERMANENTLY,
             )
-        return await _missing_product_redirect(product_id, permanent_when_known=True)
+        return await _missing_product_redirect(product_id, request=request)
     _queue_visitor_event(request, source="website", page_type="home")
     return await _serve_storefront_index(request, include_seo_links=True)
 
@@ -6128,16 +6259,16 @@ async def webapp_admin_status(request: Request):
 @app.head("/product/{product_id}", response_class=HTMLResponse)
 async def serve_product_page(product_id: int, request: Request):
     """Redirect short product URLs to their canonical slug URL."""
-    return await _serve_product_short(product_id, "en")
+    return await _serve_product_short(product_id, "en", request)
 
 
-async def _serve_product_short(product_id: int, language: str):
+async def _serve_product_short(product_id: int, language: str, request: Request):
     if hasattr(_catalog_db, "get_product_by_public_or_internal_id"):
         product = await _catalog_db.get_product_by_public_or_internal_id(product_id)
     else:
         product = await _catalog_db.get_product(product_id)
     if not product:
-        return await _missing_product_redirect(product_id, language=language)
+        return await _missing_product_redirect(product_id, language=language, request=request)
     public_id = _product_public_id(product) or product_id
     return RedirectResponse(
         url=_localized_path(_canonical_product_path(public_id, product.get("caption") or ""), language),
@@ -6151,7 +6282,7 @@ async def serve_localized_product_page(language: str, product_id: int, request: 
     language = _require_localized_language(language)
     if language == "en":
         return RedirectResponse(url=f"/product/{product_id}", status_code=301)
-    return await _serve_product_short(product_id, language)
+    return await _serve_product_short(product_id, language, request)
 
 
 @app.get("/product/{product_id}/{slug}", response_class=HTMLResponse)
@@ -6173,7 +6304,7 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
     if not product:
         product = legacy_product
     if not product:
-        return await _missing_product_redirect(product_id, slug=slug, language=language)
+        return await _missing_product_redirect(product_id, slug=slug, language=language, request=request)
 
     caption: str = product.get("caption") or ""
     internal_product_id = int(product.get("id") or product_id)
@@ -6195,7 +6326,7 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
         except Exception:
             redirect_meta = None
         if redirect_meta and _generate_slug(redirect_meta.get("caption") or "") == slug:
-            return await _missing_product_redirect(product_id, slug=slug, language=language)
+            return await _missing_product_redirect(product_id, slug=slug, language=language, request=request)
         return RedirectResponse(
             url=_localized_path(_canonical_product_path(public_product_id, caption), language),
             status_code=301,
@@ -6233,7 +6364,10 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
         seo_terms=seo_side_notes,
         language=language,
     )
-    visible_search_terms = _dedupe_seo_phrases([*product_search_phrases, *seo_side_notes], limit=18)
+    visible_search_terms = _dedupe_seo_phrases(
+        [*product_search_phrases, *seo_side_notes],
+        limit=Config.SEO_SIDE_NOTE_LIMIT,
+    )
     order_context = await _public_order_context(telegram_bot_url=deep_link)
     product_media = [
         {
@@ -6283,15 +6417,6 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
         deep_link=deep_link,
         og_type="product",
         schema_title=product_title,
-        keywords=", ".join(filter(None, [
-            product_title,
-            ", ".join(product_search_phrases),
-            product.get("category", ""),
-            product.get("subcategory", ""),
-            ", ".join(seo_side_notes[:8]),
-            " ".join(caption.split()[:6]),
-            "Top Shelf Cali Plug",
-        ])),
         category=category,
         language=language,
         alternate_path=product_path,
@@ -6395,24 +6520,13 @@ async def _serve_category_page(category_name: str, request: Request, language: s
     page_path = _paginated_path(base_path, current_page)
     category_url = _localized_url(page_path, language)
 
-    # Build keyword list from category + subcategory names
-    subcat_names = ", ".join(subcategories) if subcategories else ""
     seo_terms = await _seo_side_note_terms(matched_category, language=language)
     public_catalog_bot_url = _public_catalog_bot_url()
     order_context = await _public_order_context(telegram_bot_url=public_catalog_bot_url)
-    keywords = ", ".join(filter(None, [
-        display_name,
-        subcat_names,
-        ", ".join(seo_terms),
-        "Top Shelf Cali Plug",
-        "buy online",
-    ]))
-
     ctx = _build_seo_context(
         title=_build_category_seo_title(display_name),
         desc=f"{_seo_ui(language)['catalog_desc']} {total} {_seo_ui(language)['products_available']}. {_seo_ui(language)['order_via']}.",
         url=category_url,
-        keywords=keywords,
         language=language,
         alternate_path=page_path,
     )
@@ -6482,7 +6596,7 @@ async def _serve_category_page(category_name: str, request: Request, language: s
                 "@type": "ListItem",
                 "position": i + 1,
                 "item": {
-                    "@type": "Product",
+                    "@type": "WebPage",
                     "name": p["title"],
                     "url": _absolute_storefront_url(p["url"]),
                     **({"image": _absolute_storefront_url(p["image_url"])} if p.get("image_url") else {}),
@@ -6587,13 +6701,6 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
         title=_build_subcategory_seo_title(category_display, subcategory_display),
         desc=f"{total} {subcategory_display} {category_display}. {_seo_ui(language)['catalog_desc']} {_seo_ui(language)['order_via']}.",
         url=page_url,
-        keywords=", ".join(filter(None, [
-            subcategory_display,
-            category_display,
-            ", ".join(seo_terms),
-            "Top Shelf Cali Plug",
-            "Telegram store",
-        ])),
         language=language,
         alternate_path=page_path,
     )
@@ -6652,7 +6759,7 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
                 "@type": "ListItem",
                 "position": i + 1,
                 "item": {
-                    "@type": "Product",
+                    "@type": "WebPage",
                     "name": p["title"],
                     "url": _absolute_storefront_url(p["url"]),
                     **({"image": _absolute_storefront_url(p["image_url"])} if p.get("image_url") else {}),

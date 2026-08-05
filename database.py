@@ -392,6 +392,21 @@ class Database:
                     language TEXT NOT NULL DEFAULT '',
                     approved INTEGER NOT NULL DEFAULT 1,
                     hits INTEGER NOT NULL DEFAULT 0,
+                    first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    published_at TIMESTAMP,
+                    last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    baseline_captured_at TIMESTAMP,
+                    baseline_impressions INTEGER NOT NULL DEFAULT 0,
+                    baseline_clicks INTEGER NOT NULL DEFAULT 0,
+                    baseline_ctr REAL NOT NULL DEFAULT 0,
+                    baseline_position REAL NOT NULL DEFAULT 0,
+                    last_evaluated_at TIMESTAMP,
+                    evaluation_impressions INTEGER NOT NULL DEFAULT 0,
+                    evaluation_clicks INTEGER NOT NULL DEFAULT 0,
+                    evaluation_ctr REAL NOT NULL DEFAULT 0,
+                    evaluation_position REAL NOT NULL DEFAULT 0,
+                    outcome_status TEXT NOT NULL DEFAULT 'pending',
+                    expires_at TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -444,6 +459,7 @@ class Database:
                     confidence INTEGER NOT NULL DEFAULT 0,
                     approved INTEGER NOT NULL DEFAULT 0,
                     evidence_count INTEGER NOT NULL DEFAULT 1,
+                    observation_count INTEGER NOT NULL DEFAULT 1,
                     notes_json TEXT,
                     last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -570,6 +586,23 @@ class Database:
             """)
 
             await db.execute("""
+                CREATE TABLE IF NOT EXISTS search_console_dimension_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    query TEXT NOT NULL,
+                    normalized_query TEXT NOT NULL,
+                    country TEXT NOT NULL DEFAULT '',
+                    device TEXT NOT NULL DEFAULT '',
+                    clicks INTEGER NOT NULL DEFAULT 0,
+                    impressions INTEGER NOT NULL DEFAULT 0,
+                    ctr REAL NOT NULL DEFAULT 0,
+                    position REAL NOT NULL DEFAULT 0,
+                    source_date TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(normalized_query, country, device, source_date)
+                )
+            """)
+
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS search_console_media_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     query TEXT NOT NULL DEFAULT '',
@@ -669,7 +702,23 @@ class Database:
                 ("broadcast_chats", "last_delivery_error", "TEXT", True),
                 ("search_query_events", "language", "TEXT NOT NULL DEFAULT ''", True),
                 ("seo_query_mappings", "language", "TEXT NOT NULL DEFAULT ''", True),
+                ("seo_query_mappings", "first_seen_at", "TIMESTAMP", True),
+                ("seo_query_mappings", "published_at", "TIMESTAMP", True),
+                ("seo_query_mappings", "last_seen_at", "TIMESTAMP", True),
+                ("seo_query_mappings", "baseline_captured_at", "TIMESTAMP", True),
+                ("seo_query_mappings", "baseline_impressions", "INTEGER NOT NULL DEFAULT 0", True),
+                ("seo_query_mappings", "baseline_clicks", "INTEGER NOT NULL DEFAULT 0", True),
+                ("seo_query_mappings", "baseline_ctr", "REAL NOT NULL DEFAULT 0", True),
+                ("seo_query_mappings", "baseline_position", "REAL NOT NULL DEFAULT 0", True),
+                ("seo_query_mappings", "last_evaluated_at", "TIMESTAMP", True),
+                ("seo_query_mappings", "evaluation_impressions", "INTEGER NOT NULL DEFAULT 0", True),
+                ("seo_query_mappings", "evaluation_clicks", "INTEGER NOT NULL DEFAULT 0", True),
+                ("seo_query_mappings", "evaluation_ctr", "REAL NOT NULL DEFAULT 0", True),
+                ("seo_query_mappings", "evaluation_position", "REAL NOT NULL DEFAULT 0", True),
+                ("seo_query_mappings", "outcome_status", "TEXT NOT NULL DEFAULT 'pending'", True),
+                ("seo_query_mappings", "expires_at", "TIMESTAMP", True),
                 ("external_seo_signals", "language", "TEXT NOT NULL DEFAULT 'en'", True),
+                ("external_seo_signals", "observation_count", "INTEGER NOT NULL DEFAULT 1", True),
                 ("visitor_events", "traffic_class", "TEXT NOT NULL DEFAULT 'human'", True),
                 ("visitor_events", "crawler_name", "TEXT NOT NULL DEFAULT ''", True),
                 ("visitor_events", "is_pageview", "INTEGER NOT NULL DEFAULT 1", True),
@@ -687,6 +736,17 @@ class Database:
                             logger.debug(f"Column '{column}' already exists in {table} table")
                     else:
                         logger.warning(f"Could not add '{column}' column to {table}: {e}")
+
+            await db.execute("""
+                UPDATE seo_query_mappings
+                SET first_seen_at = COALESCE(first_seen_at, created_at, CURRENT_TIMESTAMP),
+                    published_at = CASE
+                        WHEN approved = 1 THEN COALESCE(published_at, created_at, CURRENT_TIMESTAMP)
+                        ELSE published_at
+                    END,
+                    last_seen_at = COALESCE(last_seen_at, updated_at, created_at, CURRENT_TIMESTAMP),
+                    outcome_status = COALESCE(NULLIF(outcome_status, ''), 'pending')
+            """)
 
             try:
                 cursor = await db.execute("""
@@ -809,6 +869,7 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_query_mappings_approved ON seo_query_mappings(approved, normalized_term)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_query_mappings_taxonomy ON seo_query_mappings(category, subcategory)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_query_mappings_language ON seo_query_mappings(language, category, subcategory, approved)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_query_mappings_outcome ON seo_query_mappings(approved, outcome_status, published_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_query_events_language ON search_query_events(language, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_auto_learn_suppression_expires ON seo_auto_learn_suppression(expires_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_console_query_events_date ON search_console_query_events(source_date DESC)")
@@ -818,6 +879,8 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_console_media_events_page ON search_console_media_events(page, search_type, source_date DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_external_seo_signals_approved ON external_seo_signals(approved, confidence DESC, last_seen DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_external_seo_signals_taxonomy ON external_seo_signals(category, subcategory, approved)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_external_seo_signals_observations ON external_seo_signals(provider, approved, observation_count, confidence)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_search_console_dimensions_date ON search_console_dimension_events(source_date DESC, country, device)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_indexnow_submissions_status ON indexnow_submissions(status, updated_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_indexnow_submissions_submitted ON indexnow_submissions(submitted_at DESC)")
 
@@ -4469,9 +4532,14 @@ class Database:
             await db.executemany(
                 """
                 INSERT INTO seo_query_mappings (
-                    term, normalized_term, category, subcategory, source, language, approved, updated_at
+                    term, normalized_term, category, subcategory, source, language, approved,
+                    first_seen_at, published_at, last_seen_at, outcome_status, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP,
+                    CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE NULL END,
+                    CURRENT_TIMESTAMP, 'pending', CURRENT_TIMESTAMP
+                )
                 ON CONFLICT(normalized_term) DO UPDATE SET
                     term = excluded.term,
                     category = excluded.category,
@@ -4482,6 +4550,21 @@ class Database:
                         ELSE seo_query_mappings.language
                     END,
                     approved = excluded.approved,
+                    published_at = CASE
+                        WHEN seo_query_mappings.approved = 0 AND excluded.approved = 1
+                            THEN CURRENT_TIMESTAMP
+                        ELSE COALESCE(seo_query_mappings.published_at, excluded.published_at)
+                    END,
+                    last_seen_at = CURRENT_TIMESTAMP,
+                    outcome_status = CASE
+                        WHEN seo_query_mappings.approved = 0 AND excluded.approved = 1
+                            THEN 'pending'
+                        ELSE seo_query_mappings.outcome_status
+                    END,
+                    expires_at = CASE
+                        WHEN excluded.approved = 1 THEN NULL
+                        ELSE seo_query_mappings.expires_at
+                    END,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE seo_query_mappings.term IS NOT excluded.term
                    OR seo_query_mappings.category IS NOT excluded.category
@@ -4490,10 +4573,58 @@ class Database:
                    OR (excluded.language != '' AND seo_query_mappings.language IS NOT excluded.language)
                    OR seo_query_mappings.approved IS NOT excluded.approved
                 """,
-                rows,
+                [(*row, row[-1]) for row in rows],
+            )
+            mapping_changes = db.total_changes - changes_before
+            normalized_terms = [row[1] for row in rows]
+            placeholders = ",".join("?" * len(normalized_terms))
+            await db.execute(
+                f"""
+                UPDATE seo_query_mappings
+                SET last_seen_at = CURRENT_TIMESTAMP
+                WHERE normalized_term IN ({placeholders})
+                """,
+                tuple(normalized_terms),
+            )
+            await db.execute(
+                f"""
+                UPDATE seo_query_mappings
+                SET baseline_impressions = COALESCE((
+                        SELECT SUM(e.impressions)
+                        FROM search_console_query_events e
+                        WHERE e.normalized_query = seo_query_mappings.normalized_term
+                          AND e.source_date >= date('now', '-28 day')
+                    ), 0),
+                    baseline_clicks = COALESCE((
+                        SELECT SUM(e.clicks)
+                        FROM search_console_query_events e
+                        WHERE e.normalized_query = seo_query_mappings.normalized_term
+                          AND e.source_date >= date('now', '-28 day')
+                    ), 0),
+                    baseline_ctr = COALESCE((
+                        SELECT CASE WHEN SUM(e.impressions) > 0
+                            THEN CAST(SUM(e.clicks) AS REAL) / SUM(e.impressions)
+                            ELSE 0 END
+                        FROM search_console_query_events e
+                        WHERE e.normalized_query = seo_query_mappings.normalized_term
+                          AND e.source_date >= date('now', '-28 day')
+                    ), 0),
+                    baseline_position = COALESCE((
+                        SELECT CASE WHEN SUM(e.impressions) > 0
+                            THEN SUM(e.position * e.impressions) / SUM(e.impressions)
+                            ELSE AVG(e.position) END
+                        FROM search_console_query_events e
+                        WHERE e.normalized_query = seo_query_mappings.normalized_term
+                          AND e.source_date >= date('now', '-28 day')
+                    ), 0),
+                    baseline_captured_at = CURRENT_TIMESTAMP
+                WHERE normalized_term IN ({placeholders})
+                  AND baseline_captured_at IS NULL
+                """,
+                tuple(normalized_terms),
             )
             await db.commit()
-            return db.total_changes - changes_before
+            return mapping_changes
 
     async def increment_seo_mapping_hits(self, terms: List[str]) -> int:
         """Increment usage counters for approved SEO mappings matched by search."""
@@ -4515,7 +4646,8 @@ class Database:
             await db.executemany(
                 """
                 UPDATE seo_query_mappings
-                SET hits = COALESCE(hits, 0) + 1
+                SET hits = COALESCE(hits, 0) + 1,
+                    last_seen_at = CURRENT_TIMESTAMP
                 WHERE approved = 1 AND normalized_term = ?
                 """,
                 normalized_terms,
@@ -4627,6 +4759,98 @@ class Database:
             await db.commit()
         return len(retired_ids)
 
+    async def evaluate_seo_mapping_outcomes(self, *, limit: int = 500) -> Dict[str, int]:
+        """Evaluate mature automatic mappings and retire only long-term non-performers."""
+        limit = max(1, min(int(limit or 500), 5000))
+        stats = {"evaluated": 0, "winners": 0, "monitoring": 0, "retired": 0}
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT
+                    m.id, m.normalized_term, m.hits, m.published_at,
+                    m.baseline_impressions, m.baseline_clicks,
+                    m.baseline_ctr, m.baseline_position,
+                    CAST(julianday('now') - julianday(COALESCE(m.published_at, m.created_at)) AS INTEGER) AS age_days,
+                    COALESCE(SUM(e.impressions), 0) AS impressions,
+                    COALESCE(SUM(e.clicks), 0) AS clicks,
+                    CASE WHEN COALESCE(SUM(e.impressions), 0) > 0
+                        THEN CAST(SUM(e.clicks) AS REAL) / SUM(e.impressions)
+                        ELSE 0 END AS ctr,
+                    CASE WHEN COALESCE(SUM(e.impressions), 0) > 0
+                        THEN SUM(e.position * e.impressions) / SUM(e.impressions)
+                        ELSE COALESCE(AVG(e.position), 0) END AS position
+                FROM seo_query_mappings m
+                LEFT JOIN search_console_query_events e
+                  ON e.normalized_query = m.normalized_term
+                 AND e.source_date >= date('now', '-28 day')
+                WHERE m.approved = 1
+                  AND m.source IN ('auto_learn', 'external_signal')
+                  AND datetime(COALESCE(m.published_at, m.created_at)) <= datetime('now', '-28 day')
+                GROUP BY m.id
+                ORDER BY COALESCE(m.last_evaluated_at, m.published_at, m.created_at) ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ) as cursor:
+                rows = [dict(row) for row in await cursor.fetchall()]
+
+            for row in rows:
+                stats["evaluated"] += 1
+                baseline_impressions = int(row.get("baseline_impressions") or 0)
+                baseline_clicks = int(row.get("baseline_clicks") or 0)
+                baseline_ctr = float(row.get("baseline_ctr") or 0)
+                baseline_position = float(row.get("baseline_position") or 0)
+                impressions = int(row.get("impressions") or 0)
+                clicks = int(row.get("clicks") or 0)
+                ctr = float(row.get("ctr") or 0)
+                position = float(row.get("position") or 0)
+                age_days = int(row.get("age_days") or 0)
+                improved = (
+                    clicks > baseline_clicks
+                    or impressions >= max(3, int(baseline_impressions * 1.15))
+                    or (impressions >= 3 and ctr >= baseline_ctr + 0.02)
+                    or (
+                        impressions >= 3
+                        and baseline_position > 0
+                        and position > 0
+                        and position <= baseline_position - 2.0
+                    )
+                )
+                retire = age_days >= 90 and not improved and impressions == 0 and int(row.get("hits") or 0) == 0
+                if retire:
+                    outcome_status = "retired_no_evidence"
+                    stats["retired"] += 1
+                elif improved:
+                    outcome_status = "winner"
+                    stats["winners"] += 1
+                else:
+                    outcome_status = "monitoring"
+                    stats["monitoring"] += 1
+
+                await db.execute(
+                    """
+                    UPDATE seo_query_mappings
+                    SET approved = CASE WHEN ? THEN 0 ELSE approved END,
+                        outcome_status = ?,
+                        evaluation_impressions = ?,
+                        evaluation_clicks = ?,
+                        evaluation_ctr = ?,
+                        evaluation_position = ?,
+                        last_evaluated_at = CURRENT_TIMESTAMP,
+                        expires_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE expires_at END,
+                        updated_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE updated_at END
+                    WHERE id = ?
+                    """,
+                    (
+                        int(retire), outcome_status, impressions, clicks, ctr, position,
+                        int(retire), int(retire), row["id"],
+                    ),
+                )
+            if rows:
+                await db.commit()
+        return stats
+
     async def upsert_search_console_query_events(
         self,
         rows: List[Dict[str, Any]],
@@ -4690,6 +4914,65 @@ class Database:
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(normalized_query, page, country, device, source_date) DO UPDATE SET
+                        query = excluded.query,
+                        clicks = excluded.clicks,
+                        impressions = excluded.impressions,
+                        ctr = excluded.ctr,
+                        position = excluded.position,
+                        created_at = CURRENT_TIMESTAMP
+                    """,
+                    normalized_rows,
+                )
+            await db.commit()
+        return len(normalized_rows)
+
+    async def replace_search_console_dimension_events(
+        self,
+        rows: List[Dict[str, Any]],
+        *,
+        replace_since: Optional[str] = None,
+    ) -> int:
+        """Replace country/device Search Console aggregates without double-counting page evidence."""
+        from utils.seo_terms import normalize_term
+
+        normalized_rows = []
+        seen = set()
+        for row in rows or []:
+            query = str(row.get("query") or "").strip()
+            normalized_query = normalize_term(query)
+            source_date = str(row.get("date") or row.get("source_date") or "").strip()
+            if not normalized_query or not source_date:
+                continue
+            country = str(row.get("country") or "")[:20]
+            device = str(row.get("device") or "")[:40]
+            key = (normalized_query, country, device, source_date)
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized_rows.append((
+                query[:300], normalized_query[:300], country, device,
+                max(0, int(row.get("clicks") or 0)),
+                max(0, int(row.get("impressions") or 0)),
+                float(row.get("ctr") or 0),
+                float(row.get("position") or 0),
+                source_date[:20],
+            ))
+        if not normalized_rows and not replace_since:
+            return 0
+        async with self.get_connection() as db:
+            if replace_since:
+                await db.execute(
+                    "DELETE FROM search_console_dimension_events WHERE source_date >= ?",
+                    (str(replace_since)[:20],),
+                )
+            if normalized_rows:
+                await db.executemany(
+                    """
+                    INSERT INTO search_console_dimension_events (
+                        query, normalized_query, country, device,
+                        clicks, impressions, ctr, position, source_date
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(normalized_query, country, device, source_date) DO UPDATE SET
                         query = excluded.query,
                         clicks = excluded.clicks,
                         impressions = excluded.impressions,
@@ -4811,8 +5094,9 @@ class Database:
                 category,
                 subcategory,
                 max(0, min(100, int(signal.get("confidence") or 0))),
-                int(bool(signal.get("approved", approved))),
+                0 if row_provider == "google_trends" else int(bool(signal.get("approved", approved))),
                 max(1, int(signal.get("evidence_count") or 1)),
+                max(1, int(signal.get("observation_count") or 1)),
                 notes_json[:2000],
             ))
 
@@ -4824,9 +5108,10 @@ class Database:
                 """
                 INSERT INTO external_seo_signals (
                     term, normalized_term, term_type, provider, source,
-                    language, category, subcategory, confidence, approved, evidence_count, notes_json
+                    language, category, subcategory, confidence, approved, evidence_count,
+                    observation_count, notes_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(provider, normalized_term, category, subcategory) DO UPDATE SET
                     term = excluded.term,
                     term_type = excluded.term_type,
@@ -4834,10 +5119,16 @@ class Database:
                     language = excluded.language,
                     confidence = max(external_seo_signals.confidence, excluded.confidence),
                     approved = CASE
-                        WHEN external_seo_signals.approved = 1 OR excluded.approved = 1 THEN 1
+                        WHEN external_seo_signals.approved = 1 THEN 1
+                        WHEN excluded.approved = 1 AND excluded.provider != 'google_trends' THEN 1
                         ELSE 0
                     END,
                     evidence_count = max(external_seo_signals.evidence_count, excluded.evidence_count),
+                    observation_count = CASE
+                        WHEN date(external_seo_signals.last_seen) < date('now')
+                            THEN external_seo_signals.observation_count + 1
+                        ELSE external_seo_signals.observation_count
+                    END,
                     notes_json = excluded.notes_json,
                     last_seen = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
@@ -5016,7 +5307,10 @@ class Database:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
-                SELECT term, category, subcategory, source, language, hits, updated_at
+                SELECT term, category, subcategory, source, language, hits,
+                       outcome_status, published_at, last_evaluated_at,
+                       baseline_impressions, evaluation_impressions,
+                       baseline_clicks, evaluation_clicks, updated_at
                 FROM seo_query_mappings
                 WHERE approved = 1
                 ORDER BY updated_at DESC, id DESC
@@ -5049,6 +5343,21 @@ class Database:
                 FROM seo_query_mappings
                 WHERE approved = 1
                   AND TRIM(COALESCE(category, '')) <> ''
+                  AND (
+                      source NOT IN ('auto_learn', 'external_signal')
+                      OR COALESCE(hits, 0) > 0
+                      OR outcome_status = 'winner'
+                      OR EXISTS (
+                          SELECT 1
+                          FROM external_seo_signals signal
+                          WHERE signal.approved = 1
+                            AND signal.normalized_term = seo_query_mappings.normalized_term
+                            AND (
+                                signal.evidence_count >= 3
+                                OR signal.observation_count >= 2
+                            )
+                      )
+                  )
                 GROUP BY
                     TRIM(COALESCE(category, '')),
                     TRIM(COALESCE(subcategory, ''))
@@ -5203,12 +5512,16 @@ class Database:
                 "seo_auto_learn_last_skipped",
                 "seo_auto_learn_last_suppressed",
                 "seo_auto_learn_last_retired_noise",
+                "seo_auto_learn_last_evaluated",
+                "seo_auto_learn_last_winners",
+                "seo_auto_learn_last_monitoring",
                 "seo_auto_learn_last_error",
                 "seo_trends_last_run_at",
                 "seo_trends_last_status",
                 "seo_trends_last_rows",
                 "seo_trends_last_candidates",
                 "seo_trends_last_imported",
+                "seo_trends_last_matured",
                 "seo_trends_last_promoted",
                 "seo_trends_last_duration_ms",
                 "seo_trends_last_error",
@@ -5220,6 +5533,7 @@ class Database:
                 "search_console_import_last_property",
                 "search_console_import_last_requests",
                 "search_console_import_last_media_rows",
+                "search_console_import_last_dimension_rows",
                 "search_console_import_last_aggregates",
                 "search_console_import_last_page_mismatches",
                 "search_console_import_last_error",
@@ -5255,6 +5569,15 @@ class Database:
                 "mappings_updated_7d": await scalar(
                     "SELECT COUNT(*) FROM seo_query_mappings WHERE approved = 1 AND updated_at >= datetime('now', '-7 days')"
                 ),
+                "mapping_outcomes": await rows(
+                    """
+                    SELECT COALESCE(NULLIF(outcome_status, ''), 'pending') AS status,
+                           COUNT(*) AS count
+                    FROM seo_query_mappings
+                    GROUP BY COALESCE(NULLIF(outcome_status, ''), 'pending')
+                    ORDER BY count DESC, status ASC
+                    """
+                ),
                 "search_console_window_days": search_console_days,
                 "search_console_queries_window": await scalar(
                     "SELECT COUNT(DISTINCT normalized_query) FROM search_console_query_events WHERE source_date >= ?",
@@ -5273,6 +5596,10 @@ class Database:
                     (search_console_since,),
                 ),
                 "search_console_total_rows": await scalar("SELECT COUNT(*) FROM search_console_query_events"),
+                "search_console_dimension_rows_window": await scalar(
+                    "SELECT COUNT(*) FROM search_console_dimension_events WHERE source_date >= ?",
+                    (search_console_since,),
+                ),
                 "search_console_media_rows_window": await scalar(
                     "SELECT COUNT(*) FROM search_console_media_events WHERE source_date >= ?",
                     (search_console_since,),
@@ -5413,6 +5740,51 @@ class Database:
                     LIMIT ?
                     """,
                     (search_console_since, limit),
+                ),
+                "search_console_page_scorecard": await rows(
+                    """
+                    SELECT
+                        page,
+                        SUM(clicks) AS clicks,
+                        SUM(impressions) AS impressions,
+                        ROUND(CASE WHEN SUM(impressions) > 0
+                            THEN 100.0 * SUM(clicks) / SUM(impressions) ELSE 0 END, 2) AS ctr_percent,
+                        ROUND(CASE WHEN SUM(impressions) > 0
+                            THEN SUM(position * impressions) / SUM(impressions)
+                            ELSE AVG(position) END, 1) AS avg_position,
+                        MAX(source_date) AS last_seen
+                    FROM search_console_query_events
+                    WHERE source_date >= ? AND page <> ''
+                    GROUP BY page
+                    ORDER BY impressions DESC, clicks DESC
+                    LIMIT ?
+                    """,
+                    (search_console_since, limit),
+                ),
+                "search_console_countries": await rows(
+                    """
+                    SELECT country, SUM(clicks) AS clicks, SUM(impressions) AS impressions,
+                           ROUND(CASE WHEN SUM(impressions) > 0
+                               THEN 100.0 * SUM(clicks) / SUM(impressions) ELSE 0 END, 2) AS ctr_percent
+                    FROM search_console_dimension_events
+                    WHERE source_date >= ? AND country <> ''
+                    GROUP BY country
+                    ORDER BY impressions DESC, clicks DESC
+                    LIMIT 20
+                    """,
+                    (search_console_since,),
+                ),
+                "search_console_devices": await rows(
+                    """
+                    SELECT device, SUM(clicks) AS clicks, SUM(impressions) AS impressions,
+                           ROUND(CASE WHEN SUM(impressions) > 0
+                               THEN 100.0 * SUM(clicks) / SUM(impressions) ELSE 0 END, 2) AS ctr_percent
+                    FROM search_console_dimension_events
+                    WHERE source_date >= ? AND device <> ''
+                    GROUP BY device
+                    ORDER BY impressions DESC, clicks DESC
+                    """,
+                    (search_console_since,),
                 ),
                 "search_console_opportunities": await rows(
                     """
@@ -5875,6 +6247,34 @@ class Database:
             await db.commit()
         return len(rows)
 
+    async def approve_mature_external_seo_signals(
+        self,
+        *,
+        provider: str,
+        min_observations: int = 2,
+        min_confidence: int = 86,
+    ) -> int:
+        """Approve external signals only after repeated observations and strong relevance."""
+        provider = str(provider or "").strip()[:80]
+        if not provider:
+            return 0
+        async with self.get_connection() as db:
+            changes_before = db.total_changes
+            await db.execute(
+                """
+                UPDATE external_seo_signals
+                SET approved = 1, updated_at = CURRENT_TIMESTAMP
+                WHERE provider = ?
+                  AND approved = 0
+                  AND observation_count >= ?
+                  AND confidence >= ?
+                  AND category != ''
+                """,
+                (provider, max(2, int(min_observations)), max(1, min(100, int(min_confidence)))),
+            )
+            await db.commit()
+            return db.total_changes - changes_before
+
     async def get_search_console_sitemap_snapshot(self) -> Dict[str, Any]:
         """Return the latest Google Search Console sitemap submission status."""
         keys = [
@@ -5886,6 +6286,7 @@ class Database:
             "search_console_sitemap_last_url",
             "search_console_sitemap_last_site_url",
             "search_console_sitemap_last_auth_source",
+            "search_console_sitemap_last_fingerprint",
         ]
         placeholders = ",".join("?" * len(keys))
         async with self.get_connection() as db:
@@ -5905,6 +6306,7 @@ class Database:
             "sitemap_url": values.get("search_console_sitemap_last_url") or "",
             "site_url": values.get("search_console_sitemap_last_site_url") or "",
             "auth_source": values.get("search_console_sitemap_last_auth_source") or "",
+            "fingerprint": values.get("search_console_sitemap_last_fingerprint") or "",
         }
 
     async def enqueue_indexnow_urls(

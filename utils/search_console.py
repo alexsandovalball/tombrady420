@@ -354,7 +354,7 @@ def _fetch_search_console_data_sync(
         import requests
     except ImportError as exc:  # pragma: no cover - depends on Render install state
         logger.warning("[search_console] dependency_missing error=%s", exc)
-        return {"status": "dependency_error", "rows": [], "media_rows": [], "error": str(exc)}
+        return {"status": "dependency_error", "rows": [], "dimension_rows": [], "media_rows": [], "error": str(exc)}
 
     credentials, auth_source = _load_search_console_credentials(
         service_account_json=service_account_json,
@@ -369,6 +369,7 @@ def _fetch_search_console_data_sync(
         return {
             "status": "auth_error",
             "rows": [],
+            "dimension_rows": [],
             "media_rows": [],
             "auth_source": auth_source,
             "error": "credentials unavailable or refresh failed",
@@ -376,7 +377,7 @@ def _fetch_search_console_data_sync(
 
     end_date = (datetime.utcnow().date() - timedelta(days=1))
     start_date = end_date - timedelta(days=max(0, lookback_days - 1))
-    total_limit = max(10, min(10000, int(row_limit or 2500)))
+    total_limit = max(10, min(25000, int(row_limit or 5000)))
     last_error = ""
     last_http_status = None
     successful_empty_property = ""
@@ -429,6 +430,7 @@ def _fetch_search_console_data_sync(
         return {
             "status": "api_error",
             "rows": [],
+            "dimension_rows": [],
             "media_rows": [],
             "auth_source": auth_source,
             "property_url": "",
@@ -440,11 +442,29 @@ def _fetch_search_console_data_sync(
     for row in selected_rows:
         row["property_url"] = selected_property
 
+    dimension_rows: list[dict[str, Any]] = []
     media_rows: list[dict[str, Any]] = []
     encoded_site = urllib.parse.quote(selected_property, safe="")
     endpoint = f"https://searchconsole.googleapis.com/webmasters/v3/sites/{encoded_site}/searchAnalytics/query"
     media_limit = min(500, total_limit)
     media_errors: list[str] = []
+    dimension_result = _query_search_analytics(
+        requests,
+        endpoint=endpoint,
+        token=credentials.token,
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+        dimensions=["date", "query", "country", "device"],
+        row_limit=min(5000, total_limit),
+        search_type="web",
+    )
+    total_requests += int(dimension_result.get("requests") or 0)
+    if dimension_result.get("error"):
+        media_errors.append(f"dimensions: {dimension_result.get('error')}")
+    else:
+        dimension_rows = list(dimension_result.get("rows") or [])
+        for row in dimension_rows:
+            row["property_url"] = selected_property
     for search_type in ("image", "video"):
         result = _query_search_analytics(
             requests,
@@ -467,6 +487,7 @@ def _fetch_search_console_data_sync(
     return {
         "status": "ok" if selected_rows else "ok_empty",
         "rows": selected_rows,
+        "dimension_rows": dimension_rows,
         "media_rows": media_rows,
         "auth_source": auth_source,
         "property_url": selected_property,
@@ -501,7 +522,7 @@ async def fetch_search_console_data(
         oauth_token_json=oauth_token_json,
         oauth_token_file=oauth_token_file,
     ):
-        return {"status": "not_configured", "rows": [], "media_rows": [], "error": "not configured"}
+        return {"status": "not_configured", "rows": [], "dimension_rows": [], "media_rows": [], "error": "not configured"}
 
     return await asyncio.to_thread(
         _fetch_search_console_data_sync,

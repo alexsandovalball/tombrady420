@@ -46,7 +46,7 @@ class ConfigClass:
         self.SEO_AUTO_LEARN_MAX_MATCHED_COUNT: int = 5
         self.SEO_AUTO_LEARN_SUPPRESSION_HOURS: int = 72
         self.SEO_EXTERNAL_SIGNAL_SCORE: int = 86
-        self.SEO_SIDE_NOTE_LIMIT: int = 10
+        self.SEO_SIDE_NOTE_LIMIT: int = 6
         self.SEO_TRENDS_ENABLED: bool = True
         self.SEO_TRENDS_INTERVAL_SECONDS: int = 21600
         self.SEO_TRENDS_LIMIT_PER_GEO: int = 10
@@ -60,7 +60,7 @@ class ConfigClass:
         self.SEARCH_CONSOLE_OAUTH_TOKEN_JSON: Optional[str] = None
         self.SEARCH_CONSOLE_OAUTH_TOKEN_FILE: Optional[str] = None
         self.SEARCH_CONSOLE_LOOKBACK_DAYS: int = 30
-        self.SEARCH_CONSOLE_ROW_LIMIT: int = 2500
+        self.SEARCH_CONSOLE_ROW_LIMIT: int = 5000
         self.SEARCH_CONSOLE_SITEMAP_SUBMIT_ENABLED: bool = False
         self.SEARCH_CONSOLE_SITEMAP_URL: Optional[str] = None
         self.SEARCH_CONSOLE_SITEMAP_INTERVAL_SECONDS: int = 21600
@@ -207,7 +207,7 @@ class ConfigClass:
         )
         self.SEO_SIDE_NOTE_LIMIT = max(
             3,
-            min(25, config('SEO_SIDE_NOTE_LIMIT', default=10, cast=int)),
+            min(12, config('SEO_SIDE_NOTE_LIMIT', default=6, cast=int)),
         )
         self.SEO_TRENDS_ENABLED = config('SEO_TRENDS_ENABLED', default=True, cast=bool)
         self.SEO_TRENDS_INTERVAL_SECONDS = max(
@@ -263,7 +263,7 @@ class ConfigClass:
         )
         self.SEARCH_CONSOLE_ROW_LIMIT = max(
             10,
-            min(10000, config('SEARCH_CONSOLE_ROW_LIMIT', default=2500, cast=int)),
+            min(25000, config('SEARCH_CONSOLE_ROW_LIMIT', default=5000, cast=int)),
         )
         self.EXTERNAL_SEO_SIGNALS_FILE = config('EXTERNAL_SEO_SIGNALS_FILE', default=None)
         

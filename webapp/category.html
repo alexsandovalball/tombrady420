@@ -12,7 +12,6 @@
     <meta name="robots" content="index, follow">
     <meta name="googlebot" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
     <meta name="author" content="Top Shelf Cali Plug">
-    <meta name="keywords" content="{{ seo_keywords }}">
     <meta name="theme-color" content="#2481cc">
 
     <!-- Open Graph -->
@@ -23,7 +22,7 @@
     <meta property="og:image:alt" content="{{ seo_title }}">
     {% if seo_image_width %}<meta property="og:image:width" content="{{ seo_image_width }}">{% endif %}
     {% if seo_image_height %}<meta property="og:image:height" content="{{ seo_image_height }}">{% endif %}
-    {% if seo_image_width %}<meta property="og:image:type" content="image/png">{% endif %}
+    {% if seo_image_type %}<meta property="og:image:type" content="{{ seo_image_type }}">{% endif %}
     <meta property="og:url" content="{{ seo_url }}">
     <meta property="og:site_name" content="Top Shelf Cali Plug">
     <meta property="og:locale" content="{{ seo_locale or 'en_US' }}">
@@ -39,12 +38,12 @@
     <script type="application/ld+json">{{ seo_schema | safe }}</script>
 
     <!-- Browser icons -->
-    <link rel="icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260723-football-emoji-v5">
-    <link rel="shortcut icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260723-football-emoji-v5">
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260723-football-emoji-v5">
+    <link rel="icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260805-football-emoji-svg-v1">
+    <link rel="shortcut icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260805-football-emoji-svg-v1">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260805-football-emoji-svg-v1">
     
     <!-- PWA Manifest -->
-    <link rel="manifest" href="/assets/manifest.json?v=20260723-football-emoji-v5">
+    <link rel="manifest" href="/assets/manifest.json?v=20260805-football-emoji-svg-v1">
 
     <script src="/assets/telegram-miniapp-bridge.js?v=20260717-botfather-bridge-v1"></script>
     <script>
@@ -52,7 +51,7 @@
             if (!image || image.dataset.previewRetried === '1') {
                 if (image) {
                     image.onerror = null;
-                    image.src = '/assets/site-icon.svg?v=20260723-football-emoji-v5';
+                    image.src = '/assets/site-icon.svg?v=20260805-football-emoji-svg-v1';
                 }
                 return;
             }
@@ -232,7 +231,7 @@
         <section class="cat-search-footer" aria-label="Related search terms">
             <h2>{{ ui.related_searches }}</h2>
             <ul class="term-list">
-                {% for term in seo_terms[:10] %}
+                {% for term in seo_terms[:6] %}
                 <li>{{ term }}</li>
                 {% endfor %}
             </ul>
