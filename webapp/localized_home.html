@@ -16,11 +16,11 @@
     <meta property="og:url" content="{{ seo_url }}">
     <meta property="og:locale" content="{{ seo_locale or 'en_US' }}">
     <script type="application/ld+json">{{ seo_schema | safe }}</script>
-    <link rel="icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260805-football-emoji-svg-v1">
-    <link rel="shortcut icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260805-football-emoji-svg-v1">
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260805-football-emoji-svg-v1">
-    <link rel="manifest" href="/assets/manifest.json?v=20260805-football-emoji-svg-v1">
-    <link rel="stylesheet" href="/assets/style.css?v=20260717-ios-dark-text-v1">
+    <link rel="icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2">
+    <link rel="shortcut icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260805-football-emoji-canonical-v2">
+    <link rel="manifest" href="/assets/manifest.json?v=20260805-football-emoji-canonical-v2">
+    <link rel="stylesheet" href="/assets/style.css?v=20260805-admin-monitor-v2">
     <link rel="preconnect" href="https://telegram.org" crossorigin>
     <link rel="dns-prefetch" href="https://telegram.org">
     <script src="/assets/telegram-miniapp-bridge.js?v=20260717-botfather-bridge-v1"></script>
@@ -128,9 +128,9 @@
                     {% if item.media_type == 'video' and item.media_url %}
                     <video class="seo-card-video" muted playsinline preload="metadata" src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
                     {% elif item.media_url %}
-                    <img src="{{ item.media_url }}" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260805-football-emoji-svg-v1';">
+                    <img src="{{ item.media_url }}" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2';">
                     {% else %}
-                    <img src="/assets/site-icon.svg?v=20260805-football-emoji-svg-v1" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async">
+                    <img src="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async">
                     {% endif %}
                     <span>{{ item.title }}</span>
                     {% if item.stock_status == 'out_of_stock' %}<span class="stock-badge">Sold out</span>{% endif %}
@@ -196,7 +196,7 @@
                     image.loading = 'lazy';
                     image.decoding = 'async';
                     image.addEventListener('error', function () {
-                        image.src = '/assets/site-icon.svg?v=20260805-football-emoji-svg-v1';
+                        image.src = '/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2';
                     }, { once: true });
                     return image;
                 }

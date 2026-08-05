@@ -3873,7 +3873,7 @@ else:
 # Default Open Graph image with the same standalone football emoji used by the home page.
 # Must be an absolute HTTPS URL — data: URIs are rejected by all social media crawlers
 # (WhatsApp, iMessage, Twitter/X, Facebook, Discord, Slack, Telegram, etc.).
-_SITE_ICON_VERSION = "20260805-football-emoji-svg-v1"
+_SITE_ICON_VERSION = "20260805-football-emoji-canonical-v2"
 _DEFAULT_SITE_ICON_PATH = f"/assets/site-icon.svg?v={_SITE_ICON_VERSION}"
 _DEFAULT_OG_IMAGE_PATH = f"/og-image.png?v={_SITE_ICON_VERSION}"
 _DEFAULT_OG_IMAGE = (
@@ -5471,10 +5471,19 @@ def _log_seo_public_request(request: Request, route: str, **fields: Any) -> None
 
 
 def _read_brand_icon_png() -> bytes:
-    # Raster counterpart of site-icon.svg for consumers that reject SVG images.
+    # Square raster captured from site-icon.svg for consumers that reject SVG.
     image_path = Path(__file__).parent / "webapp" / "assets" / "site-icon-emoji.png"
     if not image_path.exists():
         raise HTTPException(status_code=404, detail="Brand image not found")
+    return image_path.read_bytes()
+
+
+def _read_social_icon_png() -> bytes:
+    # Social-card raster captured from the same canonical SVG. Its 600x315
+    # canvas prevents link-preview crawlers from cropping the football.
+    image_path = Path(__file__).parent / "webapp" / "assets" / "site-icon-social.png"
+    if not image_path.exists():
+        raise HTTPException(status_code=404, detail="Social image not found")
     return image_path.read_bytes()
 
 
@@ -5534,7 +5543,7 @@ async def serve_og_image(request: Request):
     return _seo_store_and_respond(
         request,
         cache_key,
-        _read_brand_icon_png(),
+        _read_social_icon_png(),
         media_type="image/png",
         max_age=86400,
         extra_headers={"Content-Type": "image/png"},
@@ -6223,7 +6232,7 @@ async def webapp_admin_status(request: Request):
         payload["cache_age_seconds"] = round(now - cached[0], 1)
         return _json_no_store(payload)
 
-    db_snapshot = await _catalog_db.get_admin_dashboard_snapshot(recent_limit=10)
+    db_snapshot = await _catalog_db.get_admin_dashboard_snapshot(recent_limit=25)
     seo_snapshot = await _catalog_db.get_search_intelligence_snapshot(limit=150)
     seo_snapshot["search_console_setup"] = describe_search_console_setup(
         enabled=Config.SEARCH_CONSOLE_ENABLED,

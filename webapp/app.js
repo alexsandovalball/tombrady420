@@ -22,7 +22,7 @@
         ERROR_DISPLAY_MS: 4000,  // Duration to show error messages on buttons
         INITIAL_DATA_TIMEOUT_MS: 10000,  // Timeout for initial data load to prevent infinite loading
         MAX_VIDEO_PREVIEW_CACHE_SIZE: 24,  // Captured video preview frames kept in memory
-        SITE_ICON_URL: '/assets/site-icon.svg?v=20260805-football-emoji-svg-v1',
+        SITE_ICON_URL: '/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2',
         MAX_CACHE_SIZE: 20  // Maximum number of cached API responses to prevent memory leaks
     };
 
@@ -1528,6 +1528,35 @@
         return `${Math.round(number)}ms`;
     }
 
+    function formatAdminBytes(value) {
+        const bytes = Number(value || 0);
+        if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+        const scaled = bytes / Math.pow(1024, index);
+        return `${scaled >= 10 || index === 0 ? Math.round(scaled) : scaled.toFixed(1)} ${units[index]}`;
+    }
+
+    function formatAdminDuration(value) {
+        let seconds = Math.max(0, Math.round(Number(value || 0)));
+        if (!Number.isFinite(seconds)) return '0s';
+        const days = Math.floor(seconds / 86400);
+        seconds %= 86400;
+        const hours = Math.floor(seconds / 3600);
+        seconds %= 3600;
+        const minutes = Math.floor(seconds / 60);
+        if (days) return `${days}d ${hours}h`;
+        if (hours) return `${hours}h ${minutes}m`;
+        if (minutes) return `${minutes}m ${seconds % 60}s`;
+        return `${seconds}s`;
+    }
+
+    function formatAdminPercent(value, digits = 1) {
+        const number = Number(value || 0);
+        if (!Number.isFinite(number)) return '0%';
+        return `${number.toFixed(digits)}%`;
+    }
+
     function formatAdminPagePath(page) {
         const value = String(page || '').trim();
         if (!value) return '/';
@@ -1669,6 +1698,14 @@
         const searchConsoleSetup = seo.search_console_setup || {};
         const seoRuntime = seo.runtime_status || {};
         const metrics = data.metrics?.endpoints || {};
+        const process = data.process || {};
+        const mediaRuntime = data.media_runtime || {};
+        const cacheState = data.cache_state || {};
+        const resourceUsage = data.resource_usage || {};
+        const tmpUsage = resourceUsage.tmp || {};
+        const diskUsage = resourceUsage.cache || {};
+        const webhookMonitor = data.webhook_monitor || {};
+        const webhookBotStats = webhookMonitor.bots || {};
         const runtimeBots = Array.isArray(data.runtime_bots) ? data.runtime_bots : [];
         const activeBots = runtimeBots.filter(bot => bot.username && bot.telegram_ok !== false);
         const unhealthyBots = runtimeBots.filter(bot => bot.telegram_health && !['ok', 'webhook_warning'].includes(bot.telegram_health));
@@ -1679,6 +1716,18 @@
         (seo.mapping_outcomes || []).forEach(item => {
             mappingOutcomes[String(item.status || 'pending')] = Number(item.count || 0);
         });
+        const webhookTotals = Object.values(webhookBotStats).reduce((totals, item) => {
+            totals.success += Number(item?.success || 0);
+            totals.failure += Number(item?.failure || 0);
+            totals.total += Number(item?.total || 0);
+            return totals;
+        }, { success: 0, failure: 0, total: 0 });
+        const webhookSuccessPercent = webhookTotals.total
+            ? (webhookTotals.success * 100 / webhookTotals.total)
+            : 100;
+        const visitorQueuePercent = Number(process.visitor_queue_max || 0)
+            ? Number(process.visitor_queue_size || 0) * 100 / Number(process.visitor_queue_max)
+            : 0;
 
         panel.replaceChildren();
         panel.hidden = false;
@@ -1690,7 +1739,9 @@
         title.textContent = 'Admin Monitor';
 
         const meta = document.createElement('span');
-        meta.textContent = data.generated_at ? `Updated ${data.generated_at.replace('T', ' ').replace('Z', '')}` : 'Live';
+        meta.textContent = data.generated_at
+            ? `Updated ${data.generated_at.replace('T', ' ').replace('Z', '')}${Number(data.cache_age_seconds || 0) ? ` · cache ${Number(data.cache_age_seconds).toFixed(1)}s` : ''}`
+            : 'Live';
 
         header.append(title, meta);
         panel.appendChild(header);
@@ -1699,22 +1750,36 @@
         grid.className = 'admin-metric-grid';
         appendAdminMetric(grid, 'Bots online', `${formatAdminCount(activeBots.length)}/${formatAdminCount(data.configured_bot_count)}`);
         appendAdminMetric(grid, 'Bot warnings', `${formatAdminCount(unhealthyBots.length)} unhealthy / ${formatAdminCount(webhookWarningBots.length)} webhook / ${formatAdminCount(setupWarningBots.length)} setup`);
-        appendAdminMetric(grid, 'Products', formatAdminCount(summary.products));
-        appendAdminMetric(grid, 'Users 24h / total', `${formatAdminCount(summary.active_users_24h)} / ${formatAdminCount(summary.bot_users)}`);
+        appendAdminMetric(grid, 'Products in / out of stock', `${formatAdminCount(summary.products_in_stock)} / ${formatAdminCount(summary.products_out_of_stock)}`);
+        appendAdminMetric(grid, 'Catalog taxonomy', `${formatAdminCount(summary.products)} products · ${formatAdminCount(summary.categories)} categories · ${formatAdminCount(summary.subcategories)} subcategories`);
+        appendAdminMetric(grid, 'Users 24h / 7d / total', `${formatAdminCount(summary.active_users_24h)} / ${formatAdminCount(summary.active_users_7d)} / ${formatAdminCount(summary.bot_users)}`);
         appendAdminMetric(grid, 'Subscribed / blocked', `${formatAdminCount(summary.subscribed_users)} / ${formatAdminCount(summary.blocked_users)}`);
-        appendAdminMetric(grid, 'Visitors / visits 24h', `${formatAdminCount(summary.unique_visitors_24h)} / ${formatAdminCount(summary.website_visits_24h)}`);
-        appendAdminMetric(grid, 'WebApp opens 24h', formatAdminCount(summary.webapp_visits_24h));
-        appendAdminMetric(grid, 'Pending notif. / messages', `${formatAdminCount(summary.pending_notifications)} / ${formatAdminCount(summary.queued_custom_messages)}`);
+        appendAdminMetric(grid, 'Human visitors / pageviews 24h', `${formatAdminCount(summary.unique_visitors_24h)} / ${formatAdminCount(summary.visitor_events_24h)}`);
+        appendAdminMetric(grid, 'Website / WebApp views 24h', `${formatAdminCount(summary.website_visits_24h)} / ${formatAdminCount(summary.webapp_visits_24h)}`);
+        appendAdminMetric(grid, 'Known Telegram visitors 24h', formatAdminCount(summary.known_visitor_users_24h));
+        appendAdminMetric(grid, 'Crawler / search crawler requests', `${formatAdminCount(summary.crawler_events_24h)} / ${formatAdminCount(summary.search_crawler_events_24h)}`);
+        appendAdminMetric(grid, 'Pending / stale notifications', `${formatAdminCount(summary.pending_notifications)} / ${formatAdminCount(summary.stale_pending_notifications)}`);
+        appendAdminMetric(grid, 'Queued / stale messages', `${formatAdminCount(summary.queued_custom_messages)} / ${formatAdminCount(summary.stale_custom_messages)}`);
+        appendAdminMetric(grid, 'WebApp events / errors 24h', `${formatAdminCount(summary.webapp_events_24h)} / ${formatAdminCount(summary.webapp_errors_24h)}`);
+        appendAdminMetric(grid, 'Inline queries / chosen 24h', `${formatAdminCount(summary.inline_queries_24h)} / ${formatAdminCount(summary.inline_chosen_24h)}`);
         appendAdminMetric(grid, 'Searches / no-result 24h', `${formatAdminCount(summary.search_queries_24h)} / ${formatAdminCount(summary.search_no_result_24h)}`);
+        appendAdminMetric(grid, 'Searches / no-result 7d', `${formatAdminCount(summary.search_queries_7d)} / ${formatAdminCount(summary.search_no_result_7d)}`);
+        appendAdminMetric(grid, 'Webhook success', `${formatAdminPercent(webhookSuccessPercent, 1)} · ${formatAdminCount(webhookTotals.failure)} failures`);
+        appendAdminMetric(grid, 'Process uptime', formatAdminDuration(process.uptime_seconds));
+        appendAdminMetric(grid, 'Memory current / peak', `${formatAdminBytes(process.memory_rss_bytes)} / ${formatAdminBytes(process.memory_peak_rss_bytes)}`);
+        appendAdminMetric(grid, 'Persistent cache used / free', `${formatAdminBytes(diskUsage.app_cache_bytes)} / ${formatAdminBytes(diskUsage.free_bytes)}`);
+        appendAdminMetric(grid, 'Temporary media / free', `${formatAdminBytes(tmpUsage.used_bytes)} / ${formatAdminBytes(tmpUsage.free_bytes)}`);
+        appendAdminMetric(grid, 'Media streams / files', `${formatAdminCount(mediaRuntime.active_streams)} / ${formatAdminCount(mediaRuntime.active_files)}`);
+        appendAdminMetric(grid, 'Visitor writer queue', `${formatAdminCount(process.visitor_queue_size)}/${formatAdminCount(process.visitor_queue_max)} (${formatAdminPercent(visitorQueuePercent, 1)}) · ${formatAdminCount(process.visitor_events_dropped)} dropped`);
         appendAdminMetric(grid, `Google performance pages ${googleWindowDays}d`, formatAdminCount(seo.search_console_pages_window));
-        appendAdminMetric(grid, 'Google clicks/impr.', `${formatAdminCount(seo.search_console_clicks_window)}/${formatAdminCount(seo.search_console_impressions_window)}`);
+        appendAdminMetric(grid, 'Google queries / clicks / impressions', `${formatAdminCount(seo.search_console_queries_window)} / ${formatAdminCount(seo.search_console_clicks_window)} / ${formatAdminCount(seo.search_console_impressions_window)}`);
         appendAdminMetric(grid, 'Image/video impressions', `${formatAdminCount(seo.search_console_image_impressions_window)}/${formatAdminCount(seo.search_console_video_impressions_window)}`);
         appendAdminMetric(grid, 'SEO learners', `${seoRuntime.seo_auto_learn_last_status || 'pending'} / ${seoRuntime.seo_trends_last_status || 'pending'}`);
         appendAdminMetric(grid, 'Mapping changes 24h / 7d', `${formatAdminCount(seo.mappings_updated_24h)} / ${formatAdminCount(seo.mappings_updated_7d)}`);
         appendAdminMetric(grid, 'Mapping outcomes', `${formatAdminCount(mappingOutcomes.winner)} winning / ${formatAdminCount(mappingOutcomes.monitoring)} monitoring / ${formatAdminCount(mappingOutcomes.pending)} pending / ${formatAdminCount(mappingOutcomes.retired_no_evidence)} retired`);
         appendAdminMetric(grid, 'Google import', `${searchConsoleSetup.configured ? (seoRuntime.search_console_import_last_status || 'configured') : 'not connected'}${seoRuntime.search_console_import_last_attempt_at ? ` · ${seoRuntime.search_console_import_last_attempt_at}` : ''}`);
         appendAdminMetric(grid, 'Google sitemap', googleSitemap.status || 'never');
-        appendAdminMetric(grid, 'IndexNow pending / failed', `${formatAdminCount(indexnow.pending)} / ${formatAdminCount(indexnow.failed)}`);
+        appendAdminMetric(grid, 'IndexNow submitted / pending / failed', `${formatAdminCount(indexnow.submitted)} / ${formatAdminCount(indexnow.pending)} / ${formatAdminCount(indexnow.failed)}`);
         if (Number(data.webhook_401_total || 0) > 0) {
             appendAdminMetric(grid, 'Webhook 401 total', formatAdminCount(data.webhook_401_total));
         }
@@ -1734,7 +1799,8 @@
         appendAdminList(panel, 'Runtime Bots', data.runtime_bots || [], item => {
             const username = item.username ? `@${item.username}` : 'not started';
             const health = item.telegram_health || (item.running ? 'running' : 'stopped');
-            let detail = `#${item.index} ${username}: ${health}`;
+            const slot = item.slot_name || (item.slot_id !== null && item.slot_id !== undefined ? `slot ${item.slot_id}` : 'slot -');
+            let detail = `#${item.index} ${username}: ${health}, ${slot}, Telegram id ${item.telegram_bot_id || '-'}, app ${item.running ? 'running' : 'stopped'}`;
             if (item.webhook_pending !== null && item.webhook_pending !== undefined) {
                 detail += `, pending ${formatAdminCount(item.webhook_pending)}`;
             }
@@ -1832,7 +1898,10 @@
 
                 const meta = document.createElement('span');
                 meta.className = 'admin-page-meta';
-                meta.textContent = `source ${item.source || 'unknown'} · language ${item.language || 'en'} · ${formatAdminCount(item.hits)} uses · changed ${item.updated_at || '-'}`;
+                const evidence = item.outcome_status
+                    ? ` · outcome ${item.outcome_status} · impressions ${formatAdminCount(item.baseline_impressions)}→${formatAdminCount(item.evaluation_impressions)} · clicks ${formatAdminCount(item.baseline_clicks)}→${formatAdminCount(item.evaluation_clicks)}`
+                    : '';
+                meta.textContent = `source ${item.source || 'unknown'} · language ${item.language || 'en'} · ${formatAdminCount(item.hits)} uses${evidence} · changed ${item.updated_at || '-'}`;
                 li.appendChild(meta);
                 return li;
             }
@@ -1865,21 +1934,24 @@
                     status: seoRuntime.seo_auto_learn_last_status,
                     changed: seoRuntime.seo_auto_learn_last_changed,
                     at: seoRuntime.seo_auto_learn_last_run_at,
-                    extra: `${formatAdminCount(seoRuntime.seo_auto_learn_last_candidates)} candidates, ${formatAdminCount(seoRuntime.seo_auto_learn_last_suppressed)} suppressed`
+                    extra: `${formatAdminCount(seoRuntime.seo_auto_learn_last_candidates)} candidates, ${formatAdminCount(seoRuntime.seo_auto_learn_last_suppressed)} suppressed, ${formatAdminCount(seoRuntime.seo_auto_learn_last_retired_noise)} noise retired`,
+                    error: seoRuntime.seo_auto_learn_last_error
                 },
                 {
                     name: 'Google Trends',
                     status: seoRuntime.seo_trends_last_status,
                     changed: seoRuntime.seo_trends_last_promoted,
                     at: seoRuntime.seo_trends_last_run_at,
-                    extra: `${formatAdminCount(seoRuntime.seo_trends_last_candidates)} candidates, ${formatAdminCount(seoRuntime.seo_trends_last_imported)} imported`
+                    extra: `${formatAdminCount(seoRuntime.seo_trends_last_candidates)} candidates, ${formatAdminCount(seoRuntime.seo_trends_last_imported)} imported, ${formatAdminCount(seoRuntime.seo_trends_last_matured)} matured`,
+                    error: seoRuntime.seo_trends_last_error
                 },
                 {
                     name: 'Search Console',
                     status: seoRuntime.search_console_import_last_status,
                     changed: seoRuntime.search_console_import_last_signals,
                     at: seoRuntime.search_console_import_last_attempt_at,
-                    extra: `${formatAdminCount(seoRuntime.search_console_import_last_rows)} rows, ${formatAdminCount(seoRuntime.search_console_import_last_aggregates)} aggregates`
+                    extra: `${formatAdminCount(seoRuntime.search_console_import_last_rows)} rows, ${formatAdminCount(seoRuntime.search_console_import_last_media_rows)} media rows, ${formatAdminCount(seoRuntime.search_console_import_last_aggregates)} aggregates · ${seoRuntime.search_console_import_last_auth_source || 'no auth source'}`,
+                    error: seoRuntime.search_console_import_last_error
                 }
             ],
             item => {
@@ -1888,7 +1960,7 @@
 
                 const meta = document.createElement('span');
                 meta.className = 'admin-page-meta';
-                meta.textContent = `${item.extra} · last ${item.at || '-'}`;
+                meta.textContent = `${item.extra} · last ${item.at || '-'}${item.error ? ` · error ${String(item.error).slice(0, 180)}` : ''}`;
                 li.appendChild(meta);
                 return li;
             }
@@ -1903,6 +1975,168 @@
             li.textContent = `${item.search_type || 'media'}: ${formatAdminCount(item.impressions)} impressions, ${formatAdminCount(item.clicks)} clicks · ${item.page || '/'}`;
             return li;
         });
+
+        const endpointPerformance = Object.entries(metrics)
+            .map(([name, item]) => ({ name, ...(item || {}) }))
+            .sort((a, b) => Number(b.p95_ms || 0) - Number(a.p95_ms || 0));
+        appendAdminDetailsList(panel, 'admin-endpoint-performance', 'All Endpoint Performance', 'Per-process counters since the latest deploy, ordered by slowest p95.', endpointPerformance, item => {
+            const li = document.createElement('li');
+            li.textContent = `${item.name}: ${formatAdminCount(item.count)} calls · avg ${formatAdminMs(item.avg_ms)} · p95 ${formatAdminMs(item.p95_ms)}`;
+            return li;
+        });
+
+        const webhookPerformance = Object.entries(webhookBotStats).map(([index, item]) => ({ index, ...(item || {}) }));
+        appendAdminDetailsList(panel, 'admin-webhook-performance', 'Webhook Performance By Bot', 'Successful and failed webhook updates recorded since the latest deploy.', webhookPerformance, item => {
+            const li = document.createElement('li');
+            const rate = Number(item.success_rate === undefined ? 1 : item.success_rate) * 100;
+            li.textContent = `Bot #${item.index}: ${formatAdminCount(item.success)} successful / ${formatAdminCount(item.failure)} failed · ${formatAdminPercent(rate, 1)} success · avg ${formatAdminMs(item.avg_duration_ms)}`;
+            const meta = document.createElement('span');
+            meta.className = 'admin-page-meta';
+            meta.textContent = `last update ${item.last_seen ? new Date(Number(item.last_seen) * 1000).toLocaleString() : '-'}`;
+            li.appendChild(meta);
+            return li;
+        });
+
+        appendAdminDetailsList(panel, 'admin-bot-users', 'Users By Bot', 'Persistent user ownership, recent activity, and blocked-user counts for every bot.', data.bot_user_counts || [], item => {
+            const li = document.createElement('li');
+            li.textContent = `@${item.bot_username || 'untracked'}: ${formatAdminCount(item.users)} users · ${formatAdminCount(item.active_24h)} active 24h · ${formatAdminCount(item.blocked)} blocked`;
+            return li;
+        });
+
+        appendAdminDetailsList(panel, 'admin-inline-activity', 'Inline Mode Activity', 'Query volume, response latency, and average result count during the last 24 hours.', data.inline_activity || [], item => {
+            const li = document.createElement('li');
+            li.textContent = `@${item.bot_username || 'unknown'}: ${formatAdminCount(item.queries)} queries · avg ${formatAdminMs(item.avg_latency_ms)} · ${Number(item.avg_results || 0).toFixed(1)} results/query`;
+            return li;
+        });
+
+        appendAdminDetailsList(panel, 'admin-pending-messages', 'Pending Custom Messages By Bot', 'Queued direct messages which have not yet been marked sent.', data.pending_custom_messages_by_bot || [], item => {
+            const li = document.createElement('li');
+            li.textContent = `@${item.bot_username || 'untracked'}: ${formatAdminCount(item.pending)} pending`;
+            return li;
+        });
+
+        appendAdminDetailsList(panel, 'admin-webapp-actions', 'WebApp Actions 24h', 'Most frequent Mini App events grouped by event, action, and status.', data.webapp_event_counts || [], item => {
+            const li = document.createElement('li');
+            li.textContent = `${item.event_type || 'event'} / ${item.action || 'action'} / ${item.status || 'unknown'}: ${formatAdminCount(item.count)}`;
+            return li;
+        });
+
+        const recentWebAppProblems = (data.recent_webapp_events || []).filter(item =>
+            String(item.status || '').toLowerCase() === 'error' || String(item.error || '').trim()
+        );
+        appendAdminDetailsList(panel, 'admin-webapp-errors', 'Recent WebApp Errors', 'Latest client-reported WebApp failures, including the user and action when available.', recentWebAppProblems, item => {
+            const li = document.createElement('li');
+            const identity = item.username ? `@${item.username}` : (item.user_id || 'unknown user');
+            li.textContent = `${item.created_at || '-'} · ${identity} · ${item.event_type || 'event'} / ${item.action || 'action'}: ${String(item.error || item.status || 'error').slice(0, 180)}`;
+            return li;
+        });
+
+        appendAdminDetailsList(panel, 'admin-visitor-devices', 'Visitor Devices 24h', 'Human pageviews only; crawlers and automated clients are excluded.', data.visitor_devices || [], item => {
+            const li = document.createElement('li');
+            li.textContent = `${item.device_type || 'unknown'}: ${formatAdminCount(item.visitors)} visitors · ${formatAdminCount(item.visits)} visits`;
+            return li;
+        });
+
+        appendAdminDetailsList(panel, 'admin-recent-visitors', 'Recent Human Visits', 'Latest identified website and Mini App pageviews. Crawler traffic is excluded.', data.recent_visitor_events || [], item => {
+            const li = document.createElement('li');
+            const identity = item.username ? `@${item.username}` : (item.telegram_user_id || 'anonymous');
+            const location = [item.city, item.region, item.country].filter(value => value && value !== 'Unknown').join(', ') || 'unknown location';
+            li.textContent = `${item.created_at || '-'} · ${identity} · ${item.source || 'site'} ${item.page_type || 'page'} ${item.path || '/'} · ${location} · ${item.device_type || 'unknown device'}`;
+            return li;
+        });
+
+        appendAdminDetailsList(panel, 'admin-crawlers', 'Crawler Activity 24h', 'Kept separate from human visitor totals.', data.crawler_activity || [], item => {
+            const li = document.createElement('li');
+            li.textContent = `${item.crawler_name || 'Unknown crawler'} (${item.traffic_class || 'automation'}): ${formatAdminCount(item.requests)} requests · ${formatAdminCount(item.pages)} pages · last ${item.last_seen || '-'}`;
+            return li;
+        });
+
+        appendAdminDetailsList(panel, 'admin-recent-products', 'Recently Added Products', 'Newest catalog records and their owning bot.', data.recent_products || [], item => {
+            const li = document.createElement('li');
+            const title = String(item.caption || '').split('\n')[0] || `Product ${item.id}`;
+            li.textContent = `#${item.id} ${title.slice(0, 90)} · ${item.category || 'uncategorized'}${item.subcategory ? ` / ${item.subcategory}` : ''} · ${item.file_type || 'no media'} · @${item.bot_username || 'unknown'}`;
+            return li;
+        });
+
+        const storageRows = [
+            `Process started: ${process.started_at || '-'} · uptime ${formatAdminDuration(process.uptime_seconds)}`,
+            `Memory: ${formatAdminBytes(process.memory_rss_bytes)} current · ${formatAdminBytes(process.memory_peak_rss_bytes)} peak · ${formatAdminBytes(process.memory_virtual_bytes)} virtual`,
+            `Persistent cache: ${formatAdminBytes(diskUsage.app_cache_bytes)} app files · ${formatAdminBytes(diskUsage.free_bytes)} filesystem free of ${formatAdminBytes(diskUsage.total_bytes)}`,
+            `Temporary storage: ${formatAdminBytes(tmpUsage.used_bytes)} app/bot files · ${formatAdminBytes(tmpUsage.free_bytes)} filesystem free`,
+            `Media cache: ${mediaRuntime.cache_enabled ? 'enabled' : 'disabled'} · videos ${mediaRuntime.video_cache_enabled ? 'enabled' : 'disabled'} · ${formatAdminCount(mediaRuntime.cache_max_mb)} MB max · ${formatAdminCount(mediaRuntime.cache_ttl_hours)}h TTL`,
+            `Media runtime: ${formatAdminCount(mediaRuntime.active_streams)} streams · ${formatAdminCount(mediaRuntime.tracked_temp_files)} tracked temp files · ${formatAdminCount(mediaRuntime.generation_locks)} generation locks`,
+            `Visitor writer: ${formatAdminCount(process.visitor_events_written)} written · ${formatAdminCount(process.visitor_events_dropped)} dropped · queue ${formatAdminCount(process.visitor_queue_size)}/${formatAdminCount(process.visitor_queue_max)}`,
+            `Response caches: ${formatAdminCount(process.seo_response_cache_entries)} SEO · ${formatAdminCount(process.webapp_search_cache_entries)} WebApp search`
+        ];
+        appendAdminDetailsList(panel, 'admin-system-resources', 'System & Storage', 'Live process, RAM, disk, media-cache, and background-writer state.', storageRows, item => {
+            const li = document.createElement('li');
+            li.textContent = item;
+            return li;
+        });
+
+        const cacheRows = [
+            `Resolved file IDs: ${formatAdminCount(cacheState.resolved_file_ids)} memory / ${formatAdminCount(summary.file_id_cache_entries)} persistent`,
+            `Media metadata: ${formatAdminCount(cacheState.media_info)} memory · canonical ${formatAdminCount(summary.canonical_media)} · bot mappings ${formatAdminCount(summary.bot_media_mappings)}`,
+            `Media objects: ${formatAdminCount(summary.media_objects_active)} active · registry write keys ${formatAdminCount(cacheState.media_registry_write_keys)}`,
+            `API result cache: ${formatAdminCount(cacheState.api_results)} · translation cache ${formatAdminCount(summary.translation_cache_entries)}`,
+            `Webhook locks: ${formatAdminCount(cacheState.webhook_processing_locks)} · concurrency ${formatAdminCount(cacheState.webhook_update_concurrency)} · orphan legacy secrets ${formatAdminCount(cacheState.orphan_legacy_secrets)}`,
+            `Security records: ${formatAdminCount(summary.blocked_entities)} permanent entities · ${formatAdminCount(summary.blocked_ips)} IPs`
+        ];
+        appendAdminDetailsList(panel, 'admin-cache-inventory', 'Cache & Security Inventory', 'Live and persistent cache sizes plus blocked-access records.', cacheRows, item => {
+            const li = document.createElement('li');
+            li.textContent = item;
+            return li;
+        });
+
+        appendAdminDetailsList(panel, 'admin-mapping-languages', 'SEO Mapping Languages', 'Approved mapping coverage by language.', seo.mapping_languages || [], item => {
+            const li = document.createElement('li');
+            li.textContent = `${String(item.language || 'en').toUpperCase()}: ${formatAdminCount(item.count)} mappings`;
+            return li;
+        });
+
+        appendAdminDetailsList(panel, 'admin-search-languages', 'User Search Languages 30d', 'Languages recorded for catalog searches during the last 30 days.', seo.search_languages_30d || [], item => {
+            const li = document.createElement('li');
+            li.textContent = `${String(item.language || 'en').toUpperCase()}: ${formatAdminCount(item.count)} searches`;
+            return li;
+        });
+
+        appendAdminDetailsList(panel, 'admin-google-countries', 'Google Performance By Country', `Search Console dimensions for the latest ${googleWindowDays} days.`, seo.search_console_countries || [], item => {
+            const li = document.createElement('li');
+            li.textContent = `${String(item.country || 'unknown').toUpperCase()}: ${formatAdminCount(item.clicks)} clicks · ${formatAdminCount(item.impressions)} impressions · ${item.ctr_percent || 0}% CTR`;
+            return li;
+        });
+
+        appendAdminDetailsList(panel, 'admin-google-devices', 'Google Performance By Device', `Search Console dimensions for the latest ${googleWindowDays} days.`, seo.search_console_devices || [], item => {
+            const li = document.createElement('li');
+            li.textContent = `${item.device || 'unknown'}: ${formatAdminCount(item.clicks)} clicks · ${formatAdminCount(item.impressions)} impressions · ${item.ctr_percent || 0}% CTR`;
+            return li;
+        });
+
+        appendAdminDetailsList(panel, 'admin-unmapped-searches', 'Low/No-result Searches To Learn', `Recent searches returning at most ${formatAdminCount(seo.low_result_threshold)} products.`, seo.unmapped || [], item => {
+            const li = document.createElement('li');
+            li.textContent = `${item.query || 'query'}: ${formatAdminCount(item.count)} searches · ${formatAdminCount(item.no_result_count)} no-result · last ${item.last_seen || '-'}`;
+            return li;
+        });
+
+        appendAdminDetailsList(panel, 'admin-external-signals', 'Recent Approved SEO Signals', 'Search Console and Google Trends signals admitted by the relevance safeguards.', seo.recent_external_signals || [], item => {
+            const li = document.createElement('li');
+            li.textContent = `${item.term || 'term'} -> ${item.category || 'catalog'}${item.subcategory ? ` / ${item.subcategory}` : ''} · ${item.provider || item.source || 'unknown'} · ${item.language || 'en'} · confidence ${formatAdminCount(item.confidence)} · evidence ${formatAdminCount(item.evidence_count)}`;
+            return li;
+        });
+
+        if (indexnow.last) {
+            appendAdminDetailsList(panel, 'admin-indexnow-last', 'Latest IndexNow Submission', 'Most recently updated Bing/IndexNow queue item.', [indexnow.last], item => {
+                const li = document.createElement('li');
+                li.textContent = `${item.status || 'unknown'} · HTTP ${item.http_status || '-'} · ${formatAdminCount(item.attempts)} attempts · ${item.reason || 'catalog change'} · ${item.url || '-'}`;
+                if (item.last_error) {
+                    const meta = document.createElement('span');
+                    meta.className = 'admin-page-meta';
+                    meta.textContent = `error ${String(item.last_error).slice(0, 180)} · updated ${item.updated_at || '-'}`;
+                    li.appendChild(meta);
+                }
+                return li;
+            });
+        }
         appendAdminGooglePages(panel, seo);
         appendAdminCrawlablePages(panel, data.crawlable_pages);
     }

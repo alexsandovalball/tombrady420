@@ -38,12 +38,12 @@
     <script type="application/ld+json">{{ seo_schema | safe }}</script>
 
     <!-- Browser icons -->
-    <link rel="icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260805-football-emoji-svg-v1">
-    <link rel="shortcut icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260805-football-emoji-svg-v1">
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260805-football-emoji-svg-v1">
+    <link rel="icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2">
+    <link rel="shortcut icon" type="image/svg+xml" href="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260805-football-emoji-canonical-v2">
     
     <!-- PWA Manifest -->
-    <link rel="manifest" href="/assets/manifest.json?v=20260805-football-emoji-svg-v1">
+    <link rel="manifest" href="/assets/manifest.json?v=20260805-football-emoji-canonical-v2">
 
     <script src="/assets/telegram-miniapp-bridge.js?v=20260717-botfather-bridge-v1"></script>
     <script>
@@ -51,7 +51,7 @@
             if (!image || image.dataset.previewRetried === '1') {
                 if (image) {
                     image.onerror = null;
-                    image.src = '/assets/site-icon.svg?v=20260805-football-emoji-svg-v1';
+                    image.src = '/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2';
                 }
                 return;
             }
@@ -61,7 +61,7 @@
             image.src = retryUrl.toString();
         };
     </script>
-    <link rel="stylesheet" href="/assets/style.css?v=20260717-ios-dark-text-v1">
+    <link rel="stylesheet" href="/assets/style.css?v=20260805-admin-monitor-v2">
     <style>
         html { background: #ffffff; }
         body {

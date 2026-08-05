@@ -5854,6 +5854,8 @@ class Database:
         """Return read-only dashboard data from persistent application state."""
         recent_limit = max(5, min(recent_limit, 100))
         since_24h = datetime.now() - timedelta(hours=24)
+        since_7d = datetime.now() - timedelta(days=7)
+        stale_queue_before = datetime.now() - timedelta(hours=1)
 
         async with self.get_connection() as db:
             db.row_factory = aiosqlite.Row
@@ -5865,6 +5867,8 @@ class Database:
 
             summary = {
                 "products": await scalar("SELECT COUNT(*) FROM products"),
+                "products_in_stock": await scalar("SELECT COUNT(*) FROM products WHERE COALESCE(stock_status, 'active') = 'active'"),
+                "products_out_of_stock": await scalar("SELECT COUNT(*) FROM products WHERE stock_status = 'out_of_stock'"),
                 "categories": await scalar("SELECT COUNT(DISTINCT category) FROM products WHERE category IS NOT NULL AND TRIM(category) <> ''"),
                 "subcategories": await scalar("SELECT COUNT(DISTINCT category || '|' || subcategory) FROM products WHERE category IS NOT NULL AND TRIM(category) <> '' AND subcategory IS NOT NULL AND TRIM(subcategory) <> ''"),
                 "bot_users": await scalar("SELECT COUNT(*) FROM bot_users"),
@@ -5872,12 +5876,24 @@ class Database:
                     "SELECT COUNT(*) FROM bot_users WHERE last_seen >= ?",
                     (since_24h,),
                 ),
+                "active_users_7d": await scalar(
+                    "SELECT COUNT(*) FROM bot_users WHERE last_seen >= ?",
+                    (since_7d,),
+                ),
                 "blocked_users": await scalar("SELECT COUNT(*) FROM bot_users WHERE is_blocked = 1"),
                 "blocked_entities": await scalar("SELECT COUNT(*) FROM blocked_entities WHERE is_permanent = 1"),
                 "blocked_ips": await scalar("SELECT COUNT(*) FROM blocked_ips"),
                 "subscribed_users": await scalar("SELECT COUNT(*) FROM bot_users WHERE is_subscribed = 1"),
                 "pending_notifications": await scalar("SELECT COUNT(*) FROM notification_queue WHERE sent_at IS NULL"),
+                "stale_pending_notifications": await scalar(
+                    "SELECT COUNT(*) FROM notification_queue WHERE sent_at IS NULL AND created_at < ?",
+                    (stale_queue_before,),
+                ),
                 "queued_custom_messages": await scalar("SELECT COUNT(*) FROM custom_message_queue WHERE sent_at IS NULL"),
+                "stale_custom_messages": await scalar(
+                    "SELECT COUNT(*) FROM custom_message_queue WHERE sent_at IS NULL AND created_at < ?",
+                    (stale_queue_before,),
+                ),
                 "file_id_cache_entries": await scalar("SELECT COUNT(*) FROM bot_file_id_cache"),
                 "canonical_media": await scalar("SELECT COUNT(*) FROM canonical_media"),
                 "bot_media_mappings": await scalar("SELECT COUNT(*) FROM bot_media_file_ids WHERE is_valid = 1"),
@@ -5886,6 +5902,10 @@ class Database:
                 "bot_registry_active": await scalar("SELECT COUNT(*) FROM bot_registry WHERE status = 'active'"),
                 "webapp_events_24h": await scalar(
                     "SELECT COUNT(*) FROM webapp_events WHERE created_at >= ?",
+                    (since_24h,),
+                ),
+                "webapp_errors_24h": await scalar(
+                    "SELECT COUNT(*) FROM webapp_events WHERE created_at >= ? AND (LOWER(COALESCE(status, '')) = 'error' OR TRIM(COALESCE(error, '')) <> '')",
                     (since_24h,),
                 ),
                 "visitor_events_24h": await scalar(
@@ -5954,9 +5974,17 @@ class Database:
                     "SELECT COUNT(*) FROM search_query_events WHERE created_at >= ?",
                     (since_24h,),
                 ),
+                "search_queries_7d": await scalar(
+                    "SELECT COUNT(*) FROM search_query_events WHERE created_at >= ?",
+                    (since_7d,),
+                ),
                 "search_no_result_24h": await scalar(
                     "SELECT COUNT(*) FROM search_query_events WHERE matched_count = 0 AND created_at >= ?",
                     (since_24h,),
+                ),
+                "search_no_result_7d": await scalar(
+                    "SELECT COUNT(*) FROM search_query_events WHERE matched_count = 0 AND created_at >= ?",
+                    (since_7d,),
                 ),
                 "seo_query_mappings": await scalar("SELECT COUNT(*) FROM seo_query_mappings WHERE approved = 1"),
             }
