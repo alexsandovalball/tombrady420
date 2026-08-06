@@ -1847,9 +1847,6 @@
             return `${identity} (${item.user_id || '-'}): @${item.bot_username || 'bot'} · ${item.language || 'en'} · ${formatAdminCount(item.interaction_count)} interactions · ${status} · last ${item.last_seen || '-'}`;
         }, 25);
 
-        appendAdminList(panel, 'Top Google Searches', seo.top_search_console_queries || [], item =>
-            `${item.query}: ${formatAdminCount(item.clicks)} clicks, ${formatAdminCount(item.impressions)} impressions, avg pos ${item.avg_position || '-'}`
-        );
         appendAdminDetailsList(
             panel,
             'admin-google-page-scorecard',
@@ -1880,10 +1877,6 @@
         });
         appendAdminList(panel, 'Google Ranking Opportunities', seo.search_console_opportunities || [], item =>
             `${item.query || 'query'}: ${formatAdminCount(item.impressions)} impressions, ${formatAdminCount(item.clicks)} clicks, CTR ${Math.round(Number(item.ctr || 0) * 1000) / 10}%, avg pos ${item.avg_position || '-'} · ${item.page || '/'}`
-        );
-
-        appendAdminList(panel, 'CTR Terms Being Learned', seo.search_console_ctr_terms || [], item =>
-            `${item.query || 'query'}: ${formatAdminCount(item.impressions)} impressions, CTR ${Math.round(Number(item.ctr || 0) * 1000) / 10}%, ${item.category || ''}${item.subcategory ? ` / ${item.subcategory}` : ''}`
         );
 
         appendAdminDetailsList(

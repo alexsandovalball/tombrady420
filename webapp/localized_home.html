@@ -632,10 +632,6 @@
                     return identity.trim() + ' (' + String(item.user_id || '-') + '): @' + String(item.bot_username || 'bot') + ' · ' + String(item.language || 'en') + ' · ' + formatCount(item.interaction_count) + ' interactions · ' + userStatus + ' · last ' + (item.last_seen || '-');
                 }, 25);
 
-                appendList(panel, 'Top Google Searches', seo.top_search_console_queries || [], function (item) {
-                    return String(item.query || 'query') + ': ' + formatCount(item.clicks) + ' clicks, ' + formatCount(item.impressions) + ' impressions, avg pos ' + (item.avg_position || '-');
-                }, 10);
-
                 appendDetailsList(
                     panel,
                     'admin-google-page-scorecard',
@@ -656,11 +652,6 @@
                 appendList(panel, 'Google Ranking Opportunities', seo.search_console_opportunities || [], function (item) {
                     var ctr = Number(item.ctr || 0);
                     return String(item.query || 'query') + ': ' + formatCount(item.impressions) + ' impressions, ' + formatCount(item.clicks) + ' clicks, CTR ' + Math.round(ctr * 1000) / 10 + '%, avg pos ' + (item.avg_position || '-') + ' · ' + String(item.page || '/');
-                }, 10);
-
-                appendList(panel, 'CTR Terms Being Learned', seo.search_console_ctr_terms || [], function (item) {
-                    var ctr = Number(item.ctr || 0);
-                    return String(item.query || 'query') + ': ' + formatCount(item.impressions) + ' impressions, CTR ' + Math.round(ctr * 1000) / 10 + '%, ' + String(item.category || '') + (item.subcategory ? ' / ' + item.subcategory : '');
                 }, 10);
 
                 appendDetailsList(
