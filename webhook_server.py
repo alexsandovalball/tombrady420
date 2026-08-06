@@ -173,7 +173,7 @@ _SEO_SITEMAP_CACHE_SECONDS = _bounded_int_env("SEO_SITEMAP_CACHE_SECONDS", 300, 
 _SEO_PAGE_CACHE_SECONDS = _bounded_int_env("SEO_PAGE_CACHE_SECONDS", 300, 30, 3600)
 _SEO_PUBLIC_MEDIA_CACHE_SECONDS = _bounded_int_env("SEO_PUBLIC_MEDIA_CACHE_SECONDS", 86400, 300, 604800)
 _SEO_PUBLIC_MEDIA_RATE_LIMIT_REQUESTS = _bounded_int_env("SEO_PUBLIC_MEDIA_RATE_LIMIT_REQUESTS", 120, 10, 2000)
-_ADMIN_CACHE_CLEANUP_INTERVAL_SECONDS = _bounded_int_env("ADMIN_CACHE_CLEANUP_INTERVAL_SECONDS", 45, 10, 600)
+_ADMIN_CACHE_CLEANUP_INTERVAL_SECONDS = _bounded_int_env("ADMIN_CACHE_CLEANUP_INTERVAL_SECONDS", 15, 10, 600)
 _ADMIN_CACHE_CLEANUP_BATCH_SIZE = _bounded_int_env("ADMIN_CACHE_CLEANUP_BATCH_SIZE", 50, 5, 500)
 _ADMIN_CACHE_CLEANUP_MAX_ATTEMPTS = _bounded_int_env("ADMIN_CACHE_CLEANUP_MAX_ATTEMPTS", 12, 1, 100)
 _ADMIN_CACHE_CLEANUP_RETRY_BASE_SECONDS = _bounded_int_env("ADMIN_CACHE_CLEANUP_RETRY_BASE_SECONDS", 60, 10, 3600)
@@ -7589,7 +7589,8 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Media not found")
 
     media_type_info = media_info[media_index]
-    file_id = media_type_info["id"]
+    original_file_id = str(media_type_info.get("id") or "")
+    file_id = original_file_id
     is_video = media_type_info.get('type') == 'video'
 
     # Resolve bot-specific file_id for multi-bot scenarios
@@ -7597,7 +7598,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
     # the file was originally indexed by a different bot
     source_chat_id = product.get('chat_id')
     source_message_id = _resolve_product_media_message_id(product, product_id, media_index)
-    file_id = await _resolve_bot_specific_media_file_id(
+    resolved_file_id = await _resolve_bot_specific_media_file_id(
         bot=bot,
         source_chat_id=source_chat_id,
         source_message_id=source_message_id,
@@ -7606,11 +7607,12 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
         product_id=product_id,
         media_index=media_index,
     )
+    file_id = resolved_file_id or original_file_id
 
     # Structured logging for diagnostics
     logger.debug(
         f"Media request: product_id={product_id}, media_index={media_index}, "
-        f"is_video={is_video}, file_id={file_id[:20]}..."
+        f"is_video={is_video}, file_id={(file_id or '')[:20]}..."
     )
 
     media_cache_key = hashlib.sha256(file_id.encode()).hexdigest()
@@ -7632,6 +7634,20 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
             return current_file_id, tg
         except Exception as first_exc:
             if not source_chat_id or not source_message_id:
+                if original_file_id and original_file_id != current_file_id:
+                    logger.warning(
+                        "[media_cache] original_file_id_fallback_retry product_id=%s media_index=%s",
+                        product_id,
+                        media_index,
+                    )
+                    tg = await fetch_telegram_file(
+                        bot,
+                        original_file_id,
+                        context=f"stream_catalog_media_original:{product_id}:{media_index}",
+                        retries=0,
+                        timeout_seconds=3.5,
+                    )
+                    return original_file_id, tg
                 raise first_exc
 
             refreshed_file_id = await get_bot_specific_file_id(
@@ -7643,6 +7659,20 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                 force_refresh=True,
             )
             if not refreshed_file_id or refreshed_file_id == current_file_id:
+                if original_file_id and original_file_id != current_file_id:
+                    logger.warning(
+                        "[media_cache] original_file_id_fallback_retry product_id=%s media_index=%s",
+                        product_id,
+                        media_index,
+                    )
+                    tg = await fetch_telegram_file(
+                        bot,
+                        original_file_id,
+                        context=f"stream_catalog_media_original:{product_id}:{media_index}",
+                        retries=0,
+                        timeout_seconds=3.5,
+                    )
+                    return original_file_id, tg
                 raise first_exc
 
             logger.warning(
@@ -8499,6 +8529,12 @@ async def process_webhook_request(request: Request, bot_registry_id: str):
                 "[%s] Bot %s: Processing message update from user %s",
                 request_id, bot_registry_id, update.message.from_user.id,
             )
+        elif update.edited_message:
+            update_kind = "edited_message"
+            logger.info(
+                "[%s] Bot %s: Processing edited message from user %s",
+                request_id, bot_registry_id, update.edited_message.from_user.id,
+            )
         elif update.callback_query:
             update_kind = "callback"
             user_id = update.callback_query.from_user.id
@@ -8530,6 +8566,51 @@ async def process_webhook_request(request: Request, bot_registry_id: str):
             logger.info(
                 "[%s] Bot %s: Processing channel post from chat %s",
                 request_id, bot_registry_id, update.channel_post.chat.id,
+            )
+        elif update.inline_query:
+            update_kind = "inline_query"
+            callback_data_for_log = (update.inline_query.query or "")[:120]
+            logger.info(
+                "[%s] Bot %s: Processing inline query from user %s: %s",
+                request_id,
+                bot_registry_id,
+                update.inline_query.from_user.id,
+                callback_data_for_log,
+            )
+        elif update.chosen_inline_result:
+            update_kind = "chosen_inline_result"
+            callback_data_for_log = (update.chosen_inline_result.query or "")[:120]
+            logger.info(
+                "[%s] Bot %s: Processing chosen inline result from user %s result_id=%s query=%s",
+                request_id,
+                bot_registry_id,
+                update.chosen_inline_result.from_user.id,
+                update.chosen_inline_result.result_id,
+                callback_data_for_log,
+            )
+        elif update.my_chat_member:
+            update_kind = "my_chat_member"
+            logger.info(
+                "[%s] Bot %s: Processing my_chat_member update for chat %s",
+                request_id,
+                bot_registry_id,
+                update.my_chat_member.chat.id,
+            )
+        elif update.chat_member:
+            update_kind = "chat_member"
+            logger.info(
+                "[%s] Bot %s: Processing chat_member update for chat %s",
+                request_id,
+                bot_registry_id,
+                update.chat_member.chat.id,
+            )
+        elif update.poll_answer:
+            update_kind = "poll_answer"
+            logger.info(
+                "[%s] Bot %s: Processing poll answer from user %s",
+                request_id,
+                bot_registry_id,
+                update.poll_answer.user.id,
             )
         else:
             logger.info(

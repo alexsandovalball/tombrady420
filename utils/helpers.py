@@ -24,6 +24,8 @@ _db = Database()
 _VALIDATED_HELPER_FILE_IDS: OrderedDict[tuple[str, str], tuple[float, Optional[str]]] = OrderedDict()
 _VALIDATED_HELPER_FILE_ID_TTL_SECONDS = 60 * 30
 _VALIDATED_HELPER_FILE_ID_MAX = 2000
+_ADMIN_CACHE_DELETE_RETRY_DELAYS_SECONDS = (2, 6, 15)
+_admin_cleanup_retry_tasks: set[asyncio.Task] = set()
 
 
 def _get_recent_helper_validation(bot_username: str, file_id: Optional[str]) -> tuple[bool, Optional[str]]:
@@ -49,6 +51,15 @@ def _remember_helper_validation(bot_username: str, file_id: Optional[str], file_
     _VALIDATED_HELPER_FILE_IDS.move_to_end(cache_key)
     while len(_VALIDATED_HELPER_FILE_IDS) > _VALIDATED_HELPER_FILE_ID_MAX:
         _VALIDATED_HELPER_FILE_IDS.popitem(last=False)
+
+
+def _track_admin_cleanup_retry_task(task: asyncio.Task) -> None:
+    _admin_cleanup_retry_tasks.add(task)
+
+    def _cleanup(completed_task: asyncio.Task) -> None:
+        _admin_cleanup_retry_tasks.discard(completed_task)
+
+    task.add_done_callback(_cleanup)
 
 
 def resolve_stable_bot_identifier(bot_or_username, fallback: str = "unknown") -> str:
@@ -651,63 +662,91 @@ async def get_bot_specific_file_id(
     
     target_chat_id = admin_ids[0]
 
+    async def _delete_admin_cache_record(message_id: int) -> None:
+        await _call_db_optional(
+            "delete_admin_cache_cleanup",
+            bot_username=bot_username,
+            admin_chat_id=target_chat_id,
+            message_id=message_id,
+        )
+
+    async def _reschedule_admin_cache_record(message_id: int, error: object, delay_seconds: int) -> None:
+        await _call_db_optional(
+            "reschedule_admin_cache_cleanup",
+            bot_username=bot_username,
+            admin_chat_id=target_chat_id,
+            message_id=message_id,
+            error=str(error or "delete_failed"),
+            delay_seconds=delay_seconds,
+        )
+
+    async def _attempt_delete_message(message_id: int) -> tuple[bool, Optional[BaseException]]:
+        try:
+            await bot.delete_message(chat_id=target_chat_id, message_id=message_id)
+            await _delete_admin_cache_record(message_id)
+            return True, None
+        except BadRequest as e:
+            error_msg = str(e).lower()
+            if "message to delete not found" in error_msg:
+                await _delete_admin_cache_record(message_id)
+                logger.debug("[get_bot_specific_file_id] Forwarded admin-chat copy already gone")
+                return True, None
+            return False, e
+        except Exception as e:
+            return False, e
+
+    async def _retry_delete_forwarded_message(message_id: int) -> None:
+        last_error: Optional[BaseException] = None
+        for delay_seconds in _ADMIN_CACHE_DELETE_RETRY_DELAYS_SECONDS:
+            await asyncio.sleep(delay_seconds)
+            deleted, error = await _attempt_delete_message(message_id)
+            if deleted:
+                logger.debug("[get_bot_specific_file_id] Deleted forwarded message from admin chat during background retry")
+                return
+            last_error = error
+            if isinstance(error, RetryAfter):
+                continue
+            if error is not None and not is_transient_telegram_error(error):
+                break
+
+        retry_delay = max(10, int(getattr(last_error, "retry_after", 0) or 20))
+        await _reschedule_admin_cache_record(message_id, last_error or "background_delete_failed", retry_delay)
+        logger.warning("[get_bot_specific_file_id] Background delete retry still failed: %s", last_error)
+
     async def _delete_forwarded_message(forwarded_message) -> None:
         message_id = getattr(forwarded_message, "message_id", None)
         if not message_id:
             logger.warning("[get_bot_specific_file_id] Forwarded message had no message_id; cannot delete admin-chat copy")
             return
         last_error = None
-        try:
-            await bot.delete_message(chat_id=target_chat_id, message_id=message_id)
-            await _call_db_optional(
-                "delete_admin_cache_cleanup",
-                bot_username=bot_username,
-                admin_chat_id=target_chat_id,
-                message_id=message_id,
-            )
+        deleted, error = await _attempt_delete_message(message_id)
+        if deleted:
             logger.debug("[get_bot_specific_file_id] Deleted forwarded message from admin chat")
             return
-        except RetryAfter as e:
-            last_error = e
+
+        last_error = error
+        if isinstance(error, RetryAfter):
+            e = error
             retry_after = int(getattr(e, "retry_after", 0) or 0)
             if retry_after and retry_after <= 2:
                 try:
                     await asyncio.sleep(retry_after)
-                    await bot.delete_message(chat_id=target_chat_id, message_id=message_id)
-                    await _call_db_optional(
-                        "delete_admin_cache_cleanup",
-                        bot_username=bot_username,
-                        admin_chat_id=target_chat_id,
-                        message_id=message_id,
-                    )
+                    deleted, retry_error = await _attempt_delete_message(message_id)
+                    if not deleted:
+                        raise retry_error or e
                     logger.debug("[get_bot_specific_file_id] Deleted forwarded message from admin chat after retry")
                     return
                 except Exception as retry_exc:
                     last_error = retry_exc
-        except BadRequest as e:
-            last_error = e
-            error_msg = str(e).lower()
-            if "message to delete not found" in error_msg:
-                await _call_db_optional(
-                    "delete_admin_cache_cleanup",
-                    bot_username=bot_username,
-                    admin_chat_id=target_chat_id,
-                    message_id=message_id,
-                )
-                logger.debug("[get_bot_specific_file_id] Forwarded admin-chat copy already gone")
-                return
-        except Exception as e:
-            last_error = e
 
         logger.warning("[get_bot_specific_file_id] Could not delete forwarded message immediately: %s", last_error)
-        await _call_db_optional(
-            "reschedule_admin_cache_cleanup",
-            bot_username=bot_username,
-            admin_chat_id=target_chat_id,
-            message_id=message_id,
-            error=str(last_error or "delete_failed"),
-            delay_seconds=max(30, int(getattr(last_error, "retry_after", 0) or 60)),
+        retry_delay = max(10, int(getattr(last_error, "retry_after", 0) or 20))
+        await _reschedule_admin_cache_record(message_id, last_error or "delete_failed", retry_delay)
+        retry_task = asyncio.create_task(
+            _retry_delete_forwarded_message(message_id),
+            name=f"admin_cache_delete_retry:{bot_username}:{message_id}",
         )
+        _track_admin_cleanup_retry_task(retry_task)
     
     # Log context for debugging
     logger.debug(
