@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 _db = Database()
 _VALIDATED_HELPER_FILE_IDS: OrderedDict[tuple[str, str], tuple[float, Optional[str]]] = OrderedDict()
 _VALIDATED_HELPER_FILE_ID_TTL_SECONDS = 60 * 30
+_DEFERRED_HELPER_FILE_ID_TTL_SECONDS = 60 * 5
 _VALIDATED_HELPER_FILE_ID_MAX = 2000
 _ADMIN_CACHE_DELETE_RETRY_DELAYS_SECONDS = (2, 6, 15)
 _admin_cleanup_retry_tasks: set[asyncio.Task] = set()
@@ -35,19 +36,26 @@ def _get_recent_helper_validation(bot_username: str, file_id: Optional[str]) -> 
     cached = _VALIDATED_HELPER_FILE_IDS.get(cache_key)
     if not cached:
         return False, None
-    validated_at, file_unique_id = cached
-    if _time.monotonic() - validated_at >= _VALIDATED_HELPER_FILE_ID_TTL_SECONDS:
+    expires_at, file_unique_id = cached
+    if _time.monotonic() >= expires_at:
         _VALIDATED_HELPER_FILE_IDS.pop(cache_key, None)
         return False, None
     _VALIDATED_HELPER_FILE_IDS.move_to_end(cache_key)
     return True, file_unique_id
 
 
-def _remember_helper_validation(bot_username: str, file_id: Optional[str], file_unique_id: Optional[str] = None) -> None:
+def _remember_helper_validation(
+    bot_username: str,
+    file_id: Optional[str],
+    file_unique_id: Optional[str] = None,
+    *,
+    ttl_seconds: Optional[int] = None,
+) -> None:
     if not bot_username or not file_id:
         return
     cache_key = (bot_username.lower(), file_id)
-    _VALIDATED_HELPER_FILE_IDS[cache_key] = (_time.monotonic(), file_unique_id)
+    ttl = max(5, int(ttl_seconds or _VALIDATED_HELPER_FILE_ID_TTL_SECONDS))
+    _VALIDATED_HELPER_FILE_IDS[cache_key] = (_time.monotonic() + ttl, file_unique_id)
     _VALIDATED_HELPER_FILE_IDS.move_to_end(cache_key)
     while len(_VALIDATED_HELPER_FILE_IDS) > _VALIDATED_HELPER_FILE_ID_MAX:
         _VALIDATED_HELPER_FILE_IDS.popitem(last=False)
@@ -554,6 +562,12 @@ async def get_bot_specific_file_id(
                     return mapped_file_id
             except (TelegramError, asyncio.TimeoutError) as e:
                 if is_transient_telegram_error(e):
+                    _remember_helper_validation(
+                        bot_identifier,
+                        mapped_file_id,
+                        expected_unique_id,
+                        ttl_seconds=_DEFERRED_HELPER_FILE_ID_TTL_SECONDS,
+                    )
                     logger.warning(
                         "[media_registry] bot_media_mapping_validation_deferred_using_cached bot=%s msg=%s error=%s",
                         bot_identifier,
@@ -628,6 +642,12 @@ async def get_bot_specific_file_id(
                 return cached_file_id
         except (TelegramError, asyncio.TimeoutError) as e:
             if is_transient_telegram_error(e):
+                _remember_helper_validation(
+                    bot_username,
+                    cached_file_id,
+                    expected_unique_id,
+                    ttl_seconds=_DEFERRED_HELPER_FILE_ID_TTL_SECONDS,
+                )
                 logger.warning(
                     "[media_registry] cached_file_id_validation_deferred_using_cached bot=%s msg=%s idx=%s error=%s",
                     bot_username,

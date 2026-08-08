@@ -1179,7 +1179,7 @@
                     stack: err.stack
                 });
             }
-        }, 2500);
+        }, 4000);
     }
 
     async function init() {
@@ -1230,6 +1230,10 @@
             
             // Apply initial translations
             applyTranslations();
+
+            // Render a shell immediately so the Mini App never sits blank while
+            // session/bootstrap requests are still in flight.
+            showWelcome(false, 'replace');
             
             // Load initial data before showing welcome
             // Wrapped in try-catch to ensure showWelcome() is ALWAYS called
@@ -1253,7 +1257,7 @@
             const openedRoute = await restoreBrowserRoute(window.history.state);
             const openedDeepLink = openedRoute ? true : await openDeepLinkedProduct('replace', { addToHistory: false });
             if (!openedDeepLink) {
-                // Show welcome screen with loaded data (even if data loading failed)
+                // Refresh the welcome screen with the latest loaded data.
                 showWelcome(false, 'replace');
             }
         } catch (err) {
@@ -2144,16 +2148,18 @@
             if (tg.initData) {
                 headers['X-Telegram-Init-Data'] = tg.initData;
             }
+            const sessionSuffix = state.webappSessionToken ? `&session=${encodeURIComponent(state.webappSessionToken)}` : '';
             const fetchOptions = {
                 headers,
                 credentials: 'same-origin',
                 cache: 'no-store'
             };
-            let response = await fetch(`/api/admin/status?ts=${Date.now()}`, fetchOptions);
+            let response = await fetch(`/api/admin/status?ts=${Date.now()}${sessionSuffix}`, fetchOptions);
             if (response.status === 404) {
-                response = await fetch(`/api/webapp-admin/status?ts=${Date.now()}`, fetchOptions);
+                response = await fetch(`/api/webapp-admin/status?ts=${Date.now()}${sessionSuffix}`, fetchOptions);
             }
             if (!response.ok) {
+                logger.apiCall('admin_status', 'error', { status: response.status });
                 state.adminStatusLoaded = response.status === 403;
                 return;
             }

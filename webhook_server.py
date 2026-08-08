@@ -6232,8 +6232,26 @@ async def webapp_admin_status(request: Request):
         payload["cache_age_seconds"] = round(now - cached[0], 1)
         return _json_no_store(payload)
 
-    db_snapshot = await _catalog_db.get_admin_dashboard_snapshot(recent_limit=25)
-    seo_snapshot = await _catalog_db.get_search_intelligence_snapshot(limit=150)
+    admin_errors: list[str] = []
+
+    async def _safe_snapshot(name: str, factory, fallback):
+        try:
+            return await factory()
+        except Exception as exc:
+            logger.exception("[admin_status] %s_failed: %s", name, exc)
+            admin_errors.append(f"{name}: {str(exc)[:200]}")
+            return fallback
+
+    db_snapshot = await _safe_snapshot(
+        "db_snapshot",
+        lambda: _catalog_db.get_admin_dashboard_snapshot(recent_limit=25),
+        {"summary": {}},
+    )
+    seo_snapshot = await _safe_snapshot(
+        "seo_snapshot",
+        lambda: _catalog_db.get_search_intelligence_snapshot(limit=150),
+        {"runtime_status": {}, "recent_mappings": [], "recent_external_signals": []},
+    )
     seo_snapshot["search_console_setup"] = describe_search_console_setup(
         enabled=Config.SEARCH_CONSOLE_ENABLED,
         site_url=Config.SEARCH_CONSOLE_SITE_URL,
@@ -6244,7 +6262,11 @@ async def webapp_admin_status(request: Request):
         oauth_token_json=Config.SEARCH_CONSOLE_OAUTH_TOKEN_JSON,
         oauth_token_file=Config.SEARCH_CONSOLE_OAUTH_TOKEN_FILE,
     )
-    crawlable_snapshot = await _crawlable_page_snapshot(limit=5000)
+    crawlable_snapshot = await _safe_snapshot(
+        "crawlable_snapshot",
+        lambda: _crawlable_page_snapshot(limit=5000),
+        {"pages": [], "total": 0},
+    )
     indexnow_snapshot = dict(db_snapshot.get("indexnow") or {})
     indexnow_snapshot.update({
         "enabled": _indexnow_enabled(),
@@ -6269,6 +6291,7 @@ async def webapp_admin_status(request: Request):
         "webhook_monitor": _webhook_monitor.snapshot(),
         "seo": seo_snapshot,
         "crawlable_pages": crawlable_snapshot,
+        "errors": admin_errors,
         **db_snapshot,
         "indexnow": indexnow_snapshot,
     }
@@ -8096,6 +8119,15 @@ async def create_webapp_session(request: Request):
         content=json.dumps({"ok": True, "expires_in": WEBAPP_SESSION_TTL_SECONDS, "session": token}),
         media_type="application/json",
         headers={"Cache-Control": "no-store"},
+    )
+    response.set_cookie(
+        key=WEBAPP_SESSION_COOKIE,
+        value=token,
+        max_age=WEBAPP_SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
     )
     return response
 

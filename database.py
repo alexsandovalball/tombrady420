@@ -3107,6 +3107,14 @@ class Database:
             target_lang: Target language code
             translated_text: Translated text
         """
+        if translated_text is None:
+            logger.warning(
+                "Skipping translation cache write with null translated_text: source_lang=%s target_lang=%s source=%r",
+                source_lang,
+                target_lang,
+                (source_text or "")[:120],
+            )
+            return
         async with self.get_connection() as db:
             try:
                 await db.execute("""

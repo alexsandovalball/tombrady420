@@ -247,5 +247,10 @@ def startup_cleanup() -> None:
     )
     if tmp["used_bytes"] >= TMP_EMERGENCY_BYTES or cache["used_bytes"] >= PERSISTENT_EMERGENCY_BYTES:
         emergency_cleanup()
-    elif tmp["used_bytes"] >= TMP_WARNING_BYTES or cache["used_bytes"] >= PERSISTENT_WARNING_BYTES:
-        logger.warning("[resource] disk_usage_warning tmp_used=%d persistent_used=%d", tmp["used_bytes"], cache["used_bytes"])
+    elif tmp["used_bytes"] >= TMP_WARNING_BYTES or cache["app_cache_bytes"] >= PERSISTENT_WARNING_BYTES:
+        logger.warning(
+            "[resource] disk_usage_warning tmp_used=%d persistent_used=%d persistent_filesystem_used=%d",
+            tmp["used_bytes"],
+            cache["app_cache_bytes"],
+            cache["used_bytes"],
+        )
