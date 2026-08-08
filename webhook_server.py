@@ -7593,9 +7593,10 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
         media_index: Index of media in product's media array
     """
     init_data, _ = _get_validated_init_data(request, allow_preview=True)
+    crawler_request = _is_crawler_user_agent(request.headers.get("user-agent", ""))
     if (
         init_data is None
-        and _is_crawler_user_agent(request.headers.get("user-agent", ""))
+        and crawler_request
         and not request.url.path.startswith("/media/products/")
     ):
         logger.info(
@@ -7670,6 +7671,24 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
             )
             return current_file_id, tg
         except Exception as first_exc:
+            if is_transient_telegram_error(first_exc):
+                if original_file_id and original_file_id != current_file_id:
+                    logger.warning(
+                        "[media_cache] transient_original_file_id_fallback_retry product_id=%s media_index=%s crawler=%s",
+                        product_id,
+                        media_index,
+                        crawler_request,
+                    )
+                    tg = await fetch_telegram_file(
+                        bot,
+                        original_file_id,
+                        context=f"stream_catalog_media_original:{product_id}:{media_index}",
+                        retries=0,
+                        timeout_seconds=3.0,
+                    )
+                    return original_file_id, tg
+                raise first_exc
+
             if not source_chat_id or not source_message_id:
                 if original_file_id and original_file_id != current_file_id:
                     logger.warning(
@@ -7682,7 +7701,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                         original_file_id,
                         context=f"stream_catalog_media_original:{product_id}:{media_index}",
                         retries=0,
-                        timeout_seconds=3.5,
+                        timeout_seconds=3.0,
                     )
                     return original_file_id, tg
                 raise first_exc
@@ -7707,7 +7726,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                         original_file_id,
                         context=f"stream_catalog_media_original:{product_id}:{media_index}",
                         retries=0,
-                        timeout_seconds=3.5,
+                        timeout_seconds=3.0,
                     )
                     return original_file_id, tg
                 raise first_exc
@@ -7722,7 +7741,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                 refreshed_file_id,
                 context=f"stream_catalog_media_refresh:{product_id}:{media_index}",
                 retries=0,
-                timeout_seconds=3.5,
+                timeout_seconds=3.0,
             )
             refreshed_cache_key = (
                 source_chat_id,

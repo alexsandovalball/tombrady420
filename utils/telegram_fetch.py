@@ -28,8 +28,12 @@ TELEGRAM_FILE_FETCH_CONCURRENCY = _bounded_int_env("TELEGRAM_FILE_FETCH_CONCURRE
 TELEGRAM_FILE_FETCH_TIMEOUT_SECONDS = float(_bounded_int_env("TELEGRAM_FILE_FETCH_TIMEOUT_SECONDS", 8, 2, 30))
 TELEGRAM_FILE_FETCH_CACHE_TTL_SECONDS = float(_bounded_int_env("TELEGRAM_FILE_FETCH_CACHE_TTL_SECONDS", 90, 5, 600))
 TELEGRAM_FILE_FETCH_CACHE_MAX = _bounded_int_env("TELEGRAM_FILE_FETCH_CACHE_MAX", 512, 64, 4096)
+TELEGRAM_FILE_FETCH_FAILURE_COOLDOWN_SECONDS = float(
+    _bounded_int_env("TELEGRAM_FILE_FETCH_FAILURE_COOLDOWN_SECONDS", 8, 1, 30)
+)
 _telegram_file_fetch_semaphore = asyncio.Semaphore(TELEGRAM_FILE_FETCH_CONCURRENCY)
 _telegram_file_fetch_cache: OrderedDict[tuple[int, str], tuple[float, Any]] = OrderedDict()
+_telegram_file_fetch_failures: OrderedDict[tuple[int, str], tuple[float, str, str, float]] = OrderedDict()
 _telegram_file_fetch_inflight: dict[tuple[int, str], asyncio.Task] = {}
 _telegram_file_fetch_lock = asyncio.Lock()
 
@@ -55,8 +59,49 @@ async def _remember_fetch_result(key: tuple[int, str], result: Any) -> None:
     async with _telegram_file_fetch_lock:
         _telegram_file_fetch_cache[key] = (time.monotonic(), result)
         _telegram_file_fetch_cache.move_to_end(key)
+        _telegram_file_fetch_failures.pop(key, None)
         while len(_telegram_file_fetch_cache) > TELEGRAM_FILE_FETCH_CACHE_MAX:
             _telegram_file_fetch_cache.popitem(last=False)
+
+
+async def _get_recent_fetch_failure(key: tuple[int, str]) -> tuple[str, str, float] | None:
+    async with _telegram_file_fetch_lock:
+        cached = _telegram_file_fetch_failures.get(key)
+        if cached is None:
+            return None
+        expires_at, failure_kind, message, retry_after = cached
+        if time.monotonic() >= expires_at:
+            _telegram_file_fetch_failures.pop(key, None)
+            return None
+        _telegram_file_fetch_failures.move_to_end(key)
+        return failure_kind, message, retry_after
+
+
+async def _remember_fetch_failure(
+    key: tuple[int, str],
+    *,
+    failure_kind: str,
+    message: str,
+    retry_after: float = 0.0,
+    ttl_seconds: Optional[float] = None,
+) -> None:
+    cooldown = max(1.0, float(ttl_seconds or TELEGRAM_FILE_FETCH_FAILURE_COOLDOWN_SECONDS))
+    async with _telegram_file_fetch_lock:
+        _telegram_file_fetch_failures[key] = (
+            time.monotonic() + cooldown,
+            failure_kind,
+            message,
+            max(0.0, float(retry_after or 0.0)),
+        )
+        _telegram_file_fetch_failures.move_to_end(key)
+        while len(_telegram_file_fetch_failures) > TELEGRAM_FILE_FETCH_CACHE_MAX:
+            _telegram_file_fetch_failures.popitem(last=False)
+
+
+def _raise_recent_fetch_failure(failure_kind: str, message: str, retry_after: float) -> None:
+    if failure_kind == "retry_after":
+        raise RetryAfter(retry_after or 1)
+    raise TimedOut(message or "Recent Telegram file fetch timed out")
 
 
 async def _run_fetch(
@@ -84,11 +129,23 @@ async def _run_fetch(
                     delay,
                 )
                 if attempt >= attempts:
+                    await _remember_fetch_failure(
+                        _bot_fetch_key(bot, file_id),
+                        failure_kind="retry_after",
+                        message=str(exc),
+                        retry_after=delay,
+                        ttl_seconds=min(max(delay, 1.0), TELEGRAM_FILE_FETCH_FAILURE_COOLDOWN_SECONDS),
+                    )
                     raise
                 await asyncio.sleep(delay)
             except (asyncio.TimeoutError, TimedOut) as exc:
                 last_exc = exc
                 if attempt >= attempts:
+                    await _remember_fetch_failure(
+                        _bot_fetch_key(bot, file_id),
+                        failure_kind="timeout",
+                        message=str(exc),
+                    )
                     raise
                 delay = 0.25 * (attempt + 1) + random.uniform(0.0, 0.25)
                 logger.warning(
@@ -126,6 +183,12 @@ async def fetch_telegram_file(
     if cached is not None:
         logger.debug("[telegram_fetch] cache_hit context=%s", context)
         return cached
+
+    recent_failure = await _get_recent_fetch_failure(key)
+    if recent_failure is not None:
+        failure_kind, message, retry_after = recent_failure
+        logger.debug("[telegram_fetch] failure_cooldown_hit context=%s kind=%s", context, failure_kind)
+        _raise_recent_fetch_failure(failure_kind, message, retry_after)
 
     async with _telegram_file_fetch_lock:
         inflight = _telegram_file_fetch_inflight.get(key)
