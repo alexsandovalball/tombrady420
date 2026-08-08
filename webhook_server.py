@@ -4152,7 +4152,18 @@ async def _translate_seo_lines(lines: Iterable[str], language: str) -> List[str]
     values = [str(line) for line in lines if str(line or "").strip()]
     if _normalize_seo_language(language) == "en" or not values:
         return values
-    return await translation_service.translate_batch(values, language, source_lang="en")
+    translated_values = await translation_service.translate_batch(values, language, source_lang="en")
+    if not isinstance(translated_values, list):
+        return values
+
+    normalized_values: List[str] = []
+    for index, original in enumerate(values):
+        translated = translated_values[index] if index < len(translated_values) else None
+        candidate = translated if isinstance(translated, str) and translated.strip() else original
+        if candidate:
+            normalized_values.append(str(candidate))
+
+    return normalized_values
 
 
 def _configured_bot_username(bot_index: int) -> str:
@@ -6222,7 +6233,7 @@ async def webapp_admin_status(request: Request):
     user, _, init_data = _get_authenticated_webapp_user(request)
     await _check_user_not_blocked(init_data, get_client_ip(request))
     if int(user.id) not in {int(admin_id) for admin_id in Config.ADMIN_IDS}:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+        return _json_no_store({"authorized": False})
 
     admin_user_id = int(user.id)
     now = _time.monotonic()
@@ -6274,6 +6285,7 @@ async def webapp_admin_status(request: Request):
         "key_file_available": bool(_indexnow_key(create=False)),
     })
     payload = {
+        "authorized": True,
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "admin_user_id": admin_user_id,
         "cache_age_seconds": 0,
@@ -6386,7 +6398,9 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
     subcategory = product.get("subcategory") or ""
     product_title, raw_seo_desc, description_lines = _caption_parts(caption)
     localized_description_lines = await _translate_seo_lines(description_lines, language)
-    localized_raw_desc = " ".join(localized_description_lines)[:160] or raw_seo_desc
+    localized_raw_desc = " ".join(
+        line for line in localized_description_lines if isinstance(line, str) and line.strip()
+    )[:160] or raw_seo_desc
     seo_desc = _build_product_seo_description(product_title, localized_raw_desc, category, subcategory, language)
     seo_title = _build_product_seo_title(product_title, category, subcategory, language)
     seo_image = _product_primary_image_url(product)

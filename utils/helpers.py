@@ -531,9 +531,9 @@ async def get_bot_specific_file_id(
     if canonical and not force_refresh:
         mapped_file_id = await _db.get_bot_media_file_id(bot_identifier, canonical["file_unique_id"])
         if mapped_file_id:
+            expected_unique_id = canonical.get("file_unique_id")
             helper_validated, helper_unique_id = _get_recent_helper_validation(bot_identifier, mapped_file_id)
             if helper_validated:
-                expected_unique_id = canonical.get("file_unique_id")
                 if not expected_unique_id or not helper_unique_id or helper_unique_id == expected_unique_id:
                     logger.debug("[media_registry] using_recent_bot_media_mapping bot=%s msg=%s", bot_identifier, source_message_id)
                     return mapped_file_id
@@ -546,7 +546,6 @@ async def get_bot_specific_file_id(
                     timeout_seconds=validation_timeout_seconds,
                 )
                 mapped_unique_id = getattr(tg_file, "file_unique_id", None)
-                expected_unique_id = canonical.get("file_unique_id")
                 if expected_unique_id and mapped_unique_id and mapped_unique_id != expected_unique_id:
                     await _db.invalidate_bot_media_file_id(bot_identifier, expected_unique_id)
                     logger.warning(

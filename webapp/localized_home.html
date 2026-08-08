@@ -495,7 +495,11 @@
 
 
             function renderAdminPanel(data) {
-                if (!data) return;
+                if (!data || data.authorized === false) {
+                    panel.hidden = true;
+                    panel.replaceChildren();
+                    return;
+                }
 
                 var summary = data.summary || {};
                 var seo = data.seo || {};
@@ -823,6 +827,12 @@
                         return;
                     }
                     var data = await response.json();
+                    if (data && data.authorized === false) {
+                        adminState.loaded = true;
+                        panel.hidden = true;
+                        panel.replaceChildren();
+                        return;
+                    }
                     adminState.loaded = true;
                     renderAdminPanel(data);
                 } catch (err) {
