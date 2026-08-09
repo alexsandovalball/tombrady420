@@ -6233,7 +6233,10 @@ async def webapp_admin_status(request: Request):
     user, _, init_data = _get_authenticated_webapp_user(request)
     await _check_user_not_blocked(init_data, get_client_ip(request))
     if int(user.id) not in {int(admin_id) for admin_id in Config.ADMIN_IDS}:
-        return _json_no_store({"authorized": False})
+        return _json_no_store(
+            {"authorized": False, "detail": "Admin access required"},
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
 
     admin_user_id = int(user.id)
     now = _time.monotonic()

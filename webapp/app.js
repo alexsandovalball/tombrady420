@@ -1693,7 +1693,13 @@
 
     function renderAdminPanel(data) {
         const panel = document.getElementById('admin-panel');
-        if (!panel || !data) return;
+        if (!panel || !data || data.authorized === false) {
+            if (panel) {
+                panel.hidden = true;
+                panel.replaceChildren();
+            }
+            return;
+        }
 
         const summary = data.summary || {};
         const seo = data.seo || {};
@@ -2161,9 +2167,29 @@
             if (!response.ok) {
                 logger.apiCall('admin_status', 'error', { status: response.status });
                 state.adminStatusLoaded = response.status === 403;
+                if (response.status === 403) {
+                    state.adminStatus = null;
+                    const panel = document.getElementById('admin-panel');
+                    if (panel) {
+                        panel.hidden = true;
+                        panel.replaceChildren();
+                    }
+                    stopAdminPanelAutoRefresh();
+                }
                 return;
             }
             const data = await response.json();
+            if (data && data.authorized === false) {
+                state.adminStatus = null;
+                state.adminStatusLoaded = true;
+                const panel = document.getElementById('admin-panel');
+                if (panel) {
+                    panel.hidden = true;
+                    panel.replaceChildren();
+                }
+                stopAdminPanelAutoRefresh();
+                return;
+            }
             state.adminStatus = data;
             state.adminStatusLoaded = true;
             renderAdminPanel(data);

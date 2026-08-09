@@ -823,12 +823,22 @@
                     if (!response.ok) {
                         if (response.status === 403) {
                             adminState.loaded = true;
+                            if (adminState.refreshTimer) {
+                                window.clearInterval(adminState.refreshTimer);
+                                adminState.refreshTimer = null;
+                            }
+                            panel.hidden = true;
+                            panel.replaceChildren();
                         }
                         return;
                     }
                     var data = await response.json();
                     if (data && data.authorized === false) {
                         adminState.loaded = true;
+                        if (adminState.refreshTimer) {
+                            window.clearInterval(adminState.refreshTimer);
+                            adminState.refreshTimer = null;
+                        }
                         panel.hidden = true;
                         panel.replaceChildren();
                         return;
