@@ -44,6 +44,7 @@ from utils.helpers import (
     get_channel_username,
     get_file_id_cache_size,
     get_bot_specific_file_id,
+    is_invalid_telegram_file_id_error,
     is_admin,
     is_transient_telegram_error,
     register_bot_handlers,
@@ -100,7 +101,7 @@ from utils.webhook_identity import BotSlot, build_bot_slot, build_registry_webho
 from middleware.request_deduplicator import RequestDeduplicator
 from configs.telegram_ip_whitelist import is_telegram_ip
 from utils.deeplinks import build_bot_product_url, build_bot_start_url, build_webapp_product_url
-from utils.telegram_fetch import fetch_telegram_file
+from utils.telegram_fetch import fetch_telegram_file, get_telegram_fetch_snapshot
 from utils.access_control import (
     is_user_blocked_cached,
     record_user_ip_debounced,
@@ -228,6 +229,8 @@ _MEDIA_FETCH_FAILURE_COOLDOWN_SECONDS = float(
 _MEDIA_FETCH_FAILURE_CACHE_MAX = _bounded_int_env("MEDIA_FETCH_FAILURE_CACHE_MAX", 512, 64, 4096)
 _media_fetch_failures: OrderedDict[tuple[int, int], tuple[float, str]] = OrderedDict()
 _media_fetch_failures_lock = asyncio.Lock()
+_MEDIA_RESOLUTION_CONCURRENCY = _bounded_int_env("MEDIA_RESOLUTION_CONCURRENCY", 2, 1, 4)
+_media_resolution_semaphore = asyncio.Semaphore(_MEDIA_RESOLUTION_CONCURRENCY)
 
 # Media cache configuration. Disk cache is app-owned, bounded, and self-pruning.
 _DEFAULT_MEDIA_STORAGE_MODE = "persistent" if Path("/data").exists() else "temp"
@@ -249,6 +252,8 @@ MEDIA_CACHE_MAX_SIZE_BYTES = MEDIA_CACHE_MAX_SIZE_MB * 1024 * 1024
 MEDIA_CACHE_TTL_HOURS = _bounded_int_env("MEDIA_CACHE_TTL_HOURS", 12, 1, 168)
 MEDIA_CACHE_MAX_FILE_BYTES = _bounded_int_env("MEDIA_CACHE_MAX_FILE_MB", 25, 1, 50) * 1024 * 1024
 MEDIA_TEMP_MAX_BYTES = _bounded_int_env("MEDIA_TEMP_MAX_MB", 250, 50, 1200) * 1024 * 1024
+_RUNTIME_TELEMETRY_INTERVAL_SECONDS = _bounded_int_env("RUNTIME_TELEMETRY_INTERVAL_SECONDS", 300, 60, 900)
+_RUNTIME_MEMORY_WARN_BYTES = _bounded_int_env("RUNTIME_MEMORY_WARN_MB", 400, 128, 4096) * 1024 * 1024
 
 ensure_resource_dirs()
 MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -647,17 +652,25 @@ async def _resolve_bot_specific_media_file_id(
     try:
         bot_username = bot.username or ""
         cache_key = (source_chat_id, source_message_id, media_index, bot_username)
-        bot_specific_file_id = _resolved_file_id_cache.get(cache_key)
-        if bot_specific_file_id is None:
-            bot_specific_file_id = await get_bot_specific_file_id(
-                bot,
-                source_chat_id,
-                source_message_id,
-                file_type,
-                file_index=media_index,
-            )
-            if bot_specific_file_id:
-                _cache_resolved_file_id(cache_key, bot_specific_file_id)
+        # Category pages can request several media items at once. Share the
+        # per-item resolution lock so concurrent callers do not forward the
+        # same source message repeatedly into the admin chat.
+        resolution_lock = await _get_media_generation_lock(
+            f"resolve:{source_chat_id}:{source_message_id}:{media_index}:{bot_username}"
+        )
+        async with resolution_lock:
+            bot_specific_file_id = _resolved_file_id_cache.get(cache_key)
+            if bot_specific_file_id is None:
+                async with _media_resolution_semaphore:
+                    bot_specific_file_id = await get_bot_specific_file_id(
+                        bot,
+                        source_chat_id,
+                        source_message_id,
+                        file_type,
+                        file_index=media_index,
+                    )
+                if bot_specific_file_id:
+                    _cache_resolved_file_id(cache_key, bot_specific_file_id)
 
         if bot_specific_file_id:
             logger.debug(
@@ -1724,6 +1737,8 @@ def _runtime_process_snapshot() -> Dict[str, object]:
         "visitor_events_dropped": _visitor_events_dropped,
         "seo_response_cache_entries": len(_seo_response_cache),
         "webapp_search_cache_entries": len(_webapp_search_cache),
+        "telegram_fetch": get_telegram_fetch_snapshot(),
+        "memory_warning_threshold_bytes": _RUNTIME_MEMORY_WARN_BYTES,
     }
     try:
         status_text = Path("/proc/self/status").read_text(encoding="utf-8")
@@ -1758,6 +1773,8 @@ def _media_runtime_snapshot() -> Dict[str, object]:
         "active_files": len(_media_active_streams),
         "tracked_temp_files": len(_media_last_access),
         "generation_locks": len(_media_generation_locks),
+        "resolution_concurrency_limit": _MEDIA_RESOLUTION_CONCURRENCY,
+        "resolution_semaphore_available": getattr(_media_resolution_semaphore, "_value", None),
     }
 
 
@@ -2259,6 +2276,38 @@ async def _media_cache_prune_loop():
                 logger.warning("[resource] cache_usage_warning app_cache=%d", cache_usage["app_cache_bytes"])
         except Exception as e:
             logger.warning(f"Media cache prune loop error: {e}")
+
+
+async def _runtime_telemetry_loop():
+    """Periodically log bounded runtime counters for memory investigations."""
+    while True:
+        await asyncio.sleep(_RUNTIME_TELEMETRY_INTERVAL_SECONDS)
+        try:
+            process = _runtime_process_snapshot()
+            media = _media_runtime_snapshot()
+            rss_bytes = process.get("memory_rss_bytes")
+            fetch = process.get("telegram_fetch") or {}
+            log_method = logger.warning if isinstance(rss_bytes, int) and rss_bytes >= _RUNTIME_MEMORY_WARN_BYTES else logger.info
+            cache_state = _cache_state_snapshot()
+            log_method(
+                "[runtime_telemetry] rss_bytes=%s peak_rss_bytes=%s active_streams=%s "
+                "generation_locks=%s telegram_active=%s telegram_inflight=%s "
+                "telegram_failed=%s cache_entries=%s media_info=%s api_results=%s",
+                rss_bytes,
+                process.get("memory_peak_rss_bytes"),
+                media.get("active_streams"),
+                media.get("generation_locks"),
+                fetch.get("active"),
+                fetch.get("inflight"),
+                fetch.get("failed"),
+                fetch.get("result_cache_entries"),
+                cache_state.get("media_info"),
+                cache_state.get("api_results"),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("[runtime_telemetry] snapshot_failed", exc_info=True)
 
 
 async def _wal_checkpoint_loop():
@@ -3682,6 +3731,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_visitor_event_writer_loop(), name="visitor_event_writer"),
         asyncio.create_task(_visitor_analytics_prune_loop(), name="visitor_analytics_prune"),
         asyncio.create_task(_media_cache_prune_loop(), name="media_cache_prune"),
+        asyncio.create_task(_runtime_telemetry_loop(), name="runtime_telemetry"),
         asyncio.create_task(_admin_cache_cleanup_loop(), name="admin_cache_cleanup"),
         asyncio.create_task(_wal_checkpoint_loop(), name="wal_checkpoint"),
         asyncio.create_task(_seo_auto_learn_loop(), name="seo_auto_learn"),
@@ -4031,6 +4081,7 @@ _SEO_UI = {
         "browse_bot": "Browse Full Catalog in Telegram", "related_products": "Related products",
         "new_products": "New products",
         "related_searches": "Related searches", "back_home": "Back to Homepage",
+        "back_to_category": "Back to category", "back_to_subcategory": "Back to subcategory",
         "previous": "Previous", "next": "Next", "page": "Page",
         "media_preview": "Product media preview", "all_media": "All product media",
         "open_video": "Open video", "open_media": "Open media", "media": "media",
@@ -4048,6 +4099,7 @@ _SEO_UI = {
         "browse_bot": "Vollständigen Katalog in Telegram öffnen", "related_products": "Ähnliche Produkte",
         "new_products": "Neue Produkte",
         "related_searches": "Ähnliche Suchanfragen", "back_home": "Zurück zur Startseite",
+        "back_to_category": "Zur Kategorie", "back_to_subcategory": "Zur Unterkategorie",
         "previous": "Zurück", "next": "Weiter", "page": "Seite",
         "media_preview": "Produktmedien", "all_media": "Alle Produktmedien",
         "open_video": "Video öffnen", "open_media": "Medium öffnen", "media": "Medium",
@@ -4064,6 +4116,7 @@ _SEO_UI = {
         "browse_bot": "Volledige catalogus in Telegram", "related_products": "Vergelijkbare producten",
         "new_products": "Nieuwe producten",
         "related_searches": "Gerelateerde zoekopdrachten", "back_home": "Terug naar home",
+        "back_to_category": "Terug naar categorie", "back_to_subcategory": "Terug naar subcategorie",
         "previous": "Vorige", "next": "Volgende", "page": "Pagina",
         "media_preview": "Productmedia", "all_media": "Alle productmedia",
         "open_video": "Video openen", "open_media": "Media openen", "media": "media",
@@ -4080,6 +4133,7 @@ _SEO_UI = {
         "browse_bot": "Apri il catalogo completo su Telegram", "related_products": "Prodotti correlati",
         "new_products": "Nuovi prodotti",
         "related_searches": "Ricerche correlate", "back_home": "Torna alla home",
+        "back_to_category": "Torna alla categoria", "back_to_subcategory": "Torna alla sottocategoria",
         "previous": "Precedente", "next": "Successiva", "page": "Pagina",
         "media_preview": "Media del prodotto", "all_media": "Tutti i media del prodotto",
         "open_video": "Apri video", "open_media": "Apri media", "media": "media",
@@ -4096,6 +4150,7 @@ _SEO_UI = {
         "browse_bot": "Abrir catálogo completo en Telegram", "related_products": "Productos relacionados",
         "new_products": "Nuevos productos",
         "related_searches": "Búsquedas relacionadas", "back_home": "Volver al inicio",
+        "back_to_category": "Volver a la categoría", "back_to_subcategory": "Volver a la subcategoría",
         "previous": "Anterior", "next": "Siguiente", "page": "Página",
         "media_preview": "Contenido del producto", "all_media": "Todo el contenido del producto",
         "open_video": "Abrir vídeo", "open_media": "Abrir contenido", "media": "contenido",
@@ -4112,6 +4167,7 @@ _SEO_UI = {
         "browse_bot": "Ouvrir le catalogue complet sur Telegram", "related_products": "Produits similaires",
         "new_products": "Nouveaux produits",
         "related_searches": "Recherches associées", "back_home": "Retour à l'accueil",
+        "back_to_category": "Retour à la catégorie", "back_to_subcategory": "Retour à la sous-catégorie",
         "previous": "Précédent", "next": "Suivant", "page": "Page",
         "media_preview": "Médias du produit", "all_media": "Tous les médias du produit",
         "open_video": "Ouvrir la vidéo", "open_media": "Ouvrir le média", "media": "média",
@@ -6570,6 +6626,15 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
     ctx["subcategory"] = subcategory
     ctx["subcategory_display"] = get_subcategory_display_name(subcategory, language) if subcategory else ""
     ctx["subcategory_url"] = _localized_path(_canonical_subcategory_path(category, subcategory), language) if category and subcategory else ""
+    if ctx["subcategory_url"]:
+        ctx["back_url"] = ctx["subcategory_url"]
+        ctx["back_label"] = f"← {_seo_ui(language)['back_to_subcategory']}: {ctx['subcategory_display']}"
+    elif ctx["category_url"]:
+        ctx["back_url"] = ctx["category_url"]
+        ctx["back_label"] = f"← {_seo_ui(language)['back_to_category']}: {ctx['category_display']}"
+    else:
+        ctx["back_url"] = _localized_path("/", language)
+        ctx["back_label"] = f"← {_seo_ui(language)['back_home']}"
     ctx["product_image"] = _product_primary_image_url(product, absolute=False)
     ctx["product_media"] = product_media
     ctx["telegram_bot_url"] = deep_link
@@ -7817,6 +7882,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
     temp_file_to_cleanup: Optional[Path] = None
 
     async def _fetch_stream_file(current_file_id: str) -> tuple[str, Any]:
+        stale_file_id_invalidated = False
         try:
             tg = await fetch_telegram_file(
                 bot,
@@ -7827,8 +7893,54 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
             )
             return current_file_id, tg
         except Exception as first_exc:
+            if is_invalid_telegram_file_id_error(first_exc):
+                # Remove stale IDs from both the short-lived resolver cache and
+                # the durable per-bot cache before attempting rehydration.
+                _resolved_file_id_cache.pop(
+                    (source_chat_id, source_message_id, media_index, getattr(bot, "username", "")),
+                    None,
+                )
+                if source_chat_id and source_message_id:
+                    try:
+                        await _catalog_db.delete_bot_file_id_cache_entry(
+                            source_chat_id,
+                            source_message_id,
+                            media_index,
+                            getattr(bot, "username", ""),
+                        )
+                    except Exception as cache_exc:
+                        logger.debug(
+                            "[media_cache] stale_file_id_cache_delete_failed product_id=%s media_index=%s error=%s",
+                            product_id,
+                            media_index,
+                            cache_exc,
+                        )
+                    try:
+                        canonical = await _catalog_db.get_canonical_media_by_origin(
+                            source_chat_id,
+                            source_message_id,
+                            media_type_info.get("type", "document"),
+                        )
+                        if canonical and canonical.get("file_unique_id"):
+                            await _catalog_db.invalidate_bot_media_file_id(
+                                (getattr(bot, "username", "") or "").lower(),
+                                canonical["file_unique_id"],
+                            )
+                    except Exception as registry_exc:
+                        logger.debug(
+                            "[media_cache] stale_media_registry_invalidation_failed product_id=%s media_index=%s error=%s",
+                            product_id,
+                            media_index,
+                            registry_exc,
+                        )
+                logger.warning(
+                    "[media_cache] stale_file_id_invalidated product_id=%s media_index=%s",
+                    product_id,
+                    media_index,
+                )
+                stale_file_id_invalidated = True
             if is_transient_telegram_error(first_exc):
-                if original_file_id and original_file_id != current_file_id:
+                if original_file_id and original_file_id != current_file_id and not stale_file_id_invalidated:
                     logger.warning(
                         "[media_cache] transient_original_file_id_fallback_retry product_id=%s media_index=%s crawler=%s",
                         product_id,
@@ -7888,7 +8000,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                 force_refresh=True,
             )
             if not refreshed_file_id or refreshed_file_id == current_file_id:
-                if original_file_id and original_file_id != current_file_id:
+                if original_file_id and original_file_id != current_file_id and not stale_file_id_invalidated:
                     logger.warning(
                         "[media_cache] original_file_id_fallback_retry product_id=%s media_index=%s",
                         product_id,
@@ -8427,8 +8539,17 @@ async def webapp_logs(request: Request):
             if details:
                 log_msg += f" details={json.dumps(details)}"
             
+            # A denied admin-monitor probe is expected for ordinary users. Keep
+            # it visible for diagnostics without treating it as an app fault.
+            endpoint = str(details.get("endpoint", "")) if isinstance(details, dict) else ""
+            expected_admin_denial = (
+                ("/api/admin/status" in endpoint or "/api/webapp-admin/status" in endpoint)
+                and ("403" in str(error) or str(details.get("status_code", "")) == "403")
+            )
             # Log at appropriate level based on status
-            if status == "error" or error:
+            if expected_admin_denial:
+                logger.info(log_msg + " expected_admin_denial=true")
+            elif status == "error" or error:
                 logger.error(log_msg)
             elif status == "warning":
                 logger.warning(log_msg)

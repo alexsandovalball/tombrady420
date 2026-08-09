@@ -51,6 +51,9 @@ def _format_admin_status_message(snapshot: dict) -> str:
     metrics = snapshot.get("metrics", {}).get("endpoints", {})
     runtime_bots = snapshot.get("runtime_bots", [])
     cache_state = snapshot.get("cache_state", {})
+    process = snapshot.get("process", {})
+    media_runtime = snapshot.get("media_runtime", {})
+    telegram_fetch = process.get("telegram_fetch", {}) if isinstance(process, dict) else {}
     event_counts = snapshot.get("webapp_event_counts", [])
     bot_user_counts = snapshot.get("bot_user_counts", [])
     top_locations = snapshot.get("top_visitor_locations", [])
@@ -168,6 +171,10 @@ def _format_admin_status_message(snapshot: dict) -> str:
         f"• Resolved file IDs: {_fmt_count(cache_state.get('resolved_file_ids'))}",
         f"• Orphan legacy secrets: {_fmt_count(cache_state.get('orphan_legacy_secrets'))}",
         f"• Webhook 401 total: {_fmt_count(snapshot.get('webhook_401_total'))}",
+        f"• RAM RSS: {_fmt_count(round((process.get('memory_rss_bytes') or 0) / (1024 * 1024), 1))} MB",
+        f"• Media streams: {_fmt_count(media_runtime.get('active_streams'))}; "
+        f"Telegram fetches active: {_fmt_count(telegram_fetch.get('active'))}",
+        f"• Telegram fetch failures: {_fmt_count(telegram_fetch.get('failed'))}",
     ])
 
     if metrics:
@@ -224,6 +231,8 @@ async def adminstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             from webhook_server import (
                 _runtime_bot_health_snapshots,
                 _cache_state_snapshot,
+                _runtime_process_snapshot,
+                _media_runtime_snapshot,
                 _webhook_401_counter,
                 _indexnow_enabled,
                 _indexnow_key,
@@ -231,6 +240,8 @@ async def adminstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             snapshot["runtime_bots"] = await _runtime_bot_health_snapshots()
             snapshot["cache_state"] = _cache_state_snapshot()
+            snapshot["process"] = _runtime_process_snapshot()
+            snapshot["media_runtime"] = _media_runtime_snapshot()
             snapshot["webhook_401_total"] = _webhook_401_counter
             snapshot["metrics"] = metrics.snapshot()
             snapshot["indexnow"] = {

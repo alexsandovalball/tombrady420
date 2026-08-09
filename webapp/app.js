@@ -2461,11 +2461,45 @@
         updateBackButton();
     }
 
+    function getProductTaxonomy(product = state.currentProduct) {
+        const category = String(product?.category || '').trim();
+        const subcategory = String(product?.subcategory || '').trim();
+        if (!category) return null;
+        return { category, subcategory: subcategory || null };
+    }
+
+    function goBackToProductTaxonomy() {
+        const destination = getProductTaxonomy();
+        if (!destination) return false;
+
+        logger.navigationChange('go_back_to_product_taxonomy', {
+            product_id: state.currentProduct?.id,
+            category: destination.category,
+            subcategory: destination.subcategory
+        });
+
+        // A product opened from a notification or deep link can have no
+        // browser/app history. Always return to its canonical catalog page.
+        state.history = [];
+        loadProducts(
+            destination.category,
+            destination.subcategory,
+            true,
+            false,
+            'replace'
+        );
+        return true;
+    }
+
     function goBack() {
         logger.userInteraction('back_button_click', {
             current_view: state.view,
             history_length: state.history.length
         });
+
+        if (state.view === 'product-detail' && goBackToProductTaxonomy()) {
+            return;
+        }
 
         if (
             isPublicBrowserRoutingEnabled() &&

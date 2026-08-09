@@ -36,6 +36,10 @@ _telegram_file_fetch_cache: OrderedDict[tuple[int, str], tuple[float, Any]] = Or
 _telegram_file_fetch_failures: OrderedDict[tuple[int, str], tuple[float, str, str, float]] = OrderedDict()
 _telegram_file_fetch_inflight: dict[tuple[int, str], asyncio.Task] = {}
 _telegram_file_fetch_lock = asyncio.Lock()
+_telegram_file_fetch_active = 0
+_telegram_file_fetch_started = 0
+_telegram_file_fetch_completed = 0
+_telegram_file_fetch_failed = 0
 
 
 def _bot_fetch_key(bot: Bot, file_id: str) -> tuple[int, str]:
@@ -131,55 +135,66 @@ async def _run_fetch(
     attempts: int,
     timeout: float,
 ) -> Any:
+    global _telegram_file_fetch_active, _telegram_file_fetch_started
+    global _telegram_file_fetch_failed, _telegram_file_fetch_completed
     async with _telegram_file_fetch_semaphore:
-        last_exc: Exception | None = None
-        for attempt in range(attempts + 1):
-            try:
-                result = await asyncio.wait_for(bot.get_file(file_id), timeout=timeout)
-                await _remember_fetch_result(_bot_fetch_key(bot, file_id), result)
-                return result
-            except RetryAfter as exc:
-                last_exc = exc
-                delay = max(0.5, float(getattr(exc, "retry_after", 1) or 1))
-                logger.warning(
-                    "[telegram_fetch] retry_after context=%s attempt=%d delay=%.2f",
-                    context,
-                    attempt + 1,
-                    delay,
-                )
-                if attempt >= attempts:
-                    await _remember_fetch_failure(
-                        _bot_fetch_key(bot, file_id),
-                        failure_kind="retry_after",
-                        message=str(exc),
-                        retry_after=delay,
-                        ttl_seconds=min(max(delay, 1.0), TELEGRAM_FILE_FETCH_FAILURE_COOLDOWN_SECONDS),
+        _telegram_file_fetch_active += 1
+        _telegram_file_fetch_started += 1
+        try:
+            last_exc: Exception | None = None
+            for attempt in range(attempts + 1):
+                try:
+                    result = await asyncio.wait_for(bot.get_file(file_id), timeout=timeout)
+                    await _remember_fetch_result(_bot_fetch_key(bot, file_id), result)
+                    return result
+                except RetryAfter as exc:
+                    last_exc = exc
+                    delay = max(0.5, float(getattr(exc, "retry_after", 1) or 1))
+                    logger.warning(
+                        "[telegram_fetch] retry_after context=%s attempt=%d delay=%.2f",
+                        context,
+                        attempt + 1,
+                        delay,
                     )
-                    raise
-                await asyncio.sleep(delay)
-            except (asyncio.TimeoutError, TimedOut) as exc:
-                last_exc = exc
-                if attempt >= attempts:
-                    await _remember_fetch_failure(
-                        _bot_fetch_key(bot, file_id),
-                        failure_kind="timeout",
-                        message=str(exc),
+                    if attempt >= attempts:
+                        await _remember_fetch_failure(
+                            _bot_fetch_key(bot, file_id),
+                            failure_kind="retry_after",
+                            message=str(exc),
+                            retry_after=delay,
+                            ttl_seconds=min(max(delay, 1.0), TELEGRAM_FILE_FETCH_FAILURE_COOLDOWN_SECONDS),
+                        )
+                        raise
+                    await asyncio.sleep(delay)
+                except (asyncio.TimeoutError, TimedOut) as exc:
+                    last_exc = exc
+                    if attempt >= attempts:
+                        await _remember_fetch_failure(
+                            _bot_fetch_key(bot, file_id),
+                            failure_kind="timeout",
+                            message=str(exc),
+                        )
+                        raise
+                    delay = 0.25 * (attempt + 1) + random.uniform(0.0, 0.25)
+                    logger.warning(
+                        "[telegram_fetch] timeout retry context=%s attempt=%d delay=%.2f error=%s",
+                        context,
+                        attempt + 1,
+                        delay,
+                        exc,
                     )
+                    await asyncio.sleep(delay)
+                except TelegramError:
                     raise
-                delay = 0.25 * (attempt + 1) + random.uniform(0.0, 0.25)
-                logger.warning(
-                    "[telegram_fetch] timeout retry context=%s attempt=%d delay=%.2f error=%s",
-                    context,
-                    attempt + 1,
-                    delay,
-                    exc,
-                )
-                await asyncio.sleep(delay)
-            except TelegramError:
-                raise
-        if last_exc is not None:
-            raise last_exc
-        raise RuntimeError(f"Telegram file fetch failed unexpectedly for {context}")
+            if last_exc is not None:
+                raise last_exc
+            raise RuntimeError(f"Telegram file fetch failed unexpectedly for {context}")
+        except BaseException:
+            _telegram_file_fetch_failed += 1
+            raise
+        finally:
+            _telegram_file_fetch_active = max(0, _telegram_file_fetch_active - 1)
+            _telegram_file_fetch_completed += 1
 
 
 async def fetch_telegram_file(
@@ -228,3 +243,21 @@ async def fetch_telegram_file(
     # One browser request timing out must not cancel the shared fetch for other
     # callers, nor interrupt its eventual cache/update cleanup.
     return await asyncio.shield(inflight)
+
+
+def get_telegram_fetch_snapshot() -> dict[str, int]:
+    """Return bounded fetch counters for the admin/runtime monitor.
+
+    These counters are intentionally process-local and diagnostic only. They
+    avoid retaining request objects, exceptions, or media data in memory.
+    """
+    return {
+        "active": _telegram_file_fetch_active,
+        "inflight": len(_telegram_file_fetch_inflight),
+        "started": _telegram_file_fetch_started,
+        "completed": _telegram_file_fetch_completed,
+        "failed": _telegram_file_fetch_failed,
+        "result_cache_entries": len(_telegram_file_fetch_cache),
+        "failure_cache_entries": len(_telegram_file_fetch_failures),
+        "concurrency_limit": TELEGRAM_FILE_FETCH_CONCURRENCY,
+    }

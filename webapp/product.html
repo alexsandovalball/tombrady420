@@ -217,6 +217,8 @@
         .language-switch { display: flex; flex-wrap: wrap; gap: .45rem; margin: 0 0 1rem; }
         .language-switch a { color: var(--text-secondary, #666); text-decoration: none; font-size: .82rem; padding: .3rem .5rem; border: 1px solid var(--border, #ddd); border-radius: 6px; background: var(--card-bg, #fff); }
         .language-switch a[aria-current="page"] { color: var(--accent, #2481cc); border-color: var(--accent, #2481cc); }
+        .seo-back-link { display: inline-flex; align-items: center; min-height: 42px; margin: 0 0 .75rem; padding: .55rem .75rem; border: 1px solid var(--border, #ddd); border-radius: 8px; color: var(--text-primary, #111); background: var(--card-bg, #fff); text-decoration: none; font-weight: 700; }
+        .seo-back-link:hover { color: var(--accent, #2481cc); border-color: var(--accent, #2481cc); }
     </style>
 </head>
 <body>
@@ -224,6 +226,7 @@
         <nav class="language-switch" aria-label="Language">
             {% for alternate in language_switch or [] %}<a href="{{ alternate.href }}"{% if alternate.language == seo_lang %} aria-current="page"{% endif %}>{{ alternate.language|upper }}</a>{% endfor %}
         </nav>
+        <a class="seo-back-link" href="{{ back_url }}">{{ back_label }}</a>
         <nav class="seo-nav" aria-label="Breadcrumb">
             <a href="{{ localized_home_url }}">{{ ui.home }}</a>
             <a href="{{ localized_home_url }}?search=1#catalog-search">🔍 {{ ui.search }}</a>

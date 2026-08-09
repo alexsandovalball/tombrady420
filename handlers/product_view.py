@@ -10,7 +10,7 @@ from utils.helpers import send_media_message, is_admin, get_user_lang_async
 from utils.safe_send import safe_send_message
 from utils.media_resolver import MediaResolver, collect_product_media
 from utils.pagination import paginate_items
-from utils.categories import format_category_info, get_catalog_ui_text
+from utils.categories import canonicalize_subcategory, format_category_info, get_catalog_ui_text
 from translations.translator import translate_text_async
 
 logger = logging.getLogger(__name__)
@@ -168,86 +168,52 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         # Get user's pagination state to determine back button behavior
         user_id = update.effective_user.id
         
-        # Get the most recent pagination state to determine where user was browsing
-        latest_state = await db.get_latest_pagination_state(user_id)
-        
         # Get user's language preference
         user_lang = await get_user_lang_async(user_id)
         back_to_catalog_label = get_catalog_ui_text("button_back_to_categories", user_lang)
         back_to_subcategory_label = get_catalog_ui_text("button_back_to_subcategories", user_lang)
 
-        # Determine appropriate back button based on context
+        # The product taxonomy is authoritative. Products can be opened from
+        # notifications, inline results, deep links, or stale messages where
+        # the user's latest pagination state is unrelated or unavailable.
+        # Only legacy products without taxonomy should use chat state.
+        product_category = str(product.get("category") or "").strip()
+        product_subcategory = str(product.get("subcategory") or "").strip()
+        if product_category and product_subcategory:
+            product_subcategory = canonicalize_subcategory(product_category, product_subcategory)
         back_callback = "menu|1"  # Default fallback
         back_label = back_to_catalog_label
-        
-        if latest_state and "state_type" in latest_state and "page" in latest_state:
-            state_type = latest_state["state_type"]
-            page = latest_state["page"]
-            query = latest_state.get("query", "")
-            
-            # Check if user was browsing a subcategory
-            if state_type.startswith("subcategory_"):
-                # Extract category and subcategory from state_type
-                # Format: subcategory_{category}_{subcategory}
-                parts = state_type.split("_", 2)  # Split into at most 3 parts
-                if len(parts) >= 3:
-                    category = parts[1]
-                    subcategory = parts[2]
-                    back_callback = f"subcategory|{category}|{subcategory}|{page}"
-                    back_label = back_to_subcategory_label
-                else:
-                    # Fallback if format is unexpected
-                    back_callback = "menu|1"
-                    back_label = back_to_catalog_label
-            # Check if user was browsing a category
-            elif state_type.startswith("category_"):
-                # Extract category from state_type: category_{categoryname}
-                parts = state_type.split("_", 1)
-                if len(parts) >= 2:
-                    category = parts[1]
-                    back_callback = f"category|{category}|{page}"
-                    back_label = back_to_catalog_label
-                else:
-                    # Fallback
-                    back_callback = "menu|1"
-                    back_label = back_to_catalog_label
-            elif state_type == "search":
-                # User was searching - use the query from the state
-                if query:
-                    # Replace pipe characters to avoid breaking callback data
-                    safe_query = query.replace("|", "_PIPE_")
-                    # Truncate if needed (Telegram callback_data limit is 64 bytes)
-                    max_query_len = 64 - 16
-                    if len(safe_query) > max_query_len:
-                        safe_query = safe_query[:max_query_len]
+
+        if product_category and product_subcategory:
+            back_callback = f"subcategory|{product_category}|{product_subcategory}|1"
+            back_label = back_to_subcategory_label
+        elif product_category:
+            back_callback = f"category|{product_category}|1"
+            back_label = back_to_catalog_label
+        else:
+            # Preserve a useful fallback for old products that predate stored
+            # category metadata.
+            latest_state = await db.get_latest_pagination_state(user_id)
+            if latest_state and "state_type" in latest_state and "page" in latest_state:
+                state_type = latest_state["state_type"]
+                page = latest_state["page"]
+                query = latest_state.get("query", "")
+
+                if state_type.startswith("subcategory_"):
+                    parts = state_type.split("_", 2)
+                    if len(parts) >= 3:
+                        back_callback = f"subcategory|{parts[1]}|{parts[2]}|{page}"
+                        back_label = back_to_subcategory_label
+                elif state_type.startswith("category_"):
+                    parts = state_type.split("_", 1)
+                    if len(parts) >= 2:
+                        back_callback = f"category|{parts[1]}|{page}"
+                elif state_type == "search" and query:
+                    safe_query = query.replace("|", "_PIPE_")[:48]
                     back_callback = f"page|search|{safe_query}|{page}"
                     back_label = "🔙 Back to search results"
-                else:
-                    back_callback = "menu|1"
-                    back_label = back_to_catalog_label
-            elif state_type == "catalog":
-                # User was browsing all products
-                back_callback = f"menu|{page}"
-                back_label = back_to_catalog_label
-            else:
-                # Default fallback
-                back_callback = "menu|1"
-                back_label = back_to_catalog_label
-        else:
-            # No pagination state found - user likely came from notification
-            # Use product's category/subcategory to determine back button
-            product_category = product.get("category")
-            product_subcategory = product.get("subcategory")
-            
-            if product_category and product_subcategory:
-                # Product has both category and subcategory - go to subcategory view
-                back_callback = f"subcategory|{product_category}|{product_subcategory}|1"
-                back_label = back_to_subcategory_label
-            elif product_category:
-                # Product has only category - go to category view
-                back_callback = f"category|{product_category}|1"
-                back_label = back_to_catalog_label
-            # else: keep default "menu|1"
+                elif state_type == "catalog":
+                    back_callback = f"menu|{page}"
 
         navigation_buttons = _build_navigation_buttons(back_callback, back_label)
         
