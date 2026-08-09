@@ -54,7 +54,9 @@ _user_query_tasks_lock = asyncio.Lock()
 # stay in sync without touching helper builders individually.
 INLINE_PAGE_SIZE = 10
 _INLINE_PAGE_SIZE = INLINE_PAGE_SIZE  # Internal alias kept for backward compat
-_INLINE_MEDIA_RESOLVE_TIMEOUT = 1.5
+# Keep inline startup snappy; rich media should degrade quickly rather than
+# making Telegram wait too long before the picker opens.
+_INLINE_MEDIA_RESOLVE_TIMEOUT = 0.8
 _INLINE_RESULT_REJECTION_MARKERS = (
     "photo_invalid",
     "photo_url_invalid",
@@ -200,6 +202,7 @@ async def _build_product_article(
     context: ContextTypes.DEFAULT_TYPE,
     *,
     force_article: bool = False,
+    allow_rehydrate: bool = True,
 ) -> InlineQueryResult:
     """Build an inline result for a single product.
 
@@ -251,7 +254,11 @@ async def _build_product_article(
     # --- Attempt rich media result for photo/video products ---
     media_quarantined = _inline_media_quarantined(bot_username, product_id)
     if not force_article and not media_quarantined and file_type in ("photo", "video"):
-        resolved_file_id = await _resolve_file_id_for_inline(product, context)
+        resolved_file_id = await _resolve_file_id_for_inline(
+            product,
+            context,
+            allow_rehydrate=allow_rehydrate,
+        )
         if resolved_file_id:
             if file_type == "photo":
                 return InlineQueryResultCachedPhoto(
@@ -321,6 +328,8 @@ async def _build_product_article(
 async def _resolve_file_id_for_inline(
     product: Dict[str, Any],
     context: ContextTypes.DEFAULT_TYPE,
+    *,
+    allow_rehydrate: bool = True,
 ) -> Optional[str]:
     """Return a file_id usable by the current bot for the given product.
 
@@ -357,6 +366,9 @@ async def _resolve_file_id_for_inline(
             if cached:
                 return cached
 
+            if not allow_rehydrate:
+                return None
+
             resolved = await asyncio.wait_for(
                 get_bot_specific_file_id(
                     context,
@@ -386,6 +398,7 @@ async def _build_product_results(
     context: ContextTypes.DEFAULT_TYPE,
     *,
     force_article: bool = False,
+    allow_rehydrate: bool = True,
 ) -> List[InlineQueryResult]:
     built = await asyncio.gather(
         *[
@@ -394,6 +407,7 @@ async def _build_product_results(
                 bot_username,
                 context,
                 force_article=force_article,
+                allow_rehydrate=allow_rehydrate,
             )
             for product in products
         ],
@@ -437,6 +451,7 @@ async def _build_new_arrivals_articles(
     limit: int = 5,
     *,
     force_article: bool = False,
+    allow_rehydrate: bool = True,
 ) -> List[InlineQueryResult]:
     """Return newest products as inline results."""
     # Products are sorted by created_at DESC in DB, so first items are newest
@@ -446,6 +461,7 @@ async def _build_new_arrivals_articles(
         bot_username,
         context,
         force_article=force_article,
+        allow_rehydrate=allow_rehydrate,
     )
 
 
@@ -456,6 +472,7 @@ async def _build_popular_articles(
     limit: int = 5,
     *,
     force_article: bool = False,
+    allow_rehydrate: bool = True,
 ) -> List[InlineQueryResult]:
     """Return trending / most-recently-added products as inline results."""
     # Simple heuristic: products are already sorted by created_at DESC in the DB query
@@ -465,6 +482,7 @@ async def _build_popular_articles(
         bot_username,
         context,
         force_article=force_article,
+        allow_rehydrate=allow_rehydrate,
     )
 
 
@@ -538,23 +556,6 @@ async def _process_inline_query(update: Update, context: ContextTypes.DEFAULT_TY
             next_offset = ""
             is_empty = True
 
-        # Calculate latency
-        latency_ms = int((time.monotonic() - start_time) * 1000)
-        results_count = len(results)
-
-        # Log to analytics with performance metrics
-        try:
-            await db.log_inline_query(
-                user_id=user_id,
-                query=query,
-                bot_username=bot_username,
-                latency_ms=latency_ms,
-                results_count=results_count,
-                is_empty_query=is_empty,
-            )
-        except Exception as exc:
-            logger.warning("Failed to log inline query: %s", exc)
-
         # switch_pm drives users into the bot for full browsing.
         # Conditionally pass switch_pm_* only if the installed version supports them.
         _answer_params = inspect.signature(inline_query.answer).parameters
@@ -620,6 +621,21 @@ async def _process_inline_query(update: Update, context: ContextTypes.DEFAULT_TY
                 next_offset="",
                 **_extra,
             )
+
+        # Log after answering so analytics never slows down the picker opening.
+        latency_ms = int((time.monotonic() - start_time) * 1000)
+        results_count = len(results)
+        try:
+            await db.log_inline_query(
+                user_id=user_id,
+                query=query,
+                bot_username=bot_username,
+                latency_ms=latency_ms,
+                results_count=results_count,
+                is_empty_query=is_empty,
+            )
+        except Exception as exc:
+            logger.warning("Failed to log inline query: %s", exc)
     except Exception as exc:
         logger.error("Error answering inline query: %s", exc, exc_info=True)
         # Answer with empty results to avoid Telegram timeout
@@ -653,6 +669,7 @@ async def _handle_empty_query(
                 context,
                 limit=3,
                 force_article=force_article,
+                allow_rehydrate=False,
             )
         )
         # Add popular/trending (next 3 products – skip new-arrivals slice to avoid duplicate IDs)
@@ -663,6 +680,7 @@ async def _handle_empty_query(
                 context,
                 limit=3,
                 force_article=force_article,
+                allow_rehydrate=False,
             )
         )
     except Exception as exc:
