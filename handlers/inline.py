@@ -74,6 +74,14 @@ _INLINE_BAD_MEDIA_MAX = 512
 _inline_bad_media_results: Dict[Tuple[str, str], float] = {}
 
 
+def _consume_background_task(task: asyncio.Task) -> None:
+    """Consume a shielded background task result so timeout paths stay quiet."""
+    try:
+        task.result()
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
 async def _get_cached_products() -> List[Dict[str, Any]]:
     """Return cached product list, refreshing if stale."""
     global _product_cache
@@ -369,7 +377,7 @@ async def _resolve_file_id_for_inline(
             if not allow_rehydrate:
                 return None
 
-            resolved = await asyncio.wait_for(
+            rehydrate_task = asyncio.create_task(
                 get_bot_specific_file_id(
                     context,
                     chat_id,
@@ -377,6 +385,11 @@ async def _resolve_file_id_for_inline(
                     file_type,
                     file_index=0,
                 ),
+                name=f"inline_media_rehydrate:{product.get('id')}",
+            )
+            rehydrate_task.add_done_callback(_consume_background_task)
+            resolved = await asyncio.wait_for(
+                asyncio.shield(rehydrate_task),
                 timeout=_INLINE_MEDIA_RESOLVE_TIMEOUT,
             )
             if resolved:
@@ -778,6 +791,7 @@ async def _handle_query_search(
         bot_username,
         context,
         force_article=force_article,
+        allow_rehydrate=False,
     )
 
 

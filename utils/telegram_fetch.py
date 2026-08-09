@@ -42,6 +42,25 @@ def _bot_fetch_key(bot: Bot, file_id: str) -> tuple[int, str]:
     return (id(bot), file_id)
 
 
+async def _remove_inflight_fetch(key: tuple[int, str], task: asyncio.Task) -> None:
+    async with _telegram_file_fetch_lock:
+        if _telegram_file_fetch_inflight.get(key) is task:
+            _telegram_file_fetch_inflight.pop(key, None)
+
+
+def _finish_inflight_fetch(task: asyncio.Task, key: tuple[int, str]) -> None:
+    # Retrieve the exception so a timed-out caller cannot create an unhandled
+    # task warning. The original awaiters still receive the same exception.
+    try:
+        task.exception()
+    except BaseException:
+        pass
+    try:
+        asyncio.get_running_loop().create_task(_remove_inflight_fetch(key, task))
+    except RuntimeError:
+        pass
+
+
 async def _get_cached_fetch_result(key: tuple[int, str]) -> Any | None:
     async with _telegram_file_fetch_lock:
         cached = _telegram_file_fetch_cache.get(key)
@@ -204,11 +223,8 @@ async def fetch_telegram_file(
                 name=f"telegram_file_fetch:{file_id[:24]}",
             )
             _telegram_file_fetch_inflight[key] = inflight
+            inflight.add_done_callback(lambda task, fetch_key=key: _finish_inflight_fetch(task, fetch_key))
 
-    try:
-        return await inflight
-    finally:
-        async with _telegram_file_fetch_lock:
-            current = _telegram_file_fetch_inflight.get(key)
-            if current is inflight:
-                _telegram_file_fetch_inflight.pop(key, None)
+    # One browser request timing out must not cancel the shared fetch for other
+    # callers, nor interrupt its eventual cache/update cleanup.
+    return await asyncio.shield(inflight)

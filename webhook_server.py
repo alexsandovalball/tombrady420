@@ -7536,6 +7536,24 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
 
 
 def _seo_media_fallback_response(request: Request, reason: str, *, image_url: str = "") -> Response:
+    # When the requested public media is unavailable, point crawlers/browsers at
+    # the product's real primary image instead of returning the site icon as a
+    # misleading media response. Keep the icon only as the final fallback.
+    if image_url:
+        current_url = str(request.url).split("?", 1)[0].rstrip("/")
+        target_url = str(image_url).rstrip("/")
+        if target_url and target_url != current_url:
+            return RedirectResponse(
+                url=image_url,
+                status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+                headers={
+                    "Cache-Control": f"public, max-age={_SEO_PUBLIC_MEDIA_CACHE_SECONDS}",
+                    "X-SEO-Media-Fallback": reason[:80],
+                    "X-Robots-Tag": "index, follow",
+                    "Vary": "Accept",
+                },
+            )
+
     fallback_body = _read_site_icon_svg()
     fallback_type = "image/svg+xml"
     fallback_etag_key = f"seo-media-fallback:{reason}:{_SITE_ICON_VERSION}"
@@ -7601,8 +7619,42 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
         file_id = str(media_type_info.get("id") or "")
         crawler_request = _is_crawler_user_agent(request.headers.get("user-agent", ""))
         can_use_disk_cache = MEDIA_CACHE_ENABLED and (media_kind != "video" or MEDIA_CACHE_VIDEO_ENABLED)
-        cached_public_media_path = await _media_cache.get(file_id) if can_use_disk_cache else None
-        if crawler_request and cached_public_media_path is None:
+        cache_file_id = file_id
+        if can_use_disk_cache:
+            # A public request has no Telegram init data, so it cannot resolve a
+            # cross-bot file ID through the normal authenticated media path. Use
+            # the durable bot mapping first when it is already available.
+            source_chat_id = product.get("chat_id")
+            source_message_id = _resolve_product_media_message_id(product, internal_product_id, media_index)
+            primary_bot = _get_primary_bot(request, required=False)
+            bot_username = getattr(primary_bot, "username", "") if primary_bot else ""
+            if source_chat_id and source_message_id and bot_username:
+                cache_key = (source_chat_id, source_message_id, media_index, bot_username)
+                cache_file_id = _resolved_file_id_cache.get(cache_key) or ""
+                if not cache_file_id:
+                    try:
+                        cache_file_id = await _catalog_db.get_bot_file_id(
+                            source_chat_id,
+                            source_message_id,
+                            media_index,
+                            bot_username,
+                            file_type=media_kind,
+                        ) or ""
+                        if cache_file_id:
+                            _cache_resolved_file_id(cache_key, cache_file_id)
+                    except Exception as exc:
+                        logger.debug(
+                            "[seo_public_media] bot_mapping_probe_failed product_id=%s media_index=%s error=%s",
+                            product_id,
+                            media_index,
+                            exc,
+                        )
+                if not cache_file_id:
+                    cache_file_id = file_id
+            cached_public_media_path = await _media_cache.get(cache_file_id)
+        else:
+            cached_public_media_path = None
+        if crawler_request and cached_public_media_path is None and media_kind == "video":
             logger.info(
                 "[seo_public_media] fallback reason=crawler_uncached product_id=%s media_index=%s kind=%s",
                 product_id,
@@ -7728,7 +7780,11 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                 recent_media_failure,
             )
             if public_media_request:
-                return _seo_media_fallback_response(request, "recent_media_failure")
+                return _seo_media_fallback_response(
+                    request,
+                    "recent_media_failure",
+                    image_url=_product_primary_image_url(product, absolute=True),
+                )
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Media unavailable")
 
     # Resolve bot-specific file_id for multi-bot scenarios
