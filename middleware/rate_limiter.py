@@ -225,7 +225,12 @@ class GlobalRateLimiter(BaseHTTPMiddleware):
         path = request.url.path
 
         if self._is_exempt(path):
-            return await call_next(request)
+            try:
+                return await call_next(request)
+            except RuntimeError as exc:
+                if str(exc) != "No response returned.":
+                    raise
+                return Response(status_code=499)
 
         ip = self._get_client_ip(request)
         now = _time.monotonic()
@@ -239,7 +244,12 @@ class GlobalRateLimiter(BaseHTTPMiddleware):
             return Response(status_code=403, content=b"Access denied.")
 
         if self._disabled:
-            return await call_next(request)
+            try:
+                return await call_next(request)
+            except RuntimeError as exc:
+                if str(exc) != "No response returned.":
+                    raise
+                return Response(status_code=499)
 
         async with self._lock:
             # 2. Check global auto-block (applies to all layers)
@@ -255,4 +265,9 @@ class GlobalRateLimiter(BaseHTTPMiddleware):
                 return self._rate_limited_response(ip, path, self._auto_block_duration, "malicious probe")
 
         # 4. Allow all other requests (bypass token bucket and layer blocking)
-        return await call_next(request)
+        try:
+            return await call_next(request)
+        except RuntimeError as exc:
+            if str(exc) != "No response returned.":
+                raise
+            return Response(status_code=499)

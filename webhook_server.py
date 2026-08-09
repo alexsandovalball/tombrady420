@@ -222,6 +222,12 @@ _PRIMARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("PRIMARY_BOT_CONNECTION_POO
 _SECONDARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("SECONDARY_BOT_CONNECTION_POOL_SIZE", 4, 1, 8)
 _MEDIA_STREAM_CONCURRENCY = _bounded_int_env("MEDIA_STREAM_CONCURRENCY", 8, 2, 32)
 _media_stream_semaphore = asyncio.Semaphore(_MEDIA_STREAM_CONCURRENCY)
+_MEDIA_FETCH_FAILURE_COOLDOWN_SECONDS = float(
+    _bounded_int_env("MEDIA_FETCH_FAILURE_COOLDOWN_SECONDS", 20, 3, 120)
+)
+_MEDIA_FETCH_FAILURE_CACHE_MAX = _bounded_int_env("MEDIA_FETCH_FAILURE_CACHE_MAX", 512, 64, 4096)
+_media_fetch_failures: OrderedDict[tuple[int, int], tuple[float, str]] = OrderedDict()
+_media_fetch_failures_lock = asyncio.Lock()
 
 # Media cache configuration. Disk cache is app-owned, bounded, and self-pruning.
 _DEFAULT_MEDIA_STORAGE_MODE = "persistent" if Path("/data").exists() else "temp"
@@ -246,6 +252,37 @@ MEDIA_TEMP_MAX_BYTES = _bounded_int_env("MEDIA_TEMP_MAX_MB", 250, 50, 1200) * 10
 
 ensure_resource_dirs()
 MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+async def _get_recent_media_fetch_failure(product_id: int, media_index: int) -> str | None:
+    key = (product_id, media_index)
+    async with _media_fetch_failures_lock:
+        cached = _media_fetch_failures.get(key)
+        if cached is None:
+            return None
+        expires_at, reason = cached
+        if _time.monotonic() >= expires_at:
+            _media_fetch_failures.pop(key, None)
+            return None
+        _media_fetch_failures.move_to_end(key)
+        return reason
+
+
+async def _remember_media_fetch_failure(product_id: int, media_index: int, reason: str) -> None:
+    key = (product_id, media_index)
+    async with _media_fetch_failures_lock:
+        _media_fetch_failures[key] = (
+            _time.monotonic() + _MEDIA_FETCH_FAILURE_COOLDOWN_SECONDS,
+            reason[:160],
+        )
+        _media_fetch_failures.move_to_end(key)
+        while len(_media_fetch_failures) > _MEDIA_FETCH_FAILURE_CACHE_MAX:
+            _media_fetch_failures.popitem(last=False)
+
+
+async def _clear_media_fetch_failure(product_id: int, media_index: int) -> None:
+    async with _media_fetch_failures_lock:
+        _media_fetch_failures.pop((product_id, media_index), None)
 
 
 class WebhookIPRateLimiter:
@@ -3780,12 +3817,34 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             )
             return Response(status_code=410)
 
-        return await call_next(request)
+        try:
+            return await call_next(request)
+        except RuntimeError as exc:
+            if str(exc) != "No response returned.":
+                raise
+            logger.info(
+                "[http] request_aborted middleware=security method=%s path=%s ip=%s",
+                request.method,
+                path,
+                client_ip,
+            )
+            return Response(status_code=499)
 
 
 class CacheControlMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except RuntimeError as exc:
+            if str(exc) != "No response returned.":
+                raise
+            logger.info(
+                "[http] request_aborted middleware=cache_control method=%s path=%s ip=%s",
+                request.method,
+                request.url.path,
+                request.client.host if request.client else "unknown",
+            )
+            return Response(status_code=499)
         path = request.url.path
         
         # Add cache headers for static assets
@@ -3823,7 +3882,18 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         logger.debug(f"Incoming request: {request.method} {request.url.path} from {client_host}")
         
         # Process request
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except RuntimeError as exc:
+            if str(exc) != "No response returned.":
+                raise
+            logger.info(
+                "[http] request_aborted middleware=request_logging method=%s path=%s ip=%s",
+                request.method,
+                request.url.path,
+                client_host,
+            )
+            return Response(status_code=499)
         
         # Log response status at DEBUG level
         logger.debug(f"Response: {request.method} {request.url.path} - Status: {response.status_code}")
@@ -7529,6 +7599,18 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
             return _seo_media_fallback_response(request, "non_photo", image_url=product_fallback_image)
 
         file_id = str(media_type_info.get("id") or "")
+        crawler_request = _is_crawler_user_agent(request.headers.get("user-agent", ""))
+        can_use_disk_cache = MEDIA_CACHE_ENABLED and (media_kind != "video" or MEDIA_CACHE_VIDEO_ENABLED)
+        cached_public_media_path = await _media_cache.get(file_id) if can_use_disk_cache else None
+        if crawler_request and cached_public_media_path is None:
+            logger.info(
+                "[seo_public_media] fallback reason=crawler_uncached product_id=%s media_index=%s kind=%s",
+                product_id,
+                media_index,
+                media_kind,
+            )
+            return _seo_media_fallback_response(request, "crawler_uncached", image_url=product_fallback_image)
+
         etag = _seo_etag_from_key(f"seo-media:{product_id}:{media_index}:{file_id}")
         if _request_matches_etag(request, etag):
             return Response(
@@ -7597,10 +7679,11 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
     """
     init_data, _ = _get_validated_init_data(request, allow_preview=True)
     crawler_request = _is_crawler_user_agent(request.headers.get("user-agent", ""))
+    public_media_request = request.url.path.startswith("/media/products/")
     if (
         init_data is None
         and crawler_request
-        and not request.url.path.startswith("/media/products/")
+        and not public_media_request
     ):
         logger.info(
             "[media_cache] crawler_api_media_blocked product_id=%s media_index=%s ip=%s",
@@ -7633,6 +7716,20 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
     original_file_id = str(media_type_info.get("id") or "")
     file_id = original_file_id
     is_video = media_type_info.get('type') == 'video'
+    if public_media_request or crawler_request:
+        recent_media_failure = await _get_recent_media_fetch_failure(product_id, media_index)
+        if recent_media_failure:
+            logger.info(
+                "[media_cache] failure_cooldown_hit product_id=%s media_index=%s public=%s crawler=%s reason=%s",
+                product_id,
+                media_index,
+                public_media_request,
+                crawler_request,
+                recent_media_failure,
+            )
+            if public_media_request:
+                return _seo_media_fallback_response(request, "recent_media_failure")
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Media unavailable")
 
     # Resolve bot-specific file_id for multi-bot scenarios
     # This ensures the file_id works with the current bot instance even if
@@ -7681,6 +7778,23 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                         product_id,
                         media_index,
                         crawler_request,
+                    )
+                    tg = await fetch_telegram_file(
+                        bot,
+                        original_file_id,
+                        context=f"stream_catalog_media_original:{product_id}:{media_index}",
+                        retries=0,
+                        timeout_seconds=3.0,
+                    )
+                    return original_file_id, tg
+                raise first_exc
+
+            if crawler_request:
+                if original_file_id and original_file_id != current_file_id:
+                    logger.warning(
+                        "[media_cache] crawler_original_file_id_fallback_retry product_id=%s media_index=%s",
+                        product_id,
+                        media_index,
                     )
                     tg = await fetch_telegram_file(
                         bot,
@@ -7767,6 +7881,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
         )
         file_path = cached_file_path
         file_size = file_path.stat().st_size
+        await _clear_media_fetch_failure(product_id, media_index)
     else:
         logger.info(
             "[media_cache] cache_miss layer=disk product_id=%s media_index=%s is_video=%s enabled=%s",
@@ -7864,6 +7979,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                         file_path = temp_input_path
                         file_size = stat.st_size
                         age, idle, active = await _mark_media_access(temp_input_path)
+                        await _clear_media_fetch_failure(product_id, media_index)
                         logger.info(
                             "[media_cache] cache_reused layer=temp product_id=%s media_index=%s bytes=%d age=%.1f idle=%.1f active_streams=%d",
                             product_id,
@@ -7913,6 +8029,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                         media_index,
                         temp_input_path.stat().st_size,
                     )
+                    await _clear_media_fetch_failure(product_id, media_index)
 
                     cached_path = await _media_cache.set(
                         file_id,
@@ -7935,11 +8052,13 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
             if 'temp_input_path' in locals() and temp_input_path:
                 _cleanup_path(temp_input_path)
             if "File is too big" not in str(e):
+                await _remember_media_fetch_failure(product_id, media_index, str(e))
                 logger.exception("Unable to fetch file for product %s: %s", product_id, e)
                 raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Media unavailable")
             # If it's "File is too big", it should have been handled above
             raise
         except Exception as e:
+            await _remember_media_fetch_failure(product_id, media_index, str(e))
             logger.exception("Unable to fetch file for product %s: %s", product_id, e)
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Media unavailable")
 
