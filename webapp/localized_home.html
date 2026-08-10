@@ -128,7 +128,7 @@
                     {% if item.media_type == 'video' and item.media_url %}
                     <video class="seo-card-video" muted playsinline preload="metadata" src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
                     {% elif item.media_url %}
-                    <img src="{{ item.media_url }}" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2';">
+                    <img src="{{ item.media_url }}" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async" data-fallback-src="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2">
                     {% else %}
                     <img src="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async">
                     {% endif %}
@@ -160,6 +160,15 @@
     </main>
     <script>
         (function () {
+            document.querySelectorAll('img[data-fallback-src]').forEach(function (image) {
+                image.addEventListener('error', function () {
+                    var fallback = image.getAttribute('data-fallback-src') || '';
+                    if (!fallback || image.getAttribute('data-fallback-applied') === '1') return;
+                    image.setAttribute('data-fallback-applied', '1');
+                    image.src = fallback;
+                });
+            });
+
             var toggle = document.getElementById('public-search-toggle');
             var panel = document.getElementById('catalog-search');
             var form = document.getElementById('public-search-form');

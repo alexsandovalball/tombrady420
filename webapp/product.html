@@ -244,11 +244,11 @@
                                 <a href="{{ media.url }}">{{ ui.open_video }}</a>
                             </video>
                             {% elif loop.first %}
-                            <img src="{{ media.url }}" alt="{{ product_title }}" loading="eager" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2';">
+                            <img src="{{ media.url }}" alt="{{ product_title }}" loading="eager" decoding="async" data-fallback-src="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2">
                             {% endif %}
                         {% endfor %}
                     {% elif product_image %}
-                    <img src="{{ product_image }}" alt="{{ product_title }}" loading="eager" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2';">
+                    <img src="{{ product_image }}" alt="{{ product_title }}" loading="eager" decoding="async" data-fallback-src="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2">
                     {% else %}
                     <img src="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2" alt="{{ product_title }}" loading="eager" decoding="async">
                     {% endif %}
@@ -267,7 +267,7 @@
                         aria-label="{{ media.label }}"
                     >
                         {% if media.type == "photo" %}
-                        <img class="seo-thumb-image" src="{{ media.url }}" alt="{{ media.label }}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2';">
+                        <img class="seo-thumb-image" src="{{ media.url }}" alt="{{ media.label }}" loading="lazy" decoding="async" data-fallback-src="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2">
                         {% elif media.type == "video" %}
                         <video class="seo-thumb-preview" muted playsinline preload="metadata" src="{{ media.url }}"></video>
                         <span class="seo-thumb-video">▶</span>
@@ -339,7 +339,7 @@
                         {% if item.media_type == 'video' and item.media_url %}
                         <video class="related-thumb related-thumb-video" muted playsinline preload="metadata" src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
                         {% elif item.media_url %}
-                        <img class="related-thumb" src="{{ item.media_url }}" alt="{{ item.title }}" loading="lazy" decoding="async">
+                        <img class="related-thumb" src="{{ item.media_url }}" alt="{{ item.title }}" loading="lazy" decoding="async" data-fallback-src="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2">
                         {% else %}
                         <span class="related-thumb related-thumb-placeholder" aria-hidden="true"></span>
                         {% endif %}
@@ -366,6 +366,15 @@
     </main>
     <script>
         (() => {
+            document.querySelectorAll('img[data-fallback-src]').forEach((image) => {
+                image.addEventListener('error', () => {
+                    const fallback = image.dataset.fallbackSrc || '';
+                    if (!fallback || image.dataset.fallbackApplied === '1') return;
+                    image.dataset.fallbackApplied = '1';
+                    image.src = fallback;
+                });
+            });
+
             const viewer = document.querySelector('.seo-media-viewer');
             const thumbs = Array.from(document.querySelectorAll('.seo-thumb[data-media-url]'));
             if (!viewer) return;

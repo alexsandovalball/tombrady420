@@ -6290,7 +6290,11 @@ class Database:
         min_observations: int = 2,
         min_confidence: int = 86,
     ) -> int:
-        """Approve external signals only after repeated observations and strong relevance."""
+        """Approve external signals after strong relevance and enough evidence.
+
+        A caller may use one observation for a very high-confidence signal, while
+        ordinary external signals still pass the safer repeated-observation gate.
+        """
         provider = str(provider or "").strip()[:80]
         if not provider:
             return 0
@@ -6306,7 +6310,7 @@ class Database:
                   AND confidence >= ?
                   AND category != ''
                 """,
-                (provider, max(2, int(min_observations)), max(1, min(100, int(min_confidence)))),
+                (provider, max(1, int(min_observations)), max(1, min(100, int(min_confidence)))),
             )
             await db.commit()
             return db.total_changes - changes_before

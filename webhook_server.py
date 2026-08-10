@@ -290,6 +290,28 @@ async def _clear_media_fetch_failure(product_id: int, media_index: int) -> None:
         _media_fetch_failures.pop((product_id, media_index), None)
 
 
+def _media_retry_headers() -> dict[str, str]:
+    """Tell clients when a failed Telegram media fetch should be retried."""
+    return {
+        "Retry-After": str(max(3, int(_MEDIA_FETCH_FAILURE_COOLDOWN_SECONDS))),
+        "Cache-Control": "no-store",
+    }
+
+
+def _log_media_fetch_failure(product_id: int, media_index: int, exc: Exception) -> None:
+    """Keep expected upstream timeouts readable without hiding real defects."""
+    if is_transient_telegram_error(exc) or isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        logger.warning(
+            "[media_cache] fetch_failed_transient product_id=%s media_index=%s error_type=%s error=%s",
+            product_id,
+            media_index,
+            type(exc).__name__,
+            str(exc)[:180],
+        )
+    else:
+        logger.exception("Unable to fetch file for product %s media %s", product_id, media_index)
+
+
 class WebhookIPRateLimiter:
     """Token-bucket rate limiter keyed per client IP for webhook endpoints.
 
@@ -2689,7 +2711,12 @@ async def _import_google_trends_signals(
             infer_seo_query_mapping,
             term,
             products,
-            min_score=Config.SEO_EXTERNAL_SIGNAL_SCORE - (2 if cannabis_intent and not is_related else 0),
+            min_score=max(
+                78,
+                Config.SEO_EXTERNAL_SIGNAL_SCORE
+                - (6 if cannabis_intent or mushroom_intent else 0)
+                - (2 if is_related else 0),
+            ),
             profiles=profiles,
         )
         if not inferred:
@@ -2746,15 +2773,22 @@ async def _import_google_trends_signals(
         min_observations=2,
         min_confidence=Config.SEO_EXTERNAL_SIGNAL_SCORE,
     )
+    fast_matured = await _catalog_db.approve_mature_external_seo_signals(
+        provider="google_trends",
+        min_observations=1,
+        min_confidence=min(100, Config.SEO_EXTERNAL_SIGNAL_SCORE + 8),
+    )
+    matured += fast_matured
     if imported:
         _invalidate_admin_status_cache()
     logger.info(
-        "[seo_trends] rows=%d candidates=%d relevant=%d imported=%d matured=%d",
+        "[seo_trends] rows=%d candidates=%d relevant=%d imported=%d matured=%d fast_matured=%d",
         len(trend_rows),
         len(candidate_rows),
         len(signals),
         imported,
         matured,
+        fast_matured,
     )
     await _set_runtime_settings({
         "seo_trends_last_fetch_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
@@ -5239,7 +5273,12 @@ async def _missing_product_redirect(
     slug: str = "",
     language: str = "en",
 ) -> Response:
-    """Serve a useful real 404, linking to the closest relevant catalog page."""
+    """Redirect stale public product URLs to the closest active catalog page.
+
+    A temporary redirect avoids permanently teaching search engines that a
+    deleted product ID has been replaced, which matters while the catalog is
+    actively maintained.
+    """
     fallback_path = _localized_path("/", language)
     fallback_label = _seo_ui(language)["home"]
     try:
@@ -5275,6 +5314,18 @@ async def _missing_product_redirect(
         if inferred_path:
             fallback_path = _localized_path(inferred_path, language)
             fallback_label = "Related catalog"
+
+    current_path = request.url.path.rstrip("/") or "/"
+    target_path = fallback_path.rstrip("/") or "/"
+    if target_path != current_path:
+        return RedirectResponse(
+            url=fallback_path,
+            status_code=status.HTTP_302_FOUND,
+            headers={
+                "Cache-Control": "no-store",
+                "X-SEO-Fallback": "missing-product",
+            },
+        )
 
     ctx = _build_seo_context(
         title="Product unavailable | Top Shelf Cali Plug",
@@ -7833,24 +7884,27 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
     original_file_id = str(media_type_info.get("id") or "")
     file_id = original_file_id
     is_video = media_type_info.get('type') == 'video'
-    if public_media_request or crawler_request:
-        recent_media_failure = await _get_recent_media_fetch_failure(product_id, media_index)
-        if recent_media_failure:
-            logger.info(
-                "[media_cache] failure_cooldown_hit product_id=%s media_index=%s public=%s crawler=%s reason=%s",
-                product_id,
-                media_index,
-                public_media_request,
-                crawler_request,
-                recent_media_failure,
+    recent_media_failure = await _get_recent_media_fetch_failure(product_id, media_index)
+    if recent_media_failure:
+        logger.info(
+            "[media_cache] failure_cooldown_hit product_id=%s media_index=%s public=%s crawler=%s reason=%s",
+            product_id,
+            media_index,
+            public_media_request,
+            crawler_request,
+            recent_media_failure,
+        )
+        if public_media_request:
+            return _seo_media_fallback_response(
+                request,
+                "recent_media_failure",
+                image_url=_product_primary_image_url(product, absolute=True),
             )
-            if public_media_request:
-                return _seo_media_fallback_response(
-                    request,
-                    "recent_media_failure",
-                    image_url=_product_primary_image_url(product, absolute=True),
-                )
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Media unavailable")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Media temporarily unavailable; retry shortly",
+            headers=_media_retry_headers(),
+        )
 
     # Resolve bot-specific file_id for multi-bot scenarios
     # This ensures the file_id works with the current bot instance even if
@@ -7888,8 +7942,8 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                 bot,
                 current_file_id,
                 context=f"stream_catalog_media:{product_id}:{media_index}",
-                retries=1,
-                timeout_seconds=5.0,
+                retries=0,
+                timeout_seconds=4.0,
             )
             return current_file_id, tg
         except Exception as first_exc:
@@ -7952,7 +8006,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                         original_file_id,
                         context=f"stream_catalog_media_original:{product_id}:{media_index}",
                         retries=0,
-                        timeout_seconds=3.0,
+                        timeout_seconds=2.5,
                     )
                     return original_file_id, tg
                 raise first_exc
@@ -7969,7 +8023,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                         original_file_id,
                         context=f"stream_catalog_media_original:{product_id}:{media_index}",
                         retries=0,
-                        timeout_seconds=3.0,
+                        timeout_seconds=2.5,
                     )
                     return original_file_id, tg
                 raise first_exc
@@ -7986,7 +8040,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                         original_file_id,
                         context=f"stream_catalog_media_original:{product_id}:{media_index}",
                         retries=0,
-                        timeout_seconds=3.0,
+                        timeout_seconds=2.5,
                     )
                     return original_file_id, tg
                 raise first_exc
@@ -8011,7 +8065,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                         original_file_id,
                         context=f"stream_catalog_media_original:{product_id}:{media_index}",
                         retries=0,
-                        timeout_seconds=3.0,
+                        timeout_seconds=2.5,
                     )
                     return original_file_id, tg
                 raise first_exc
@@ -8026,7 +8080,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                 refreshed_file_id,
                 context=f"stream_catalog_media_refresh:{product_id}:{media_index}",
                 retries=0,
-                timeout_seconds=3.0,
+                timeout_seconds=2.5,
             )
             refreshed_cache_key = (
                 source_chat_id,
@@ -8062,7 +8116,11 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
         try:
             # Try to get file info - this can fail for files >20MB
             try:
-                file_id, tg_file = await _fetch_stream_file(file_id)
+                file_info_lock = await _get_media_generation_lock(
+                    f"file-info:{hashlib.sha256(file_id.encode()).hexdigest()}"
+                )
+                async with file_info_lock:
+                    file_id, tg_file = await _fetch_stream_file(file_id)
                 media_cache_key = hashlib.sha256(file_id.encode()).hexdigest()
                 file_size = tg_file.file_size or 0
                 file_unique_id = getattr(tg_file, "file_unique_id", None)
@@ -8221,14 +8279,22 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                 _cleanup_path(temp_input_path)
             if "File is too big" not in str(e):
                 await _remember_media_fetch_failure(product_id, media_index, str(e))
-                logger.exception("Unable to fetch file for product %s: %s", product_id, e)
-                raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Media unavailable")
+                _log_media_fetch_failure(product_id, media_index, e)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Media unavailable",
+                    headers=_media_retry_headers(),
+                )
             # If it's "File is too big", it should have been handled above
             raise
         except Exception as e:
             await _remember_media_fetch_failure(product_id, media_index, str(e))
-            logger.exception("Unable to fetch file for product %s: %s", product_id, e)
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Media unavailable")
+            _log_media_fetch_failure(product_id, media_index, e)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Media unavailable",
+                headers=_media_retry_headers(),
+            )
 
     # Determine media type
     media_type = _guess_stream_media_type(file_path, media_type_info.get("type", "document"))
