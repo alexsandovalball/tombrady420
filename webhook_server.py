@@ -230,7 +230,7 @@ _SECONDARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("SECONDARY_BOT_CONNECTION
 _MEDIA_STREAM_CONCURRENCY = _bounded_int_env("MEDIA_STREAM_CONCURRENCY", 8, 2, 32)
 _media_stream_semaphore = asyncio.Semaphore(_MEDIA_STREAM_CONCURRENCY)
 _MEDIA_FETCH_FAILURE_COOLDOWN_SECONDS = float(
-    _bounded_int_env("MEDIA_FETCH_FAILURE_COOLDOWN_SECONDS", 20, 3, 120)
+    _bounded_int_env("MEDIA_FETCH_FAILURE_COOLDOWN_SECONDS", 8, 2, 60)
 )
 _MEDIA_FETCH_FAILURE_CACHE_MAX = _bounded_int_env("MEDIA_FETCH_FAILURE_CACHE_MAX", 512, 64, 4096)
 _media_fetch_failures: OrderedDict[tuple[int, int], tuple[float, str]] = OrderedDict()
@@ -4841,22 +4841,23 @@ def _product_primary_image_url(product: dict, *, absolute: bool = True) -> str:
 def _product_card_preview_media(product: dict, *, absolute: bool = False) -> dict[str, str]:
     """Return the best lightweight media URL for product cards.
 
-    Public cards should use the crawlable media endpoint, which has a longer
-    browser cache and avoids adding Telegram init-data to shareable pages.
+    Cards should show a real photo when possible. For video-only products, use
+    the Mini App media stream directly so the browser can render the media
+    instead of caching a crawler-oriented fallback image as the card preview.
     """
-    product_id = _product_public_id(product)
+    product_id = product.get("id") or product.get("product_id")
     if product_id is None:
         return {"type": "", "url": ""}
 
     media_info = _collect_media_info(product)
     for idx, media in enumerate(media_info):
         if media.get("type") == "photo":
-            path = _product_public_media_path(product_id, idx)
+            path = f"/api/catalog/{product_id}/media/{idx}"
             return {"type": "photo", "url": _absolute_storefront_url(path) if absolute else path}
 
     for idx, media in enumerate(media_info):
         if media.get("type") == "video":
-            path = _product_public_media_path(product_id, idx)
+            path = f"/api/catalog/{product_id}/media/{idx}"
             return {"type": "video", "url": _absolute_storefront_url(path) if absolute else path}
 
     return {"type": "", "url": ""}
@@ -6438,7 +6439,7 @@ async def _serve_storefront_index(
         request,
         "localized_home.html",
         ctx,
-        cache_key=f"localized-home-public-search-v4:{language}:{len(ctx['seo_recent_products'])}:{_newest_lastmod(recent_products, datetime.now().date().isoformat())}",
+        cache_key=f"localized-home-public-search-eager-v1:{language}:{len(ctx['seo_recent_products'])}:{_newest_lastmod(recent_products, datetime.now().date().isoformat())}",
     )
 
 
@@ -6957,7 +6958,7 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
         request,
         "product.html",
         ctx,
-        cache_key=f"product-v2:{language}:{public_product_id}:{slug}:{cache_fingerprint}",
+        cache_key=f"product-eager-v1:{language}:{public_product_id}:{slug}:{cache_fingerprint}",
     )
 
 
@@ -7123,7 +7124,7 @@ async def _serve_category_page(category_name: str, request: Request, language: s
         request,
         "category.html",
         ctx,
-        cache_key=f"category-card-media-v3:{language}:{matched_category}:{current_page}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{public_catalog_bot_url}:{order_context.get('order_fingerprint')}",
+        cache_key=f"category-card-media-eager-v1:{language}:{matched_category}:{current_page}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{public_catalog_bot_url}:{order_context.get('order_fingerprint')}",
     )
 
 
@@ -7286,7 +7287,7 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
         request,
         "category.html",
         ctx,
-        cache_key=f"subcategory-card-media-v3:{language}:{matched_category}:{matched_subcategory}:{current_page}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{public_catalog_bot_url}:{order_context.get('order_fingerprint')}",
+        cache_key=f"subcategory-card-media-eager-v1:{language}:{matched_category}:{matched_subcategory}:{current_page}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{public_catalog_bot_url}:{order_context.get('order_fingerprint')}",
     )
 
 
@@ -8182,8 +8183,8 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                 bot,
                 current_file_id,
                 context=f"stream_catalog_media:{product_id}:{media_index}",
-                retries=0,
-                timeout_seconds=4.0,
+                retries=1,
+                timeout_seconds=8.0,
             )
             return current_file_id, tg
         except Exception as first_exc:
@@ -8245,8 +8246,8 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                         bot,
                         original_file_id,
                         context=f"stream_catalog_media_original:{product_id}:{media_index}",
-                        retries=0,
-                        timeout_seconds=2.5,
+                        retries=1,
+                        timeout_seconds=5.0,
                     )
                     return original_file_id, tg
                 raise first_exc
@@ -8262,8 +8263,8 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                         bot,
                         original_file_id,
                         context=f"stream_catalog_media_original:{product_id}:{media_index}",
-                        retries=0,
-                        timeout_seconds=2.5,
+                        retries=1,
+                        timeout_seconds=5.0,
                     )
                     return original_file_id, tg
                 raise first_exc
@@ -8279,8 +8280,8 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                         bot,
                         original_file_id,
                         context=f"stream_catalog_media_original:{product_id}:{media_index}",
-                        retries=0,
-                        timeout_seconds=2.5,
+                        retries=1,
+                        timeout_seconds=5.0,
                     )
                     return original_file_id, tg
                 raise first_exc
@@ -8304,8 +8305,8 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                         bot,
                         original_file_id,
                         context=f"stream_catalog_media_original:{product_id}:{media_index}",
-                        retries=0,
-                        timeout_seconds=2.5,
+                        retries=1,
+                        timeout_seconds=5.0,
                     )
                     return original_file_id, tg
                 raise first_exc
@@ -8319,8 +8320,8 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                 bot,
                 refreshed_file_id,
                 context=f"stream_catalog_media_refresh:{product_id}:{media_index}",
-                retries=0,
-                timeout_seconds=2.5,
+                retries=1,
+                timeout_seconds=5.0,
             )
             refreshed_cache_key = (
                 source_chat_id,

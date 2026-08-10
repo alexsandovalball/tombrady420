@@ -126,7 +126,7 @@
                 {% for item in seo_recent_products %}
                 <li><a href="{{ item.url }}">
                     {% if item.media_type == 'video' and item.media_url %}
-                    <video class="seo-card-video" muted playsinline preload="none" data-src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
+                    <video class="seo-card-video" muted playsinline preload="metadata" src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
                     {% elif item.media_url %}
                     <img src="{{ item.media_url }}" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async" data-fallback-src="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2">
                     {% else %}
@@ -214,8 +214,8 @@
                 video.className = 'seo-card-video';
                 video.muted = true;
                 video.playsInline = true;
-                video.preload = 'none';
-                video.dataset.src = '/media/products/' + encodeURIComponent(item.id) + '/' + videoIndex + '#t=0.2';
+                video.preload = 'metadata';
+                video.src = '/api/catalog/' + encodeURIComponent(item.id) + '/media/' + videoIndex + '#t=0.2';
                 video.setAttribute('aria-label', String(item.caption || '').split('\n')[0] || 'Product');
                 return video;
             }
@@ -228,7 +228,12 @@
                     link.href = item.url || '/product/' + encodeURIComponent(item.id);
 
                     var preview = mediaPreview(item);
-                    if (preview) link.appendChild(preview);
+                    if (preview) {
+                        link.appendChild(preview);
+                        if (preview.tagName === 'VIDEO' && window.prepareSeoCardVideo) {
+                            window.prepareSeoCardVideo(preview);
+                        }
+                    }
 
                     var title = document.createElement('span');
                     title.textContent = String(item.caption || '').split('\n')[0] || String(item.category || 'Product');
@@ -243,9 +248,6 @@
                     nodes.push(li);
                 });
                 results.replaceChildren.apply(results, nodes);
-                if (window.hydrateSeoCardVideos) {
-                    window.hydrateSeoCardVideos(results);
-                }
             }
 
             async function runSearch(query) {
@@ -297,12 +299,6 @@
         })();
 
         (function () {
-            function activateVideo(video) {
-                if (!video || video.src || !video.dataset.src) return;
-                video.src = video.dataset.src;
-                video.load();
-            }
-
             function prepareVideo(video) {
                 if (!video || video.dataset.previewReady === '1') return;
                 video.dataset.previewReady = '1';
@@ -318,25 +314,8 @@
                 }, { once: true });
             }
 
-            window.hydrateSeoCardVideos = function (root) {
-                var scope = root || document;
-                var videos = Array.from(scope.querySelectorAll('video.seo-card-video'));
-                videos.forEach(prepareVideo);
-                if ('IntersectionObserver' in window) {
-                    var observer = new IntersectionObserver(function (entries) {
-                        entries.forEach(function (entry) {
-                            if (!entry.isIntersecting) return;
-                            activateVideo(entry.target);
-                            observer.unobserve(entry.target);
-                        });
-                    }, { rootMargin: '240px 0px' });
-                    videos.forEach(function (video) { observer.observe(video); });
-                } else {
-                    videos.slice(0, 8).forEach(activateVideo);
-                }
-            };
-
-            window.hydrateSeoCardVideos(document);
+            window.prepareSeoCardVideo = prepareVideo;
+            document.querySelectorAll('video.seo-card-video').forEach(prepareVideo);
         })();
 
         (function () {
