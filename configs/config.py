@@ -48,7 +48,7 @@ class ConfigClass:
         self.SEO_EXTERNAL_SIGNAL_SCORE: int = 70
         self.SEO_SIDE_NOTE_LIMIT: int = 6
         self.SEO_TRENDS_ENABLED: bool = True
-        self.SEO_TRENDS_INTERVAL_SECONDS: int = 21600
+        self.SEO_TRENDS_INTERVAL_SECONDS: int = 86400
         self.SEO_TRENDS_LIMIT_PER_GEO: int = 10
         self.SEO_TRENDS_MAX_TERMS_PER_RUN: int = 50
         self.SEARCH_CONSOLE_ENABLED: bool = False
@@ -211,8 +211,8 @@ class ConfigClass:
         )
         self.SEO_TRENDS_ENABLED = config('SEO_TRENDS_ENABLED', default=True, cast=bool)
         self.SEO_TRENDS_INTERVAL_SECONDS = max(
-            21600,
-            config('SEO_TRENDS_INTERVAL_SECONDS', default=21600, cast=int),
+            86400,
+            config('SEO_TRENDS_INTERVAL_SECONDS', default=86400, cast=int),
         )
         self.SEO_TRENDS_LIMIT_PER_GEO = max(
             3,

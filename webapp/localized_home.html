@@ -569,6 +569,8 @@
                 appendMetric(grid, 'Image/video impressions', formatCount(seo.search_console_image_impressions_window) + '/' + formatCount(seo.search_console_video_impressions_window));
                 appendMetric(grid, 'SEO learners', (seoRuntime.seo_auto_learn_last_status || 'pending') + ' / ' + (seoRuntime.seo_trends_last_status || 'pending'));
                 appendMetric(grid, 'Mapping changes 24h / 7d', formatCount(seo.mappings_updated_24h) + ' / ' + formatCount(seo.mappings_updated_7d));
+                appendMetric(grid, 'Trend snapshots / regions 90d', formatCount(seo.trend_snapshots_90d) + ' / ' + formatCount(seo.trend_regions_90d));
+                appendMetric(grid, 'Attributed sessions / contacts 28d', formatCount(seo.attributed_webapp_sessions_28d) + ' / ' + formatCount(seo.attributed_contact_actions_28d));
                 appendMetric(grid, 'Mapping outcomes', formatCount(mappingOutcomes.winner) + ' winning / ' + formatCount(mappingOutcomes.monitoring) + ' monitoring / ' + formatCount(mappingOutcomes.pending) + ' pending / ' + formatCount(mappingOutcomes.retired_no_evidence) + ' retired');
                 appendMetric(grid, 'Google import', (searchConsoleSetup.configured ? (seoRuntime.search_console_import_last_status || 'configured') : 'not connected') + (seoRuntime.search_console_import_last_attempt_at ? ' · ' + seoRuntime.search_console_import_last_attempt_at : ''));
                 appendMetric(grid, 'Google sitemap', googleSitemap.status || 'never');
@@ -681,10 +683,12 @@
 
                         var mappingMeta = document.createElement('span');
                         mappingMeta.className = 'admin-page-meta';
+                        var score = Number(item.promotion_score || 0) > 0 ? ' · score ' + formatCount(item.promotion_score) : '';
+                        var target = item.target_path ? ' · target ' + String(item.target_path) : '';
                         mappingMeta.textContent =
                             'source ' + String(item.source || 'unknown') +
                             ' · language ' + String(item.language || 'en') +
-                            ' · ' + formatCount(item.hits) + ' uses' +
+                            ' · ' + formatCount(item.hits) + ' uses' + score + target +
                             ' · changed ' + String(item.updated_at || '-');
                         li.appendChild(mappingMeta);
                         return li;
@@ -728,7 +732,7 @@
                             status: seoRuntime.seo_trends_last_status,
                             changed: seoRuntime.seo_trends_last_promoted,
                             at: seoRuntime.seo_trends_last_run_at,
-                            extra: formatCount(seoRuntime.seo_trends_last_candidates) + ' candidates, ' + formatCount(seoRuntime.seo_trends_last_imported) + ' imported'
+                            extra: String(seoRuntime.seo_trends_last_source_mode || 'pending') + ' · ' + formatCount(seoRuntime.seo_trends_last_snapshots) + ' snapshots, ' + formatCount(seoRuntime.seo_trends_last_scored) + ' scored, ' + formatCount(seoRuntime.seo_trends_last_rejected_below_score) + ' below 70, ' + formatCount(seoRuntime.seo_trends_last_imported) + ' imported'
                         },
                         {
                             name: 'Search Console',

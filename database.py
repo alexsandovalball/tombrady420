@@ -320,6 +320,15 @@ class Database:
                     error TEXT NOT NULL DEFAULT '',
                     details_json TEXT,
                     client_timestamp TEXT,
+                    visitor_hash TEXT NOT NULL DEFAULT '',
+                    server_session_hash TEXT NOT NULL DEFAULT '',
+                    country TEXT NOT NULL DEFAULT 'Unknown',
+                    language TEXT NOT NULL DEFAULT '',
+                    device_type TEXT NOT NULL DEFAULT 'unknown',
+                    traffic_class TEXT NOT NULL DEFAULT 'human',
+                    product_id INTEGER,
+                    category TEXT NOT NULL DEFAULT '',
+                    subcategory TEXT NOT NULL DEFAULT '',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -407,6 +416,9 @@ class Database:
                     evaluation_position REAL NOT NULL DEFAULT 0,
                     outcome_status TEXT NOT NULL DEFAULT 'pending',
                     expires_at TIMESTAMP,
+                    promotion_score INTEGER NOT NULL DEFAULT 0,
+                    target_path TEXT NOT NULL DEFAULT '',
+                    model_version TEXT NOT NULL DEFAULT '',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -586,6 +598,25 @@ class Database:
             """)
 
             await db.execute("""
+                CREATE TABLE IF NOT EXISTS seo_signal_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider TEXT NOT NULL,
+                    term TEXT NOT NULL,
+                    normalized_term TEXT NOT NULL,
+                    signal_type TEXT NOT NULL DEFAULT 'query',
+                    region TEXT NOT NULL DEFAULT '',
+                    language TEXT NOT NULL DEFAULT 'en',
+                    interest_score INTEGER NOT NULL DEFAULT 0,
+                    momentum_score INTEGER NOT NULL DEFAULT 0,
+                    source_rank INTEGER NOT NULL DEFAULT 0,
+                    observed_date TEXT NOT NULL,
+                    notes_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(provider, normalized_term, signal_type, region, language, observed_date)
+                )
+            """)
+
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS search_console_dimension_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     query TEXT NOT NULL,
@@ -719,6 +750,18 @@ class Database:
                 ("seo_query_mappings", "expires_at", "TIMESTAMP", True),
                 ("external_seo_signals", "language", "TEXT NOT NULL DEFAULT 'en'", True),
                 ("external_seo_signals", "observation_count", "INTEGER NOT NULL DEFAULT 1", True),
+                ("seo_query_mappings", "promotion_score", "INTEGER NOT NULL DEFAULT 0", True),
+                ("seo_query_mappings", "target_path", "TEXT NOT NULL DEFAULT ''", True),
+                ("seo_query_mappings", "model_version", "TEXT NOT NULL DEFAULT ''", True),
+                ("webapp_events", "visitor_hash", "TEXT NOT NULL DEFAULT ''", True),
+                ("webapp_events", "server_session_hash", "TEXT NOT NULL DEFAULT ''", True),
+                ("webapp_events", "country", "TEXT NOT NULL DEFAULT 'Unknown'", True),
+                ("webapp_events", "language", "TEXT NOT NULL DEFAULT ''", True),
+                ("webapp_events", "device_type", "TEXT NOT NULL DEFAULT 'unknown'", True),
+                ("webapp_events", "traffic_class", "TEXT NOT NULL DEFAULT 'human'", True),
+                ("webapp_events", "product_id", "INTEGER", True),
+                ("webapp_events", "category", "TEXT NOT NULL DEFAULT ''", True),
+                ("webapp_events", "subcategory", "TEXT NOT NULL DEFAULT ''", True),
                 ("visitor_events", "traffic_class", "TEXT NOT NULL DEFAULT 'human'", True),
                 ("visitor_events", "crawler_name", "TEXT NOT NULL DEFAULT ''", True),
                 ("visitor_events", "is_pageview", "INTEGER NOT NULL DEFAULT 1", True),
@@ -856,6 +899,8 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_webapp_events_created ON webapp_events(created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_webapp_events_user ON webapp_events(user_id, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_webapp_events_type_action ON webapp_events(event_type, action)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_webapp_events_session ON webapp_events(server_session_hash, created_at DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_webapp_events_taxonomy ON webapp_events(category, subcategory, action, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_visitor_events_created ON visitor_events(created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_visitor_events_visitor ON visitor_events(visitor_hash, created_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_visitor_events_source ON visitor_events(source, page_type, created_at DESC)")
@@ -880,6 +925,8 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_external_seo_signals_approved ON external_seo_signals(approved, confidence DESC, last_seen DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_external_seo_signals_taxonomy ON external_seo_signals(category, subcategory, approved)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_external_seo_signals_observations ON external_seo_signals(provider, approved, observation_count, confidence)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_signal_snapshots_term ON seo_signal_snapshots(normalized_term, observed_date DESC)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_seo_signal_snapshots_region ON seo_signal_snapshots(provider, region, observed_date DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_search_console_dimensions_date ON search_console_dimension_events(source_date DESC, country, device)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_indexnow_submissions_status ON indexnow_submissions(status, updated_at DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_indexnow_submissions_submitted ON indexnow_submissions(submitted_at DESC)")
@@ -4321,6 +4368,10 @@ class Database:
             except Exception:
                 details_json = "{}"
             details_json = details_json[:4000]
+            try:
+                product_id = int(entry["product_id"]) if entry.get("product_id") is not None else None
+            except (TypeError, ValueError):
+                product_id = None
             rows.append((
                 str(entry.get("session_id") or ""),
                 str(entry.get("user_id") or "unknown"),
@@ -4331,14 +4382,25 @@ class Database:
                 str(entry.get("error") or "")[:500],
                 details_json,
                 str(entry.get("timestamp") or ""),
+                str(entry.get("visitor_hash") or "")[:80],
+                str(entry.get("server_session_hash") or "")[:80],
+                str(entry.get("country") or "Unknown")[:80],
+                str(entry.get("language") or "")[:40],
+                str(entry.get("device_type") or "unknown")[:40],
+                str(entry.get("traffic_class") or "human")[:40],
+                product_id,
+                str(entry.get("category") or "")[:80],
+                str(entry.get("subcategory") or "")[:120],
             ))
 
         async with self.get_connection() as db:
             await db.executemany(
                 """
                 INSERT INTO webapp_events
-                    (session_id, user_id, username, event_type, action, status, error, details_json, client_timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (session_id, user_id, username, event_type, action, status, error,
+                     details_json, client_timestamp, visitor_hash, server_session_hash,
+                     country, language, device_type, traffic_class, product_id, category, subcategory)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -4530,6 +4592,9 @@ class Database:
                 source[:80],
                 str(mapping.get("language") or "")[:12].lower(),
                 int(bool(approved)),
+                max(0, min(100, int(mapping.get("promotion_score") or 0))),
+                str(mapping.get("target_path") or "")[:500],
+                str(mapping.get("model_version") or "")[:40],
             ))
 
         if not rows:
@@ -4541,10 +4606,11 @@ class Database:
                 """
                 INSERT INTO seo_query_mappings (
                     term, normalized_term, category, subcategory, source, language, approved,
+                    promotion_score, target_path, model_version,
                     first_seen_at, published_at, last_seen_at, outcome_status, updated_at
                 )
                 VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP,
                     CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE NULL END,
                     CURRENT_TIMESTAMP, 'pending', CURRENT_TIMESTAMP
                 )
@@ -4558,6 +4624,18 @@ class Database:
                         ELSE seo_query_mappings.language
                     END,
                     approved = excluded.approved,
+                    promotion_score = CASE
+                        WHEN excluded.promotion_score > 0 THEN excluded.promotion_score
+                        ELSE seo_query_mappings.promotion_score
+                    END,
+                    target_path = CASE
+                        WHEN excluded.target_path != '' THEN excluded.target_path
+                        ELSE seo_query_mappings.target_path
+                    END,
+                    model_version = CASE
+                        WHEN excluded.model_version != '' THEN excluded.model_version
+                        ELSE seo_query_mappings.model_version
+                    END,
                     published_at = CASE
                         WHEN seo_query_mappings.approved = 0 AND excluded.approved = 1
                             THEN CURRENT_TIMESTAMP
@@ -4580,8 +4658,11 @@ class Database:
                    OR seo_query_mappings.source IS NOT excluded.source
                    OR (excluded.language != '' AND seo_query_mappings.language IS NOT excluded.language)
                    OR seo_query_mappings.approved IS NOT excluded.approved
+                   OR (excluded.promotion_score > 0 AND seo_query_mappings.promotion_score IS NOT excluded.promotion_score)
+                   OR (excluded.target_path != '' AND seo_query_mappings.target_path IS NOT excluded.target_path)
+                   OR (excluded.model_version != '' AND seo_query_mappings.model_version IS NOT excluded.model_version)
                 """,
-                [(*row, row[-1]) for row in rows],
+                [(*row, row[6]) for row in rows],
             )
             mapping_changes = db.total_changes - changes_before
             normalized_terms = [row[1] for row in rows]
@@ -4719,6 +4800,73 @@ class Database:
             )
             await db.commit()
         return len(rows)
+
+    async def get_product_taxonomy_map(self, product_ids: List[int]) -> Dict[int, Dict[str, str]]:
+        """Return compact taxonomy metadata for event attribution."""
+        clean_ids = set()
+        for value in product_ids or []:
+            try:
+                clean_ids.add(int(value))
+            except (TypeError, ValueError):
+                continue
+        clean_ids = sorted(clean_ids)[:100]
+        if not clean_ids:
+            return {}
+        placeholders = ",".join("?" * len(clean_ids))
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                f"""
+                SELECT id, public_id, category, COALESCE(subcategory, '') AS subcategory
+                FROM products
+                WHERE id IN ({placeholders}) OR public_id IN ({placeholders})
+                """,
+                (*clean_ids, *clean_ids),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        result: Dict[int, Dict[str, str]] = {}
+        for row in rows:
+            taxonomy = {
+                "category": str(row["category"] or ""),
+                "subcategory": str(row["subcategory"] or ""),
+            }
+            result[int(row["id"])] = taxonomy
+            if row["public_id"] is not None:
+                result[int(row["public_id"])] = taxonomy
+        return result
+
+    async def get_taxonomy_behavior_metrics(self, *, lookback_days: int = 28) -> Dict[Tuple[str, str], Dict[str, int]]:
+        """Return bounded human funnel counts used as a weak SEO relevance signal."""
+        since = datetime.now() - timedelta(days=max(1, min(90, int(lookback_days))))
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT
+                    category,
+                    COALESCE(subcategory, '') AS subcategory,
+                    COUNT(DISTINCT NULLIF(server_session_hash, '')) AS sessions,
+                    SUM(CASE WHEN action = 'view_product' THEN 1 ELSE 0 END) AS product_views,
+                    SUM(CASE WHEN action = 'view_media' THEN 1 ELSE 0 END) AS media_views,
+                    SUM(CASE WHEN action IN ('dm_to_order_click', 'home_contact_link_click') THEN 1 ELSE 0 END) AS contact_actions
+                FROM webapp_events
+                WHERE created_at >= ?
+                  AND traffic_class = 'human'
+                  AND category != ''
+                GROUP BY category, COALESCE(subcategory, '')
+                """,
+                (since,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        return {
+            (str(row["category"] or ""), str(row["subcategory"] or "")): {
+                "sessions": int(row["sessions"] or 0),
+                "product_views": int(row["product_views"] or 0),
+                "media_views": int(row["media_views"] or 0),
+                "contact_actions": int(row["contact_actions"] or 0),
+            }
+            for row in rows
+        }
 
     async def retire_off_audience_seo_mappings(self, *, limit: int = 500) -> int:
         """Disable auto-learned SEO mappings that are clearly off-audience noise."""
@@ -5063,6 +5211,152 @@ class Database:
             await db.commit()
         return len(normalized_rows)
 
+    async def upsert_seo_signal_snapshots(
+        self,
+        signals: List[Dict[str, Any]],
+        *,
+        provider: str,
+        observed_date: Optional[str] = None,
+    ) -> int:
+        """Persist compact regional signal history for daily comparisons."""
+        from utils.seo_terms import normalize_term
+
+        snapshot_date = str(observed_date or datetime.now().date().isoformat())[:10]
+        rows = []
+        seen = set()
+        for signal in signals or []:
+            term = str(signal.get("term") or "").strip()
+            normalized = normalize_term(term)
+            notes = signal.get("notes") or {}
+            region = str(notes.get("geo") or signal.get("region") or "").upper()[:20]
+            language = str(signal.get("language") or "en").lower()[:12]
+            signal_type = str(signal.get("term_type") or "query")[:60]
+            key = (normalized, signal_type, region, language)
+            if not normalized or key in seen:
+                continue
+            seen.add(key)
+            try:
+                notes_json = json.dumps(notes, ensure_ascii=True, default=str)[:2000]
+            except (TypeError, ValueError):
+                notes_json = "{}"
+            rows.append((
+                str(signal.get("provider") or provider or "external")[:80],
+                term[:300],
+                normalized[:300],
+                signal_type,
+                region,
+                language,
+                max(0, min(100, int(notes.get("interest_score") or signal.get("evidence_count") or 0))),
+                max(-100, min(300, int(notes.get("momentum_percent") or 0))),
+                max(0, int(notes.get("rank") or 0)),
+                snapshot_date,
+                notes_json,
+            ))
+        if not rows:
+            return 0
+
+        async with self.get_connection() as db:
+            await db.executemany(
+                """
+                INSERT INTO seo_signal_snapshots (
+                    provider, term, normalized_term, signal_type, region, language,
+                    interest_score, momentum_score, source_rank, observed_date, notes_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider, normalized_term, signal_type, region, language, observed_date)
+                DO UPDATE SET
+                    term = excluded.term,
+                    interest_score = excluded.interest_score,
+                    momentum_score = excluded.momentum_score,
+                    source_rank = excluded.source_rank,
+                    notes_json = excluded.notes_json
+                """,
+                rows,
+            )
+            await db.execute(
+                "DELETE FROM seo_signal_snapshots WHERE observed_date < date('now', '-400 day')"
+            )
+            await db.commit()
+        return len(rows)
+
+    async def get_seo_candidate_evidence(
+        self,
+        terms: List[str],
+        *,
+        lookback_days: int = 90,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Return compact multi-source evidence for a bounded candidate batch."""
+        from utils.seo_terms import normalize_term
+
+        normalized_terms = list(dict.fromkeys(
+            normalize_term(term) for term in terms or [] if normalize_term(term)
+        ))[:200]
+        if not normalized_terms:
+            return {}
+        placeholders = ",".join("?" * len(normalized_terms))
+        since_date = (datetime.now() - timedelta(days=max(1, min(365, lookback_days)))).date().isoformat()
+        since_time = datetime.now() - timedelta(days=max(1, min(365, lookback_days)))
+        result = {
+            term: {
+                "impressions": 0,
+                "clicks": 0,
+                "avg_position": 0.0,
+                "internal_searches": 0,
+                "provider_count": 0,
+            }
+            for term in normalized_terms
+        }
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                f"""
+                SELECT normalized_query,
+                       SUM(impressions) AS impressions,
+                       SUM(clicks) AS clicks,
+                       CASE WHEN SUM(impressions) > 0
+                            THEN SUM(position * impressions) / SUM(impressions)
+                            ELSE AVG(position) END AS avg_position
+                FROM search_console_query_events
+                WHERE normalized_query IN ({placeholders}) AND source_date >= ?
+                GROUP BY normalized_query
+                """,
+                (*normalized_terms, since_date),
+            ) as cursor:
+                for row in await cursor.fetchall():
+                    item = result.get(str(row["normalized_query"]))
+                    if item is not None:
+                        item.update({
+                            "impressions": int(row["impressions"] or 0),
+                            "clicks": int(row["clicks"] or 0),
+                            "avg_position": float(row["avg_position"] or 0),
+                        })
+            async with db.execute(
+                f"""
+                SELECT normalized_query, COUNT(*) AS searches
+                FROM search_query_events
+                WHERE normalized_query IN ({placeholders}) AND created_at >= ?
+                GROUP BY normalized_query
+                """,
+                (*normalized_terms, since_time),
+            ) as cursor:
+                for row in await cursor.fetchall():
+                    item = result.get(str(row["normalized_query"]))
+                    if item is not None:
+                        item["internal_searches"] = int(row["searches"] or 0)
+            async with db.execute(
+                f"""
+                SELECT normalized_term, COUNT(DISTINCT provider) AS provider_count
+                FROM external_seo_signals
+                WHERE normalized_term IN ({placeholders})
+                GROUP BY normalized_term
+                """,
+                tuple(normalized_terms),
+            ) as cursor:
+                for row in await cursor.fetchall():
+                    item = result.get(str(row["normalized_term"]))
+                    if item is not None:
+                        item["provider_count"] = int(row["provider_count"] or 0)
+        return result
+
     async def upsert_external_seo_signals(
         self,
         signals: List[Dict[str, Any]],
@@ -5297,10 +5591,11 @@ class Database:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
-                SELECT term, category, subcategory, source, language, hits
+                SELECT term, category, subcategory, source, language, hits,
+                       promotion_score, target_path, model_version
                 FROM seo_query_mappings
                 WHERE approved = 1
-                ORDER BY hits DESC, updated_at DESC
+                ORDER BY promotion_score DESC, hits DESC, updated_at DESC
                 LIMIT ?
                 """,
                 (limit,),
@@ -5318,7 +5613,8 @@ class Database:
                 SELECT term, category, subcategory, source, language, hits,
                        outcome_status, published_at, last_evaluated_at,
                        baseline_impressions, evaluation_impressions,
-                       baseline_clicks, evaluation_clicks, updated_at
+                       baseline_clicks, evaluation_clicks,
+                       promotion_score, target_path, model_version, updated_at
                 FROM seo_query_mappings
                 WHERE approved = 1
                 ORDER BY updated_at DESC, id DESC
@@ -5531,6 +5827,10 @@ class Database:
                 "seo_trends_last_imported",
                 "seo_trends_last_matured",
                 "seo_trends_last_promoted",
+                "seo_trends_last_snapshots",
+                "seo_trends_last_scored",
+                "seo_trends_last_rejected_below_score",
+                "seo_trends_last_source_mode",
                 "seo_trends_last_duration_ms",
                 "seo_trends_last_error",
                 "search_console_import_last_attempt_at",
@@ -5703,6 +6003,38 @@ class Database:
                 ),
                 "google_trends_latest_seen": await value(
                     "SELECT MAX(last_seen) FROM external_seo_signals WHERE approved = 1 AND provider = 'google_trends'"
+                ),
+                "trend_snapshots_90d": await scalar(
+                    "SELECT COUNT(*) FROM seo_signal_snapshots WHERE provider = 'google_trends' AND observed_date >= date('now', '-90 day')"
+                ),
+                "trend_regions_90d": await scalar(
+                    "SELECT COUNT(DISTINCT region) FROM seo_signal_snapshots WHERE provider = 'google_trends' AND observed_date >= date('now', '-90 day')"
+                ),
+                "trend_snapshot_latest_date": await value(
+                    "SELECT MAX(observed_date) FROM seo_signal_snapshots WHERE provider = 'google_trends'"
+                ),
+                "recent_trend_snapshots": await rows(
+                    """
+                    SELECT term, signal_type, region, language, interest_score,
+                           momentum_score, observed_date
+                    FROM seo_signal_snapshots
+                    WHERE provider = 'google_trends'
+                    ORDER BY observed_date DESC, interest_score DESC, momentum_score DESC
+                    LIMIT ?
+                    """,
+                    (min(limit, 50),),
+                ),
+                "attributed_webapp_sessions_28d": await scalar(
+                    """SELECT COUNT(DISTINCT NULLIF(server_session_hash, ''))
+                       FROM webapp_events
+                       WHERE created_at >= datetime('now', '-28 day')
+                         AND traffic_class = 'human'"""
+                ),
+                "attributed_contact_actions_28d": await scalar(
+                    """SELECT COUNT(*) FROM webapp_events
+                       WHERE created_at >= datetime('now', '-28 day')
+                         AND traffic_class = 'human'
+                         AND action IN ('dm_to_order_click', 'home_contact_link_click')"""
                 ),
                 "top_search_console_queries": await rows(
                     """

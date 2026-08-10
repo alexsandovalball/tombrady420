@@ -8,6 +8,7 @@ import hashlib
 import html
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -74,7 +75,10 @@ from utils.seo_autolearn import (
     is_bad_auto_seo_term,
     is_explicit_short_seo_term,
 )
-from utils.google_trends import fetch_trending_queries_for_supported_locales
+from utils.google_trends import (
+    fetch_seeded_queries_for_supported_locales,
+    fetch_trending_queries_for_supported_locales,
+)
 from utils.external_seo_signals import load_external_seo_signal_file
 from utils.search_console import describe_search_console_setup, fetch_search_console_data, submit_sitemap
 from translations.language_config import SUPPORTED_LANGUAGES
@@ -219,6 +223,8 @@ WEBAPP_SESSION_COOKIE = "brady_webapp_session"
 WEBAPP_SESSION_TTL_SECONDS = _bounded_int_env("WEBAPP_SESSION_TTL_SECONDS", 3600, 300, 24 * 3600)
 _webapp_session_tokens: OrderedDict[str, tuple[str, float]] = OrderedDict()
 _WEBAPP_SESSION_MAX = _bounded_int_env("WEBAPP_SESSION_MAX", 2048, 128, 8192)
+ANALYTICS_SESSION_COOKIE = "brady_analytics_session"
+ANALYTICS_SESSION_TTL_SECONDS = 30 * 60
 _PRIMARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("PRIMARY_BOT_CONNECTION_POOL_SIZE", 10, 2, 16)
 _SECONDARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("SECONDARY_BOT_CONNECTION_POOL_SIZE", 4, 1, 8)
 _MEDIA_STREAM_CONCURRENCY = _bounded_int_env("MEDIA_STREAM_CONCURRENCY", 8, 2, 32)
@@ -1222,6 +1228,23 @@ def _visitor_hash(request: Request, telegram_user_id: Optional[Any] = None) -> s
     return hashlib.sha256(f"{salt}:{material}".encode("utf-8")).hexdigest()[:32]
 
 
+def _analytics_session_hash(request: Request) -> str:
+    """Return a short-lived first-party session hash without storing its cookie value."""
+    token = str(
+        getattr(request.state, "analytics_session_id", "")
+        or request.cookies.get(ANALYTICS_SESSION_COOKIE)
+        or ""
+    ).strip()
+    if token:
+        material = f"analytics:{token}"
+    else:
+        # Middleware-less tests and excluded routes still get a bounded session.
+        bucket = int(_time.time() // ANALYTICS_SESSION_TTL_SECONDS)
+        material = f"fallback:{_visitor_hash(request)}:{bucket}"
+    salt = Config.BOT_TOKEN or Config.WEBHOOK_URL or "bradycadia"
+    return hashlib.sha256(f"{salt}:{material}".encode("utf-8")).hexdigest()[:32]
+
+
 def _user_agent_hash(request: Request) -> str:
     user_agent = request.headers.get("user-agent", "")
     if not user_agent:
@@ -1361,8 +1384,7 @@ def _queue_visitor_event(
         while len(_crawler_event_sample) > _CRAWLER_EVENT_SAMPLE_MAX:
             _crawler_event_sample.popitem(last=False)
     visitor_hash = _visitor_hash(request, telegram_user_id)
-    session_material = f"session:{telegram_user_id}" if telegram_user_id is not None else f"session:{visitor_hash}"
-    session_hash = hashlib.sha256(session_material.encode("utf-8")).hexdigest()[:32]
+    session_hash = _analytics_session_hash(request)
     payload = {
         "visitor_hash": visitor_hash,
         "telegram_user_id": telegram_user_id,
@@ -2637,6 +2659,97 @@ def _get_seo_trends_lock() -> asyncio.Lock:
     return _seo_trends_lock
 
 
+_SEO_EXTERNAL_MODEL_VERSION = "intent-v1"
+
+
+def _bounded_seo_score(value: Any, default: float = 0.0) -> float:
+    try:
+        return max(0.0, min(100.0, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _seo_mapping_target_path(category: str, subcategory: str = "") -> str:
+    category = str(category or "").strip()
+    subcategory = str(subcategory or "").strip()
+    if not category:
+        return "/"
+    if subcategory:
+        return _canonical_subcategory_path(category, subcategory)
+    return _canonical_category_path(category)
+
+
+def _score_external_seo_candidate(
+    *,
+    inferred_score: Any,
+    trend_confidence: Any,
+    trend_evidence: Any,
+    term_type: str,
+    evidence: Dict[str, Any],
+    behavior: Dict[str, Any],
+) -> tuple[int, Dict[str, int]]:
+    """Blend bounded demand signals; semantic relevance remains the strongest input."""
+    semantic = _bounded_seo_score(inferred_score)
+    trend = _bounded_seo_score(trend_confidence, 50.0)
+    internal_searches = max(0, int(evidence.get("internal_searches") or 0))
+    impressions = max(0, int(evidence.get("impressions") or 0))
+    clicks = max(0, int(evidence.get("clicks") or 0))
+    providers = max(0, int(evidence.get("provider_count") or 0))
+    raw_evidence = max(0.0, _bounded_seo_score(trend_evidence))
+
+    demand = _bounded_seo_score(
+        35.0 + math.log1p(internal_searches) * 18.0 + math.log1p(raw_evidence) * 7.0,
+        35.0,
+    )
+    if impressions:
+        ctr = clicks / impressions
+        position = max(0.0, float(evidence.get("avg_position") or 0.0))
+        position_opportunity = 18.0 if 4.0 <= position <= 40.0 else (8.0 if position else 0.0)
+        console = _bounded_seo_score(
+            35.0 + math.log1p(impressions) * 7.0 + min(22.0, ctr * 180.0) + position_opportunity,
+            35.0,
+        )
+    else:
+        console = 35.0
+
+    sessions = max(0, int(behavior.get("sessions") or 0))
+    product_views = max(0, int(behavior.get("product_views") or 0))
+    contact_actions = max(0, int(behavior.get("contact_actions") or 0))
+    if sessions:
+        behavior_score = _bounded_seo_score(
+            35.0
+            + math.log1p(sessions) * 5.0
+            + min(28.0, (product_views / sessions) * 14.0)
+            + min(25.0, (contact_actions / sessions) * 180.0),
+            40.0,
+        )
+    else:
+        behavior_score = 40.0
+
+    agreement = _bounded_seo_score(35.0 + providers * 20.0 + min(30.0, internal_searches * 8.0), 35.0)
+    clean_type = str(term_type or "").lower()
+    freshness = 95.0 if "rising" in clean_type else 85.0 if "top" in clean_type else 72.0
+    score = round(
+        semantic * 0.35
+        + trend * 0.25
+        + demand * 0.15
+        + console * 0.10
+        + behavior_score * 0.05
+        + agreement * 0.05
+        + freshness * 0.05
+    )
+    components = {
+        "semantic": round(semantic),
+        "trend": round(trend),
+        "demand": round(demand),
+        "search_console": round(console),
+        "behavior": round(behavior_score),
+        "agreement": round(agreement),
+        "freshness": round(freshness),
+    }
+    return max(0, min(100, score)), components
+
+
 async def _import_google_trends_signals(
     products: list[dict[str, Any]],
     profiles: dict[tuple[str, str], dict[str, Any]],
@@ -2646,10 +2759,18 @@ async def _import_google_trends_signals(
         return 0
 
     trend_rows = await asyncio.to_thread(
-        fetch_trending_queries_for_supported_locales,
+        fetch_seeded_queries_for_supported_locales,
         limit_per_geo=Config.SEO_TRENDS_LIMIT_PER_GEO,
         max_terms=Config.SEO_TRENDS_MAX_TERMS_PER_RUN,
     )
+    source_mode = "seeded"
+    if not trend_rows:
+        trend_rows = await asyncio.to_thread(
+            fetch_trending_queries_for_supported_locales,
+            limit_per_geo=Config.SEO_TRENDS_LIMIT_PER_GEO,
+            max_terms=Config.SEO_TRENDS_MAX_TERMS_PER_RUN,
+        )
+        source_mode = "trending_fallback"
     if not trend_rows:
         logger.info("[seo_trends] rows=0 imported=0 promoted=0")
         await _set_runtime_settings({
@@ -2657,6 +2778,11 @@ async def _import_google_trends_signals(
             "seo_trends_last_rows": 0,
             "seo_trends_last_candidates": 0,
             "seo_trends_last_imported": 0,
+            "seo_trends_last_matured": 0,
+            "seo_trends_last_snapshots": 0,
+            "seo_trends_last_scored": 0,
+            "seo_trends_last_rejected_below_score": 0,
+            "seo_trends_last_source_mode": "unavailable",
         })
         return 0
 
@@ -2665,7 +2791,7 @@ async def _import_google_trends_signals(
     for row in trend_rows:
         parent_term = str(row.get("term") or "").strip()
         notes = row.get("notes") or {}
-        entries = [(parent_term, "google_trends_trending", 0)]
+        entries = [(parent_term, str(row.get("term_type") or "google_trends_trending"), 0)]
         entries.extend(
             (str(term or "").strip(), "google_trends_related", rank)
             for rank, term in enumerate((notes.get("related_queries") or [])[:3], start=1)
@@ -2697,7 +2823,8 @@ async def _import_google_trends_signals(
             })
             candidate_rows.append(candidate)
 
-    signals = []
+    snapshot_rows = []
+    inferred_rows: List[tuple[Dict[str, Any], Dict[str, Any], bool, bool]] = []
     for row in candidate_rows:
         term = str(row.get("term") or "").strip()
         if not _is_useful_auto_seo_term(term):
@@ -2706,7 +2833,9 @@ async def _import_google_trends_signals(
         mushroom_intent = has_mushroom_search_intent(term)
         if not (cannabis_intent or mushroom_intent):
             continue
-        is_related = str(row.get("term_type") or "") == "google_trends_related"
+        if not has_search_audience_intent(term):
+            continue
+        snapshot_rows.append(row)
         inferred = await asyncio.to_thread(
             infer_seo_query_mapping,
             term,
@@ -2715,15 +2844,41 @@ async def _import_google_trends_signals(
                 70,
                 Config.SEO_EXTERNAL_SIGNAL_SCORE
                 - (6 if cannabis_intent or mushroom_intent else 0)
-                - (2 if is_related else 0),
             ),
             profiles=profiles,
         )
         if not inferred:
             continue
-        confidence = min(100, max(int(row.get("confidence") or 0), int(float(inferred.get("score") or 0))))
-        if cannabis_intent:
-            confidence = min(100, confidence + 4)
+        inferred_rows.append((row, inferred, cannabis_intent, mushroom_intent))
+
+    snapshots = await _catalog_db.upsert_seo_signal_snapshots(
+        snapshot_rows,
+        provider="google_trends",
+    )
+    evidence_by_term = await _catalog_db.get_seo_candidate_evidence(
+        [str(row.get("term") or "") for row, _, _, _ in inferred_rows],
+        lookback_days=90,
+    )
+    behavior_by_taxonomy = await _catalog_db.get_taxonomy_behavior_metrics(lookback_days=28)
+
+    signals = []
+    rejected_below_score = 0
+    for row, inferred, cannabis_intent, mushroom_intent in inferred_rows:
+        term = str(row.get("term") or "").strip()
+        normalized = normalize_term(term)
+        taxonomy = (str(inferred.get("category") or ""), str(inferred.get("subcategory") or ""))
+        promotion_score, score_components = _score_external_seo_candidate(
+            inferred_score=inferred.get("score"),
+            trend_confidence=row.get("confidence"),
+            trend_evidence=row.get("evidence_count"),
+            term_type=str(row.get("term_type") or ""),
+            evidence=evidence_by_term.get(normalized, {}),
+            behavior=behavior_by_taxonomy.get(taxonomy, {}),
+        )
+        if promotion_score < Config.SEO_EXTERNAL_SIGNAL_SCORE:
+            rejected_below_score += 1
+            continue
+        target_path = _seo_mapping_target_path(*taxonomy)
         signals.append({
             "term": term,
             "term_type": str(row.get("term_type") or "google_trends_trending"),
@@ -2732,7 +2887,7 @@ async def _import_google_trends_signals(
             "language": str(row.get("language") or "en").lower(),
             "category": inferred["category"],
             "subcategory": inferred["subcategory"],
-            "confidence": confidence,
+            "confidence": promotion_score,
             # Trends is a discovery hint, not proof. The database promotes it
             # only after the same relevant signal is observed on multiple days.
             "approved": False,
@@ -2745,6 +2900,10 @@ async def _import_google_trends_signals(
                 "related_rank": (row.get("notes") or {}).get("related_rank") or 0,
                 "cannabis_boosted": cannabis_intent,
                 "mushroom_relevant": mushroom_intent,
+                "promotion_score": promotion_score,
+                "score_components": score_components,
+                "target_path": target_path,
+                "model_version": _SEO_EXTERNAL_MODEL_VERSION,
             },
         })
 
@@ -2759,6 +2918,11 @@ async def _import_google_trends_signals(
             "seo_trends_last_rows": len(trend_rows),
             "seo_trends_last_candidates": len(candidate_rows),
             "seo_trends_last_imported": 0,
+            "seo_trends_last_matured": 0,
+            "seo_trends_last_snapshots": snapshots,
+            "seo_trends_last_scored": len(inferred_rows),
+            "seo_trends_last_rejected_below_score": rejected_below_score,
+            "seo_trends_last_source_mode": source_mode,
         })
         return 0
 
@@ -2782,10 +2946,14 @@ async def _import_google_trends_signals(
     if imported:
         _invalidate_admin_status_cache()
     logger.info(
-        "[seo_trends] rows=%d candidates=%d relevant=%d imported=%d matured=%d fast_matured=%d",
+        "[seo_trends] mode=%s rows=%d candidates=%d snapshots=%d scored=%d relevant=%d rejected_below_score=%d imported=%d matured=%d fast_matured=%d",
+        source_mode,
         len(trend_rows),
         len(candidate_rows),
+        snapshots,
+        len(inferred_rows),
         len(signals),
+        rejected_below_score,
         imported,
         matured,
         fast_matured,
@@ -2796,6 +2964,10 @@ async def _import_google_trends_signals(
         "seo_trends_last_candidates": len(candidate_rows),
         "seo_trends_last_imported": imported,
         "seo_trends_last_matured": matured,
+        "seo_trends_last_snapshots": snapshots,
+        "seo_trends_last_scored": len(inferred_rows),
+        "seo_trends_last_rejected_below_score": rejected_below_score,
+        "seo_trends_last_source_mode": source_mode,
     })
     return imported + matured
 
@@ -2831,6 +3003,12 @@ async def _promote_approved_external_signals() -> int:
                 "language": variant["language"],
                 "category": item.get("category") or "",
                 "subcategory": item.get("subcategory") or "",
+                "promotion_score": int(item.get("confidence") or 0),
+                "target_path": _seo_mapping_target_path(
+                    item.get("category") or "",
+                    item.get("subcategory") or "",
+                ),
+                "model_version": _SEO_EXTERNAL_MODEL_VERSION,
             })
 
     if not approvals:
@@ -3397,6 +3575,12 @@ async def _seo_auto_learn_once() -> int:
                 "language": learned_term["language"],
                 "category": inferred["category"],
                 "subcategory": inferred["subcategory"],
+                "promotion_score": int(float(inferred.get("score") or 0)),
+                "target_path": _seo_mapping_target_path(
+                    inferred["category"],
+                    inferred["subcategory"],
+                ),
+                "model_version": "internal-v1",
             })
         logger.info(
             "[seo_auto_learn] approve query=%r variants=%d category=%s subcategory=%s score=%s reason=%s count=%s best_matched=%s",
@@ -3520,14 +3704,31 @@ async def _seo_auto_learn_loop():
 
 
 async def _seo_trends_loop():
-    """Background task: ingest a small batch of Google Trends signals."""
+    """Background task: ingest one bounded Google Trends batch per day."""
     if not Config.SEO_TRENDS_ENABLED:
         logger.info("[seo_trends] disabled")
         return
 
     await asyncio.sleep(30)
     while True:
+        sleep_for = Config.SEO_TRENDS_INTERVAL_SECONDS
         try:
+            last_success = await _catalog_db.get_bot_setting("seo_trends_last_success_at", "")
+            if last_success:
+                try:
+                    last_dt = datetime.fromisoformat(str(last_success).replace("Z", "+00:00")).replace(tzinfo=None)
+                    age_seconds = max(0.0, (datetime.now() - last_dt).total_seconds())
+                    if age_seconds < Config.SEO_TRENDS_INTERVAL_SECONDS:
+                        sleep_for = max(300.0, Config.SEO_TRENDS_INTERVAL_SECONDS - age_seconds)
+                        logger.info(
+                            "[seo_trends] scheduled_daily next_in_seconds=%d last_success=%s",
+                            int(sleep_for),
+                            last_success,
+                        )
+                        await asyncio.sleep(sleep_for)
+                        continue
+                except (TypeError, ValueError):
+                    logger.debug("[seo_trends] invalid_last_success value=%r", last_success)
             lock = _get_seo_trends_lock()
             if lock.locked():
                 logger.info("[seo_trends] skipped reason=previous_run_active")
@@ -3547,12 +3748,15 @@ async def _seo_trends_loop():
                     Config.SEO_TRENDS_LIMIT_PER_GEO,
                     Config.SEO_TRENDS_MAX_TERMS_PER_RUN,
                 )
+                completed_at = datetime.now().isoformat(sep=" ", timespec="seconds")
                 await _set_runtime_settings({
-                    "seo_trends_last_run_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+                    "seo_trends_last_run_at": completed_at,
+                    "seo_trends_last_success_at": completed_at,
                     "seo_trends_last_status": "ok",
                     "seo_trends_last_imported": imported,
                     "seo_trends_last_promoted": promoted,
                     "seo_trends_last_duration_ms": round(duration_ms, 1),
+                    "seo_trends_last_error": "",
                 })
         except Exception as exc:
             logger.warning("[seo_trends] loop_error error=%s", exc)
@@ -3561,7 +3765,8 @@ async def _seo_trends_loop():
                 "seo_trends_last_status": "error",
                 "seo_trends_last_error": str(exc)[:300],
             })
-        await asyncio.sleep(Config.SEO_TRENDS_INTERVAL_SECONDS)
+            sleep_for = min(3600, Config.SEO_TRENDS_INTERVAL_SECONDS)
+        await asyncio.sleep(sleep_for)
 
 
 async def _seo_translation_warmup_once() -> int:
@@ -3984,16 +4189,52 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         
         return response
 
+
+class AnalyticsSessionMiddleware(BaseHTTPMiddleware):
+    """Maintain a short first-party session for aggregate, non-crawler analytics."""
+
+    _EXCLUDED_PREFIXES = (
+        "/assets/", "/media/", "/api/catalog/", "/webhook/", "/_internal/",
+        "/favicon", "/robots.txt", "/sitemap", "/indexnow",
+    )
+
+    async def dispatch(self, request, call_next):
+        path = request.url.path
+        traffic = classify_user_agent(request.headers.get("user-agent", ""))
+        eligible = not traffic.is_crawler and not path.startswith(self._EXCLUDED_PREFIXES)
+        token = str(request.cookies.get(ANALYTICS_SESSION_COOKIE) or "").strip()
+        is_new = eligible and not token
+        if is_new:
+            token = secrets.token_urlsafe(18)
+        if token:
+            request.state.analytics_session_id = token
+
+        response = await call_next(request)
+        if is_new:
+            forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+            response.set_cookie(
+                key=ANALYTICS_SESSION_COOKIE,
+                value=token,
+                max_age=ANALYTICS_SESSION_TTL_SECONDS,
+                httponly=True,
+                secure=request.url.scheme == "https" or forwarded_proto == "https",
+                samesite="lax",
+                path="/",
+            )
+        return response
+
 # Middleware stack – order matters: FastAPI applies these in reverse registration
 # order, so the last registered runs first.  We want:
 #   SecurityMiddleware (outermost – reject scans before any other work)
 #   GlobalRateLimiter
+#   AnalyticsSessionMiddleware
 #   CacheControlMiddleware
 #   RequestLoggingMiddleware
 #   GZipMiddleware (innermost)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(CacheControlMiddleware)
+app.add_middleware(AnalyticsSessionMiddleware)
 app.add_middleware(GlobalRateLimiter)
 app.add_middleware(SecurityMiddleware)
 
@@ -8581,14 +8822,54 @@ async def webapp_logs(request: Request):
         if not logs:
             return _json_no_store({"success": True, "message": "No logs to process"})
 
+        user_data = _visitor_user_from_init_data(init_data)
+        telegram_user_id = user_data.id if user_data else None
+        location = _visitor_location(request)
+        traffic = classify_user_agent(request.headers.get("user-agent", ""))
+        visitor_hash = _visitor_hash(request, telegram_user_id)
+        server_session_hash = _analytics_session_hash(request)
+        product_ids: List[int] = []
+        for entry in logs[:200]:
+            details = entry.get("details") if isinstance(entry.get("details"), dict) else {}
+            raw_product_id = entry.get("product_id", details.get("product_id"))
+            try:
+                if raw_product_id is not None:
+                    product_ids.append(int(raw_product_id))
+            except (TypeError, ValueError):
+                continue
+        taxonomy_map = await _catalog_db.get_product_taxonomy_map(product_ids)
+
+        enriched_logs: List[Dict[str, Any]] = []
+        for entry in logs[:200]:
+            enriched = dict(entry)
+            details = enriched.get("details") if isinstance(enriched.get("details"), dict) else {}
+            raw_product_id = enriched.get("product_id", details.get("product_id"))
+            try:
+                product_id = int(raw_product_id) if raw_product_id is not None else None
+            except (TypeError, ValueError):
+                product_id = None
+            taxonomy = taxonomy_map.get(product_id or -1, {})
+            enriched.update({
+                "visitor_hash": visitor_hash,
+                "server_session_hash": server_session_hash,
+                "country": location["country"],
+                "language": _visitor_language(request, user_data),
+                "device_type": _visitor_device_type(request),
+                "traffic_class": traffic.traffic_class,
+                "product_id": product_id,
+                "category": taxonomy.get("category") or details.get("category") or "",
+                "subcategory": taxonomy.get("subcategory") or details.get("subcategory") or "",
+            })
+            enriched_logs.append(enriched)
+
         persisted = 0
         try:
-            persisted = await _catalog_db.log_webapp_events(logs)
+            persisted = await _catalog_db.log_webapp_events(enriched_logs)
         except Exception as persist_error:
             logger.warning("[WebApp] Failed to persist %d event log(s): %s", len(logs), persist_error)
         
         # Log each event with structured format
-        for log_entry in logs:
+        for log_entry in enriched_logs:
             timestamp = log_entry.get("timestamp", "")
             user_id = log_entry.get("user_id", "unknown")
             username = log_entry.get("username", "unknown")
@@ -8622,7 +8903,7 @@ async def webapp_logs(request: Request):
             else:
                 logger.info(log_msg)
         
-        return _json_no_store({"success": True, "processed": len(logs), "persisted": persisted})
+        return _json_no_store({"success": True, "processed": len(enriched_logs), "persisted": persisted})
         
     except HTTPException:
         raise

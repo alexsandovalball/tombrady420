@@ -1786,6 +1786,8 @@
         appendAdminMetric(grid, 'Image/video impressions', `${formatAdminCount(seo.search_console_image_impressions_window)}/${formatAdminCount(seo.search_console_video_impressions_window)}`);
         appendAdminMetric(grid, 'SEO learners', `${seoRuntime.seo_auto_learn_last_status || 'pending'} / ${seoRuntime.seo_trends_last_status || 'pending'}`);
         appendAdminMetric(grid, 'Mapping changes 24h / 7d', `${formatAdminCount(seo.mappings_updated_24h)} / ${formatAdminCount(seo.mappings_updated_7d)}`);
+        appendAdminMetric(grid, 'Trend snapshots / regions 90d', `${formatAdminCount(seo.trend_snapshots_90d)} / ${formatAdminCount(seo.trend_regions_90d)}`);
+        appendAdminMetric(grid, 'Attributed sessions / contacts 28d', `${formatAdminCount(seo.attributed_webapp_sessions_28d)} / ${formatAdminCount(seo.attributed_contact_actions_28d)}`);
         appendAdminMetric(grid, 'Mapping outcomes', `${formatAdminCount(mappingOutcomes.winner)} winning / ${formatAdminCount(mappingOutcomes.monitoring)} monitoring / ${formatAdminCount(mappingOutcomes.pending)} pending / ${formatAdminCount(mappingOutcomes.retired_no_evidence)} retired`);
         appendAdminMetric(grid, 'Google import', `${searchConsoleSetup.configured ? (seoRuntime.search_console_import_last_status || 'configured') : 'not connected'}${seoRuntime.search_console_import_last_attempt_at ? ` · ${seoRuntime.search_console_import_last_attempt_at}` : ''}`);
         appendAdminMetric(grid, 'Google sitemap', googleSitemap.status || 'never');
@@ -1905,7 +1907,9 @@
                 const evidence = item.outcome_status
                     ? ` · outcome ${item.outcome_status} · impressions ${formatAdminCount(item.baseline_impressions)}→${formatAdminCount(item.evaluation_impressions)} · clicks ${formatAdminCount(item.baseline_clicks)}→${formatAdminCount(item.evaluation_clicks)}`
                     : '';
-                meta.textContent = `source ${item.source || 'unknown'} · language ${item.language || 'en'} · ${formatAdminCount(item.hits)} uses${evidence} · changed ${item.updated_at || '-'}`;
+                const score = Number(item.promotion_score || 0) > 0 ? ` · score ${formatAdminCount(item.promotion_score)}` : '';
+                const target = item.target_path ? ` · target ${item.target_path}` : '';
+                meta.textContent = `source ${item.source || 'unknown'} · language ${item.language || 'en'} · ${formatAdminCount(item.hits)} uses${score}${target}${evidence} · changed ${item.updated_at || '-'}`;
                 li.appendChild(meta);
                 return li;
             }
@@ -1946,7 +1950,7 @@
                     status: seoRuntime.seo_trends_last_status,
                     changed: seoRuntime.seo_trends_last_promoted,
                     at: seoRuntime.seo_trends_last_run_at,
-                    extra: `${formatAdminCount(seoRuntime.seo_trends_last_candidates)} candidates, ${formatAdminCount(seoRuntime.seo_trends_last_imported)} imported, ${formatAdminCount(seoRuntime.seo_trends_last_matured)} matured`,
+                    extra: `${seoRuntime.seo_trends_last_source_mode || 'pending'} · ${formatAdminCount(seoRuntime.seo_trends_last_snapshots)} snapshots, ${formatAdminCount(seoRuntime.seo_trends_last_scored)} scored, ${formatAdminCount(seoRuntime.seo_trends_last_rejected_below_score)} below 70, ${formatAdminCount(seoRuntime.seo_trends_last_imported)} imported, ${formatAdminCount(seoRuntime.seo_trends_last_matured)} matured`,
                     error: seoRuntime.seo_trends_last_error
                 },
                 {
@@ -2125,6 +2129,12 @@
         appendAdminDetailsList(panel, 'admin-external-signals', 'Recent Approved SEO Signals', 'Search Console and Google Trends signals admitted by the relevance safeguards.', seo.recent_external_signals || [], item => {
             const li = document.createElement('li');
             li.textContent = `${item.term || 'term'} -> ${item.category || 'catalog'}${item.subcategory ? ` / ${item.subcategory}` : ''} · ${item.provider || item.source || 'unknown'} · ${item.language || 'en'} · confidence ${formatAdminCount(item.confidence)} · evidence ${formatAdminCount(item.evidence_count)}`;
+            return li;
+        });
+
+        appendAdminDetailsList(panel, 'admin-trend-snapshots', 'Recent Relevant Trend Signals', 'Daily regional audience terms retained for comparison before promotion.', seo.recent_trend_snapshots || [], item => {
+            const li = document.createElement('li');
+            li.textContent = `${item.term || 'term'} · ${item.region || 'global'} / ${item.language || 'en'} · ${item.signal_type || 'query'} · interest ${formatAdminCount(item.interest_score)} · momentum ${formatAdminCount(item.momentum_score)} · ${item.observed_date || '-'}`;
             return li;
         });
 
