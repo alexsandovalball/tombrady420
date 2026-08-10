@@ -229,6 +229,7 @@ ANALYTICS_SESSION_TTL_SECONDS = 30 * 60
 _PRIMARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("PRIMARY_BOT_CONNECTION_POOL_SIZE", 10, 2, 16)
 _SECONDARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("SECONDARY_BOT_CONNECTION_POOL_SIZE", 4, 1, 8)
 _MEDIA_STREAM_CONCURRENCY = _bounded_int_env("MEDIA_STREAM_CONCURRENCY", 8, 2, 32)
+_WEB_MEDIA_BOT_INDEX = 0
 _media_stream_semaphore = asyncio.Semaphore(_MEDIA_STREAM_CONCURRENCY)
 _MEDIA_FETCH_FAILURE_COOLDOWN_SECONDS = float(
     _bounded_int_env("MEDIA_FETCH_FAILURE_COOLDOWN_SECONDS", 8, 2, 60)
@@ -7390,6 +7391,27 @@ def _get_primary_bot(request: Request, required: bool = True):
     return None
 
 
+def _get_web_media_bot(request: Request, required: bool = True):
+    """
+    Return the bot identity used for Website/WebApp media streaming.
+
+    Browser media requests are not tied to a specific Telegram chat bot, so use
+    slot 0 consistently. This keeps the disk cache and durable file-id mapping
+    stable for public pages and the Mini App while leaving in-chat bot delivery
+    free to resolve bot-specific file IDs as before.
+    """
+    apps = _bot_applications or getattr(request.app.state, "bot_apps", []) or []
+    if 0 <= _WEB_MEDIA_BOT_INDEX < len(apps):
+        bot_app = apps[_WEB_MEDIA_BOT_INDEX]
+        if bot_app is not None:
+            return bot_app.bot
+
+    bot = _get_primary_bot(request, required=False)
+    if bot is not None or not required:
+        return bot
+    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Bot not initialized")
+
+
 def _remember_webapp_session(init_data: str) -> str:
     """Create a short-lived same-origin token for media URLs/cookies."""
     now = _time.time()
@@ -8037,11 +8059,33 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
             # the durable bot mapping first when it is already available.
             source_chat_id = product.get("chat_id")
             source_message_id = _resolve_product_media_message_id(product, internal_product_id, media_index)
-            primary_bot = _get_primary_bot(request, required=False)
-            bot_username = getattr(primary_bot, "username", "") if primary_bot else ""
+            web_media_bot = _get_web_media_bot(request, required=False)
+            bot_username = getattr(web_media_bot, "username", "") if web_media_bot else ""
             if source_chat_id and source_message_id and bot_username:
                 cache_key = (source_chat_id, source_message_id, media_index, bot_username)
                 cache_file_id = _resolved_file_id_cache.get(cache_key) or ""
+                if not cache_file_id:
+                    try:
+                        bot_identifier = resolve_stable_bot_identifier(web_media_bot, bot_username.lower())
+                        canonical = await _catalog_db.get_canonical_media_by_origin(
+                            source_chat_id,
+                            source_message_id,
+                            media_kind,
+                        )
+                        if canonical and canonical.get("file_unique_id"):
+                            cache_file_id = await _catalog_db.get_bot_media_file_id(
+                                bot_identifier,
+                                canonical["file_unique_id"],
+                            ) or ""
+                            if cache_file_id:
+                                _cache_resolved_file_id(cache_key, cache_file_id)
+                    except Exception as exc:
+                        logger.debug(
+                            "[seo_public_media] bot_media_mapping_probe_failed product_id=%s media_index=%s error=%s",
+                            product_id,
+                            media_index,
+                            exc,
+                        )
                 if not cache_file_id:
                     try:
                         cache_file_id = await _catalog_db.get_bot_file_id(
@@ -8166,7 +8210,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
             },
         )
     await _check_user_not_blocked(init_data, get_client_ip(request))
-    bot = _get_primary_bot(request)
+    bot = _get_web_media_bot(request)
 
     # Define size limits
     WEB_STREAMING_LIMIT = 50 * 1024 * 1024  # 50MB - absolute max
@@ -8277,8 +8321,12 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                             media_type_info.get("type", "document"),
                         )
                         if canonical and canonical.get("file_unique_id"):
-                            await _catalog_db.invalidate_bot_media_file_id(
+                            bot_identifier = resolve_stable_bot_identifier(
+                                bot,
                                 (getattr(bot, "username", "") or "").lower(),
+                            )
+                            await _catalog_db.invalidate_bot_media_file_id(
+                                bot_identifier,
                                 canonical["file_unique_id"],
                             )
                     except Exception as registry_exc:
@@ -8426,7 +8474,10 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                 file_size = tg_file.file_size or 0
                 file_unique_id = getattr(tg_file, "file_unique_id", None)
                 if file_unique_id:
-                    bot_identifier = (getattr(bot, "username", None) or f"bot_{0}").lower()
+                    bot_identifier = resolve_stable_bot_identifier(
+                        bot,
+                        (getattr(bot, "username", None) or f"bot_{_WEB_MEDIA_BOT_INDEX}").lower(),
+                    )
                     if not _has_media_registry_write(bot_identifier, file_unique_id, file_id):
                         await _catalog_db.upsert_canonical_media(
                             product_id=str(product_id),
