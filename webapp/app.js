@@ -3344,6 +3344,39 @@
         }
     }
 
+    function retryMediaElement(element, options = {}) {
+        if (!element) return false;
+        const maxRetries = Number(options.maxRetries || 4);
+        const delays = options.delays || [450, 1000, 1800, 3000];
+        const originalUrl = element.dataset.mediaSrc || element.dataset.originalSrc || element.src || '';
+        if (!originalUrl) return false;
+        element.dataset.originalSrc = originalUrl;
+        const attempt = Number(element.dataset.mediaRetryAttempt || '0');
+        if (attempt >= maxRetries) {
+            if (typeof options.onGiveUp === 'function') {
+                options.onGiveUp();
+            } else if (options.finalFallbackSrc && element.tagName === 'IMG') {
+                element.onerror = null;
+                element.src = options.finalFallbackSrc;
+            }
+            return false;
+        }
+        element.dataset.mediaRetryAttempt = String(attempt + 1);
+        window.setTimeout(() => {
+            const retryUrl = new URL(originalUrl, window.location.origin);
+            retryUrl.searchParams.set('media_retry', Date.now().toString());
+            element.src = retryUrl.toString();
+            if (typeof element.load === 'function') {
+                try {
+                    element.load();
+                } catch (err) {
+                    // Ignore load resets on browsers that do not allow it.
+                }
+            }
+        }, delays[Math.min(attempt, delays.length - 1)]);
+        return true;
+    }
+
     function teardownMediaViewer(container) {
         if (!container) return;
         container.querySelectorAll('video').forEach((video) => {
@@ -3366,6 +3399,7 @@
 
         const vid = document.createElement('video');
         vid.src = mediaUrl;
+        vid.dataset.mediaSrc = mediaUrl;
         vid.crossOrigin = 'anonymous';
         vid.muted = true;
         vid.playsInline = true;
@@ -3447,10 +3481,15 @@
             }
         }, { once: true });
         vid.onerror = () => {
-            if (fallbackContainer) {
-                useFallbackImage();
-                if (!fallbackShown) showBrandMediaFallback(fallbackContainer, 'Video unavailable');
-            }
+            retryMediaElement(vid, {
+                maxRetries: 3,
+                onGiveUp: () => {
+                    if (fallbackContainer) {
+                        useFallbackImage();
+                        if (!fallbackShown) showBrandMediaFallback(fallbackContainer, 'Video unavailable');
+                    }
+                }
+            });
         };
         setTimeout(() => {
             if (!frameCaptured && !fallbackShown) {
@@ -3525,13 +3564,16 @@
             } else {
                 const img = document.createElement('img');
                 img.src = mediaUrl;
+                img.dataset.mediaSrc = mediaUrl;
                 img.alt = item.caption || 'Product';
                 img.loading = 'lazy';
                 img.onload = () => {
                     img.classList.add('loaded');
                 };
                 img.onerror = () => {
-                    showBrandMediaFallback(media);
+                    retryMediaElement(img, {
+                        onGiveUp: () => showBrandMediaFallback(media)
+                    });
                 };
                 media.appendChild(img);
             }
@@ -3736,6 +3778,7 @@
                     // This avoids downloading the entire video as a blob before playback,
                     // which was causing slow loading and failures on larger files.
                     video.src = mediaUrl;
+                    video.dataset.mediaSrc = mediaUrl;
                     
                     // Append video to DOM first so the browser can begin buffering
                     // and trigger autoplay. The loading overlay (z-index:5) will cover it.
@@ -3834,27 +3877,33 @@
                             // Fall through to default error handling
                         }
                         if (renderToken !== mediaRenderToken) return;
-                        
+
                         const errorMsg = video.error ? `Error code: ${video.error.code}, ${video.error.message}` : 'Unknown error';
-                        logger.videoEvent('video_load_error', 'error', errorMsg, {
-                            product_id: product.id,
-                            media_index: index,
-                            error_code: video.error?.code,
-                            error_message: video.error?.message,
-                            network_state: video.networkState,
-                            ready_state: video.readyState
+                        retryMediaElement(video, {
+                            maxRetries: 3,
+                            onGiveUp: () => {
+                                if (renderToken !== mediaRenderToken) return;
+                                logger.videoEvent('video_load_error', 'error', errorMsg, {
+                                    product_id: product.id,
+                                    media_index: index,
+                                    error_code: video.error?.code,
+                                    error_message: video.error?.message,
+                                    network_state: video.networkState,
+                                    ready_state: video.readyState
+                                });
+
+                                mediaViewer.innerHTML = `
+                                    <div class="media-error">
+                                        <div class="media-error-icon">⚠️</div>
+                                        <div class="media-error-title">Video Unavailable</div>
+                                        <div class="media-error-details">${errorMsg}</div>
+                                        <div class="media-error-hint">
+                                            👇 Try the "Get Product in Bot Chat" button below
+                                        </div>
+                                    </div>
+                                `;
+                            }
                         });
-                        
-                        mediaViewer.innerHTML = `
-                            <div class="media-error">
-                                <div class="media-error-icon">⚠️</div>
-                                <div class="media-error-title">Video Unavailable</div>
-                                <div class="media-error-details">${errorMsg}</div>
-                                <div class="media-error-hint">
-                                    👇 Try the "Get Product in Bot Chat" button below
-                                </div>
-                            </div>
-                        `;
                     });
                     
                     video.addEventListener('play', () => {
@@ -3867,6 +3916,7 @@
                 } else {
                     const img = document.createElement('img');
                     img.src = mediaUrl;
+                    img.dataset.mediaSrc = mediaUrl;
                     img.alt = `${product.caption || 'Product'} - Image ${index + 1}`;
                     img.style.maxWidth = '100%';
                     img.style.maxHeight = '500px';
@@ -3881,18 +3931,23 @@
                     };
                     img.onerror = () => {
                         if (renderToken !== mediaRenderToken) return;
-                        logger.error('image_load_error', 'Failed to load image', {
-                            product_id: product.id,
-                            media_index: index,
-                            url: safeLogUrl(mediaUrl)
+                        retryMediaElement(img, {
+                            onGiveUp: () => {
+                                if (renderToken !== mediaRenderToken) return;
+                                logger.error('image_load_error', 'Failed to load image', {
+                                    product_id: product.id,
+                                    media_index: index,
+                                    url: safeLogUrl(mediaUrl)
+                                });
+                                mediaViewer.innerHTML = `
+                                    <div class="media-error">
+                                        <img class="media-error-brand-icon" src="${CONFIG.SITE_ICON_URL}" alt="Image unavailable">
+                                        <div class="media-error-title">Image Unavailable</div>
+                                        <div class="media-error-hint">Try the "Get Product in Bot Chat" button below</div>
+                                    </div>
+                                `;
+                            }
                         });
-                        mediaViewer.innerHTML = `
-                            <div class="media-error">
-                                <img class="media-error-brand-icon" src="${CONFIG.SITE_ICON_URL}" alt="Image unavailable">
-                                <div class="media-error-title">Image Unavailable</div>
-                                <div class="media-error-hint">Try the "Get Product in Bot Chat" button below</div>
-                            </div>
-                        `;
                     };
                     mediaViewer.appendChild(img);
                 }
@@ -3967,6 +4022,7 @@
                     if (thumbUrl) {
                         const thumbImg = document.createElement('img');
                         thumbImg.src = thumbUrl;
+                        thumbImg.dataset.mediaSrc = thumbUrl;
                         thumbImg.alt = product.caption || 'Product media';
                         thumbImg.style.width = '100%';
                         thumbImg.style.height = '100%';
@@ -3981,7 +4037,9 @@
                             thumbImg.style.opacity = '1';
                         };
                         thumbImg.onerror = () => {
-                            showBrandMediaFallback(thumbContent);
+                            retryMediaElement(thumbImg, {
+                                onGiveUp: () => showBrandMediaFallback(thumbContent)
+                            });
                         };
                         thumbContent.appendChild(thumbImg);
                     } else {

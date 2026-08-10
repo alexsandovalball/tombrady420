@@ -48,6 +48,7 @@ from utils.helpers import (
     is_invalid_telegram_file_id_error,
     is_admin,
     is_transient_telegram_error,
+    resolve_stable_bot_identifier,
     register_bot_handlers,
 )
 from utils.categories import (
@@ -302,6 +303,18 @@ def _media_retry_headers() -> dict[str, str]:
         "Retry-After": str(max(3, int(_MEDIA_FETCH_FAILURE_COOLDOWN_SECONDS))),
         "Cache-Control": "no-store",
     }
+
+
+def _media_retry_response(status_code: int = status.HTTP_503_SERVICE_UNAVAILABLE) -> Response:
+    return Response(
+        content=json.dumps({
+            "error": "media_temporarily_unavailable",
+            "message": "Media is being refreshed. Retry shortly.",
+        }),
+        media_type="application/json",
+        status_code=status_code,
+        headers=_media_retry_headers(),
+    )
 
 
 def _log_media_fetch_failure(product_id: int, media_index: int, exc: Exception) -> None:
@@ -688,6 +701,45 @@ async def _resolve_bot_specific_media_file_id(
         )
         async with resolution_lock:
             bot_specific_file_id = _resolved_file_id_cache.get(cache_key)
+            if bot_specific_file_id is None:
+                bot_identifier = resolve_stable_bot_identifier(bot, (bot_username or "").lower())
+                try:
+                    canonical = await _catalog_db.get_canonical_media_by_origin(
+                        source_chat_id,
+                        source_message_id,
+                        file_type,
+                    )
+                    if canonical and canonical.get("file_unique_id"):
+                        bot_specific_file_id = await _catalog_db.get_bot_media_file_id(
+                            bot_identifier,
+                            canonical["file_unique_id"],
+                        )
+                except Exception as exc:
+                    logger.debug(
+                        "[media_cache] hot_bot_media_mapping_lookup_failed product_id=%s media_index=%s error=%s",
+                        product_id,
+                        media_index,
+                        exc,
+                    )
+                if bot_specific_file_id is None:
+                    try:
+                        bot_specific_file_id = await _catalog_db.get_bot_file_id(
+                            source_chat_id,
+                            source_message_id,
+                            media_index,
+                            bot_username,
+                            file_type=file_type,
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "[media_cache] hot_bot_file_id_lookup_failed product_id=%s media_index=%s error=%s",
+                            product_id,
+                            media_index,
+                            exc,
+                        )
+                if bot_specific_file_id:
+                    _cache_resolved_file_id(cache_key, bot_specific_file_id)
+
             if bot_specific_file_id is None:
                 async with _media_resolution_semaphore:
                     bot_specific_file_id = await get_bot_specific_file_id(
@@ -6439,7 +6491,7 @@ async def _serve_storefront_index(
         request,
         "localized_home.html",
         ctx,
-        cache_key=f"localized-home-public-search-eager-v1:{language}:{len(ctx['seo_recent_products'])}:{_newest_lastmod(recent_products, datetime.now().date().isoformat())}",
+        cache_key=f"localized-home-public-search-media-retry-v1:{language}:{len(ctx['seo_recent_products'])}:{_newest_lastmod(recent_products, datetime.now().date().isoformat())}",
     )
 
 
@@ -6958,7 +7010,7 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
         request,
         "product.html",
         ctx,
-        cache_key=f"product-eager-v1:{language}:{public_product_id}:{slug}:{cache_fingerprint}",
+        cache_key=f"product-media-retry-v1:{language}:{public_product_id}:{slug}:{cache_fingerprint}",
     )
 
 
@@ -7124,7 +7176,7 @@ async def _serve_category_page(category_name: str, request: Request, language: s
         request,
         "category.html",
         ctx,
-        cache_key=f"category-card-media-eager-v1:{language}:{matched_category}:{current_page}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{public_catalog_bot_url}:{order_context.get('order_fingerprint')}",
+        cache_key=f"category-card-media-retry-v1:{language}:{matched_category}:{current_page}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{public_catalog_bot_url}:{order_context.get('order_fingerprint')}",
     )
 
 
@@ -7287,7 +7339,7 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
         request,
         "category.html",
         ctx,
-        cache_key=f"subcategory-card-media-eager-v1:{language}:{matched_category}:{matched_subcategory}:{current_page}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{public_catalog_bot_url}:{order_context.get('order_fingerprint')}",
+        cache_key=f"subcategory-card-media-retry-v1:{language}:{matched_category}:{matched_subcategory}:{current_page}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{public_catalog_bot_url}:{order_context.get('order_fingerprint')}",
     )
 
 
@@ -7944,6 +7996,8 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
             product_id,
             media_index,
         )
+        if not _is_crawler_user_agent(request.headers.get("user-agent", "")):
+            return _media_retry_response(status.HTTP_429_TOO_MANY_REQUESTS)
         return _seo_media_fallback_response(request, "rate_limited")
 
     try:
@@ -8043,6 +8097,8 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
 
         response = await stream_catalog_media(request, internal_product_id, media_index)
         if getattr(response, "status_code", 200) >= 400:
+            if not crawler_request:
+                return response
             if media_kind == "video":
                 return response
             fallback_index = _seo_preferred_fallback_media_index(product, media_index)
@@ -8072,6 +8128,8 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
             media_index,
             exc,
         )
+        if not _is_crawler_user_agent(request.headers.get("user-agent", "")):
+            return _media_retry_response()
         return _seo_media_fallback_response(request, "error", image_url=product_fallback_image if 'product_fallback_image' in locals() else "")
 
 
@@ -8136,6 +8194,8 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
             recent_media_failure,
         )
         if public_media_request:
+            if not crawler_request:
+                return _media_retry_response()
             return _seo_media_fallback_response(
                 request,
                 "recent_media_failure",

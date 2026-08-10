@@ -366,12 +366,34 @@
     </main>
     <script>
         (() => {
+            const retryMediaElement = (element, options = {}) => {
+                if (!element) return;
+                const maxRetries = Number(options.maxRetries || 4);
+                const delays = options.delays || [450, 1000, 1800, 3000];
+                const originalUrl = element.dataset.mediaSrc || element.dataset.originalSrc || element.src || '';
+                if (!originalUrl) return;
+                element.dataset.originalSrc = originalUrl;
+                const attempt = Number(element.dataset.mediaRetryAttempt || '0');
+                if (attempt >= maxRetries) {
+                    if (options.finalFallback) {
+                        element.onerror = null;
+                        element.src = options.finalFallback;
+                    }
+                    return;
+                }
+                element.dataset.mediaRetryAttempt = String(attempt + 1);
+                window.setTimeout(() => {
+                    const retryUrl = new URL(originalUrl, window.location.origin);
+                    retryUrl.searchParams.set('media_retry', Date.now().toString());
+                    element.src = retryUrl.toString();
+                }, delays[Math.min(attempt, delays.length - 1)]);
+            };
+
             document.querySelectorAll('img[data-fallback-src]').forEach((image) => {
                 image.addEventListener('error', () => {
-                    const fallback = image.dataset.fallbackSrc || '';
-                    if (!fallback || image.dataset.fallbackApplied === '1') return;
-                    image.dataset.fallbackApplied = '1';
-                    image.src = fallback;
+                    retryMediaElement(image, {
+                        finalFallback: image.dataset.fallbackSrc || ''
+                    });
                 });
             });
 
@@ -400,12 +422,14 @@
                 } else if (type === 'photo') {
                     node = document.createElement('img');
                     node.src = url;
+                    node.dataset.mediaSrc = url;
                     node.alt = label;
                     node.loading = 'eager';
                     node.decoding = 'async';
                     node.onerror = () => {
-                        node.onerror = null;
-                        node.src = '/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2';
+                        retryMediaElement(node, {
+                            finalFallback: '/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2'
+                        });
                     };
                 } else {
                     node = document.createElement('a');

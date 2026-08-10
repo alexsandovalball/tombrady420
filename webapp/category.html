@@ -47,18 +47,34 @@
 
     <script src="/assets/telegram-miniapp-bridge.js?v=20260717-botfather-bridge-v1"></script>
     <script>
-        window.retryProductPreview = function (image) {
-            if (!image || image.dataset.previewRetried === '1') {
-                if (image) {
-                    image.onerror = null;
-                    image.src = '/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2';
+        window.retryMediaElement = function (element, options) {
+            if (!element) return;
+            var settings = options || {};
+            var maxRetries = Number(settings.maxRetries || 4);
+            var delays = settings.delays || [450, 1000, 1800, 3000];
+            var originalUrl = element.dataset.mediaSrc || element.dataset.originalSrc || element.src || '';
+            if (!originalUrl) return;
+            element.dataset.originalSrc = originalUrl;
+            var attempt = Number(element.dataset.mediaRetryAttempt || '0');
+            if (attempt >= maxRetries) {
+                if (settings.finalFallback) {
+                    element.onerror = null;
+                    element.src = settings.finalFallback;
                 }
                 return;
             }
-            image.dataset.previewRetried = '1';
-            var retryUrl = new URL(image.dataset.mediaSrc || image.src, window.location.origin);
-            retryUrl.searchParams.set('preview_retry', Date.now().toString());
-            image.src = retryUrl.toString();
+            element.dataset.mediaRetryAttempt = String(attempt + 1);
+            window.setTimeout(function () {
+                var retryUrl = new URL(originalUrl, window.location.origin);
+                retryUrl.searchParams.set('media_retry', Date.now().toString());
+                element.src = retryUrl.toString();
+            }, delays[Math.min(attempt, delays.length - 1)]);
+        };
+
+        window.retryProductPreview = function (image) {
+            window.retryMediaElement(image, {
+                finalFallback: '/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2'
+            });
         };
     </script>
     <link rel="stylesheet" href="/assets/style.css?v=20260805-admin-monitor-v2">
