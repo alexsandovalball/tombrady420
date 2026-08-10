@@ -4841,23 +4841,22 @@ def _product_primary_image_url(product: dict, *, absolute: bool = True) -> str:
 def _product_card_preview_media(product: dict, *, absolute: bool = False) -> dict[str, str]:
     """Return the best lightweight media URL for product cards.
 
-    Cards should show a real photo when possible. For video-only products, use
-    the Mini App media stream directly so the browser can render the media
-    instead of caching a crawler-oriented fallback image as the card preview.
+    Public cards should use the crawlable media endpoint, which has a longer
+    browser cache and avoids adding Telegram init-data to shareable pages.
     """
-    product_id = product.get("id") or product.get("product_id")
+    product_id = _product_public_id(product)
     if product_id is None:
         return {"type": "", "url": ""}
 
     media_info = _collect_media_info(product)
     for idx, media in enumerate(media_info):
         if media.get("type") == "photo":
-            path = f"/api/catalog/{product_id}/media/{idx}"
+            path = _product_public_media_path(product_id, idx)
             return {"type": "photo", "url": _absolute_storefront_url(path) if absolute else path}
 
     for idx, media in enumerate(media_info):
         if media.get("type") == "video":
-            path = f"/api/catalog/{product_id}/media/{idx}"
+            path = _product_public_media_path(product_id, idx)
             return {"type": "video", "url": _absolute_storefront_url(path) if absolute else path}
 
     return {"type": "", "url": ""}
@@ -6439,7 +6438,7 @@ async def _serve_storefront_index(
         request,
         "localized_home.html",
         ctx,
-        cache_key=f"localized-home-public-search-v3:{language}:{len(ctx['seo_recent_products'])}:{_newest_lastmod(recent_products, datetime.now().date().isoformat())}",
+        cache_key=f"localized-home-public-search-v4:{language}:{len(ctx['seo_recent_products'])}:{_newest_lastmod(recent_products, datetime.now().date().isoformat())}",
     )
 
 
@@ -6958,7 +6957,7 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
         request,
         "product.html",
         ctx,
-        cache_key=f"product:{language}:{public_product_id}:{slug}:{cache_fingerprint}",
+        cache_key=f"product-v2:{language}:{public_product_id}:{slug}:{cache_fingerprint}",
     )
 
 
@@ -7124,7 +7123,7 @@ async def _serve_category_page(category_name: str, request: Request, language: s
         request,
         "category.html",
         ctx,
-        cache_key=f"category-card-media-v2:{language}:{matched_category}:{current_page}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{public_catalog_bot_url}:{order_context.get('order_fingerprint')}",
+        cache_key=f"category-card-media-v3:{language}:{matched_category}:{current_page}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{public_catalog_bot_url}:{order_context.get('order_fingerprint')}",
     )
 
 
@@ -7287,7 +7286,7 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
         request,
         "category.html",
         ctx,
-        cache_key=f"subcategory-card-media-v2:{language}:{matched_category}:{matched_subcategory}:{current_page}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{public_catalog_bot_url}:{order_context.get('order_fingerprint')}",
+        cache_key=f"subcategory-card-media-v3:{language}:{matched_category}:{matched_subcategory}:{current_page}:{total}:{_newest_lastmod(products, datetime.now().date().isoformat())}:{public_catalog_bot_url}:{order_context.get('order_fingerprint')}",
     )
 
 

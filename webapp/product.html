@@ -337,7 +337,7 @@
                 <li class="related-card">
                     <a href="{{ item.url }}">
                         {% if item.media_type == 'video' and item.media_url %}
-                        <video class="related-thumb related-thumb-video" muted playsinline preload="metadata" src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
+                        <video class="related-thumb related-thumb-video" muted playsinline preload="none" data-src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
                         {% elif item.media_url %}
                         <img class="related-thumb" src="{{ item.media_url }}" alt="{{ item.title }}" loading="lazy" decoding="async" data-fallback-src="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2">
                         {% else %}
@@ -505,7 +505,28 @@
 
             const initialMainVideo = viewer.querySelector('video.seo-main-video');
             if (initialMainVideo) captureMainVideoPoster(initialMainVideo);
-            document.querySelectorAll('video.related-thumb-video').forEach((video) => captureMainVideoPoster(video));
+            const hydrateRelatedVideos = () => {
+                const videos = Array.from(document.querySelectorAll('video.related-thumb-video'));
+                const activate = (video) => {
+                    if (!video || video.src || !video.dataset.src) return;
+                    video.src = video.dataset.src;
+                    captureMainVideoPoster(video);
+                    video.load();
+                };
+                if ('IntersectionObserver' in window) {
+                    const observer = new IntersectionObserver((entries) => {
+                        entries.forEach((entry) => {
+                            if (!entry.isIntersecting) return;
+                            activate(entry.target);
+                            observer.unobserve(entry.target);
+                        });
+                    }, { rootMargin: '240px 0px' });
+                    videos.forEach((video) => observer.observe(video));
+                } else {
+                    videos.slice(0, 6).forEach(activate);
+                }
+            };
+            hydrateRelatedVideos();
         })();
     </script>
 </body>

@@ -182,7 +182,7 @@
                 <li>
                     <a href="{{ p.url }}">
                         {% if p.media_type == 'video' and p.media_url %}
-                        <video class="product-thumb seo-card-video" muted playsinline preload="metadata" src="{{ p.media_url }}#t=0.2" aria-label="{{ p.title }}"></video>
+                        <video class="product-thumb seo-card-video" muted playsinline preload="none" data-src="{{ p.media_url }}#t=0.2" aria-label="{{ p.title }}"></video>
                         {% elif p.media_url %}
                         <img class="product-thumb" src="{{ p.media_url }}" data-media-src="{{ p.media_url }}" alt="{{ p.title }}" loading="eager" fetchpriority="auto" decoding="async" onerror="retryProductPreview(this);">
                         {% else %}
@@ -244,7 +244,27 @@
     </div>
     <script>
         (function () {
-            document.querySelectorAll('video.seo-card-video').forEach(function (video) {
+            function activateVideo(video) {
+                if (!video || video.src || !video.dataset.src) return;
+                video.src = video.dataset.src;
+                video.load();
+            }
+
+            var videos = Array.from(document.querySelectorAll('video.seo-card-video'));
+            if ('IntersectionObserver' in window) {
+                var observer = new IntersectionObserver(function (entries) {
+                    entries.forEach(function (entry) {
+                        if (!entry.isIntersecting) return;
+                        activateVideo(entry.target);
+                        observer.unobserve(entry.target);
+                    });
+                }, { rootMargin: '240px 0px' });
+                videos.forEach(function (video) { observer.observe(video); });
+            } else {
+                videos.slice(0, 8).forEach(activateVideo);
+            }
+
+            videos.forEach(function (video) {
                 video.addEventListener('loadedmetadata', function () {
                     try {
                         if (Number.isFinite(video.duration) && video.duration > 0.4) {
