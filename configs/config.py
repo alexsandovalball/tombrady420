@@ -41,11 +41,11 @@ class ConfigClass:
         self.SEO_AUTO_LEARN_INTERVAL_SECONDS: int = 900
         self.SEO_AUTO_LEARN_LOOKBACK_HOURS: int = 720
         self.SEO_AUTO_LEARN_MIN_COUNT: int = 1
-        self.SEO_AUTO_LEARN_SCORE: int = 80
+        self.SEO_AUTO_LEARN_SCORE: int = 70
         self.SEO_AUTO_LEARN_MAX_PER_RUN: int = 60
         self.SEO_AUTO_LEARN_MAX_MATCHED_COUNT: int = 8
         self.SEO_AUTO_LEARN_SUPPRESSION_HOURS: int = 72
-        self.SEO_EXTERNAL_SIGNAL_SCORE: int = 80
+        self.SEO_EXTERNAL_SIGNAL_SCORE: int = 70
         self.SEO_SIDE_NOTE_LIMIT: int = 6
         self.SEO_TRENDS_ENABLED: bool = True
         self.SEO_TRENDS_INTERVAL_SECONDS: int = 21600
@@ -187,7 +187,7 @@ class ConfigClass:
         )
         self.SEO_AUTO_LEARN_SCORE = max(
             70,
-            min(100, config('SEO_AUTO_LEARN_SCORE', default=80, cast=int)),
+            min(100, config('SEO_AUTO_LEARN_SCORE', default=70, cast=int)),
         )
         self.SEO_AUTO_LEARN_MAX_PER_RUN = max(
             1,
@@ -202,8 +202,8 @@ class ConfigClass:
             min(24 * 30, config('SEO_AUTO_LEARN_SUPPRESSION_HOURS', default=72, cast=int)),
         )
         self.SEO_EXTERNAL_SIGNAL_SCORE = max(
-            75,
-            min(100, config('SEO_EXTERNAL_SIGNAL_SCORE', default=80, cast=int)),
+            70,
+            min(100, config('SEO_EXTERNAL_SIGNAL_SCORE', default=70, cast=int)),
         )
         self.SEO_SIDE_NOTE_LIMIT = max(
             3,

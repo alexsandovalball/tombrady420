@@ -2712,7 +2712,7 @@ async def _import_google_trends_signals(
             term,
             products,
             min_score=max(
-                78,
+                70,
                 Config.SEO_EXTERNAL_SIGNAL_SCORE
                 - (6 if cannabis_intent or mushroom_intent else 0)
                 - (2 if is_related else 0),
