@@ -1758,6 +1758,8 @@ async def _probe_runtime_bot_health(idx: int, base: Dict[str, object]) -> Dict[s
             health = "webhook_missing"
         elif expected_webhook_url and current_webhook_url.rstrip("/") != expected_webhook_url.rstrip("/"):
             health = "webhook_mismatch"
+        if not snapshot.get("running"):
+            health = "app_stopped"
 
         snapshot.update({
             "telegram_health": health,
@@ -1808,6 +1810,40 @@ async def _runtime_bot_health_snapshots(*, force: bool = False) -> List[Dict[str
 
     _bot_health_cache = (now, [dict(item) for item in health_snapshots])
     return health_snapshots
+
+
+def _is_bot_online(snapshot: Dict[str, object]) -> bool:
+    return (
+        bool(snapshot.get("running"))
+        and bool(snapshot.get("telegram_ok"))
+        and bool(snapshot.get("webhook_ok"))
+        and snapshot.get("telegram_health") == "ok"
+    )
+
+
+def _bot_health_summary(snapshots: List[Dict[str, object]]) -> Dict[str, int]:
+    online = sum(1 for item in snapshots if _is_bot_online(item))
+    down = sum(
+        1
+        for item in snapshots
+        if item.get("telegram_health") in {"deleted_or_invalid", "not_loaded", "app_stopped"}
+    )
+    unhealthy = sum(
+        1
+        for item in snapshots
+        if item.get("telegram_health") not in {None, "ok", "webhook_warning"}
+    )
+    webhook_warning = sum(1 for item in snapshots if item.get("telegram_health") == "webhook_warning")
+    setup_warning = sum(1 for item in snapshots if int(item.get("startup_issue_count") or 0) > 0)
+    return {
+        "online": online,
+        "down": down,
+        "unhealthy": unhealthy,
+        "webhook_warning": webhook_warning,
+        "setup_warning": setup_warning,
+        "configured": len(Config.BOT_TOKENS),
+        "loaded": sum(1 for item in snapshots if item.get("username")),
+    }
 
 
 def _cache_state_snapshot() -> Dict[str, int]:
@@ -1965,7 +2001,8 @@ async def reinitialize_bots(fastapi_app=None) -> dict:
         logger.warning("No BOT_TOKENS found in Config during reinitialisation")
         return {"created": [], "failed": [], "errors": {"no_tokens": "No BOT_TOKENS configured"}}
 
-    new_secret_tokens: List[Optional[str]] = []
+    new_bot_applications: List[Optional[Application]] = [None] * len(tokens)
+    new_secret_tokens: List[Optional[str]] = [None] * len(tokens)
     _bot_slots = {}
     _bot_applications_by_registry_id = {}
     _runtime_index_to_registry_id = {}
@@ -1983,8 +2020,8 @@ async def reinitialize_bots(fastapi_app=None) -> dict:
             registry_id = _runtime_index_to_registry_id.get(idx)
             if registry_id:
                 _webhook_secret_history[registry_id] = [prev_token, webhook_secret_token]
-            _bot_applications.append(bot_app)
-            new_secret_tokens.append(webhook_secret_token)
+            new_bot_applications[idx] = bot_app
+            new_secret_tokens[idx] = webhook_secret_token
             logger.info(
                 "Re-initialised bot %d (webhook secret prefix=%s)",
                 idx,
@@ -1993,11 +2030,12 @@ async def reinitialize_bots(fastapi_app=None) -> dict:
             summary["created"].append(idx)
         except Exception as exc:
             logger.exception("Failed to reinitialise bot %d: %s", idx, exc)
-            new_secret_tokens.append(None)
             summary["failed"].append(idx)
             summary["errors"][str(idx)] = str(exc)[:300]
+            _record_bot_startup_issue(idx, "reinit_startup", exc)
 
     # Update module-level global so process_webhook_request always uses fresh tokens.
+    _bot_applications = new_bot_applications
     _webhook_secret_tokens = new_secret_tokens
     _invalidate_admin_status_cache()
 
@@ -3937,6 +3975,7 @@ async def lifespan(app: FastAPI):
             logger.warning("Bot startup skipped index=%d reason=empty_token", idx)
             startup_summary["skipped"].append(idx)
             webhook_secret_tokens.append(None)
+            _record_bot_startup_issue(idx, "startup_skipped", "empty token")
             continue
         try:
             bot_app, webhook_secret_token = await setup_application(token, idx)
@@ -3947,10 +3986,12 @@ async def lifespan(app: FastAPI):
             logger.warning("Bot startup failure index=%d token_suffix=%s: %s", idx, token[-6:], exc)
             startup_summary["failed"].append(idx)
             webhook_secret_tokens.append(None)
+            _record_bot_startup_issue(idx, "startup", exc)
         except Exception as exc:
             logger.warning("Bot startup failure index=%d token_suffix=%s: %s", idx, token[-6:], exc, exc_info=True)
             startup_summary["failed"].append(idx)
             webhook_secret_tokens.append(None)
+            _record_bot_startup_issue(idx, "startup", exc)
 
     successful_bot_apps = [bot_app for bot_app in bot_apps if bot_app is not None]
     if not successful_bot_apps:
@@ -6679,10 +6720,12 @@ async def admin_dashboard_overview(request: Request):
     db_snapshot = await _catalog_db.get_admin_dashboard_snapshot()
     metrics_snapshot = metrics.snapshot()
     webhook_snapshot = _webhook_monitor.snapshot()
+    runtime_bots = await _runtime_bot_health_snapshots(force=True)
     return _json_no_store({
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "configured_bot_count": len(Config.BOT_TOKENS),
-        "runtime_bots": await _runtime_bot_health_snapshots(),
+        "runtime_bots": runtime_bots,
+        "bot_health_summary": _bot_health_summary(runtime_bots),
         "cache_state": _cache_state_snapshot(),
         "process": _runtime_process_snapshot(),
         "media_runtime": _media_runtime_snapshot(),
@@ -6714,6 +6757,9 @@ async def webapp_admin_status(request: Request):
     cached = _admin_status_cache.get(admin_user_id)
     if cached and now - cached[0] < _ADMIN_STATUS_CACHE_SECONDS:
         payload = dict(cached[1])
+        runtime_bots = await _runtime_bot_health_snapshots(force=True)
+        payload["runtime_bots"] = runtime_bots
+        payload["bot_health_summary"] = _bot_health_summary(runtime_bots)
         payload["cache_age_seconds"] = round(now - cached[0], 1)
         return _json_no_store(payload)
 
@@ -6758,13 +6804,15 @@ async def webapp_admin_status(request: Request):
         "endpoint": Config.INDEXNOW_ENDPOINT,
         "key_file_available": bool(_indexnow_key(create=False)),
     })
+    runtime_bots = await _runtime_bot_health_snapshots(force=True)
     payload = {
         "authorized": True,
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "admin_user_id": admin_user_id,
         "cache_age_seconds": 0,
         "configured_bot_count": len(Config.BOT_TOKENS),
-        "runtime_bots": await _runtime_bot_health_snapshots(),
+        "runtime_bots": runtime_bots,
+        "bot_health_summary": _bot_health_summary(runtime_bots),
         "cache_state": _cache_state_snapshot(),
         "process": _runtime_process_snapshot(),
         "media_runtime": _media_runtime_snapshot(),
@@ -8856,8 +8904,16 @@ async def create_webapp_session(request: Request):
     )
 
     token = _remember_webapp_session(init_data)
+    user_data = _visitor_user_from_init_data(init_data)
+    admin_ids = {int(admin_id) for admin_id in Config.ADMIN_IDS}
+    is_admin_session = bool(user_data and int(user_data.id) in admin_ids)
     response = Response(
-        content=json.dumps({"ok": True, "expires_in": WEBAPP_SESSION_TTL_SECONDS, "session": token}),
+        content=json.dumps({
+            "ok": True,
+            "expires_in": WEBAPP_SESSION_TTL_SECONDS,
+            "session": token,
+            "is_admin": is_admin_session,
+        }),
         media_type="application/json",
         headers={"Cache-Control": "no-store"},
     )
@@ -9001,8 +9057,16 @@ async def webapp_logs(request: Request):
             # it visible for diagnostics without treating it as an app fault.
             endpoint = str(details.get("endpoint", "")) if isinstance(details, dict) else ""
             expected_admin_denial = (
-                ("/api/admin/status" in endpoint or "/api/webapp-admin/status" in endpoint)
-                and ("403" in str(error) or str(details.get("status_code", "")) == "403")
+                (
+                    "/api/admin/status" in endpoint
+                    or "/api/webapp-admin/status" in endpoint
+                    or str(action) == "admin_status"
+                )
+                and (
+                    "403" in str(error)
+                    or str(details.get("status_code", "")) == "403"
+                    or str(details.get("status", "")) == "403"
+                )
             )
             # Log at appropriate level based on status
             if expected_admin_denial:

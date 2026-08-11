@@ -237,6 +237,8 @@
         adminStatusLoaded: false,
         adminStatusLoading: false,
         adminStatusRefreshTimer: null,
+        isAdminSession: false,
+        adminSessionChecked: false,
         bootFallbackTimer: null,
         languages: [
             { code: 'en', name: 'English (USA)', flag: '🇺🇸' },
@@ -1411,17 +1413,24 @@
             });
             state.webappSessionReady = response.ok;
             if (!response.ok) {
+                state.isAdminSession = false;
+                state.adminSessionChecked = true;
                 logger.apiCall('webapp_session', 'error', { status: response.status });
             } else {
                 try {
                     const payload = await response.json();
                     state.webappSessionToken = typeof payload.session === 'string' ? payload.session : '';
+                    state.isAdminSession = payload?.is_admin === true;
                 } catch (parseErr) {
                     state.webappSessionToken = '';
+                    state.isAdminSession = false;
                 }
+                state.adminSessionChecked = true;
             }
         } catch (err) {
             state.webappSessionReady = false;
+            state.isAdminSession = false;
+            state.adminSessionChecked = true;
             logger.error('webapp_session', err.message);
         }
         return state.webappSessionReady;
@@ -1632,17 +1641,15 @@
         section.appendChild(group);
     }
 
-    function appendAdminGooglePages(section, seo) {
-        const items = seo.top_search_console_pages || [];
+    function appendAdminGooglePageList(section, className, title, noteText, items, totalCount) {
         if (!items.length) return;
 
-        const totalCount = Number(seo.search_console_pages_window || items.length);
         const visibleItems = items.slice(0, 150);
         appendAdminDetailsList(
             section,
-            'admin-google-pages',
-            'Google Search Performance Pages',
-            `Showing ${formatAdminCount(visibleItems.length)} URL(s) with Google impressions or clicks; this is not the full Google index.`,
+            className,
+            title,
+            noteText,
             visibleItems,
             item => {
                 const li = document.createElement('li');
@@ -1658,6 +1665,34 @@
                 li.append(link, meta);
                 return li;
             },
+            totalCount || items.length
+        );
+    }
+
+    function appendAdminGooglePages(section, seo) {
+        const totalCount = Number(seo.search_console_pages_window || 0);
+        appendAdminGooglePageList(
+            section,
+            'admin-google-pages-recent',
+            'Newest Google Page Activity',
+            'URLs most recently seen in Google Search Console performance data.',
+            seo.search_console_recent_pages || [],
+            totalCount
+        );
+        appendAdminGooglePageList(
+            section,
+            'admin-google-pages-ranking',
+            'Best Ranking Google Pages',
+            'URLs ordered by strongest average Google position in the current Search Console window.',
+            seo.search_console_best_ranking_pages || [],
+            totalCount
+        );
+        appendAdminGooglePageList(
+            section,
+            'admin-google-pages',
+            'Google Search Performance Pages',
+            `Showing URL(s) with Google impressions or clicks; this is not the full Google index.`,
+            seo.top_search_console_pages || [],
             totalCount
         );
     }
@@ -1717,7 +1752,8 @@
         const webhookMonitor = data.webhook_monitor || {};
         const webhookBotStats = webhookMonitor.bots || {};
         const runtimeBots = Array.isArray(data.runtime_bots) ? data.runtime_bots : [];
-        const activeBots = runtimeBots.filter(bot => bot.username && bot.telegram_ok !== false);
+        const botHealthSummary = data.bot_health_summary || {};
+        const activeBots = runtimeBots.filter(bot => bot.running && bot.telegram_ok && bot.webhook_ok && bot.telegram_health === 'ok');
         const unhealthyBots = runtimeBots.filter(bot => bot.telegram_health && !['ok', 'webhook_warning'].includes(bot.telegram_health));
         const webhookWarningBots = runtimeBots.filter(bot => bot.telegram_health === 'webhook_warning');
         const setupWarningBots = runtimeBots.filter(bot => Number(bot.startup_issue_count || 0) > 0);
@@ -1758,8 +1794,8 @@
 
         const grid = document.createElement('div');
         grid.className = 'admin-metric-grid';
-        appendAdminMetric(grid, 'Bots online', `${formatAdminCount(activeBots.length)}/${formatAdminCount(data.configured_bot_count)}`);
-        appendAdminMetric(grid, 'Bot warnings', `${formatAdminCount(unhealthyBots.length)} unhealthy / ${formatAdminCount(webhookWarningBots.length)} webhook / ${formatAdminCount(setupWarningBots.length)} setup`);
+        appendAdminMetric(grid, 'Bots online', `${formatAdminCount(botHealthSummary.online ?? activeBots.length)}/${formatAdminCount(botHealthSummary.configured ?? data.configured_bot_count)}`);
+        appendAdminMetric(grid, 'Bot warnings', `${formatAdminCount(botHealthSummary.unhealthy ?? unhealthyBots.length)} unhealthy / ${formatAdminCount(botHealthSummary.webhook_warning ?? webhookWarningBots.length)} webhook / ${formatAdminCount(botHealthSummary.setup_warning ?? setupWarningBots.length)} setup`);
         appendAdminMetric(grid, 'Products in / out of stock', `${formatAdminCount(summary.products_in_stock)} / ${formatAdminCount(summary.products_out_of_stock)}`);
         appendAdminMetric(grid, 'Catalog taxonomy', `${formatAdminCount(summary.products)} products · ${formatAdminCount(summary.categories)} categories · ${formatAdminCount(summary.subcategories)} subcategories`);
         appendAdminMetric(grid, 'Users 24h / 7d / total', `${formatAdminCount(summary.active_users_24h)} / ${formatAdminCount(summary.active_users_7d)} / ${formatAdminCount(summary.bot_users)}`);
@@ -2157,6 +2193,20 @@
 
     async function loadAdminPanel(force = false) {
         if ((!tg.initData && !state.webappSessionReady) || state.adminStatusLoading || (!force && state.adminStatusLoaded)) return;
+        if (!state.adminSessionChecked) {
+            await establishWebAppSession();
+        }
+        if (!state.isAdminSession) {
+            state.adminStatus = null;
+            state.adminStatusLoaded = true;
+            const panel = document.getElementById('admin-panel');
+            if (panel) {
+                panel.hidden = true;
+                panel.replaceChildren();
+            }
+            stopAdminPanelAutoRefresh();
+            return;
+        }
         state.adminStatusLoading = true;
 
         try {
@@ -2216,6 +2266,7 @@
 
     function queueAdminPanelRefresh() {
         if (!tg.initData && !state.webappSessionReady) return;
+        if (state.adminSessionChecked && !state.isAdminSession) return;
         setTimeout(() => {
             loadAdminPanel(true).catch(err => logger.error('admin_monitor', err.message));
         }, 0);
@@ -2223,6 +2274,7 @@
 
     function startAdminPanelAutoRefresh() {
         if ((!tg.initData && !state.webappSessionReady) || state.adminStatusRefreshTimer) return;
+        if (state.adminSessionChecked && !state.isAdminSession) return;
         state.adminStatusRefreshTimer = setInterval(() => {
             if (!document.hidden) {
                 loadAdminPanel(true).catch(err => logger.error('admin_monitor', err.message));

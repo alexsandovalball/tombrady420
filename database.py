@@ -6081,6 +6081,53 @@ class Database:
                     """,
                     (search_console_since, limit),
                 ),
+                "search_console_recent_pages": await rows(
+                    """
+                    SELECT
+                        page,
+                        SUM(clicks) AS clicks,
+                        SUM(impressions) AS impressions,
+                        ROUND(
+                            CASE WHEN SUM(impressions) > 0
+                                THEN SUM(position * impressions) / SUM(impressions)
+                                ELSE AVG(position)
+                            END,
+                            1
+                        ) AS avg_position,
+                        MAX(source_date) AS last_seen,
+                        COUNT(DISTINCT normalized_query) AS query_count
+                    FROM search_console_query_events
+                    WHERE source_date >= ? AND page <> ''
+                    GROUP BY page
+                    ORDER BY last_seen DESC, impressions DESC, clicks DESC
+                    LIMIT ?
+                    """,
+                    (search_console_since, limit),
+                ),
+                "search_console_best_ranking_pages": await rows(
+                    """
+                    SELECT
+                        page,
+                        SUM(clicks) AS clicks,
+                        SUM(impressions) AS impressions,
+                        ROUND(
+                            CASE WHEN SUM(impressions) > 0
+                                THEN SUM(position * impressions) / SUM(impressions)
+                                ELSE AVG(position)
+                            END,
+                            1
+                        ) AS avg_position,
+                        MAX(source_date) AS last_seen,
+                        COUNT(DISTINCT normalized_query) AS query_count
+                    FROM search_console_query_events
+                    WHERE source_date >= ? AND page <> ''
+                    GROUP BY page
+                    HAVING avg_position IS NOT NULL
+                    ORDER BY avg_position ASC, impressions DESC, clicks DESC
+                    LIMIT ?
+                    """,
+                    (search_console_since, limit),
+                ),
                 "search_console_page_scorecard": await rows(
                     """
                     SELECT

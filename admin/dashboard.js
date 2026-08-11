@@ -125,13 +125,14 @@
   function renderSummary(data) {
     const s = data.summary || {};
     const runtimeBots = data.runtime_bots || [];
-    const healthyBots = runtimeBots.filter(bot => bot.username && bot.telegram_ok !== false);
+    const botHealthSummary = data.bot_health_summary || {};
+    const healthyBots = runtimeBots.filter(bot => bot.running && bot.telegram_ok && bot.webhook_ok && bot.telegram_health === "ok");
     const unhealthyBots = runtimeBots.filter(bot => bot.telegram_health && !["ok", "webhook_warning"].includes(bot.telegram_health));
     const webhookWarningBots = runtimeBots.filter(bot => bot.telegram_health === "webhook_warning");
     const setupWarningBots = runtimeBots.filter(bot => Number(bot.startup_issue_count || 0) > 0);
     const items = [
-      ["Runtime Bots", `${healthyBots.length}/${runtimeBots.length}`],
-      ["Bot Warnings", `${unhealthyBots.length} bad / ${webhookWarningBots.length} hook / ${setupWarningBots.length} setup`],
+      ["Runtime Bots", `${botHealthSummary.online ?? healthyBots.length}/${botHealthSummary.configured ?? runtimeBots.length}`],
+      ["Bot Warnings", `${botHealthSummary.unhealthy ?? unhealthyBots.length} bad / ${botHealthSummary.webhook_warning ?? webhookWarningBots.length} hook / ${botHealthSummary.setup_warning ?? setupWarningBots.length} setup`],
       ["Products", s.products],
       ["Users", s.bot_users],
       ["Active 24h", s.active_users_24h],
@@ -153,7 +154,7 @@
     els.botCount.textContent = `${bots.length} configured`;
     els.runtimeBots.innerHTML = bots.length ? bots.map(bot => {
       const health = bot.telegram_health || (bot.running ? "running" : "stopped");
-      const tone = bot.telegram_ok === false || bot.setup_ok === false || !bot.username ? "warn" : "good";
+      const tone = health !== "ok" || bot.telegram_ok === false || bot.webhook_ok === false || bot.setup_ok === false || !bot.username ? "warn" : "good";
       const runtime = pill(health, tone);
       const botDetail = [
         bot.webhook_pending !== null && bot.webhook_pending !== undefined ? `pending ${formatNumber(bot.webhook_pending)}` : "",

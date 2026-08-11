@@ -65,8 +65,12 @@ def _format_admin_status_message(snapshot: dict) -> str:
     google_impressions = seo.get("search_console_impressions_window", seo.get("search_console_impressions_7d"))
     google_trends_signals = seo.get("google_trends_signals", 0)
     google_trends_latest_seen = seo.get("google_trends_latest_seen") or "none yet"
+    bot_health_summary = snapshot.get("bot_health_summary") or {}
 
-    active_bots = [bot for bot in runtime_bots if bot.get("username") and bot.get("telegram_ok", True)]
+    active_bots = [
+        bot for bot in runtime_bots
+        if bot.get("running") and bot.get("telegram_ok") and bot.get("webhook_ok") and bot.get("telegram_health") == "ok"
+    ]
     unhealthy_bots = [
         bot for bot in runtime_bots
         if bot.get("telegram_health") not in {None, "ok", "webhook_warning"}
@@ -85,7 +89,8 @@ def _format_admin_status_message(snapshot: dict) -> str:
         "📊 Admin Status",
         "",
         "🤖 Bots",
-        f"• Runtime: {_fmt_count(len(active_bots))}/{_fmt_count(len(runtime_bots))} configured",
+        f"• Online: {_fmt_count(bot_health_summary.get('online', len(active_bots)))}/{_fmt_count(bot_health_summary.get('configured', len(runtime_bots)))} configured",
+        f"• Down/unhealthy: {_fmt_count(bot_health_summary.get('down'))}/{_fmt_count(bot_health_summary.get('unhealthy', len(unhealthy_bots)))}",
         f"• Registry active: {_fmt_count(summary.get('bot_registry_active'))}",
     ]
     if missing_bots:
