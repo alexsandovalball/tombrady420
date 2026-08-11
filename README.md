@@ -168,10 +168,12 @@ The open web routes render product/category pages for crawlers:
 /product/<id>/<slug>
 /category/<category>
 /category/<category>/<subcategory>
-/learn
 /sitemap.xml
 /robots.txt
 ```
+
+Legacy `/learn`, localized `/learn`, `/learn/<slug>`, and `/guides-feed.xml`
+routes redirect back to the catalog home page so old indexed links do not 404.
 
 Unavailable product links should fall back to a related category or the home
 page rather than showing a blank JSON error.

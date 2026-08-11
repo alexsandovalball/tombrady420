@@ -4870,8 +4870,10 @@ def _newest_lastmod(products: list[dict], fallback: str, *, category: str = "", 
 def _static_seo_lastmod(fallback: str) -> str:
     candidates = [
         Path(__file__).parent / "configs" / "seo_terms.json",
-        Path(__file__).parent / "webapp" / "learn.html",
-        Path(__file__).parent / "webapp" / "learn_index.html",
+        Path(__file__).parent / "webapp" / "localized_home.html",
+        Path(__file__).parent / "webapp" / "category.html",
+        Path(__file__).parent / "webapp" / "product.html",
+        Path(__file__).parent / "webapp" / "style.css",
     ]
     mtimes = [path.stat().st_mtime for path in candidates if path.exists()]
     if not mtimes:

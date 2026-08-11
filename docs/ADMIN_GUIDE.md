@@ -18,7 +18,7 @@ work when typed directly.
 /send             Send one user a direct message
 /broadcast        Broadcast a custom message to users
 /setcontact       Set order contact handle
-/setlink          Set order/contact URL
+/setlink          Manage extra home/contact link buttons; does not replace /setcontact
 /recategorize     Re-send category prompts for uncategorized products
 /clearcache       Clear bot-specific file_id cache
 /prunebots        Preview/remove users/products from inactive bot instances
@@ -136,9 +136,11 @@ Use `/reinitbots confirm` after changing tokens without redeploying. Use
 
 ## Admin Dashboard
 
-Set:
+Prefer `/adminstatus` and the in-Telegram admin monitor for day-to-day
+operations. The browser dashboard is disabled unless both values below are set:
 
 ```text
+ADMIN_DASHBOARD_ENABLED=true
 ADMIN_DASHBOARD_TOKEN=long-random-private-token
 ```
 
@@ -148,8 +150,9 @@ Open:
 https://your-domain.com/admin
 ```
 
-Enter the token. The dashboard API is protected; the page shell alone contains
-no private data.
+Enter the token. The dashboard API is protected; leave
+`ADMIN_DASHBOARD_ENABLED` unset or `false` if you do not want the browser shell
+visible on the open web.
 
 ## Database Maintenance
 

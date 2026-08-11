@@ -55,8 +55,6 @@ Public storefront shell:
   webapp/localized_home.html
   webapp/category.html
   webapp/product.html
-  webapp/learn.html
-  webapp/learn_index.html
 
 Telegram Mini App shell:
   webapp/index.html
@@ -83,6 +81,10 @@ still a distinct shell.
 experience. Category card previews prefer lightweight previews. Full video
 streams should be touched only when a product is opened or the user plays media.
 
+Legacy guide routes such as `/learn`, localized `/learn`, `/learn/<slug>`, and
+`/guides-feed.xml` redirect to the catalog home page. The current site is
+catalog-only by design.
+
 ## Media
 
 The media path is:
@@ -92,6 +94,9 @@ The media path is:
 3. cross-bot cache misses are rehydrated from source channel messages
 4. WebApp streams media through FastAPI with Range support
 5. temp and persistent cache cleanup removes old/idle/oversized entries
+
+The doodle wallpaper is an inline SVG/CSS background in `webapp/style.css`.
+Runtime pages do not depend on old wallpaper preview PNG assets.
 
 Persistent video cache is recommended on Render when disk is available. A
 700 MB cap is a practical balance for a 1 GB disk with `/data/catalog.db`.
