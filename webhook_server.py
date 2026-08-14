@@ -4758,6 +4758,86 @@ def _product_search_phrases(
     return _dedupe_seo_phrases(candidates, limit=10)
 
 
+_SEO_PHRASE_STOPWORDS = {
+    "a", "an", "and", "are", "at", "for", "from", "in", "is", "new", "of",
+    "on", "or", "our", "the", "to", "with",
+}
+
+
+def _seo_phrase_tokens(value: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9][a-z0-9'/-]*", normalize_term(value))
+        if token not in _SEO_PHRASE_STOPWORDS
+    }
+
+
+def _is_near_duplicate_product_phrase(phrase: str, title: str) -> bool:
+    """Avoid filling related-search chips with repeated product-title variants."""
+    phrase_norm = normalize_term(phrase)
+    title_norm = normalize_term(title)
+    if not phrase_norm or not title_norm:
+        return False
+    if phrase_norm == title_norm:
+        return True
+
+    phrase_tokens = _seo_phrase_tokens(phrase_norm)
+    title_tokens = _seo_phrase_tokens(title_norm)
+    if not phrase_tokens or not title_tokens:
+        return False
+
+    overlap = phrase_tokens & title_tokens
+    if len(phrase_tokens) >= max(3, len(title_tokens) - 1) and len(overlap) == len(phrase_tokens):
+        return True
+    union = phrase_tokens | title_tokens
+    return len(phrase_tokens) >= 3 and bool(union) and (len(overlap) / len(union)) >= 0.75
+
+
+def _product_related_search_terms(
+    *,
+    title: str,
+    category: str = "",
+    subcategory: str = "",
+    seo_terms: Iterable[str] = (),
+    language: str = "en",
+    limit: int = 6,
+) -> list[str]:
+    """Build varied visible product-page search terms without title spam."""
+    language = _normalize_seo_language(language)
+    category_display = get_category_display_name(category, language) if category else ""
+    subcategory_display = get_subcategory_display_name(subcategory, language) if subcategory else ""
+
+    candidates: list[str] = []
+    for term in seo_terms:
+        if not _is_near_duplicate_product_phrase(str(term), title):
+            candidates.append(str(term))
+
+    if subcategory_display and category_display:
+        candidates.extend([
+            f"{subcategory_display} {category_display}",
+            f"{subcategory_display} menu",
+            f"{subcategory_display} products",
+        ])
+    if category_display:
+        candidates.extend([
+            f"{category_display} menu",
+            f"{category_display} catalog",
+            f"{category_display} products",
+        ])
+
+    title_words = [
+        token for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9'/-]*", title)
+        if normalize_term(token) not in _SEO_PHRASE_STOPWORDS
+    ]
+    if len(title_words) >= 2:
+        candidates.append(" ".join(title_words[-3:]))
+
+    return _dedupe_seo_phrases(
+        [term for term in candidates if not _is_near_duplicate_product_phrase(term, title)],
+        limit=limit,
+    )
+
+
 _SEO_BRAND_NAME = "Top Shelf Cali Plug"
 _SEO_TITLE_MAX_LENGTH = 68
 
