@@ -75,11 +75,17 @@ def normalize_language_code(lang: str) -> str:
 
 
 class BoundedCache:
-    """LRU cache with maximum size limit."""
+    """LRU cache bounded by both entry count and approximate UTF-8 bytes."""
     
-    def __init__(self, max_size: int = 1000):
+    def __init__(self, max_size: int = 1000, max_bytes: int = 4 * 1024 * 1024):
         self.max_size = max_size
+        self.max_bytes = max_bytes
+        self._bytes = 0
         self._cache = OrderedDict()
+
+    @staticmethod
+    def _entry_size(key: str, value: str) -> int:
+        return len(key.encode("utf-8")) + len(value.encode("utf-8"))
     
     def get(self, key: str) -> Optional[str]:
         """Get value from cache, moving it to end (most recent)."""
@@ -92,19 +98,20 @@ class BoundedCache:
     def set(self, key: str, value: str):
         """Set value in cache, removing oldest if at capacity."""
         if key in self._cache:
-            # Update existing and move to end
+            self._bytes -= self._entry_size(key, self._cache[key])
             self._cache[key] = value
             self._cache.move_to_end(key)
         else:
-            # Add new item
             self._cache[key] = value
-            # Remove oldest if over capacity
-            if len(self._cache) > self.max_size:
-                self._cache.popitem(last=False)
+        self._bytes += self._entry_size(key, value)
+        while len(self._cache) > self.max_size or self._bytes > self.max_bytes:
+            old_key, old_value = self._cache.popitem(last=False)
+            self._bytes -= self._entry_size(old_key, old_value)
     
     def clear(self):
         """Clear the cache."""
         self._cache.clear()
+        self._bytes = 0
 
 
 class TranslationService:

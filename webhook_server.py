@@ -4,6 +4,7 @@ This allows the bot to receive updates via webhooks instead of polling,
 which is more suitable for serverless deployments like Render.com.
 """
 import asyncio
+import gc
 import hashlib
 import html
 import json
@@ -139,6 +140,20 @@ def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int
     return max(minimum, min(value, maximum))
 
 
+def _detected_memory_limit_mb(default: int = 512) -> int:
+    """Read the container memory limit so safeguards scale with the Render plan."""
+    for path in (Path("/sys/fs/cgroup/memory.max"), Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")):
+        try:
+            raw = path.read_text(encoding="utf-8").strip()
+            if raw and raw != "max":
+                limit_bytes = int(raw)
+                if 128 * 1024 * 1024 <= limit_bytes < 1024 * 1024 * 1024 * 1024:
+                    return max(128, limit_bytes // (1024 * 1024))
+        except (OSError, ValueError):
+            continue
+    return default
+
+
 # Global registry for bot applications
 # This allows the notification service to access all bot instances
 _bot_applications = []
@@ -146,11 +161,11 @@ _webhook_secret_tokens: List[Optional[str]] = []
 _bot_slots: Dict[int, BotSlot] = {}
 _bot_startup_issues: Dict[int, List[Dict[str, object]]] = {}
 _catalog_db = Database()
-_WEBHOOK_UPDATE_CONCURRENCY = _bounded_int_env("WEBHOOK_UPDATE_CONCURRENCY", 4, 1, 16)
+_WEBHOOK_UPDATE_CONCURRENCY = _bounded_int_env("WEBHOOK_UPDATE_CONCURRENCY", 3, 1, 16)
 _webhook_processing_semaphores: Dict[str, asyncio.Semaphore] = {}
 _bot_applications_by_registry_id: Dict[str, Application] = {}
 _runtime_index_to_registry_id: Dict[int, str] = {}
-_VISITOR_EVENT_QUEUE_MAX = _bounded_int_env("VISITOR_EVENT_QUEUE_MAX", 512, 100, 5000)
+_VISITOR_EVENT_QUEUE_MAX = _bounded_int_env("VISITOR_EVENT_QUEUE_MAX", 256, 100, 5000)
 _VISITOR_EVENT_LOG_EVERY = _bounded_int_env("VISITOR_EVENT_LOG_EVERY", 500, 50, 10000)
 _visitor_event_queue: Optional[asyncio.Queue] = None
 _visitor_events_written = 0
@@ -184,13 +199,18 @@ _ADMIN_CACHE_CLEANUP_BATCH_SIZE = _bounded_int_env("ADMIN_CACHE_CLEANUP_BATCH_SI
 _ADMIN_CACHE_CLEANUP_MAX_ATTEMPTS = _bounded_int_env("ADMIN_CACHE_CLEANUP_MAX_ATTEMPTS", 12, 1, 100)
 _ADMIN_CACHE_CLEANUP_RETRY_BASE_SECONDS = _bounded_int_env("ADMIN_CACHE_CLEANUP_RETRY_BASE_SECONDS", 60, 10, 3600)
 _SEO_PUBLIC_MEDIA_RATE_LIMIT_WINDOW = _bounded_int_env("SEO_PUBLIC_MEDIA_RATE_LIMIT_WINDOW", 60, 10, 3600)
-_SEO_RESPONSE_CACHE_MAX = _bounded_int_env("SEO_RESPONSE_CACHE_MAX", 128, 16, 1000)
+_SEO_RESPONSE_CACHE_MAX = _bounded_int_env("SEO_RESPONSE_CACHE_MAX", 32, 16, 1000)
+_SEO_RESPONSE_CACHE_MAX_BYTES = _bounded_int_env("SEO_RESPONSE_CACHE_MAX_MB", 8, 2, 64) * 1024 * 1024
 _seo_response_cache: OrderedDict[str, tuple[float, bytes, str, str, int]] = OrderedDict()
+_seo_response_cache_bytes = 0
 _seo_auto_learn_lock: Optional[asyncio.Lock] = None
 _seo_trends_lock: Optional[asyncio.Lock] = None
-_webapp_search_cache: OrderedDict[str, tuple[float, dict]] = OrderedDict()
+_seo_maintenance_lock: Optional[asyncio.Lock] = None
+_webapp_search_cache: OrderedDict[str, tuple[float, dict, int]] = OrderedDict()
 _WEBAPP_SEARCH_CACHE_TTL_SECONDS = _bounded_int_env("WEBAPP_SEARCH_CACHE_TTL_SECONDS", 90, 15, 600)
-_WEBAPP_SEARCH_CACHE_MAX = _bounded_int_env("WEBAPP_SEARCH_CACHE_MAX", 128, 32, 1000)
+_WEBAPP_SEARCH_CACHE_MAX = _bounded_int_env("WEBAPP_SEARCH_CACHE_MAX", 48, 32, 1000)
+_WEBAPP_SEARCH_CACHE_MAX_BYTES = _bounded_int_env("WEBAPP_SEARCH_CACHE_MAX_MB", 4, 1, 32) * 1024 * 1024
+_webapp_search_cache_bytes = 0
 _ADMIN_STATUS_CACHE_SECONDS = _bounded_int_env("ADMIN_STATUS_CACHE_SECONDS", 15, 5, 120)
 _ADMIN_STATUS_CACHE_MAX = _bounded_int_env("ADMIN_STATUS_CACHE_MAX", 16, 1, 64)
 _admin_status_cache: OrderedDict[int, tuple[float, dict[str, Any]]] = OrderedDict()
@@ -198,7 +218,7 @@ _BOT_HEALTH_CACHE_SECONDS = _bounded_int_env("BOT_HEALTH_CACHE_SECONDS", 60, 15,
 _bot_health_cache: tuple[float, List[Dict[str, object]]] = (0.0, [])
 _SEARCH_CONSOLE_IMPORT_INTERVAL_SECONDS = _bounded_int_env(
     "SEARCH_CONSOLE_IMPORT_INTERVAL_SECONDS",
-    3600,
+    21600,
     900,
     12 * 3600,
 )
@@ -226,18 +246,21 @@ _webapp_session_tokens: OrderedDict[str, tuple[str, float]] = OrderedDict()
 _WEBAPP_SESSION_MAX = _bounded_int_env("WEBAPP_SESSION_MAX", 2048, 128, 8192)
 ANALYTICS_SESSION_COOKIE = "brady_analytics_session"
 ANALYTICS_SESSION_TTL_SECONDS = 30 * 60
-_PRIMARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("PRIMARY_BOT_CONNECTION_POOL_SIZE", 10, 2, 16)
-_SECONDARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("SECONDARY_BOT_CONNECTION_POOL_SIZE", 4, 1, 8)
-_MEDIA_STREAM_CONCURRENCY = _bounded_int_env("MEDIA_STREAM_CONCURRENCY", 8, 2, 32)
+_PRIMARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("PRIMARY_BOT_CONNECTION_POOL_SIZE", 6, 2, 16)
+_SECONDARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("SECONDARY_BOT_CONNECTION_POOL_SIZE", 2, 1, 8)
+_MEDIA_STREAM_CONCURRENCY = _bounded_int_env("MEDIA_STREAM_CONCURRENCY", 4, 2, 32)
+_MEDIA_DOWNLOAD_CONCURRENCY = _bounded_int_env("MEDIA_DOWNLOAD_CONCURRENCY", 2, 1, 8)
 _WEB_MEDIA_BOT_INDEX = 0
 _media_stream_semaphore = asyncio.Semaphore(_MEDIA_STREAM_CONCURRENCY)
+_media_download_semaphore = asyncio.Semaphore(_MEDIA_DOWNLOAD_CONCURRENCY)
+_media_downloads_active = 0
 _MEDIA_FETCH_FAILURE_COOLDOWN_SECONDS = float(
     _bounded_int_env("MEDIA_FETCH_FAILURE_COOLDOWN_SECONDS", 8, 2, 60)
 )
 _MEDIA_FETCH_FAILURE_CACHE_MAX = _bounded_int_env("MEDIA_FETCH_FAILURE_CACHE_MAX", 512, 64, 4096)
 _media_fetch_failures: OrderedDict[tuple[int, int], tuple[float, str]] = OrderedDict()
 _media_fetch_failures_lock = asyncio.Lock()
-_MEDIA_RESOLUTION_CONCURRENCY = _bounded_int_env("MEDIA_RESOLUTION_CONCURRENCY", 2, 1, 4)
+_MEDIA_RESOLUTION_CONCURRENCY = _bounded_int_env("MEDIA_RESOLUTION_CONCURRENCY", 1, 1, 4)
 _media_resolution_semaphore = asyncio.Semaphore(_MEDIA_RESOLUTION_CONCURRENCY)
 
 # Media cache configuration. Disk cache is app-owned, bounded, and self-pruning.
@@ -261,7 +284,14 @@ MEDIA_CACHE_TTL_HOURS = _bounded_int_env("MEDIA_CACHE_TTL_HOURS", 12, 1, 168)
 MEDIA_CACHE_MAX_FILE_BYTES = _bounded_int_env("MEDIA_CACHE_MAX_FILE_MB", 25, 1, 50) * 1024 * 1024
 MEDIA_TEMP_MAX_BYTES = _bounded_int_env("MEDIA_TEMP_MAX_MB", 250, 50, 1200) * 1024 * 1024
 _RUNTIME_TELEMETRY_INTERVAL_SECONDS = _bounded_int_env("RUNTIME_TELEMETRY_INTERVAL_SECONDS", 300, 60, 900)
-_RUNTIME_MEMORY_WARN_BYTES = _bounded_int_env("RUNTIME_MEMORY_WARN_MB", 400, 128, 4096) * 1024 * 1024
+_RUNTIME_MEMORY_LIMIT_MB = _detected_memory_limit_mb()
+_RUNTIME_MEMORY_WARN_BYTES = _bounded_int_env("RUNTIME_MEMORY_WARN_MB", int(_RUNTIME_MEMORY_LIMIT_MB * 0.68), 128, 4096) * 1024 * 1024
+_RUNTIME_MEMORY_SOFT_BYTES = _bounded_int_env("RUNTIME_MEMORY_SOFT_MB", int(_RUNTIME_MEMORY_LIMIT_MB * 0.70), 128, 4096) * 1024 * 1024
+_RUNTIME_MEMORY_HARD_BYTES = _bounded_int_env("RUNTIME_MEMORY_HARD_MB", int(_RUNTIME_MEMORY_LIMIT_MB * 0.84), 192, 4096) * 1024 * 1024
+if _RUNTIME_MEMORY_HARD_BYTES <= _RUNTIME_MEMORY_SOFT_BYTES:
+    _RUNTIME_MEMORY_HARD_BYTES = _RUNTIME_MEMORY_SOFT_BYTES + 32 * 1024 * 1024
+_MEMORY_SHED_COOLDOWN_SECONDS = 300
+_last_memory_shed_at = 0.0
 
 ensure_resource_dirs()
 MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -565,6 +595,8 @@ _MEDIA_INFO_CACHE_MAX = 300
 # Each entry is (payload_bytes, timestamp).
 _api_result_cache: OrderedDict = OrderedDict()
 _API_RESULT_CACHE_MAX = 100
+_API_RESULT_CACHE_MAX_BYTES = _bounded_int_env("API_RESULT_CACHE_MAX_MB", 8, 2, 64) * 1024 * 1024
+_api_result_cache_bytes = 0
 _API_RESULT_CACHE_TTL = 30  # seconds
 
 # Short cache for approved SEO mappings used by public search expansion.
@@ -975,20 +1007,28 @@ def _cache_resolved_file_id(key: tuple, file_id: str) -> None:
 
 def _api_result_cache_set(key: str, payload: str) -> None:
     """Insert an API result into the shared LRU cache with eviction."""
+    global _api_result_cache_bytes
+    previous = _api_result_cache.pop(key, None)
+    if previous is not None:
+        _api_result_cache_bytes -= len(previous[0].encode("utf-8"))
     _api_result_cache[key] = (payload, _time.monotonic())
+    _api_result_cache_bytes += len(payload.encode("utf-8"))
     _api_result_cache.move_to_end(key)
-    if len(_api_result_cache) > _API_RESULT_CACHE_MAX:
-        _api_result_cache.popitem(last=False)
+    while len(_api_result_cache) > _API_RESULT_CACHE_MAX or _api_result_cache_bytes > _API_RESULT_CACHE_MAX_BYTES:
+        _, (old_payload, _) = _api_result_cache.popitem(last=False)
+        _api_result_cache_bytes -= len(old_payload.encode("utf-8"))
 
 
 def _api_result_cache_get(key: str) -> Optional[str]:
     """Return a fresh API cache payload, or None when missing/expired."""
+    global _api_result_cache_bytes
     cached_entry = _api_result_cache.get(key)
     if cached_entry is None:
         return None
     payload, ts = cached_entry
     if _time.monotonic() - ts >= _API_RESULT_CACHE_TTL:
         _api_result_cache.pop(key, None)
+        _api_result_cache_bytes -= len(payload.encode("utf-8"))
         return None
     _api_result_cache.move_to_end(key)
     return payload
@@ -1017,12 +1057,15 @@ def _remember_media_registry_write(bot_identifier: str, file_unique_id: str, res
 def clear_in_memory_caches() -> int:
     """Clear all in-memory caches. Returns total entries cleared."""
     global _resolved_file_id_cache, _media_info_cache, _api_result_cache, _media_registry_write_cache, _seo_query_mapping_cache, _admin_status_cache, _bot_health_cache, _seo_taxonomy_profiles_cache
+    global _api_result_cache_bytes, _seo_response_cache_bytes, _webapp_search_cache_bytes
 
     total = (
         len(_resolved_file_id_cache)
         + len(_media_info_cache)
         + len(_api_result_cache)
         + len(_media_registry_write_cache)
+        + len(_seo_response_cache)
+        + len(_webapp_search_cache)
         + (len(_seo_query_mapping_cache[1]) if _seo_query_mapping_cache else 0)
     )
 
@@ -1030,10 +1073,16 @@ def clear_in_memory_caches() -> int:
     _media_info_cache.clear()
     _api_result_cache.clear()
     _media_registry_write_cache.clear()
+    _seo_response_cache.clear()
+    _webapp_search_cache.clear()
+    _api_result_cache_bytes = 0
+    _seo_response_cache_bytes = 0
+    _webapp_search_cache_bytes = 0
     _seo_query_mapping_cache = None
     _seo_taxonomy_profiles_cache = ("", {})
     _admin_status_cache.clear()
     _bot_health_cache = (0.0, [])
+    translation_service.clear_cache()
 
     logger.info(f"Cleared {total} in-memory cache entries")
     return total
@@ -1821,6 +1870,35 @@ def _is_bot_online(snapshot: Dict[str, object]) -> bool:
     )
 
 
+async def _download_telegram_media_to_drive(tg_file: Any, destination: Path) -> None:
+    """Bound cold Telegram downloads and reject new work before an OOM."""
+    global _media_downloads_active
+    pressure = _memory_pressure_level()
+    if pressure != "normal":
+        _shed_nonessential_memory(force=pressure == "hard")
+    if _memory_pressure_level() == "hard":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Media temporarily delayed while the service recovers memory",
+            headers={"Retry-After": "5", "Cache-Control": "no-store"},
+        )
+
+    async with _media_download_semaphore:
+        if _memory_pressure_level() == "hard":
+            _shed_nonessential_memory(force=True)
+            if _memory_pressure_level() == "hard":
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Media temporarily delayed while the service recovers memory",
+                    headers={"Retry-After": "5", "Cache-Control": "no-store"},
+                )
+        _media_downloads_active += 1
+        try:
+            await tg_file.download_to_drive(custom_path=destination)
+        finally:
+            _media_downloads_active = max(0, _media_downloads_active - 1)
+
+
 def _bot_health_summary(snapshots: List[Dict[str, object]]) -> Dict[str, int]:
     online = sum(1 for item in snapshots if _is_bot_online(item))
     down = sum(
@@ -1869,8 +1947,12 @@ def _runtime_process_snapshot() -> Dict[str, object]:
         "visitor_events_written": _visitor_events_written,
         "visitor_events_dropped": _visitor_events_dropped,
         "seo_response_cache_entries": len(_seo_response_cache),
+        "seo_response_cache_bytes": _seo_response_cache_bytes,
         "webapp_search_cache_entries": len(_webapp_search_cache),
+        "webapp_search_cache_bytes": _webapp_search_cache_bytes,
+        "api_result_cache_bytes": _api_result_cache_bytes,
         "telegram_fetch": get_telegram_fetch_snapshot(),
+        "memory_limit_bytes": _RUNTIME_MEMORY_LIMIT_MB * 1024 * 1024,
         "memory_warning_threshold_bytes": _RUNTIME_MEMORY_WARN_BYTES,
     }
     try:
@@ -1890,6 +1972,53 @@ def _runtime_process_snapshot() -> Dict[str, object]:
     return snapshot
 
 
+def _current_rss_bytes() -> int:
+    """Return current Linux RSS, or zero when the platform does not expose it."""
+    try:
+        for line in Path("/proc/self/status").read_text(encoding="utf-8").splitlines():
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def _memory_pressure_level() -> str:
+    rss_bytes = _current_rss_bytes()
+    if rss_bytes >= _RUNTIME_MEMORY_HARD_BYTES:
+        return "hard"
+    if rss_bytes >= _RUNTIME_MEMORY_SOFT_BYTES:
+        return "soft"
+    return "normal"
+
+
+def _shed_nonessential_memory(*, force: bool = False) -> int:
+    """Drop regenerable caches under pressure without disturbing bot/media IDs."""
+    global _last_memory_shed_at, _api_result_cache_bytes, _seo_response_cache_bytes, _webapp_search_cache_bytes
+    now = _time.monotonic()
+    minimum_interval = 30 if force else _MEMORY_SHED_COOLDOWN_SECONDS
+    if now - _last_memory_shed_at < minimum_interval:
+        return 0
+    removed = len(_api_result_cache) + len(_seo_response_cache) + len(_webapp_search_cache) + len(_admin_status_cache)
+    _api_result_cache.clear()
+    _seo_response_cache.clear()
+    _webapp_search_cache.clear()
+    _admin_status_cache.clear()
+    _api_result_cache_bytes = 0
+    _seo_response_cache_bytes = 0
+    _webapp_search_cache_bytes = 0
+    translation_service.clear_cache()
+    collected = gc.collect()
+    _last_memory_shed_at = now
+    logger.warning(
+        "[memory_guard] caches_shed entries=%d gc_collected=%d rss_bytes=%d",
+        removed,
+        collected,
+        _current_rss_bytes(),
+    )
+    return removed
+
+
 def _media_runtime_snapshot() -> Dict[str, object]:
     active_streams = sum(_media_active_streams.values())
     return {
@@ -1903,6 +2032,8 @@ def _media_runtime_snapshot() -> Dict[str, object]:
         "temp_ttl_seconds": MEDIA_CACHE_TTL_SECONDS,
         "max_file_mb": int(MEDIA_CACHE_MAX_FILE_BYTES / (1024 * 1024)),
         "active_streams": active_streams,
+        "active_downloads": _media_downloads_active,
+        "download_concurrency_limit": _MEDIA_DOWNLOAD_CONCURRENCY,
         "active_files": len(_media_active_streams),
         "tracked_temp_files": len(_media_last_access),
         "generation_locks": len(_media_generation_locks),
@@ -2421,13 +2552,18 @@ async def _runtime_telemetry_loop():
             process = _runtime_process_snapshot()
             media = _media_runtime_snapshot()
             rss_bytes = process.get("memory_rss_bytes")
+            pressure = _memory_pressure_level()
+            if pressure != "normal":
+                _shed_nonessential_memory(force=pressure == "hard")
+                rss_bytes = _current_rss_bytes() or rss_bytes
             fetch = process.get("telegram_fetch") or {}
             log_method = logger.warning if isinstance(rss_bytes, int) and rss_bytes >= _RUNTIME_MEMORY_WARN_BYTES else logger.info
             cache_state = _cache_state_snapshot()
             log_method(
                 "[runtime_telemetry] rss_bytes=%s peak_rss_bytes=%s active_streams=%s "
                 "generation_locks=%s telegram_active=%s telegram_inflight=%s "
-                "telegram_failed=%s cache_entries=%s media_info=%s api_results=%s",
+                "telegram_failed=%s cache_entries=%s media_info=%s api_results=%s "
+                "active_downloads=%s pressure=%s seo_cache_bytes=%s api_cache_bytes=%s search_cache_bytes=%s",
                 rss_bytes,
                 process.get("memory_peak_rss_bytes"),
                 media.get("active_streams"),
@@ -2438,6 +2574,11 @@ async def _runtime_telemetry_loop():
                 fetch.get("result_cache_entries"),
                 cache_state.get("media_info"),
                 cache_state.get("api_results"),
+                media.get("active_downloads"),
+                pressure,
+                process.get("seo_response_cache_bytes"),
+                process.get("api_result_cache_bytes"),
+                process.get("webapp_search_cache_bytes"),
             )
         except asyncio.CancelledError:
             raise
@@ -2654,6 +2795,7 @@ async def _expand_auto_learn_mapping_variants(term: str, source_language: str = 
 
 async def _publish_seo_mapping_changes(mappings: List[Dict[str, Any]]) -> int:
     """Invalidate rendered SEO pages and announce every affected public URL."""
+    global _seo_response_cache_bytes
     if not mappings:
         return 0
     _invalidate_admin_status_cache()
@@ -2729,6 +2871,7 @@ async def _publish_seo_mapping_changes(mappings: List[Dict[str, Any]]) -> int:
             )
     if page_content_changed:
         _seo_response_cache.clear()
+        _seo_response_cache_bytes = 0
     if not urls:
         return 0
     if not _indexnow_enabled():
@@ -2748,6 +2891,14 @@ def _get_seo_trends_lock() -> asyncio.Lock:
     if _seo_trends_lock is None:
         _seo_trends_lock = asyncio.Lock()
     return _seo_trends_lock
+
+
+def _get_seo_maintenance_lock() -> asyncio.Lock:
+    """Prevent Trends, Search Console learning, and translation warmup overlap."""
+    global _seo_maintenance_lock
+    if _seo_maintenance_lock is None:
+        _seo_maintenance_lock = asyncio.Lock()
+    return _seo_maintenance_lock
 
 
 _SEO_EXTERNAL_MODEL_VERSION = "intent-v1"
@@ -2848,6 +2999,9 @@ async def _import_google_trends_signals(
     """Import a bounded set of public Google Trends queries into external signals."""
     if not Config.SEO_TRENDS_ENABLED:
         return 0
+    # Trends is discovery evidence, so accept slightly broader matches than
+    # internal auto-learning while retaining the audience-intent gates below.
+    trend_signal_score = max(65, Config.SEO_EXTERNAL_SIGNAL_SCORE - 2)
 
     trend_rows = await asyncio.to_thread(
         fetch_seeded_queries_for_supported_locales,
@@ -2932,9 +3086,8 @@ async def _import_google_trends_signals(
             term,
             products,
             min_score=max(
-                70,
-                Config.SEO_EXTERNAL_SIGNAL_SCORE
-                - (6 if cannabis_intent or mushroom_intent else 0)
+                62,
+                trend_signal_score - (8 if cannabis_intent or mushroom_intent else 0)
             ),
             profiles=profiles,
         )
@@ -2966,7 +3119,7 @@ async def _import_google_trends_signals(
             evidence=evidence_by_term.get(normalized, {}),
             behavior=behavior_by_taxonomy.get(taxonomy, {}),
         )
-        if promotion_score < Config.SEO_EXTERNAL_SIGNAL_SCORE:
+        if promotion_score < trend_signal_score:
             rejected_below_score += 1
             continue
         target_path = _seo_mapping_target_path(*taxonomy)
@@ -3026,12 +3179,12 @@ async def _import_google_trends_signals(
     matured = await _catalog_db.approve_mature_external_seo_signals(
         provider="google_trends",
         min_observations=2,
-        min_confidence=Config.SEO_EXTERNAL_SIGNAL_SCORE,
+        min_confidence=trend_signal_score,
     )
     fast_matured = await _catalog_db.approve_mature_external_seo_signals(
         provider="google_trends",
         min_observations=1,
-        min_confidence=min(100, Config.SEO_EXTERNAL_SIGNAL_SCORE + 8),
+        min_confidence=min(100, trend_signal_score + 8),
     )
     matured += fast_matured
     if imported:
@@ -3762,12 +3915,17 @@ async def _seo_auto_learn_loop():
     while True:
         try:
             lock = _get_seo_auto_learn_lock()
-            if lock.locked():
+            maintenance_lock = _get_seo_maintenance_lock()
+            pressure = _memory_pressure_level()
+            if pressure != "normal":
+                logger.info("[seo_auto_learn] skipped reason=memory_pressure level=%s", pressure)
+            elif lock.locked() or maintenance_lock.locked():
                 logger.info("[seo_auto_learn] skipped reason=previous_run_active")
             else:
                 started = _time.monotonic()
-                async with lock:
-                    learned = await _seo_auto_learn_once()
+                async with maintenance_lock:
+                    async with lock:
+                        learned = await _seo_auto_learn_once()
                 duration_ms = (_time.monotonic() - started) * 1000
                 logger.info(
                     "[seo_auto_learn] run_complete changed=%d duration_ms=%.1f lookback_hours=%d score=%d max_matched=%d external_score=%d",
@@ -3812,7 +3970,7 @@ async def _seo_trends_loop():
                     if age_seconds < Config.SEO_TRENDS_INTERVAL_SECONDS:
                         sleep_for = max(300.0, Config.SEO_TRENDS_INTERVAL_SECONDS - age_seconds)
                         logger.info(
-                            "[seo_trends] scheduled_daily next_in_seconds=%d last_success=%s",
+                            "[seo_trends] scheduled next_in_seconds=%d last_success=%s",
                             int(sleep_for),
                             last_success,
                         )
@@ -3821,15 +3979,21 @@ async def _seo_trends_loop():
                 except (TypeError, ValueError):
                     logger.debug("[seo_trends] invalid_last_success value=%r", last_success)
             lock = _get_seo_trends_lock()
-            if lock.locked():
+            maintenance_lock = _get_seo_maintenance_lock()
+            pressure = _memory_pressure_level()
+            if pressure != "normal":
+                logger.info("[seo_trends] skipped reason=memory_pressure level=%s", pressure)
+                sleep_for = min(3600, Config.SEO_TRENDS_INTERVAL_SECONDS)
+            elif lock.locked() or maintenance_lock.locked():
                 logger.info("[seo_trends] skipped reason=previous_run_active")
             else:
                 started = _time.monotonic()
-                async with lock:
-                    products = await _catalog_db.get_all_products_for_search()
-                    profiles = _taxonomy_profiles_for_products(products)
-                    imported = await _import_google_trends_signals(products, profiles)
-                    promoted = await _promote_approved_external_signals()
+                async with maintenance_lock:
+                    async with lock:
+                        products = await _catalog_db.get_all_products_for_search()
+                        profiles = _taxonomy_profiles_for_products(products)
+                        imported = await _import_google_trends_signals(products, profiles)
+                        promoted = await _promote_approved_external_signals()
                 duration_ms = (_time.monotonic() - started) * 1000
                 logger.info(
                     "[seo_trends] run_complete imported=%d promoted=%d duration_ms=%.1f limit_per_geo=%d max_terms=%d",
@@ -3894,11 +4058,10 @@ async def _seo_translation_warmup_once() -> int:
             texts.append(build_taxonomy_intro(*taxonomy))
     texts = list(dict.fromkeys(text for text in texts if text))
     if texts:
-        await asyncio.gather(*(
-            translation_service.translate_batch(texts, language, source_lang="en")
-            for language in SUPPORTED_LANGUAGES
-            if language != "en"
-        ))
+        for language in SUPPORTED_LANGUAGES:
+            if language == "en" or _memory_pressure_level() != "normal":
+                continue
+            await translation_service.translate_batch(texts, language, source_lang="en")
     await _catalog_db.set_bot_setting(
         "seo_translation_warmup_offset",
         str(offset + len(products)),
@@ -3910,8 +4073,16 @@ async def _seo_translation_warmup_loop():
     await asyncio.sleep(_SEO_TRANSLATION_WARMUP_STARTUP_SECONDS)
     while True:
         try:
-            warmed = await _seo_translation_warmup_once()
-            logger.info("[seo_translation] warmed_products=%d", warmed)
+            maintenance_lock = _get_seo_maintenance_lock()
+            pressure = _memory_pressure_level()
+            if pressure != "normal":
+                logger.info("[seo_translation] skipped reason=memory_pressure level=%s", pressure)
+            elif maintenance_lock.locked():
+                logger.info("[seo_translation] skipped reason=maintenance_active")
+            else:
+                async with maintenance_lock:
+                    warmed = await _seo_translation_warmup_once()
+                logger.info("[seo_translation] warmed_products=%d", warmed)
         except Exception as exc:
             logger.warning("[seo_translation] warmup_error error=%s", exc)
         await asyncio.sleep(_SEO_TRANSLATION_WARMUP_INTERVAL_SECONDS)
@@ -4601,23 +4772,33 @@ def _webapp_search_cache_key(query: str, language: str, limit: int, offset: int)
 
 
 def _get_webapp_search_cache(key: str) -> Optional[dict]:
+    global _webapp_search_cache_bytes
     now = _time.monotonic()
     cached = _webapp_search_cache.get(key)
     if not cached:
         return None
-    cached_at, payload = cached
+    cached_at, payload, payload_bytes = cached
     if now - cached_at > _WEBAPP_SEARCH_CACHE_TTL_SECONDS:
         _webapp_search_cache.pop(key, None)
+        _webapp_search_cache_bytes -= payload_bytes
         return None
     _webapp_search_cache.move_to_end(key)
     return dict(payload)
 
 
 def _set_webapp_search_cache(key: str, payload: dict) -> None:
-    _webapp_search_cache[key] = (_time.monotonic(), dict(payload))
+    global _webapp_search_cache_bytes
+    cached_payload = dict(payload)
+    payload_bytes = len(json.dumps(cached_payload, ensure_ascii=False).encode("utf-8"))
+    previous = _webapp_search_cache.pop(key, None)
+    if previous is not None:
+        _webapp_search_cache_bytes -= previous[2]
+    _webapp_search_cache[key] = (_time.monotonic(), cached_payload, payload_bytes)
+    _webapp_search_cache_bytes += payload_bytes
     _webapp_search_cache.move_to_end(key)
-    while len(_webapp_search_cache) > _WEBAPP_SEARCH_CACHE_MAX:
-        _webapp_search_cache.popitem(last=False)
+    while len(_webapp_search_cache) > _WEBAPP_SEARCH_CACHE_MAX or _webapp_search_cache_bytes > _WEBAPP_SEARCH_CACHE_MAX_BYTES:
+        _, (_, _, old_bytes) = _webapp_search_cache.popitem(last=False)
+        _webapp_search_cache_bytes -= old_bytes
 
 
 def _seo_alternate_links(path: str) -> List[Dict[str, str]]:
@@ -4725,37 +4906,6 @@ def _dedupe_seo_phrases(values: Iterable[str], limit: int = 12) -> list[str]:
         if len(phrases) >= limit:
             break
     return phrases
-
-
-def _product_search_phrases(
-    *,
-    title: str,
-    caption: str,
-    category: str = "",
-    subcategory: str = "",
-    seo_terms: Optional[Iterable[str]] = None,
-    language: str = "en",
-) -> list[str]:
-    """Build visible, product-specific search phrases for crawlable product pages."""
-    lines = [line.strip() for line in (caption or "").splitlines() if line.strip()]
-    first_line = lines[0] if lines else title
-    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'/-]*", first_line)
-    first_line_short = " ".join(words[:10])
-    language = _normalize_seo_language(language)
-    category_display = get_category_display_name(category, language) if category else ""
-    subcategory_display = get_subcategory_display_name(subcategory, language) if subcategory else ""
-    taxonomy_label = " ".join(part for part in [subcategory_display, category_display] if part).strip()
-
-    candidates = [
-        first_line,
-        first_line_short,
-        title,
-        f"{title} {taxonomy_label}",
-        f"{first_line_short} {taxonomy_label}",
-    ]
-    for term in list(seo_terms or [])[:4]:
-        candidates.append(f"{title} {term}")
-    return _dedupe_seo_phrases(candidates, limit=10)
 
 
 _SEO_PHRASE_STOPWORDS = {
@@ -5989,12 +6139,14 @@ def _seo_content_response(
 
 
 def _seo_cached_response(request: Request, cache_key: str) -> Optional[Response]:
+    global _seo_response_cache_bytes
     entry = _seo_response_cache.get(cache_key)
     if not entry:
         return None
     expires_at, content, media_type, etag, max_age = entry
     if expires_at <= _time.time():
         _seo_response_cache.pop(cache_key, None)
+        _seo_response_cache_bytes -= len(content)
         return None
     _seo_response_cache.move_to_end(cache_key)
     return _seo_content_response(
@@ -6015,12 +6167,18 @@ def _seo_store_and_respond(
     max_age: int,
     extra_headers: Optional[Dict[str, str]] = None,
 ) -> Response:
+    global _seo_response_cache_bytes
     body = content.encode("utf-8") if isinstance(content, str) else content
     etag = _seo_etag(body)
+    previous = _seo_response_cache.pop(cache_key, None)
+    if previous is not None:
+        _seo_response_cache_bytes -= len(previous[1])
     _seo_response_cache[cache_key] = (_time.time() + max_age, body, media_type, etag, max_age)
+    _seo_response_cache_bytes += len(body)
     _seo_response_cache.move_to_end(cache_key)
-    while len(_seo_response_cache) > _SEO_RESPONSE_CACHE_MAX:
-        _seo_response_cache.popitem(last=False)
+    while len(_seo_response_cache) > _SEO_RESPONSE_CACHE_MAX or _seo_response_cache_bytes > _SEO_RESPONSE_CACHE_MAX_BYTES:
+        _, old_entry = _seo_response_cache.popitem(last=False)
+        _seo_response_cache_bytes -= len(old_entry[1])
     return _seo_content_response(
         request,
         body,
@@ -7023,18 +7181,15 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
         language=language,
     )
     seo_side_notes = await _seo_side_note_terms(category, subcategory, language) if category else []
-    product_search_phrases = _product_search_phrases(
+    product_search_phrases = _product_related_search_terms(
         title=product_title,
-        caption=caption,
         category=category,
         subcategory=subcategory,
         seo_terms=seo_side_notes,
         language=language,
-    )
-    visible_search_terms = _dedupe_seo_phrases(
-        [*product_search_phrases, *seo_side_notes],
         limit=Config.SEO_SIDE_NOTE_LIMIT,
     )
+    visible_search_terms = product_search_phrases
     order_context = await _public_order_context(telegram_bot_url=deep_link)
     product_media = [
         {
@@ -8718,7 +8873,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                         media_index,
                         is_video,
                     )
-                    await tg_file.download_to_drive(custom_path=temp_input_path)
+                    await _download_telegram_media_to_drive(tg_file, temp_input_path)
                     await _mark_media_access(temp_input_path)
                     owner_id = _runtime_index_to_registry_id.get(0)
                     if owner_id:
@@ -8755,6 +8910,10 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                             is_video,
                         )
 
+        except HTTPException:
+            if 'temp_input_path' in locals() and temp_input_path:
+                _cleanup_path(temp_input_path)
+            raise
         except telegram.error.BadRequest as e:
             # Cleanup partial temp file only when generation failed.
             if 'temp_input_path' in locals() and temp_input_path:

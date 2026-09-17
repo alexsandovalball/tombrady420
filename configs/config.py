@@ -38,19 +38,19 @@ class ConfigClass:
         self.ADMIN_DASHBOARD_ENABLED: bool = False
         self.ADMIN_DASHBOARD_TOKEN: Optional[str] = None
         self.SEO_AUTO_LEARN_ENABLED: bool = True
-        self.SEO_AUTO_LEARN_INTERVAL_SECONDS: int = 900
+        self.SEO_AUTO_LEARN_INTERVAL_SECONDS: int = 3600
         self.SEO_AUTO_LEARN_LOOKBACK_HOURS: int = 720
         self.SEO_AUTO_LEARN_MIN_COUNT: int = 1
         self.SEO_AUTO_LEARN_SCORE: int = 70
         self.SEO_AUTO_LEARN_MAX_PER_RUN: int = 60
         self.SEO_AUTO_LEARN_MAX_MATCHED_COUNT: int = 8
         self.SEO_AUTO_LEARN_SUPPRESSION_HOURS: int = 72
-        self.SEO_EXTERNAL_SIGNAL_SCORE: int = 70
+        self.SEO_EXTERNAL_SIGNAL_SCORE: int = 68
         self.SEO_SIDE_NOTE_LIMIT: int = 6
         self.SEO_TRENDS_ENABLED: bool = True
-        self.SEO_TRENDS_INTERVAL_SECONDS: int = 86400
-        self.SEO_TRENDS_LIMIT_PER_GEO: int = 10
-        self.SEO_TRENDS_MAX_TERMS_PER_RUN: int = 50
+        self.SEO_TRENDS_INTERVAL_SECONDS: int = 43200
+        self.SEO_TRENDS_LIMIT_PER_GEO: int = 15
+        self.SEO_TRENDS_MAX_TERMS_PER_RUN: int = 80
         self.SEARCH_CONSOLE_ENABLED: bool = False
         self.SEARCH_CONSOLE_SITE_URL: Optional[str] = None
         self.SEARCH_CONSOLE_SERVICE_ACCOUNT_JSON: Optional[str] = None
@@ -175,7 +175,7 @@ class ConfigClass:
         self.SEO_AUTO_LEARN_ENABLED = config('SEO_AUTO_LEARN_ENABLED', default=True, cast=bool)
         self.SEO_AUTO_LEARN_INTERVAL_SECONDS = max(
             300,
-            config('SEO_AUTO_LEARN_INTERVAL_SECONDS', default=900, cast=int),
+            config('SEO_AUTO_LEARN_INTERVAL_SECONDS', default=3600, cast=int),
         )
         self.SEO_AUTO_LEARN_LOOKBACK_HOURS = max(
             1,
@@ -202,8 +202,8 @@ class ConfigClass:
             min(24 * 30, config('SEO_AUTO_LEARN_SUPPRESSION_HOURS', default=72, cast=int)),
         )
         self.SEO_EXTERNAL_SIGNAL_SCORE = max(
-            70,
-            min(100, config('SEO_EXTERNAL_SIGNAL_SCORE', default=70, cast=int)),
+            65,
+            min(100, config('SEO_EXTERNAL_SIGNAL_SCORE', default=68, cast=int)),
         )
         self.SEO_SIDE_NOTE_LIMIT = max(
             3,
@@ -211,16 +211,16 @@ class ConfigClass:
         )
         self.SEO_TRENDS_ENABLED = config('SEO_TRENDS_ENABLED', default=True, cast=bool)
         self.SEO_TRENDS_INTERVAL_SECONDS = max(
-            86400,
-            config('SEO_TRENDS_INTERVAL_SECONDS', default=86400, cast=int),
+            21600,
+            config('SEO_TRENDS_INTERVAL_SECONDS', default=43200, cast=int),
         )
         self.SEO_TRENDS_LIMIT_PER_GEO = max(
             3,
-            min(25, config('SEO_TRENDS_LIMIT_PER_GEO', default=10, cast=int)),
+            min(25, config('SEO_TRENDS_LIMIT_PER_GEO', default=15, cast=int)),
         )
         self.SEO_TRENDS_MAX_TERMS_PER_RUN = max(
             10,
-            min(200, config('SEO_TRENDS_MAX_TERMS_PER_RUN', default=50, cast=int)),
+            min(200, config('SEO_TRENDS_MAX_TERMS_PER_RUN', default=80, cast=int)),
         )
         self.SEARCH_CONSOLE_SERVICE_ACCOUNT_JSON = config('SEARCH_CONSOLE_SERVICE_ACCOUNT_JSON', default=None)
         default_search_console_file = '/data/search-console-service-account.json'

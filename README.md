@@ -144,6 +144,13 @@ Media streaming supports HTTP Range requests for WebApp video playback. Temporar
 media files are cleaned automatically, and persistent disk cache can be enabled
 for videos when Render disk space is available.
 
+Cold Telegram downloads are limited separately from cached disk streams. On a
+512 MB instance the runtime also sheds regenerable HTML/API/search caches at the
+soft memory threshold and delays new cold downloads at the hard threshold instead
+of risking an OOM restart. Defaults require no extra environment variables;
+`MEDIA_DOWNLOAD_CONCURRENCY`, `RUNTIME_MEMORY_SOFT_MB`, and
+`RUNTIME_MEMORY_HARD_MB` are available for deployment-specific tuning.
+
 Useful maintenance commands:
 
 ```powershell
@@ -183,6 +190,12 @@ real WebApp searches. The background SEO learner maps repeated no-result
 queries to existing catalog categories/subcategories only when confidence is
 high, then adds translated variants for the supported bot/WebApp languages. Use
 `/seostatus` to see what people searched and what mappings were learned.
+
+Google Trends discovery runs twice daily by default with a bounded batch. Trend
+terms may use a slightly looser catalog score than internal searches, but they
+must still contain cannabis or mushroom audience intent and normally need repeat
+observations before promotion. All SEO maintenance is serialized and pauses
+automatically while the process is under memory pressure.
 
 Optional Search Console learning can import real Google query/click/impression
 data for your own verified site. The recommended setup is OAuth with your normal

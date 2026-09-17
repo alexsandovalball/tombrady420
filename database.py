@@ -5,7 +5,7 @@ Uses SQLite with aiosqlite for async operations.
 import aiosqlite
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 import logging
 import asyncio
 import uuid
@@ -30,12 +30,21 @@ DEFAULT_ORDER_CONTACT = ''
 DEFAULT_ORDER_LINK = ''
 
 # In-memory caches for frequently accessed data
-_user_language_cache: Dict[int, Tuple[str, datetime]] = {}
+_user_language_cache: "OrderedDict[int, Tuple[str, datetime]]" = OrderedDict()
 _order_contact_cache: Optional[Tuple[str, datetime]] = None
 _order_link_cache: Optional[Tuple[str, datetime]] = None
 _order_links_cache: Optional[Tuple[List[Dict[str, str]], datetime]] = None
 _cache_lock = asyncio.Lock()
 CACHE_TTL_SECONDS = 300  # 5 minutes
+USER_LANGUAGE_CACHE_MAX = 5000
+
+
+def _cache_user_language(user_id: int, language: str) -> None:
+    """Store a language preference in a bounded LRU cache."""
+    _user_language_cache[user_id] = (language, datetime.now())
+    _user_language_cache.move_to_end(user_id)
+    while len(_user_language_cache) > USER_LANGUAGE_CACHE_MAX:
+        _user_language_cache.popitem(last=False)
 
 
 class Database:
@@ -3058,7 +3067,9 @@ class Database:
                 lang, cached_at = _user_language_cache[user_id]
                 # Return cached value if not expired
                 if datetime.now() - cached_at < timedelta(seconds=CACHE_TTL_SECONDS):
+                    _user_language_cache.move_to_end(user_id)
                     return lang
+                _user_language_cache.pop(user_id, None)
         
         # Cache miss or expired - query database
         async with self.get_connection() as db:
@@ -3070,7 +3081,7 @@ class Database:
         
         # Update cache
         async with _cache_lock:
-            _user_language_cache[user_id] = (lang, datetime.now())
+            _cache_user_language(user_id, lang)
         
         return lang
     
@@ -3099,7 +3110,7 @@ class Database:
         
         # Invalidate cache for this user
         async with _cache_lock:
-            _user_language_cache[user_id] = (language, datetime.now())
+            _cache_user_language(user_id, language)
     
     async def get_cached_translation(
         self,
