@@ -5032,6 +5032,9 @@ def _is_near_duplicate_product_phrase(phrase: str, title: str) -> bool:
     return len(phrase_tokens) >= 3 and bool(union) and (len(overlap) / len(union)) >= 0.75
 
 
+_PRODUCT_RELATED_SEARCH_LIMIT = 10
+
+
 def _product_related_search_terms(
     *,
     title: str,
@@ -5039,14 +5042,52 @@ def _product_related_search_terms(
     subcategory: str = "",
     seo_terms: Iterable[str] = (),
     language: str = "en",
-    limit: int = 6,
+    limit: int = _PRODUCT_RELATED_SEARCH_LIMIT,
 ) -> list[str]:
-    """Build varied visible product-page search terms without title spam."""
+    """Build stable, product-specific related searches without title spam."""
     language = _normalize_seo_language(language)
     category_display = get_category_display_name(category, language) if category else ""
     subcategory_display = get_subcategory_display_name(subcategory, language) if subcategory else ""
 
-    candidates: list[str] = []
+    title_token_set = _seo_phrase_tokens(title)
+    seo_pool = _dedupe_seo_phrases(
+        [
+            str(term)
+            for term in seo_terms
+            if not _is_near_duplicate_product_phrase(str(term), title)
+        ],
+        limit=24,
+    )
+
+    # Keep the HTML stable for crawlers while choosing a different useful
+    # subset for each product. Semantic overlap wins; the digest rotates ties.
+    def related_rank(term: str) -> tuple[int, int, int]:
+        term_tokens = _seo_phrase_tokens(term)
+        overlap = len(title_token_set & term_tokens)
+        digest = int.from_bytes(
+            hashlib.sha256(f"{normalize_term(title)}|{normalize_term(term)}".encode()).digest()[:8],
+            "big",
+        )
+        return (-overlap, digest, len(normalize_term(term)))
+
+    seo_pool.sort(key=related_rank)
+    dynamic_slots = min(4, max(2, limit - 2)) if limit > 2 else limit
+    candidates: list[str] = list(seo_pool[:dynamic_slots])
+
+    title_words = [
+        token
+        for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9&+'/-]*", title)
+        if normalize_term(token) not in (_SEO_PHRASE_STOPWORDS | _SEO_GENERIC_BRAND_TOKENS)
+        and not normalize_term(token).isdigit()
+    ]
+    entity = " ".join(title_words[:2]).strip()
+    if entity and subcategory_display:
+        candidates.append(f"{entity} {subcategory_display}")
+    if entity and category_display:
+        candidates.append(f"{entity} {category_display}")
+
+    # Taxonomy phrases remain as a dependable fallback when a category has
+    # too little approved/search-backed vocabulary to fill the bar.
     for term in seo_terms:
         if not _is_near_duplicate_product_phrase(str(term), title):
             candidates.append(str(term))
@@ -5061,10 +5102,6 @@ def _product_related_search_terms(
             f"{category_display} guide",
         ])
 
-    title_words = [
-        token for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9'/-]*", title)
-        if normalize_term(token) not in _SEO_PHRASE_STOPWORDS
-    ]
     if len(title_words) >= 2:
         candidates.append(" ".join(title_words[-3:]))
 
@@ -5776,14 +5813,20 @@ async def _search_console_sitemap_loop():
         await asyncio.sleep(Config.SEARCH_CONSOLE_SITEMAP_INTERVAL_SECONDS)
 
 
-async def _seo_side_note_terms(category: str, subcategory: str = "", language: str = "en") -> list[str]:
+async def _seo_side_note_terms(
+    category: str,
+    subcategory: str = "",
+    language: str = "en",
+    *,
+    limit: int | None = None,
+) -> list[str]:
     """Return visible related terms from file + learned SEO mappings."""
     category = str(category or "").strip()
     language = _normalize_seo_language(language)
     if not category:
         return []
 
-    limit = max(1, Config.SEO_SIDE_NOTE_LIMIT)
+    limit = max(1, min(25, int(limit or Config.SEO_SIDE_NOTE_LIMIT)))
     file_terms = list(get_terms_for_taxonomy(category, subcategory, limit=limit))
     static_terms = file_terms if language == "en" else await _translate_seo_lines(file_terms, language)
     notes: list[dict[str, Any]] = []
@@ -7289,14 +7332,23 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
         subcategory=subcategory,
         language=language,
     )
-    seo_side_notes = await _seo_side_note_terms(category, subcategory, language) if category else []
+    seo_side_notes = (
+        await _seo_side_note_terms(
+            category,
+            subcategory,
+            language,
+            limit=_PRODUCT_RELATED_SEARCH_LIMIT,
+        )
+        if category
+        else []
+    )
     product_search_phrases = _product_related_search_terms(
         title=product_title,
         category=category,
         subcategory=subcategory,
         seo_terms=seo_side_notes,
         language=language,
-        limit=Config.SEO_SIDE_NOTE_LIMIT,
+        limit=_PRODUCT_RELATED_SEARCH_LIMIT,
     )
     visible_search_terms = product_search_phrases
     order_context = await _public_order_context(telegram_bot_url=deep_link)
