@@ -246,10 +246,10 @@ _webapp_session_tokens: OrderedDict[str, tuple[str, float]] = OrderedDict()
 _WEBAPP_SESSION_MAX = _bounded_int_env("WEBAPP_SESSION_MAX", 2048, 128, 8192)
 ANALYTICS_SESSION_COOKIE = "brady_analytics_session"
 ANALYTICS_SESSION_TTL_SECONDS = 30 * 60
-_PRIMARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("PRIMARY_BOT_CONNECTION_POOL_SIZE", 6, 2, 16)
-_SECONDARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("SECONDARY_BOT_CONNECTION_POOL_SIZE", 2, 1, 8)
-_MEDIA_STREAM_CONCURRENCY = _bounded_int_env("MEDIA_STREAM_CONCURRENCY", 4, 2, 32)
-_MEDIA_DOWNLOAD_CONCURRENCY = _bounded_int_env("MEDIA_DOWNLOAD_CONCURRENCY", 2, 1, 8)
+_PRIMARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("PRIMARY_BOT_CONNECTION_POOL_SIZE", 8, 2, 16)
+_SECONDARY_BOT_CONNECTION_POOL_SIZE = _bounded_int_env("SECONDARY_BOT_CONNECTION_POOL_SIZE", 3, 1, 8)
+_MEDIA_STREAM_CONCURRENCY = _bounded_int_env("MEDIA_STREAM_CONCURRENCY", 6, 2, 32)
+_MEDIA_DOWNLOAD_CONCURRENCY = _bounded_int_env("MEDIA_DOWNLOAD_CONCURRENCY", 3, 1, 8)
 _WEB_MEDIA_BOT_INDEX = 0
 _media_stream_semaphore = asyncio.Semaphore(_MEDIA_STREAM_CONCURRENCY)
 _media_download_semaphore = asyncio.Semaphore(_MEDIA_DOWNLOAD_CONCURRENCY)
@@ -260,7 +260,7 @@ _MEDIA_FETCH_FAILURE_COOLDOWN_SECONDS = float(
 _MEDIA_FETCH_FAILURE_CACHE_MAX = _bounded_int_env("MEDIA_FETCH_FAILURE_CACHE_MAX", 512, 64, 4096)
 _media_fetch_failures: OrderedDict[tuple[int, int], tuple[float, str]] = OrderedDict()
 _media_fetch_failures_lock = asyncio.Lock()
-_MEDIA_RESOLUTION_CONCURRENCY = _bounded_int_env("MEDIA_RESOLUTION_CONCURRENCY", 1, 1, 4)
+_MEDIA_RESOLUTION_CONCURRENCY = _bounded_int_env("MEDIA_RESOLUTION_CONCURRENCY", 2, 1, 4)
 _media_resolution_semaphore = asyncio.Semaphore(_MEDIA_RESOLUTION_CONCURRENCY)
 
 # Media cache configuration. Disk cache is app-owned, bounded, and self-pruning.
@@ -2903,6 +2903,76 @@ def _get_seo_maintenance_lock() -> asyncio.Lock:
 
 _SEO_EXTERNAL_MODEL_VERSION = "intent-v1"
 
+_SEO_GENERIC_BRAND_TOKENS = {
+    "best", "buy", "cali", "cannabis", "cart", "carts", "concentrate",
+    "concentrates", "disposable", "edible", "edibles", "exotic", "exotics",
+    "flower", "flowers", "hash", "hybrid", "indica", "kief", "light", "menu",
+    "mushroom", "mushrooms", "premium", "product", "products", "rosin", "sativa",
+    "shop", "shroom", "shrooms", "strain", "strains", "top", "vape", "vapes",
+}
+
+
+def _catalog_brand_terms_by_taxonomy(
+    products: list[dict[str, Any]],
+) -> dict[tuple[str, str], list[tuple[str, str]]]:
+    """Build a small catalog-derived brand/entity index for Trends matching."""
+    index: dict[tuple[str, str], dict[str, str]] = {}
+    for product in products:
+        category = str(product.get("category") or "").strip()
+        subcategory = str(product.get("subcategory") or "").strip()
+        title = next(
+            (line.strip() for line in str(product.get("caption") or "").splitlines() if line.strip()),
+            "",
+        )
+        if not category or not title:
+            continue
+        tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9&+'-]*", title)[:5]
+        while tokens and normalize_term(tokens[0]) in _SEO_GENERIC_BRAND_TOKENS:
+            tokens.pop(0)
+        if not tokens:
+            continue
+
+        candidates: list[str] = []
+        for size in range(1, min(3, len(tokens)) + 1):
+            phrase = " ".join(tokens[:size]).strip()
+            normalized = normalize_term(phrase)
+            normalized_tokens = normalized.split()
+            if (
+                not normalized
+                or len(normalized) < 4
+                or normalized.isdigit()
+                or all(token in _SEO_GENERIC_BRAND_TOKENS for token in normalized_tokens)
+            ):
+                continue
+            candidates.append(phrase)
+
+        for taxonomy in ((category, subcategory), (category, "")):
+            bucket = index.setdefault(taxonomy, {})
+            for phrase in candidates:
+                bucket.setdefault(normalize_term(phrase), phrase)
+
+    return {
+        taxonomy: sorted(terms.items(), key=lambda item: (-len(item[0].split()), -len(item[0])))
+        for taxonomy, terms in index.items()
+    }
+
+
+def _match_catalog_brand_term(
+    term: str,
+    taxonomy: tuple[str, str],
+    brand_index: dict[tuple[str, str], list[tuple[str, str]]],
+) -> str:
+    """Return the longest catalog brand/entity phrase contained in a Trends query."""
+    normalized = normalize_term(term)
+    if not normalized:
+        return ""
+    padded = f" {normalized} "
+    candidates = brand_index.get(taxonomy) or brand_index.get((taxonomy[0], ""), [])
+    for candidate, display in candidates:
+        if f" {candidate} " in padded:
+            return display
+    return ""
+
 
 def _bounded_seo_score(value: Any, default: float = 0.0) -> float:
     try:
@@ -3027,6 +3097,7 @@ async def _import_google_trends_signals(
             "seo_trends_last_snapshots": 0,
             "seo_trends_last_scored": 0,
             "seo_trends_last_rejected_below_score": 0,
+            "seo_trends_last_brand_candidates": 0,
             "seo_trends_last_source_mode": "unavailable",
         })
         return 0
@@ -3104,6 +3175,7 @@ async def _import_google_trends_signals(
         lookback_days=90,
     )
     behavior_by_taxonomy = await _catalog_db.get_taxonomy_behavior_metrics(lookback_days=28)
+    brand_index = _catalog_brand_terms_by_taxonomy(products)
 
     signals = []
     rejected_below_score = 0
@@ -3111,21 +3183,30 @@ async def _import_google_trends_signals(
         term = str(row.get("term") or "").strip()
         normalized = normalize_term(term)
         taxonomy = (str(inferred.get("category") or ""), str(inferred.get("subcategory") or ""))
+        original_term_type = str(row.get("term_type") or "google_trends_trending")
+        brand_match = _match_catalog_brand_term(term, taxonomy, brand_index)
+        term_type = original_term_type
+        if brand_match:
+            relation = "rising" if "rising" in original_term_type else "top" if "top" in original_term_type else "related"
+            term_type = f"google_trends_brand_{relation}"
         promotion_score, score_components = _score_external_seo_candidate(
             inferred_score=inferred.get("score"),
             trend_confidence=row.get("confidence"),
             trend_evidence=row.get("evidence_count"),
-            term_type=str(row.get("term_type") or ""),
+            term_type=term_type,
             evidence=evidence_by_term.get(normalized, {}),
             behavior=behavior_by_taxonomy.get(taxonomy, {}),
         )
+        if brand_match:
+            promotion_score = min(100, promotion_score + 3)
+            score_components["catalog_brand_match"] = 100
         if promotion_score < trend_signal_score:
             rejected_below_score += 1
             continue
         target_path = _seo_mapping_target_path(*taxonomy)
         signals.append({
             "term": term,
-            "term_type": str(row.get("term_type") or "google_trends_trending"),
+            "term_type": term_type,
             "provider": "google_trends",
             "source": str(row.get("source") or "")[:120],
             "language": str(row.get("language") or "en").lower(),
@@ -3142,6 +3223,7 @@ async def _import_google_trends_signals(
                 "rank": (row.get("notes") or {}).get("rank"),
                 "parent_term": (row.get("notes") or {}).get("parent_term") or "",
                 "related_rank": (row.get("notes") or {}).get("related_rank") or 0,
+                "catalog_brand": brand_match,
                 "cannabis_boosted": cannabis_intent,
                 "mushroom_relevant": mushroom_intent,
                 "promotion_score": promotion_score,
@@ -3166,10 +3248,15 @@ async def _import_google_trends_signals(
             "seo_trends_last_snapshots": snapshots,
             "seo_trends_last_scored": len(inferred_rows),
             "seo_trends_last_rejected_below_score": rejected_below_score,
+            "seo_trends_last_brand_candidates": 0,
             "seo_trends_last_source_mode": source_mode,
         })
         return 0
 
+    brand_signals = sum(
+        1 for signal in signals
+        if str(signal.get("term_type") or "").startswith("google_trends_brand_")
+    )
     imported = await _catalog_db.upsert_external_seo_signals(
         signals,
         provider="google_trends",
@@ -3190,13 +3277,14 @@ async def _import_google_trends_signals(
     if imported:
         _invalidate_admin_status_cache()
     logger.info(
-        "[seo_trends] mode=%s rows=%d candidates=%d snapshots=%d scored=%d relevant=%d rejected_below_score=%d imported=%d matured=%d fast_matured=%d",
+        "[seo_trends] mode=%s rows=%d candidates=%d snapshots=%d scored=%d relevant=%d brands=%d rejected_below_score=%d imported=%d matured=%d fast_matured=%d",
         source_mode,
         len(trend_rows),
         len(candidate_rows),
         snapshots,
         len(inferred_rows),
         len(signals),
+        brand_signals,
         rejected_below_score,
         imported,
         matured,
@@ -3211,6 +3299,7 @@ async def _import_google_trends_signals(
         "seo_trends_last_snapshots": snapshots,
         "seo_trends_last_scored": len(inferred_rows),
         "seo_trends_last_rejected_below_score": rejected_below_score,
+        "seo_trends_last_brand_candidates": brand_signals,
         "seo_trends_last_source_mode": source_mode,
     })
     return imported + matured
@@ -4963,16 +5052,13 @@ def _product_related_search_terms(
             candidates.append(str(term))
 
     if subcategory_display and category_display:
-        candidates.extend([
-            f"{subcategory_display} {category_display}",
-            f"{subcategory_display} menu",
-            f"{subcategory_display} products",
-        ])
+        candidates.append(f"{subcategory_display} {category_display}")
+    if subcategory_display:
+        candidates.append(f"{subcategory_display} selection")
     if category_display:
         candidates.extend([
-            f"{category_display} menu",
-            f"{category_display} catalog",
-            f"{category_display} products",
+            f"{category_display} selection",
+            f"{category_display} guide",
         ])
 
     title_words = [
@@ -5701,12 +5787,21 @@ async def _seo_side_note_terms(category: str, subcategory: str = "", language: s
     file_terms = list(get_terms_for_taxonomy(category, subcategory, limit=limit))
     static_terms = file_terms if language == "en" else await _translate_seo_lines(file_terms, language)
     notes: list[dict[str, Any]] = []
+    brand_notes: list[dict[str, Any]] = []
     try:
-        notes = await _catalog_db.get_seo_side_notes(
-            category,
-            subcategory,
-            language=language,
-            limit=min(25, limit * 2),
+        notes, brand_notes = await asyncio.gather(
+            _catalog_db.get_seo_side_notes(
+                category,
+                subcategory,
+                language=language,
+                limit=min(25, limit * 2),
+            ),
+            _catalog_db.get_trending_brand_side_notes(
+                category,
+                subcategory,
+                language=language,
+                limit=min(4, max(2, limit // 3)),
+            ),
         )
     except Exception as exc:
         logger.debug("Failed to load SEO side notes for %s/%s: %s", category, subcategory, exc)
@@ -5718,27 +5813,41 @@ async def _seo_side_note_terms(category: str, subcategory: str = "", language: s
     primary_static_count = min(3, max(1, limit - dynamic_limit))
     static_normalized = {normalize_term(term) for term in static_terms}
     dynamic_rows = []
-    for item in notes:
+    dynamic_seen: set[str] = set()
+    for item in [*brand_notes, *notes]:
         term = str(item.get("term") or "").strip()
         normalized = normalize_term(term)
         if (
             not normalized
             or normalized in static_normalized
+            or normalized in dynamic_seen
             or len(normalized.split()) > 5
             or not _is_useful_auto_seo_term(term)
             or not has_search_audience_intent(term)
         ):
             continue
+        dynamic_seen.add(normalized)
         dynamic_rows.append(item)
     dynamic_rows.sort(
         key=lambda item: (
+            0 if item.get("signal_type") == "trend_brand" else 1,
             0 if len(normalize_term(item.get("term") or "").split()) <= 3 else 1,
             -max(0, int(item.get("evidence_count") or 0)),
             len(normalize_term(item.get("term") or "").split()),
             len(normalize_term(item.get("term") or "")),
         )
     )
-    dynamic_terms = [str(item.get("term") or "").strip() for item in dynamic_rows[:dynamic_limit]]
+    selected_dynamic: list[dict[str, Any]] = []
+    brand_count = 0
+    for item in dynamic_rows:
+        is_brand = item.get("signal_type") == "trend_brand"
+        if is_brand and brand_count >= min(2, dynamic_limit):
+            continue
+        selected_dynamic.append(item)
+        brand_count += int(is_brand)
+        if len(selected_dynamic) >= dynamic_limit:
+            break
+    dynamic_terms = [str(item.get("term") or "").strip() for item in selected_dynamic]
     terms = [
         *static_terms[:primary_static_count],
         *dynamic_terms,

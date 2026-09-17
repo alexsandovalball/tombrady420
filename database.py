@@ -5595,6 +5595,67 @@ class Database:
                 break
         return merged
 
+    async def get_trending_brand_side_notes(
+        self,
+        category: str,
+        subcategory: str = "",
+        *,
+        language: str = "en",
+        limit: int = 4,
+    ) -> List[Dict[str, Any]]:
+        """Return approved Trends terms that match a real catalog brand/entity."""
+        category = str(category or "").strip()
+        subcategory = str(subcategory or "").strip()
+        if not category:
+            return []
+
+        clean_language = str(language or "en").strip().lower()[:12]
+        limit = max(1, min(limit, 10))
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT
+                    term,
+                    provider AS source,
+                    'trend_brand' AS signal_type,
+                    evidence_count,
+                    confidence
+                FROM external_seo_signals
+                WHERE approved = 1
+                  AND provider = 'google_trends'
+                  AND term_type LIKE 'google_trends_brand_%'
+                  AND LOWER(TRIM(COALESCE(category, ''))) = LOWER(TRIM(?))
+                  AND (
+                        ? = ''
+                        OR LOWER(TRIM(COALESCE(subcategory, ''))) = LOWER(TRIM(?))
+                        OR TRIM(COALESCE(subcategory, '')) = ''
+                  )
+                  AND (language = ? OR language = 'en' OR language = '')
+                ORDER BY
+                    CASE
+                        WHEN ? != '' AND LOWER(TRIM(COALESCE(subcategory, ''))) = LOWER(TRIM(?)) THEN 0
+                        WHEN language = ? THEN 1
+                        ELSE 2
+                    END,
+                    confidence DESC,
+                    evidence_count DESC,
+                    last_seen DESC
+                LIMIT ?
+                """,
+                (
+                    category,
+                    subcategory,
+                    subcategory,
+                    clean_language,
+                    subcategory,
+                    subcategory,
+                    clean_language,
+                    limit,
+                ),
+            ) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
+
     async def get_approved_seo_query_mappings(self, limit: int = 2000) -> List[Dict[str, Any]]:
         """Return admin-approved SEO query mappings."""
         limit = max(1, min(limit, 5000))
