@@ -67,6 +67,12 @@ def _build_media_caption(
     if not suffix:
         return normalized_caption[:max_length]
 
+    # Product copy is more important than repeated navigation context. If the
+    # description itself fits Telegram's hard media-caption limit, keep it
+    # complete and omit the suffix instead of trimming the product text.
+    if len(normalized_caption) <= max_length and len(normalized_caption) + len(suffix) + 2 > max_length:
+        return normalized_caption
+
     reserve = len(suffix) + 2
     if reserve >= max_length:
         return suffix[:max_length]
@@ -218,12 +224,24 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         navigation_buttons = _build_navigation_buttons(back_callback, back_label)
         
         # Get caption and translate it
-        caption = product.get("caption") or "No description"
+        original_caption = product.get("caption") or "No description"
+        caption = original_caption
         
         # Translate caption if user language is not English
         if user_lang and user_lang not in ["en", "en-US"]:
             try:
-                caption = await translate_text_async(caption, user_lang)
+                translated_caption = await translate_text_async(original_caption, user_lang)
+                if len(translated_caption) <= 1024 or len(original_caption) > 1024:
+                    caption = translated_caption
+                else:
+                    logger.info(
+                        "Translated caption exceeds Telegram limit; using complete original "
+                        "product_id=%s language=%s translated_length=%s original_length=%s",
+                        product_id,
+                        user_lang,
+                        len(translated_caption),
+                        len(original_caption),
+                    )
             except Exception as e:
                 logger.error(f"Error translating caption: {e}")
                 # Keep original caption if translation fails

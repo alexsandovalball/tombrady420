@@ -1100,6 +1100,12 @@ def _invalidate_admin_status_cache() -> None:
     _bot_health_cache = (0.0, [])
 
 
+def invalidate_bot_health_cache() -> None:
+    """Expose a narrow invalidation hook for runtime bot-health events."""
+    global _bot_health_cache
+    _bot_health_cache = (0.0, [])
+
+
 def _record_bot_startup_issue(
     bot_index: int,
     stage: str,
@@ -2327,6 +2333,19 @@ async def setup_application(bot_token: str, bot_index: int = 0):
                         "identity_version": previous_version,
                     },
                 )
+
+        previous_username = str((previous_slot or {}).get("bot_username") or "").strip()
+        if (
+            identity_rotated
+            and previous_username
+            and bot_username
+            and previous_username.lower().lstrip("@") != str(bot_username).lower().lstrip("@")
+        ):
+            await _db.retire_replaced_bot_identity(
+                slot_id,
+                previous_username,
+                str(bot_username),
+            )
 
         slot = provisional_slot
         _bot_slots[bot_index] = slot

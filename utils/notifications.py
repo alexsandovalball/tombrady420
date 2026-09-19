@@ -124,6 +124,7 @@ class NotificationService:
         self._bot_rate_limiters: Dict[str, RateLimiter] = {}
         # Global semaphore to cap concurrent bot worker coroutines
         self._bot_worker_semaphore = asyncio.Semaphore(MAX_CONCURRENT_BOT_WORKERS)
+        self._bot_delivery_probe_cache: Dict[str, tuple[float, bool]] = {}
     
     @staticmethod
     def _is_markdown_parse_error(error: BadRequest) -> bool:
@@ -157,6 +158,53 @@ class NotificationService:
                 burst=BOT_SEND_BURST,
             )
         return self._bot_rate_limiters[key]
+
+    async def _bot_is_deliverable(
+        self,
+        bot_app: Application,
+        assigned_username: Optional[str],
+    ) -> bool:
+        """Probe a bot before expensive preparation and retire revoked identities."""
+        actual_username = get_bot_username(bot_app)
+        cache_key = (assigned_username or actual_username or "unknown").lower().lstrip("@")
+        now = asyncio.get_running_loop().time()
+        cached = self._bot_delivery_probe_cache.get(cache_key)
+        if cached and now - cached[0] < 60:
+            return cached[1]
+        try:
+            await bot_app.bot.get_me()
+            self._bot_delivery_probe_cache[cache_key] = (now, True)
+            return True
+        except TelegramError as exc:
+            error_text = str(exc or "").lower()
+            error_type = exc.__class__.__name__.lower()
+            terminal_identity_error = (
+                error_type in {"invalidtoken", "unauthorized"}
+                or "unauthorized" in error_text
+                or "invalid token" in error_text
+                or "token is invalid" in error_text
+            )
+            if not terminal_identity_error:
+                logger.warning("Bot @%s readiness probe failed temporarily: %s", actual_username, exc)
+                return False
+
+            slot = getattr(bot_app, "bot_data", {}).get("bot_slot")
+            retired_username = assigned_username or actual_username
+            logger.error(
+                "Bot @%s is unauthorized; retiring unreachable users and queued deliveries",
+                retired_username,
+            )
+            await self.db.retire_replaced_bot_identity(
+                int(slot) if slot is not None else -1,
+                retired_username,
+            )
+            try:
+                from webhook_server import invalidate_bot_health_cache
+                invalidate_bot_health_cache()
+            except (ImportError, AttributeError):
+                pass
+            self._bot_delivery_probe_cache[cache_key] = (now, False)
+            return False
 
     @staticmethod
     def _build_product_webapp_url(product_id: int, bot_username: str) -> Optional[str]:
@@ -767,9 +815,15 @@ class NotificationService:
         
         bot_app = get_bot_by_username(bot_username) if bot_username else bot_apps[0]
         if not bot_app:
-            logger.warning(f"Bot @{bot_username} not found, using primary bot")
-            bot_app = bot_apps[0]
-        
+            logger.error(
+                "Bot @%s is not loaded; preserving its queue instead of misrouting it through the primary bot",
+                bot_username,
+            )
+            return 0
+
+        if not await self._bot_is_deliverable(bot_app, bot_username):
+            return 0
+
         actual_bot_name = get_bot_username(bot_app)
         logger.info(f"[Bot @{actual_bot_name}] Processing {len(notifications)} notifications")
         
@@ -956,8 +1010,8 @@ class NotificationService:
             bot_app = get_bot_by_username(bot_username) if bot_username else bot_apps[0]
             
             if not bot_app:
-                logger.warning(f"Bot @{bot_username} not found, using primary bot")
-                bot_app = bot_apps[0]
+                logger.error("Bot @%s not found; preserving its notification queue", bot_username)
+                continue
             
             logger.info(f"Sending {len(bot_notifications)} notifications via bot @{get_bot_username(bot_app)}")
             
@@ -1648,8 +1702,13 @@ class NotificationService:
         
         bot_app = get_bot_by_username(bot_username) if bot_username else bot_apps[0]
         if not bot_app:
-            logger.warning(f"Bot @{bot_username} not found, using primary bot")
-            bot_app = bot_apps[0]
+            logger.error("Bot @%s not found; preserving its custom-message queue", bot_username)
+            stats["failed"] += len(messages)
+            return False
+
+        if not await self._bot_is_deliverable(bot_app, bot_username):
+            stats["failed"] += len(messages)
+            return False
         
         actual_bot_name = get_bot_username(bot_app)
         

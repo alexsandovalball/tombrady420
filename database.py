@@ -2806,6 +2806,8 @@ class Database:
         stats = {
             "active_bots": len(normalized_active),
             "detached_users": 0,
+            "deleted_notifications": 0,
+            "deleted_custom_messages": 0,
             "deleted_bot_instances": 0,
             "inactive_registry_rows": 0,
             "deleted_file_id_cache": 0,
@@ -2821,6 +2823,24 @@ class Database:
 
         async with self.get_connection() as db:
             await db.execute("BEGIN IMMEDIATE")
+
+            inactive_user_filter = f"""
+                SELECT user_id FROM bot_users
+                WHERE bot_username IS NOT NULL
+                  AND bot_username != ''
+                  AND LOWER(bot_username) NOT IN ({placeholders})
+            """
+            cursor = await db.execute(f"""
+                DELETE FROM notification_queue
+                WHERE user_id IN ({inactive_user_filter})
+            """, normalized_active)
+            stats["deleted_notifications"] = max(cursor.rowcount, 0)
+
+            cursor = await db.execute(f"""
+                DELETE FROM custom_message_queue
+                WHERE user_id IN ({inactive_user_filter})
+            """, normalized_active)
+            stats["deleted_custom_messages"] = max(cursor.rowcount, 0)
 
             cursor = await db.execute(f"""
                 UPDATE bot_users
@@ -2871,6 +2891,91 @@ class Database:
             logger.info("[bot_cleanup] retired inactive bot memory stats=%s", stats)
         else:
             logger.debug("[bot_cleanup] no inactive bot memory found active_bots=%d", stats["active_bots"])
+        return stats
+
+    async def retire_replaced_bot_identity(
+        self,
+        slot_id: int,
+        old_bot_username: str,
+        new_bot_username: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """Remove delivery state that cannot survive a Telegram bot replacement.
+
+        Telegram user chats and file IDs belong to a specific bot identity. When
+        a slot receives a token for a different bot, users of the revoked bot
+        cannot be messaged by the replacement until they start it themselves.
+        Catalog products and canonical channel media are intentionally retained.
+        """
+        old_username = self.normalize_bot_username(old_bot_username)
+        new_username = self.normalize_bot_username(new_bot_username or "")
+        stats = {
+            "users": 0,
+            "notifications": 0,
+            "custom_messages": 0,
+            "file_ids": 0,
+            "broadcast_chats": 0,
+            "bot_instances": 0,
+            "registry_rows": 0,
+        }
+        if not old_username or old_username == new_username:
+            return stats
+
+        async with self.get_connection() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT user_id FROM bot_users WHERE LOWER(bot_username) = ?",
+                (old_username,),
+            ) as cursor:
+                user_ids = [int(row[0]) for row in await cursor.fetchall()]
+
+            if user_ids:
+                placeholders = ",".join("?" * len(user_ids))
+                cursor = await db.execute(
+                    f"DELETE FROM notification_queue WHERE user_id IN ({placeholders})",
+                    user_ids,
+                )
+                stats["notifications"] = max(cursor.rowcount, 0)
+                cursor = await db.execute(
+                    f"DELETE FROM custom_message_queue WHERE user_id IN ({placeholders})",
+                    user_ids,
+                )
+                stats["custom_messages"] = max(cursor.rowcount, 0)
+
+            cursor = await db.execute(
+                "DELETE FROM bot_users WHERE LOWER(bot_username) = ?",
+                (old_username,),
+            )
+            stats["users"] = max(cursor.rowcount, 0)
+            cursor = await db.execute(
+                "DELETE FROM bot_file_id_cache WHERE LOWER(bot_username) = ?",
+                (old_username,),
+            )
+            stats["file_ids"] = max(cursor.rowcount, 0)
+            cursor = await db.execute(
+                "DELETE FROM broadcast_chats WHERE LOWER(bot_username) = ?",
+                (old_username,),
+            )
+            stats["broadcast_chats"] = max(cursor.rowcount, 0)
+            cursor = await db.execute(
+                "DELETE FROM bot_instances WHERE slot_id = ? AND LOWER(bot_username) = ?",
+                (slot_id, old_username),
+            )
+            stats["bot_instances"] = max(cursor.rowcount, 0)
+            cursor = await db.execute("""
+                UPDATE bot_registry
+                SET status = 'inactive', updated_at = ?
+                WHERE LOWER(bot_username) = ? AND status = 'active'
+            """, (datetime.now(), old_username))
+            stats["registry_rows"] = max(cursor.rowcount, 0)
+            await db.commit()
+
+        logger.warning(
+            "[bot_identity] retired_replaced_bot slot=%s old=@%s new=@%s stats=%s",
+            slot_id,
+            old_username,
+            new_username or "unknown",
+            stats,
+        )
         return stats
     
     async def get_users_count_by_bot(self, bot_username: Optional[str] = None) -> int:
