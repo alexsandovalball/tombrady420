@@ -7907,7 +7907,11 @@ def _remember_webapp_session(init_data: str) -> str:
 
 def _get_webapp_session_init_data(request: Request) -> str:
     """Resolve initData from the short-lived WebApp session cookie/query token."""
-    token = request.cookies.get(WEBAPP_SESSION_COOKIE) or request.query_params.get("session")
+    token = (
+        request.cookies.get(WEBAPP_SESSION_COOKIE)
+        or request.headers.get("X-WebApp-Session")
+        or request.query_params.get("session")
+    )
     if not token:
         return ""
 

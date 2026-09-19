@@ -479,6 +479,16 @@
                 section.appendChild(group);
             }
 
+            function appendTextDetails(section, className, title, noteText, items, formatter, limit) {
+                if (!Array.isArray(items) || !items.length) return;
+                var visibleItems = limit ? items.slice(0, limit) : items;
+                appendDetailsList(section, className, title + ' (' + formatCount(items.length) + ')', noteText, visibleItems, function (item) {
+                    var li = document.createElement('li');
+                    li.textContent = formatter(item);
+                    return li;
+                });
+            }
+
             function appendGooglePageList(section, className, title, noteText, items, totalCount) {
                 if (!items.length) return;
 
@@ -596,11 +606,6 @@
                     return bot && Number(bot.startup_issue_count || 0) > 0;
                 });
                 var googleWindowDays = seo.search_console_window_days || 30;
-                var mappingOutcomes = {};
-                (seo.mapping_outcomes || []).forEach(function (item) {
-                    mappingOutcomes[String(item.status || 'pending')] = Number(item.count || 0);
-                });
-
                 panel.replaceChildren();
                 panel.hidden = false;
 
@@ -621,25 +626,17 @@
                 var grid = document.createElement('div');
                 grid.className = 'admin-metric-grid';
                 appendMetric(grid, 'Bots online', formatCount(botHealthSummary.online !== undefined ? botHealthSummary.online : activeBots.length) + '/' + formatCount(botHealthSummary.configured !== undefined ? botHealthSummary.configured : data.configured_bot_count));
-                appendMetric(grid, 'Bot warnings', formatCount(botHealthSummary.unhealthy !== undefined ? botHealthSummary.unhealthy : unhealthyBots.length) + ' unhealthy / ' + formatCount(botHealthSummary.webhook_warning !== undefined ? botHealthSummary.webhook_warning : webhookWarningBots.length) + ' webhook / ' + formatCount(botHealthSummary.setup_warning !== undefined ? botHealthSummary.setup_warning : setupWarningBots.length) + ' setup');
-                appendMetric(grid, 'Products', formatCount(summary.products));
-                appendMetric(grid, 'Users 24h / total', formatCount(summary.active_users_24h) + ' / ' + formatCount(summary.bot_users));
-                appendMetric(grid, 'Subscribed / blocked', formatCount(summary.subscribed_users) + ' / ' + formatCount(summary.blocked_users));
-                appendMetric(grid, 'Visitors / visits 24h', formatCount(summary.unique_visitors_24h) + ' / ' + formatCount(summary.website_visits_24h));
-                appendMetric(grid, 'WebApp opens 24h', formatCount(summary.webapp_visits_24h));
-                appendMetric(grid, 'Pending notif. / messages', formatCount(summary.pending_notifications) + ' / ' + formatCount(summary.queued_custom_messages));
+                appendMetric(grid, 'Bot alerts', formatCount(botHealthSummary.unhealthy !== undefined ? botHealthSummary.unhealthy : unhealthyBots.length) + ' unhealthy · ' + formatCount(botHealthSummary.webhook_warning !== undefined ? botHealthSummary.webhook_warning : webhookWarningBots.length) + ' webhook · ' + formatCount(botHealthSummary.setup_warning !== undefined ? botHealthSummary.setup_warning : setupWarningBots.length) + ' setup');
+                appendMetric(grid, 'Products in / out of stock', formatCount(summary.products_in_stock) + ' / ' + formatCount(summary.products_out_of_stock));
+                appendMetric(grid, 'Active users 24h / total', formatCount(summary.active_users_24h) + ' / ' + formatCount(summary.bot_users));
+                appendMetric(grid, 'Human visitors / pageviews 24h', formatCount(summary.unique_visitors_24h) + ' / ' + formatCount(summary.visitor_events_24h));
+                appendMetric(grid, 'Pending notifications / messages', formatCount(summary.pending_notifications) + ' / ' + formatCount(summary.queued_custom_messages));
+                appendMetric(grid, 'WebApp errors 24h', formatCount(summary.webapp_errors_24h));
                 appendMetric(grid, 'Searches / no-result 24h', formatCount(summary.search_queries_24h) + ' / ' + formatCount(summary.search_no_result_24h));
-                appendMetric(grid, 'Google pages ' + googleWindowDays + 'd', formatCount(seo.search_console_pages_window));
-                appendMetric(grid, 'Google clicks/impr.', formatCount(seo.search_console_clicks_window) + '/' + formatCount(seo.search_console_impressions_window));
-                appendMetric(grid, 'Image/video impressions', formatCount(seo.search_console_image_impressions_window) + '/' + formatCount(seo.search_console_video_impressions_window));
-                appendMetric(grid, 'SEO learners', (seoRuntime.seo_auto_learn_last_status || 'pending') + ' / ' + (seoRuntime.seo_trends_last_status || 'pending'));
+                appendMetric(grid, 'Google clicks / impressions ' + googleWindowDays + 'd', formatCount(seo.search_console_clicks_window) + ' / ' + formatCount(seo.search_console_impressions_window));
                 appendMetric(grid, 'Mapping changes 24h / 7d', formatCount(seo.mappings_updated_24h) + ' / ' + formatCount(seo.mappings_updated_7d));
-                appendMetric(grid, 'Trend snapshots / regions 90d', formatCount(seo.trend_snapshots_90d) + ' / ' + formatCount(seo.trend_regions_90d));
-                appendMetric(grid, 'Attributed sessions / contacts 28d', formatCount(seo.attributed_webapp_sessions_28d) + ' / ' + formatCount(seo.attributed_contact_actions_28d));
-                appendMetric(grid, 'Mapping outcomes', formatCount(mappingOutcomes.winner) + ' winning / ' + formatCount(mappingOutcomes.monitoring) + ' monitoring / ' + formatCount(mappingOutcomes.pending) + ' pending / ' + formatCount(mappingOutcomes.retired_no_evidence) + ' retired');
-                appendMetric(grid, 'Google import', (searchConsoleSetup.configured ? (seoRuntime.search_console_import_last_status || 'configured') : 'not connected') + (seoRuntime.search_console_import_last_attempt_at ? ' · ' + seoRuntime.search_console_import_last_attempt_at : ''));
-                appendMetric(grid, 'Google sitemap', googleSitemap.status || 'never');
-                appendMetric(grid, 'IndexNow pending / failed', formatCount(indexnow.pending) + ' / ' + formatCount(indexnow.failed));
+                appendMetric(grid, 'SEO workers', (seoRuntime.seo_auto_learn_last_status || 'pending') + ' · trends ' + (seoRuntime.seo_trends_last_status || 'pending') + ' · Google ' + (searchConsoleSetup.configured ? (seoRuntime.search_console_import_last_status || 'configured') : 'not connected'));
+                appendMetric(grid, 'Indexing health', 'Google ' + (googleSitemap.status || 'never') + ' · IndexNow ' + formatCount(indexnow.pending) + ' pending / ' + formatCount(indexnow.failed) + ' failed');
                 if (Number(data.webhook_401_total || 0) > 0) {
                     appendMetric(grid, 'Webhook 401 total', formatCount(data.webhook_401_total));
                 }
@@ -658,7 +655,7 @@
                     panel.appendChild(latency);
                 }
 
-                appendList(panel, 'Runtime Bots', data.runtime_bots || [], function (item) {
+                appendTextDetails(panel, 'admin-runtime-bots', 'Runtime Bots', 'Live Telegram and webhook health for every configured bot.', data.runtime_bots || [], function (item) {
                     var username = item.username ? '@' + item.username : 'not started';
                     var slot = item.slot_name || (item.slot_id !== null && item.slot_id !== undefined ? 'slot ' + item.slot_id : 'slot -');
                     var health = item.telegram_health || (item.running ? 'running' : 'stopped');
@@ -696,17 +693,17 @@
                         });
                     });
                 });
-                appendList(panel, 'Bot Setup Warnings', setupIssues, function (item) {
+                appendTextDetails(panel, 'admin-bot-setup-warnings', 'Bot Setup Warnings', 'Startup and command-registration issues that may require attention.', setupIssues, function (item) {
                     var label = '#' + item.index + ' ' + (item.username ? '@' + item.username : 'not started');
                     var admin = item.admin_id ? ' admin ' + item.admin_id : '';
                     return label + ': ' + String(item.stage || 'setup') + admin + ' · ' + String(item.error || '').slice(0, 120);
                 }, 15);
 
-                appendList(panel, 'Pending Notifications By Bot', data.pending_notifications_by_bot || [], function (item) {
+                appendTextDetails(panel, 'admin-pending-notifications', 'Pending Notifications By Bot', 'Only bots with queued product notifications appear here.', data.pending_notifications_by_bot || [], function (item) {
                     return '@' + String(item.bot_username || 'bot') + ': ' + formatCount(item.pending) + ' pending';
                 }, 10);
 
-                appendList(panel, 'Recent Users', data.recent_users || [], function (item) {
+                appendTextDetails(panel, 'admin-recent-users', 'Recent Users', 'Latest bot users, activity, subscription, and block state.', data.recent_users || [], function (item) {
                     var identity = item.username ? '@' + item.username : String(item.first_name || 'User') + ' ' + String(item.last_name || '');
                     var userStatus = (item.is_blocked ? 'blocked' : 'active') + ' · ' + (item.is_subscribed ? 'subscribed' : 'unsubscribed') + ' · ' + (item.notifications_enabled ? 'notifications on' : 'notifications off');
                     return identity.trim() + ' (' + String(item.user_id || '-') + '): @' + String(item.bot_username || 'bot') + ' · ' + String(item.language || 'en') + ' · ' + formatCount(item.interaction_count) + ' interactions · ' + userStatus + ' · last ' + (item.last_seen || '-');
@@ -729,7 +726,7 @@
                     }
                 );
 
-                appendList(panel, 'Google Ranking Opportunities', seo.search_console_opportunities || [], function (item) {
+                appendTextDetails(panel, 'admin-google-opportunities', 'Google Ranking Opportunities', 'Queries with impressions where stronger relevance or click-through may help.', seo.search_console_opportunities || [], function (item) {
                     var ctr = Number(item.ctr || 0);
                     return String(item.query || 'query') + ': ' + formatCount(item.impressions) + ' impressions, ' + formatCount(item.clicks) + ' clicks, CTR ' + Math.round(ctr * 1000) / 10 + '%, avg pos ' + (item.avg_position || '-') + ' · ' + String(item.page || '/');
                 }, 10);
@@ -820,7 +817,7 @@
                         return li;
                     }
                 );
-                appendList(panel, 'Top Visitor Locations', data.top_visitor_locations || [], function (item) {
+                appendTextDetails(panel, 'admin-top-locations', 'Top Visitor Locations', 'Human visitors only; crawler traffic is excluded.', data.top_visitor_locations || [], function (item) {
                     var place = [item.city, item.region, item.country].filter(function (part) {
                         return part && part !== 'Unknown';
                     }).join(', ') || 'Unknown';
@@ -898,10 +895,10 @@
                     if (context.initData) {
                         headers['X-Telegram-Init-Data'] = context.initData;
                     }
-                    var statusUrl = '/api/admin/status?ts=' + Date.now();
-                    if (!context.initData && adminState.sessionToken) {
-                        statusUrl += '&session=' + encodeURIComponent(adminState.sessionToken);
+                    if (adminState.sessionToken) {
+                        headers['X-WebApp-Session'] = adminState.sessionToken;
                     }
+                    var statusUrl = '/api/admin/status?ts=' + Date.now();
                     var fetchOptions = {
                         headers: headers,
                         credentials: 'same-origin',
@@ -910,9 +907,6 @@
                     var response = await fetch(statusUrl, fetchOptions);
                     if (response.status === 404) {
                         var fallbackStatusUrl = '/api/webapp-admin/status?ts=' + Date.now();
-                        if (!context.initData && adminState.sessionToken) {
-                            fallbackStatusUrl += '&session=' + encodeURIComponent(adminState.sessionToken);
-                        }
                         response = await fetch(fallbackStatusUrl, fetchOptions);
                     }
                     if (!response.ok) {

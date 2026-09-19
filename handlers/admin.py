@@ -758,6 +758,9 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
             # Get all users (backward compatibility)
             total_users, page_users = await db.get_users_paginated(limit=per_page, offset=offset)
             bot_display_name = "All Users"
+
+        page_users = page_users or []
+        bot_param = f"|{bot_username}" if bot_username else ""
         
         if total_users == 0:
             text = f"📭 No users found for {bot_display_name}."
@@ -786,8 +789,8 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
                 username = escape_markdown_v1(f"@{str(username_raw)}")
             else:
                 username = "No username"
-            first_name = escape_markdown_v1(str(user.get('first_name', 'N/A')))
-            last_name = escape_markdown_v1(str(user.get('last_name', '')))
+            first_name = escape_markdown_v1(str(user.get('first_name') or 'N/A'))
+            last_name = escape_markdown_v1(str(user.get('last_name') or ''))
             full_name = f"{first_name} {last_name}".strip()
             
             # Notification status
@@ -837,12 +840,9 @@ async def show_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
             is_blocked = user.get('is_blocked', 0) == 1
             
             # Get user display name
-            username = user.get('username') or user.get('first_name', 'Unknown')
+            username = str(user.get('username') or user.get('first_name') or 'Unknown')
             if len(username) > 12:
                 username = username[:9] + "..."
-            
-            # Create callback data that includes bot_username if specified
-            bot_param = f"|{bot_username}" if bot_username else ""
             
             # Create row with notification toggle and block/unblock button
             row_buttons = [

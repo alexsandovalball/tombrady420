@@ -161,6 +161,7 @@ ADMIN_COMMANDS_FALLBACK = (
     "• /menu - View catalog\n"
     "• /language - Change bot language\n"
     "• /adminstatus - View bot and WebApp status\n"
+    "• /seostatus - View automatic SEO search learning\n"
     "• /users - Manage users\n"
     "• /botusers - View users by bot instance\n"
     "• /send - Send message to user\n"
