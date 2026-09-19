@@ -108,6 +108,7 @@ from middleware.request_deduplicator import RequestDeduplicator
 from configs.telegram_ip_whitelist import is_telegram_ip
 from utils.deeplinks import build_bot_product_url, build_bot_start_url, build_webapp_product_url
 from utils.telegram_fetch import fetch_telegram_file, get_telegram_fetch_snapshot
+from utils.logging_filters import redact_sensitive_text
 from utils.access_control import (
     is_user_blocked_cached,
     record_user_ip_debounced,
@@ -1116,7 +1117,7 @@ def _record_bot_startup_issue(
 ) -> None:
     issue = {
         "stage": str(stage or "startup"),
-        "error": str(error or "")[:300],
+        "error": redact_sensitive_text(error)[:300],
         "error_type": str(error_type or getattr(error, "__class__", type(error)).__name__)[:80],
         "recorded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
     }
@@ -2240,7 +2241,7 @@ async def setup_application(bot_token: str, bot_index: int = 0):
             "Bot startup failure index=%d token_suffix=%s during initialize/start: %s",
             bot_index,
             token_suffix,
-            exc,
+            redact_sensitive_text(exc),
         )
         try:
             await bot_app.shutdown()
@@ -2252,7 +2253,7 @@ async def setup_application(bot_token: str, bot_index: int = 0):
             "Bot startup failure index=%d token_suffix=%s during initialize/start: %s",
             bot_index,
             token_suffix,
-            exc,
+            redact_sensitive_text(exc),
         )
         try:
             await bot_app.shutdown()
@@ -4262,12 +4263,23 @@ async def lifespan(app: FastAPI):
             webhook_secret_tokens.append(webhook_secret_token)
             startup_summary["successful"].append(idx)
         except telegram.error.TelegramError as exc:
-            logger.warning("Bot startup failure index=%d token_suffix=%s: %s", idx, token[-6:], exc)
+            logger.warning(
+                "Bot startup failure index=%d token_suffix=%s: %s",
+                idx,
+                token[-6:],
+                redact_sensitive_text(exc),
+            )
             startup_summary["failed"].append(idx)
             webhook_secret_tokens.append(None)
             _record_bot_startup_issue(idx, "startup", exc)
         except Exception as exc:
-            logger.warning("Bot startup failure index=%d token_suffix=%s: %s", idx, token[-6:], exc, exc_info=True)
+            logger.warning(
+                "Bot startup failure index=%d token_suffix=%s type=%s: %s",
+                idx,
+                token[-6:],
+                exc.__class__.__name__,
+                redact_sensitive_text(exc),
+            )
             startup_summary["failed"].append(idx)
             webhook_secret_tokens.append(None)
             _record_bot_startup_issue(idx, "startup", exc)

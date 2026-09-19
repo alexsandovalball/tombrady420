@@ -24,9 +24,12 @@ def configure_logging(level: int = logging.INFO) -> None:
     try:
         from utils.logging_filters import PIIRedactFilter
         root_logger = logging.getLogger()
-        # Avoid duplicate filters if configure_logging() is called multiple times
-        if not any(isinstance(f, PIIRedactFilter) for f in root_logger.filters):
-            root_logger.addFilter(PIIRedactFilter())
+        # Filters attached only to the root logger do not process records that
+        # propagate from child loggers. Attach one to every root handler so all
+        # application and dependency logs are redacted before emission.
+        for handler in root_logger.handlers:
+            if not any(isinstance(f, PIIRedactFilter) for f in handler.filters):
+                handler.addFilter(PIIRedactFilter())
     except ImportError:
         pass  # utils not available (e.g. running in a minimal environment)
 

@@ -29,6 +29,7 @@ Or selectively to a single handler::
 import hashlib
 import logging
 import re
+import traceback
 from typing import Pattern
 
 # ---------------------------------------------------------------------------
@@ -49,6 +50,13 @@ _RE_PHOTO_URL_JSON: Pattern = re.compile(
     re.IGNORECASE,
 )
 
+# Telegram bot tokens can be included verbatim in exceptions raised while an
+# Application is being initialized. Match both plain tokens and tokens embedded
+# in Telegram API URLs without relying on the configured token list.
+_RE_TELEGRAM_BOT_TOKEN: Pattern = re.compile(
+    r"(?<![A-Za-z0-9_-])\d{5,20}:[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])"
+)
+
 
 def _hash_user_id(raw: str) -> str:
     """Return a stable 8-char hex digest of a raw user_id string."""
@@ -57,6 +65,11 @@ def _hash_user_id(raw: str) -> str:
 
 def _mask_username(prefix: str, first_char: str, rest: str) -> str:
     return f"{prefix}{first_char}***"
+
+
+def redact_sensitive_text(value: object) -> str:
+    """Return log-safe text with credential-shaped values removed."""
+    return _RE_TELEGRAM_BOT_TOKEN.sub("<redacted-telegram-bot-token>", str(value or ""))
 
 
 class PIIRedactFilter(logging.Filter):
@@ -74,7 +87,8 @@ class PIIRedactFilter(logging.Filter):
         except Exception:
             return True  # Don't suppress on formatting errors
 
-        # Apply PII masks
+        # Apply credential and PII masks.
+        msg = redact_sensitive_text(msg)
         msg = _RE_USER_ID.sub(
             lambda m: m.group(1) + _hash_user_id(m.group(2)), msg
         )
@@ -87,4 +101,17 @@ class PIIRedactFilter(logging.Filter):
         # Store back as a plain string so the handler doesn't re-format
         record.msg = msg
         record.args = ()
+
+        # A traceback is formatted after filters run and can repeat the raw
+        # exception value. Pre-format and redact it, then clear exc_info so the
+        # handler uses only the safe copy.
+        if record.exc_info:
+            try:
+                record.exc_text = redact_sensitive_text(
+                    "".join(traceback.format_exception(*record.exc_info))
+                )
+                record.exc_info = None
+            except Exception:
+                record.exc_text = "<exception traceback unavailable>"
+                record.exc_info = None
         return True
