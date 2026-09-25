@@ -4,6 +4,7 @@ This allows the bot to receive updates via webhooks instead of polling,
 which is more suitable for serverless deployments like Render.com.
 """
 import asyncio
+import ctypes
 import gc
 import hashlib
 import html
@@ -194,6 +195,7 @@ _SEO_ROBOTS_CACHE_SECONDS = _bounded_int_env("SEO_ROBOTS_CACHE_SECONDS", 3600, 6
 _SEO_SITEMAP_CACHE_SECONDS = _bounded_int_env("SEO_SITEMAP_CACHE_SECONDS", 300, 60, 3600)
 _SEO_PAGE_CACHE_SECONDS = _bounded_int_env("SEO_PAGE_CACHE_SECONDS", 300, 30, 3600)
 _SEO_PUBLIC_MEDIA_CACHE_SECONDS = _bounded_int_env("SEO_PUBLIC_MEDIA_CACHE_SECONDS", 86400, 300, 604800)
+_VERSIONED_MEDIA_CACHE_SECONDS = 7 * 24 * 60 * 60
 _SEO_PUBLIC_MEDIA_RATE_LIMIT_REQUESTS = _bounded_int_env("SEO_PUBLIC_MEDIA_RATE_LIMIT_REQUESTS", 120, 10, 2000)
 _ADMIN_CACHE_CLEANUP_INTERVAL_SECONDS = _bounded_int_env("ADMIN_CACHE_CLEANUP_INTERVAL_SECONDS", 15, 10, 600)
 _ADMIN_CACHE_CLEANUP_BATCH_SIZE = _bounded_int_env("ADMIN_CACHE_CLEANUP_BATCH_SIZE", 50, 5, 500)
@@ -258,6 +260,9 @@ _media_downloads_active = 0
 _MEDIA_FETCH_FAILURE_COOLDOWN_SECONDS = float(
     _bounded_int_env("MEDIA_FETCH_FAILURE_COOLDOWN_SECONDS", 8, 2, 60)
 )
+_MEDIA_DETERMINISTIC_FAILURE_COOLDOWN_SECONDS = float(
+    _bounded_int_env("MEDIA_DETERMINISTIC_FAILURE_COOLDOWN_SECONDS", 21600, 300, 86400)
+)
 _MEDIA_FETCH_FAILURE_CACHE_MAX = _bounded_int_env("MEDIA_FETCH_FAILURE_CACHE_MAX", 512, 64, 4096)
 _media_fetch_failures: OrderedDict[tuple[int, int], tuple[float, str]] = OrderedDict()
 _media_fetch_failures_lock = asyncio.Lock()
@@ -312,11 +317,18 @@ async def _get_recent_media_fetch_failure(product_id: int, media_index: int) -> 
         return reason
 
 
-async def _remember_media_fetch_failure(product_id: int, media_index: int, reason: str) -> None:
+async def _remember_media_fetch_failure(
+    product_id: int,
+    media_index: int,
+    reason: str,
+    *,
+    ttl_seconds: float | None = None,
+) -> None:
     key = (product_id, media_index)
+    ttl = max(1.0, ttl_seconds or _MEDIA_FETCH_FAILURE_COOLDOWN_SECONDS)
     async with _media_fetch_failures_lock:
         _media_fetch_failures[key] = (
-            _time.monotonic() + _MEDIA_FETCH_FAILURE_COOLDOWN_SECONDS,
+            _time.monotonic() + ttl,
             reason[:160],
         )
         _media_fetch_failures.move_to_end(key)
@@ -346,6 +358,25 @@ def _media_retry_response(status_code: int = status.HTTP_503_SERVICE_UNAVAILABLE
         media_type="application/json",
         status_code=status_code,
         headers=_media_retry_headers(),
+    )
+
+
+def _media_too_large_response(file_size: int = 0) -> Response:
+    payload: Dict[str, object] = {
+        "error": "file_too_large",
+        "message": "File exceeds the Telegram Bot API streaming limit.",
+        "can_download": False,
+    }
+    if file_size > 0:
+        payload["file_size"] = file_size
+    return Response(
+        content=json.dumps(payload),
+        media_type="application/json",
+        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        headers={
+            "Retry-After": str(int(_MEDIA_DETERMINISTIC_FAILURE_COOLDOWN_SECONDS)),
+            "Cache-Control": "private, max-age=3600",
+        },
     )
 
 
@@ -1751,7 +1782,6 @@ def _classify_bot_health_error(exc: Exception) -> tuple[str, str]:
         for marker in (
             "invalid token",
             "unauthorized",
-            "token",
             "not found",
             "deactivated",
             "bot was blocked",
@@ -1866,6 +1896,30 @@ async def _runtime_bot_health_snapshots(*, force: bool = False) -> List[Dict[str
 
     _bot_health_cache = (now, [dict(item) for item in health_snapshots])
     return health_snapshots
+
+
+async def get_active_runtime_bot_entries(*, force_health: bool = False) -> List[Dict[str, object]]:
+    """Return configured runtime bots except ones Telegram confirms are unusable."""
+    snapshots = await _runtime_bot_health_snapshots(force=force_health)
+    excluded_health = {"deleted_or_invalid", "not_loaded", "app_stopped"}
+    entries: List[Dict[str, object]] = []
+    seen: set[str] = set()
+    for snapshot in snapshots:
+        username = str(snapshot.get("username") or "").strip()
+        if (
+            not username
+            or not snapshot.get("running")
+            or snapshot.get("telegram_health") in excluded_health
+            or username.lower() in seen
+        ):
+            continue
+        seen.add(username.lower())
+        entries.append({
+            "index": int(snapshot.get("index") or 0),
+            "username": username,
+            "telegram_health": snapshot.get("telegram_health"),
+        })
+    return entries
 
 
 def _is_bot_online(snapshot: Dict[str, object]) -> bool:
@@ -1999,8 +2053,32 @@ def _memory_pressure_level() -> str:
     return "normal"
 
 
+def _trim_lru_cache(cache: OrderedDict, target_size: int) -> int:
+    removed = 0
+    while len(cache) > target_size:
+        cache.popitem(last=False)
+        removed += 1
+    return removed
+
+
+def _trim_process_heap() -> bool:
+    """Return free glibc arenas to Render's OS after large media activity."""
+    if os.name != "posix":
+        return False
+    try:
+        libc = ctypes.CDLL(None)
+        malloc_trim = getattr(libc, "malloc_trim", None)
+        if malloc_trim is None:
+            return False
+        malloc_trim.argtypes = [ctypes.c_size_t]
+        malloc_trim.restype = ctypes.c_int
+        return bool(malloc_trim(0))
+    except (AttributeError, OSError, TypeError):
+        return False
+
+
 def _shed_nonessential_memory(*, force: bool = False) -> int:
-    """Drop regenerable caches under pressure without disturbing bot/media IDs."""
+    """Drop regenerable caches and return released arenas under pressure."""
     global _last_memory_shed_at, _api_result_cache_bytes, _seo_response_cache_bytes, _webapp_search_cache_bytes
     now = _time.monotonic()
     minimum_interval = 30 if force else _MEMORY_SHED_COOLDOWN_SECONDS
@@ -2015,12 +2093,18 @@ def _shed_nonessential_memory(*, force: bool = False) -> int:
     _seo_response_cache_bytes = 0
     _webapp_search_cache_bytes = 0
     translation_service.clear_cache()
+    removed += _trim_lru_cache(_media_info_cache, 64 if force else 128)
+    removed += _trim_lru_cache(_media_registry_write_cache, 256 if force else 512)
+    if force:
+        removed += _trim_lru_cache(_resolved_file_id_cache, 150)
     collected = gc.collect()
+    heap_trimmed = _trim_process_heap()
     _last_memory_shed_at = now
     logger.warning(
-        "[memory_guard] caches_shed entries=%d gc_collected=%d rss_bytes=%d",
+        "[memory_guard] caches_shed entries=%d gc_collected=%d heap_trimmed=%s rss_bytes=%d",
         removed,
         collected,
+        heap_trimmed,
         _current_rss_bytes(),
     )
     return removed
@@ -4523,8 +4607,10 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
         
         # Add cache headers for static assets
         if path.startswith('/assets/'):
-            # Cache CSS and JS for 1 hour to reduce backend load and decrease latency
-            if path.endswith(('.js', '.css')):
+            if request.query_params.get("v"):
+                response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+            # Cache unversioned CSS and JS briefly so emergency updates propagate.
+            elif path.endswith(('.js', '.css')):
                 response.headers['Cache-Control'] = 'public, max-age=3600'
             # Cache images for 1 day (can be cached longer as they rarely change)
             elif path.endswith(('.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico')):
@@ -5299,12 +5385,22 @@ async def _seo_mapping_freshness(
     return latest, by_category, by_taxonomy
 
 
-def _product_public_media_path(product_id: int, media_index: int = 0) -> str:
-    return f"/media/products/{product_id}/{media_index}"
+def _media_version(file_id: object) -> str:
+    """Return a non-sensitive fingerprint used only for browser cache busting."""
+    value = str(file_id or "").strip()
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12] if value else ""
 
 
-def _product_public_media_url(product_id: int, media_index: int = 0) -> str:
-    return _absolute_storefront_url(_product_public_media_path(product_id, media_index))
+def _versioned_media_path(path: str, version: str = "") -> str:
+    return f"{path}?v={urllib.parse.quote(version)}" if version else path
+
+
+def _product_public_media_path(product_id: int, media_index: int = 0, version: str = "") -> str:
+    return _versioned_media_path(f"/media/products/{product_id}/{media_index}", version)
+
+
+def _product_public_media_url(product_id: int, media_index: int = 0, version: str = "") -> str:
+    return _absolute_storefront_url(_product_public_media_path(product_id, media_index, version))
 
 
 def _product_primary_image_url(product: dict, *, absolute: bool = True) -> str:
@@ -5314,7 +5410,8 @@ def _product_primary_image_url(product: dict, *, absolute: bool = True) -> str:
         return ""
     for idx, media in enumerate(_collect_media_info(product)):
         if media.get("type") == "photo":
-            return _product_public_media_url(product_id, idx) if absolute else _product_public_media_path(product_id, idx)
+            version = str(media.get("version") or "")
+            return _product_public_media_url(product_id, idx, version) if absolute else _product_public_media_path(product_id, idx, version)
     return ""
 
 
@@ -5332,12 +5429,18 @@ def _product_card_preview_media(product: dict, *, absolute: bool = False) -> dic
     media_info = _collect_media_info(product)
     for idx, media in enumerate(media_info):
         if media.get("type") == "photo":
-            path = f"/api/catalog/{product_id}/media/{idx}"
+            path = _versioned_media_path(
+                f"/api/catalog/{product_id}/media/{idx}",
+                str(media.get("version") or ""),
+            )
             return {"type": "photo", "url": _absolute_storefront_url(path) if absolute else path}
 
     for idx, media in enumerate(media_info):
         if media.get("type") == "video":
-            path = f"/api/catalog/{product_id}/media/{idx}"
+            path = _versioned_media_path(
+                f"/api/catalog/{product_id}/media/{idx}",
+                str(media.get("version") or ""),
+            )
             return {"type": "video", "url": _absolute_storefront_url(path) if absolute else path}
 
     return {"type": "", "url": ""}
@@ -5354,8 +5457,8 @@ def _product_photo_image_urls(product: dict, *, absolute: bool = True, limit: in
         if media.get("type") != "photo":
             continue
         urls.append(
-            _product_public_media_url(product_id, idx)
-            if absolute else _product_public_media_path(product_id, idx)
+            _product_public_media_url(product_id, idx, str(media.get("version") or ""))
+            if absolute else _product_public_media_path(product_id, idx, str(media.get("version") or ""))
         )
         if len(urls) >= limit:
             break
@@ -5372,7 +5475,7 @@ def _product_video_urls(product: dict, *, absolute: bool = True, limit: int = 8)
     for idx, media in enumerate(_collect_media_info(product)):
         if media.get("type") != "video":
             continue
-        path = _product_public_media_path(product_id, idx)
+        path = _product_public_media_path(product_id, idx, str(media.get("version") or ""))
         urls.append((idx, _absolute_storefront_url(path) if absolute else path))
         if len(urls) >= limit:
             break
@@ -7387,8 +7490,15 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
         {
             "index": idx,
             "type": media.get("type") or "document",
-            "url": f"/api/catalog/{internal_product_id}/media/{idx}",
-            "seo_url": _product_public_media_path(public_product_id, idx) if media.get("type") == "photo" else "",
+            "url": _versioned_media_path(
+                f"/api/catalog/{internal_product_id}/media/{idx}",
+                str(media.get("version") or ""),
+            ),
+            "seo_url": _product_public_media_path(
+                public_product_id,
+                idx,
+                str(media.get("version") or ""),
+            ) if media.get("type") == "photo" else "",
             "label": f"{product_title} {_seo_ui(language)['media']} {idx + 1}",
         }
         for idx, media in enumerate(_collect_media_info(product))
@@ -8061,7 +8171,7 @@ def _collect_media_info(product: dict) -> List[dict]:
             return cached
 
     media_info: List[dict] = [
-        {"id": file_id, "type": file_type}
+        {"id": file_id, "type": file_type, "version": _media_version(file_id)}
         for file_id, file_type in collect_product_media(product)
     ]
 
@@ -8599,25 +8709,32 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
             )
             return _seo_media_fallback_response(request, "crawler_uncached", image_url=product_fallback_image)
 
+        public_media_cache_control = (
+            f"public, max-age={_VERSIONED_MEDIA_CACHE_SECONDS}, immutable"
+            if request.query_params.get("v")
+            else f"public, max-age={_SEO_PUBLIC_MEDIA_CACHE_SECONDS}"
+        )
         etag = _seo_etag_from_key(f"seo-media:{product_id}:{media_index}:{file_id}")
-        if _request_matches_etag(request, etag):
+        if not request.headers.get("range") and _request_matches_etag(request, etag):
             return Response(
                 status_code=status.HTTP_304_NOT_MODIFIED,
-                headers=_seo_headers(etag, _SEO_PUBLIC_MEDIA_CACHE_SECONDS),
+                headers={"Cache-Control": public_media_cache_control, "ETag": etag},
             )
         if request.method == "HEAD":
+            head_headers = _seo_headers(
+                etag,
+                _SEO_PUBLIC_MEDIA_CACHE_SECONDS,
+                extra={
+                    "Content-Type": "video/mp4" if media_kind == "video" else "image/jpeg",
+                    "X-Robots-Tag": "index, follow",
+                    "Accept-Ranges": "bytes" if media_kind == "video" else "none",
+                    "Vary": "Accept",
+                },
+            )
+            head_headers["Cache-Control"] = public_media_cache_control
             return Response(
                 status_code=status.HTTP_200_OK,
-                headers=_seo_headers(
-                    etag,
-                    _SEO_PUBLIC_MEDIA_CACHE_SECONDS,
-                    extra={
-                        "Content-Type": "video/mp4" if media_kind == "video" else "image/jpeg",
-                        "X-Robots-Tag": "index, follow",
-                        "Accept-Ranges": "bytes" if media_kind == "video" else "none",
-                        "Vary": "Accept",
-                    },
-                ),
+                headers=head_headers,
             )
 
         response = await stream_catalog_media(request, internal_product_id, media_index)
@@ -8630,7 +8747,7 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
             if fallback_index is not None and fallback_index != media_index:
                 fallback_response = await stream_catalog_media(request, internal_product_id, fallback_index)
                 if getattr(fallback_response, "status_code", 200) < 400:
-                    fallback_response.headers["Cache-Control"] = f"public, max-age={_SEO_PUBLIC_MEDIA_CACHE_SECONDS}"
+                    fallback_response.headers["Cache-Control"] = public_media_cache_control
                     fallback_response.headers["ETag"] = _seo_etag_from_key(f"seo-media:{product_id}:{fallback_index}")
                     fallback_response.headers["X-Robots-Tag"] = "index, follow"
                     fallback_response.headers["Vary"] = "Accept"
@@ -8641,7 +8758,7 @@ async def stream_public_product_media(request: Request, product_id: int, media_i
                 image_url=product_fallback_image,
             )
 
-        response.headers["Cache-Control"] = f"public, max-age={_SEO_PUBLIC_MEDIA_CACHE_SECONDS}"
+        response.headers["Cache-Control"] = public_media_cache_control
         response.headers["ETag"] = etag
         response.headers["X-Robots-Tag"] = "index, follow"
         response.headers["Vary"] = "Accept"
@@ -8708,6 +8825,25 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
     original_file_id = str(media_type_info.get("id") or "")
     file_id = original_file_id
     is_video = media_type_info.get('type') == 'video'
+    media_version = str(media_type_info.get("version") or _media_version(original_file_id))
+    requested_version = str(request.query_params.get("v") or "")
+    versioned_request = bool(media_version and requested_version == media_version)
+    media_etag = _seo_etag_from_key(f"catalog-media:{media_version}")
+    media_cache_scope = "private" if init_data or request.query_params.get("session") else "public"
+    media_cache_control = (
+        f"{media_cache_scope}, max-age={_VERSIONED_MEDIA_CACHE_SECONDS}, immutable"
+        if versioned_request
+        else f"{media_cache_scope}, max-age=3600"
+    )
+    if (
+        versioned_request
+        and not request.headers.get("range")
+        and _request_matches_etag(request, media_etag)
+    ):
+        return Response(
+            status_code=status.HTTP_304_NOT_MODIFIED,
+            headers={"Cache-Control": media_cache_control, "ETag": media_etag},
+        )
     recent_media_failure = await _get_recent_media_fetch_failure(product_id, media_index)
     if recent_media_failure:
         logger.info(
@@ -8718,6 +8854,14 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
             crawler_request,
             recent_media_failure,
         )
+        if recent_media_failure == "file_too_large":
+            if public_media_request and crawler_request:
+                return _seo_media_fallback_response(
+                    request,
+                    "file_too_large",
+                    image_url=_product_primary_image_url(product, absolute=True),
+                )
+            return _media_too_large_response()
         if public_media_request:
             if not crawler_request:
                 return _media_retry_response()
@@ -8991,15 +9135,13 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                         f"File too large for getFile API "
                         f"(product {product_id}, media {media_index})"
                     )
-                    return Response(
-                        content=json.dumps({
-                            "error": "file_too_large",
-                            "message": "File exceeds Telegram Bot API limit.",
-                            "can_download": False
-                        }),
-                        media_type="application/json",
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+                    await _remember_media_fetch_failure(
+                        product_id,
+                        media_index,
+                        "file_too_large",
+                        ttl_seconds=_MEDIA_DETERMINISTIC_FAILURE_COOLDOWN_SECONDS,
                     )
+                    return _media_too_large_response()
                 else:
                     # Re-raise other BadRequest errors
                     raise
@@ -9010,16 +9152,13 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                     "File too large for web streaming - product %s, media %s, size %s bytes",
                     product_id, media_index, file_size
                 )
-                return Response(
-                    content=json.dumps({
-                        "error": "file_too_large",
-                        "file_size": file_size,
-                        "message": "File is too large to stream. Please request it in the bot chat.",
-                        "can_download": False
-                    }),
-                    media_type="application/json",
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+                await _remember_media_fetch_failure(
+                    product_id,
+                    media_index,
+                    "file_too_large",
+                    ttl_seconds=_MEDIA_DETERMINISTIC_FAILURE_COOLDOWN_SECONDS,
                 )
+                return _media_too_large_response(file_size)
 
             # Download the file via Bot API to an app-owned bounded temp location.
             suffix = ".mp4" if is_video else Path(urllib.parse.urlparse(getattr(tg_file, "file_path", "") or "").path).suffix
@@ -9114,7 +9253,7 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
             # Cleanup partial temp file only when generation failed.
             if 'temp_input_path' in locals() and temp_input_path:
                 _cleanup_path(temp_input_path)
-            if "File is too big" not in str(e):
+            if "file is too big" not in str(e).lower():
                 await _remember_media_fetch_failure(product_id, media_index, str(e))
                 _log_media_fetch_failure(product_id, media_index, e)
                 raise HTTPException(
@@ -9122,8 +9261,13 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
                     detail="Media unavailable",
                     headers=_media_retry_headers(),
                 )
-            # If it's "File is too big", it should have been handled above
-            raise
+            await _remember_media_fetch_failure(
+                product_id,
+                media_index,
+                "file_too_large",
+                ttl_seconds=_MEDIA_DETERMINISTIC_FAILURE_COOLDOWN_SECONDS,
+            )
+            return _media_too_large_response()
         except Exception as e:
             await _remember_media_fetch_failure(product_id, media_index, str(e))
             _log_media_fetch_failure(product_id, media_index, e)
@@ -9165,6 +9309,8 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
             )
             if request.url.path.startswith("/api/catalog/"):
                 response.headers["X-Robots-Tag"] = "noindex, nofollow"
+            response.headers["Cache-Control"] = media_cache_control
+            response.headers["ETag"] = media_etag
             return response
         except (ValueError, IndexError) as e:
             logger.warning(f"Invalid range header: {range_header}, error: {e}")
@@ -9177,6 +9323,8 @@ async def stream_catalog_media(request: Request, product_id: int, media_index: i
     )
     if request.url.path.startswith("/api/catalog/"):
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
+    response.headers["Cache-Control"] = media_cache_control
+    response.headers["ETag"] = media_etag
     return response
 
 

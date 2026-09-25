@@ -3437,6 +3437,41 @@
         container.replaceChildren();
     }
 
+    let deferredVideoObserver = null;
+
+    function loadDeferredVideo(video) {
+        if (!video || video.dataset.mediaActivated === '1') return;
+        const source = video.dataset.mediaSrc || '';
+        if (!source) return;
+        video.dataset.mediaActivated = '1';
+        video.src = source;
+        try {
+            video.load();
+        } catch (err) {
+            // Setting src is sufficient on browsers that reject an explicit load().
+        }
+        if (video.autoplay) {
+            video.play().catch(() => {});
+        }
+    }
+
+    function scheduleVideoPreview(video) {
+        if (!('IntersectionObserver' in window)) {
+            loadDeferredVideo(video);
+            return;
+        }
+        if (!deferredVideoObserver) {
+            deferredVideoObserver = new IntersectionObserver((entries, observer) => {
+                entries.forEach((entry) => {
+                    if (!entry.isIntersecting) return;
+                    observer.unobserve(entry.target);
+                    loadDeferredVideo(entry.target);
+                });
+            }, { rootMargin: '320px 0px', threshold: 0.01 });
+        }
+        deferredVideoObserver.observe(video);
+    }
+
     function createVideoPreview(mediaUrl, fallbackContainer, cacheKey = '', fallbackImageUrl = '') {
         const cachedPreview = getVideoPreviewFrame(cacheKey);
         if (cachedPreview) {
@@ -3444,14 +3479,13 @@
         }
 
         const vid = document.createElement('video');
-        vid.src = mediaUrl;
         vid.dataset.mediaSrc = mediaUrl;
         vid.crossOrigin = 'anonymous';
         vid.muted = true;
         vid.playsInline = true;
         vid.setAttribute('playsinline', '');
         vid.autoplay = true;
-        vid.preload = 'auto';
+        vid.preload = 'metadata';
         vid.className = 'video-preview';
         if (fallbackImageUrl) {
             vid.poster = fallbackImageUrl;
@@ -3549,6 +3583,8 @@
                 markLoaded();
             }
         }, 2500);
+
+        scheduleVideoPreview(vid);
 
         return vid;
     }
@@ -3683,9 +3719,11 @@
     function buildMediaUrl(item, mediaIndex) {
         if (!item.media_count || !item.id) return null;
         const baseUrl = `/api/catalog/${item.id}/media/${mediaIndex}`;
-        if (!state.webappSessionToken) return baseUrl;
-        const joiner = baseUrl.includes('?') ? '&' : '?';
-        return `${baseUrl}${joiner}session=${encodeURIComponent(state.webappSessionToken)}`;
+        const params = new URLSearchParams();
+        const mediaEntry = Array.isArray(item.media_info) ? item.media_info[mediaIndex] : null;
+        if (mediaEntry && mediaEntry.version) params.set('v', mediaEntry.version);
+        const query = params.toString();
+        return query ? `${baseUrl}?${query}` : baseUrl;
     }
 
     function formatDate(dateString) {
@@ -3904,11 +3942,15 @@
                             if (renderToken !== mediaRenderToken) return;
                             if (response.status === 413 && response.headers.get('content-type')?.includes('application/json')) {
                                 const errorData = await response.json();
+                                const fileSize = Number(errorData.file_size);
+                                const sizeText = Number.isFinite(fileSize) && fileSize > 0
+                                    ? `<div class="media-error-message">Size: ${(fileSize / (1024 * 1024)).toFixed(1)} MB</div>`
+                                    : '';
                                 mediaViewer.innerHTML = `
                                     <div class="media-error">
                                         <div class="media-error-icon">📦</div>
                                         <div class="media-error-title">File Too Large for Web Playback</div>
-                                        <div class="media-error-message">Size: ${(errorData.file_size / (1024 * 1024)).toFixed(1)} MB</div>
+                                        ${sizeText}
                                         <div class="media-error-hint">
                                             ${errorData.message || "This video is too large to stream in the browser."}
                                         </div>

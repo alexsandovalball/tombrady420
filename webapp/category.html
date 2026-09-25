@@ -46,6 +46,7 @@
     <link rel="manifest" href="/assets/manifest.json?v=20260805-football-emoji-canonical-v2">
 
     <script src="/assets/telegram-miniapp-bridge.js?v=20260717-botfather-bridge-v1"></script>
+    <script src="/assets/media-previews.js?v=20260925-bandwidth-v1" defer></script>
     <script>
         window.retryMediaElement = function (element, options) {
             if (!element) return;
@@ -198,9 +199,9 @@
                 <li>
                     <a href="{{ p.url }}">
                         {% if p.media_type == 'video' and p.media_url %}
-                        <video class="product-thumb seo-card-video" muted playsinline preload="metadata" src="{{ p.media_url }}#t=0.2" aria-label="{{ p.title }}"></video>
+                        <video class="product-thumb seo-card-video" muted playsinline preload="metadata" data-src="{{ p.media_url }}#t=0.2" aria-label="{{ p.title }}"></video>
                         {% elif p.media_url %}
-                        <img class="product-thumb" src="{{ p.media_url }}" data-media-src="{{ p.media_url }}" alt="{{ p.title }}" loading="eager" fetchpriority="auto" decoding="async" onerror="retryProductPreview(this);">
+                        <img class="product-thumb" src="{{ p.media_url }}" data-media-src="{{ p.media_url }}" alt="{{ p.title }}" loading="{% if loop.index <= 6 %}eager{% else %}lazy{% endif %}" fetchpriority="{% if loop.index <= 2 %}high{% else %}auto{% endif %}" decoding="async" onerror="retryProductPreview(this);">
                         {% else %}
                         <span class="product-thumb placeholder" aria-hidden="true"></span>
                         {% endif %}
@@ -258,22 +259,5 @@
             <a href="{{ localized_home_url }}">&larr; {{ ui.back_home }}</a>
         </footer>
     </div>
-    <script>
-        (function () {
-            var videos = Array.from(document.querySelectorAll('video.seo-card-video'));
-            videos.forEach(function (video) {
-                video.addEventListener('loadedmetadata', function () {
-                    try {
-                        if (Number.isFinite(video.duration) && video.duration > 0.4) {
-                            video.currentTime = Math.min(0.4, video.duration / 3);
-                        }
-                    } catch (err) {}
-                }, { once: true });
-                video.addEventListener('loadeddata', function () {
-                    video.classList.add('loaded');
-                }, { once: true });
-            });
-        })();
-    </script>
 </body>
 </html>

@@ -40,6 +40,7 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260805-football-emoji-canonical-v2">
     <link rel="manifest" href="/assets/manifest.json?v=20260805-football-emoji-canonical-v2">
     <script src="/assets/telegram-miniapp-bridge.js?v=20260717-botfather-bridge-v1"></script>
+    <script src="/assets/media-previews.js?v=20260925-bandwidth-v1" defer></script>
     <link rel="stylesheet" href="/assets/style.css?v=20260805-admin-monitor-v2">
     <style>
         html { background: #ffffff; }
@@ -337,7 +338,7 @@
                 <li class="related-card">
                     <a href="{{ item.url }}">
                         {% if item.media_type == 'video' and item.media_url %}
-                        <video class="related-thumb related-thumb-video" muted playsinline preload="metadata" src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
+                        <video class="related-thumb related-thumb-video seo-card-video" muted playsinline preload="metadata" data-src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
                         {% elif item.media_url %}
                         <img class="related-thumb" src="{{ item.media_url }}" alt="{{ item.title }}" loading="lazy" decoding="async" data-fallback-src="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2">
                         {% else %}

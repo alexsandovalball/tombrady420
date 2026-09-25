@@ -567,21 +567,9 @@ async def _get_active_bot_user_counts():
     contain historical users and identity records from switched/deleted bots,
     but those must not make old bots reappear in admin menus.
     """
-    from webhook_server import get_bot_usernames
+    from webhook_server import get_active_runtime_bot_entries
 
-    active_bot_entries = []
-    seen = set()
-    for bot_index, bot_username in enumerate(get_bot_usernames()):
-        if not bot_username:
-            continue
-        normalized = str(bot_username).lower()
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        active_bot_entries.append({
-            "index": bot_index,
-            "username": bot_username,
-        })
+    active_bot_entries = await get_active_runtime_bot_entries(force_health=True)
 
     active_bots = [entry["username"] for entry in active_bot_entries]
     logger.info(

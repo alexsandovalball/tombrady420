@@ -24,6 +24,7 @@
     <link rel="preconnect" href="https://telegram.org" crossorigin>
     <link rel="dns-prefetch" href="https://telegram.org">
     <script src="/assets/telegram-miniapp-bridge.js?v=20260717-botfather-bridge-v1"></script>
+    <script src="/assets/media-previews.js?v=20260925-bandwidth-v1" defer></script>
     <script>
         (function () {
             var isTelegramWebApp = false;
@@ -126,11 +127,11 @@
                 {% for item in seo_recent_products %}
                 <li><a href="{{ item.url }}">
                     {% if item.media_type == 'video' and item.media_url %}
-                    <video class="seo-card-video" muted playsinline preload="metadata" src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
+                    <video class="seo-card-video" muted playsinline preload="metadata" data-src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
                     {% elif item.media_url %}
-                    <img src="{{ item.media_url }}" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async" data-fallback-src="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2">
+                    <img src="{{ item.media_url }}" alt="{{ item.title }}" loading="{% if loop.index <= 6 %}eager{% else %}lazy{% endif %}" fetchpriority="{% if loop.index <= 2 %}high{% else %}auto{% endif %}" decoding="async" data-fallback-src="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2">
                     {% else %}
-                    <img src="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2" alt="{{ item.title }}" loading="eager" fetchpriority="high" decoding="async">
+                    <img src="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2" alt="{{ item.title }}" loading="{% if loop.index <= 6 %}eager{% else %}lazy{% endif %}" fetchpriority="{% if loop.index <= 2 %}high{% else %}auto{% endif %}" decoding="async">
                     {% endif %}
                     <span>{{ item.title }}</span>
                     {% if item.stock_status == 'out_of_stock' %}<span class="stock-badge">Sold out</span>{% endif %}
@@ -223,7 +224,8 @@
 
                 if (photoIndex >= 0) {
                     var image = document.createElement('img');
-                    image.src = '/media/products/' + encodeURIComponent(item.id) + '/' + photoIndex;
+                    var photoVersion = media[photoIndex] && media[photoIndex].version ? '?v=' + encodeURIComponent(media[photoIndex].version) : '';
+                    image.src = '/media/products/' + encodeURIComponent(item.id) + '/' + photoIndex + photoVersion;
                     image.dataset.mediaSrc = image.src;
                     image.alt = String(item.caption || '').split('\n')[0] || 'Product';
                     image.loading = 'lazy';
@@ -241,7 +243,8 @@
                 video.muted = true;
                 video.playsInline = true;
                 video.preload = 'metadata';
-                video.src = '/api/catalog/' + encodeURIComponent(item.id) + '/media/' + videoIndex + '#t=0.2';
+                var videoVersion = media[videoIndex] && media[videoIndex].version ? '?v=' + encodeURIComponent(media[videoIndex].version) : '';
+                video.dataset.src = '/api/catalog/' + encodeURIComponent(item.id) + '/media/' + videoIndex + videoVersion + '#t=0.2';
                 video.setAttribute('aria-label', String(item.caption || '').split('\n')[0] || 'Product');
                 return video;
             }
@@ -322,26 +325,6 @@
                     runSearch(initialQuery);
                 }
             }
-        })();
-
-        (function () {
-            function prepareVideo(video) {
-                if (!video || video.dataset.previewReady === '1') return;
-                video.dataset.previewReady = '1';
-                video.addEventListener('loadedmetadata', function () {
-                    try {
-                        if (Number.isFinite(video.duration) && video.duration > 0.4) {
-                            video.currentTime = Math.min(0.4, video.duration / 3);
-                        }
-                    } catch (err) {}
-                }, { once: true });
-                video.addEventListener('loadeddata', function () {
-                    video.classList.add('loaded');
-                }, { once: true });
-            }
-
-            window.prepareSeoCardVideo = prepareVideo;
-            document.querySelectorAll('video.seo-card-video').forEach(prepareVideo);
         })();
 
         (function () {
