@@ -573,6 +573,13 @@
                 var searchConsoleSetup = seo.search_console_setup || {};
                 var googleSitemap = seo.search_console_sitemap || {};
                 var seoRuntime = seo.runtime_status || {};
+                var searchConsoleInspectionDetails = [];
+                try {
+                    var inspectionParsed = JSON.parse(seoRuntime.search_console_inspection_last_details || '[]');
+                    searchConsoleInspectionDetails = Array.isArray(inspectionParsed) ? inspectionParsed : [];
+                } catch (_error) {
+                    searchConsoleInspectionDetails = [];
+                }
                 var botHealthSummary = data.bot_health_summary || {};
                 var metrics = data.metrics && data.metrics.endpoints ? data.metrics.endpoints : {};
                 var runtimeBots = Array.isArray(data.runtime_bots) ? data.runtime_bots : [];
@@ -620,6 +627,7 @@
                 appendMetric(grid, 'Mapping changes 24h / 7d', formatCount(seo.mappings_updated_24h) + ' / ' + formatCount(seo.mappings_updated_7d));
                 appendMetric(grid, 'SEO workers', (seoRuntime.seo_auto_learn_last_status || 'pending') + ' · trends ' + (seoRuntime.seo_trends_last_status || 'pending') + ' · Google ' + (searchConsoleSetup.configured ? (seoRuntime.search_console_import_last_status || 'configured') : 'not connected'));
                 appendMetric(grid, 'Indexing health', 'Google ' + (googleSitemap.status || 'never') + ' · IndexNow ' + formatCount(indexnow.pending) + ' pending / ' + formatCount(indexnow.failed) + ' failed');
+                appendMetric(grid, 'Google URL checks', formatCount(seoRuntime.search_console_inspection_last_indexed) + '/' + formatCount(seoRuntime.search_console_inspection_last_inspected) + ' indexed · ' + formatCount(seoRuntime.search_console_inspection_last_issues) + ' issues · ' + formatCount(seoRuntime.search_console_inspection_last_canonical_mismatches) + ' canonical');
                 if (Number(data.webhook_401_total || 0) > 0) {
                     appendMetric(grid, 'Webhook 401 total', formatCount(data.webhook_401_total));
                 }
@@ -714,6 +722,14 @@
                     return String(item.query || 'query') + ': ' + formatCount(item.impressions) + ' impressions, ' + formatCount(item.clicks) + ' clicks, CTR ' + Math.round(ctr * 1000) / 10 + '%, avg pos ' + (item.avg_position || '-') + ' · ' + String(item.page || '/');
                 }, 10);
 
+                appendTextDetails(panel, 'admin-google-url-inspection', 'Google URL Inspection', 'Daily sample of what Google currently reports for important catalog URLs.', searchConsoleInspectionDetails, function (item) {
+                    var status = item.error || item.coverage || item.verdict || 'unknown';
+                    var flags = [];
+                    if (item.fetch && item.fetch !== 'SUCCESSFUL') flags.push('fetch ' + item.fetch);
+                    if (item.canonical_mismatch) flags.push('canonical mismatch');
+                    return String(item.url || 'URL') + ': ' + String(status) + (flags.length ? ' · ' + flags.join(' · ') : '');
+                }, 8);
+
                 appendDetailsList(
                     panel,
                     'admin-seo-mapping-changes',
@@ -762,7 +778,7 @@
                 appendDetailsList(
                     panel,
                     'admin-seo-worker-activity',
-                    'SEO Worker Activity (3)',
+                    'SEO Worker Activity (4)',
                     'Latest completed background runs and the number of changes each one made.',
                     [
                         {
@@ -785,6 +801,14 @@
                             changed: seoRuntime.search_console_import_last_signals,
                             at: seoRuntime.search_console_import_last_attempt_at,
                             extra: formatCount(seoRuntime.search_console_import_last_rows) + ' rows, ' + formatCount(seoRuntime.search_console_import_last_aggregates) + ' aggregates'
+                        },
+                        {
+                            name: 'URL Inspection',
+                            status: seoRuntime.search_console_inspection_last_status,
+                            changed: seoRuntime.search_console_inspection_last_issues,
+                            at: seoRuntime.search_console_inspection_last_attempt_at,
+                            extra: formatCount(seoRuntime.search_console_inspection_last_indexed) + '/' + formatCount(seoRuntime.search_console_inspection_last_inspected) + ' indexed · ' + formatCount(seoRuntime.search_console_inspection_last_canonical_mismatches) + ' canonical, ' + formatCount(seoRuntime.search_console_inspection_last_soft_404s) + ' soft 404, ' + formatCount(seoRuntime.search_console_inspection_last_server_errors) + ' server, ' + formatCount(seoRuntime.search_console_inspection_last_blocked) + ' blocked',
+                            error: seoRuntime.search_console_inspection_last_error
                         }
                     ],
                     function (item) {
@@ -795,7 +819,7 @@
 
                         var workerMeta = document.createElement('span');
                         workerMeta.className = 'admin-page-meta';
-                        workerMeta.textContent = item.extra + ' · last ' + String(item.at || '-');
+                        workerMeta.textContent = item.extra + ' · last ' + String(item.at || '-') + (item.error ? ' · error ' + String(item.error).slice(0, 180) : '');
                         li.appendChild(workerMeta);
                         return li;
                     }

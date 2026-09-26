@@ -59,7 +59,7 @@ class ConfigClass:
         self.SEARCH_CONSOLE_OAUTH_CLIENT_FILE: Optional[str] = None
         self.SEARCH_CONSOLE_OAUTH_TOKEN_JSON: Optional[str] = None
         self.SEARCH_CONSOLE_OAUTH_TOKEN_FILE: Optional[str] = None
-        self.SEARCH_CONSOLE_LOOKBACK_DAYS: int = 30
+        self.SEARCH_CONSOLE_LOOKBACK_DAYS: int = 90
         self.SEARCH_CONSOLE_ROW_LIMIT: int = 5000
         self.SEARCH_CONSOLE_SITEMAP_SUBMIT_ENABLED: bool = False
         self.SEARCH_CONSOLE_SITEMAP_URL: Optional[str] = None
@@ -259,7 +259,7 @@ class ConfigClass:
         self.SEARCH_CONSOLE_SITE_URL = config('SEARCH_CONSOLE_SITE_URL', default=None)
         self.SEARCH_CONSOLE_LOOKBACK_DAYS = max(
             1,
-            min(30, config('SEARCH_CONSOLE_LOOKBACK_DAYS', default=30, cast=int)),
+            min(90, config('SEARCH_CONSOLE_LOOKBACK_DAYS', default=90, cast=int)),
         )
         self.SEARCH_CONSOLE_ROW_LIMIT = max(
             10,

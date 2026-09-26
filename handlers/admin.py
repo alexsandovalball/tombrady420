@@ -328,6 +328,16 @@ def _format_search_console_status(snapshot: dict) -> list[str]:
     import_aggregates = runtime.get("search_console_import_last_aggregates", 0)
     import_mismatches = runtime.get("search_console_import_last_page_mismatches", 0)
     import_error = runtime.get("search_console_import_last_error") or ""
+    inspection_status = runtime.get("search_console_inspection_last_status") or "pending"
+    inspection_at = runtime.get("search_console_inspection_last_success_at") or runtime.get("search_console_inspection_last_attempt_at") or "pending"
+    inspection_inspected = runtime.get("search_console_inspection_last_inspected", 0)
+    inspection_indexed = runtime.get("search_console_inspection_last_indexed", 0)
+    inspection_issues = runtime.get("search_console_inspection_last_issues", 0)
+    inspection_canonicals = runtime.get("search_console_inspection_last_canonical_mismatches", 0)
+    inspection_soft_404s = runtime.get("search_console_inspection_last_soft_404s", 0)
+    inspection_server_errors = runtime.get("search_console_inspection_last_server_errors", 0)
+    inspection_blocked = runtime.get("search_console_inspection_last_blocked", 0)
+    inspection_error = runtime.get("search_console_inspection_last_error") or ""
 
     return [
         "",
@@ -339,6 +349,11 @@ def _format_search_console_status(snapshot: dict) -> list[str]:
         f"• API requests/aggregates: {_fmt_count(import_requests)}/{_fmt_count(import_aggregates)}",
         f"• Image/video rows: {_fmt_count(import_media_rows)}",
         f"• Page mismatches rejected: {_fmt_count(import_mismatches)}",
+        f"• Daily URL inspection: {inspection_status}",
+        f"• Last URL inspection: {inspection_at}",
+        f"• Sample indexed/checked: {_fmt_count(inspection_indexed)}/{_fmt_count(inspection_inspected)}",
+        f"• Sample issues: {_fmt_count(inspection_issues)}",
+        f"• Canonical/soft-404/5xx/blocked: {_fmt_count(inspection_canonicals)}/{_fmt_count(inspection_soft_404s)}/{_fmt_count(inspection_server_errors)}/{_fmt_count(inspection_blocked)}",
         f"• Latest Google data date: {latest_source_date}",
         f"• Last saved import: {latest_imported_at}",
         f"• Sitemap submit: {sitemap_status}",
@@ -348,6 +363,7 @@ def _format_search_console_status(snapshot: dict) -> list[str]:
         f"• Note: {note}",
         *( [f"• Sitemap note: {sitemap_error[:120]}"] if sitemap_error else [] ),
         *( [f"• Import note: {import_error[:120]}"] if import_error else [] ),
+        *( [f"• Inspection note: {inspection_error[:120]}"] if inspection_error else [] ),
         "",
         "Auto-Learning Settings",
         f"• Runs every: {_fmt_count(interval_minutes)} min",

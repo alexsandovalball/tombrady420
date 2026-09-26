@@ -6022,6 +6022,19 @@ class Database:
                 "search_console_import_last_aggregates",
                 "search_console_import_last_page_mismatches",
                 "search_console_import_last_error",
+                "search_console_inspection_last_attempt_at",
+                "search_console_inspection_last_success_at",
+                "search_console_inspection_last_status",
+                "search_console_inspection_last_inspected",
+                "search_console_inspection_last_indexed",
+                "search_console_inspection_last_issues",
+                "search_console_inspection_last_canonical_mismatches",
+                "search_console_inspection_last_soft_404s",
+                "search_console_inspection_last_server_errors",
+                "search_console_inspection_last_blocked",
+                "search_console_inspection_last_property",
+                "search_console_inspection_last_error",
+                "search_console_inspection_last_details",
             ]
             runtime_placeholders = ",".join("?" * len(runtime_status_keys))
             runtime_rows = await rows(

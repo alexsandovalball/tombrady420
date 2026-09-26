@@ -543,6 +543,179 @@ async def fetch_search_console_rows(**kwargs) -> list[dict[str, Any]]:
     return list((await fetch_search_console_data(**kwargs)).get("rows") or [])
 
 
+def _inspect_search_console_urls_sync(
+    *,
+    site_url: str,
+    urls: list[str],
+    service_account_json: Optional[str],
+    service_account_file: Optional[str],
+    oauth_client_json: Optional[str],
+    oauth_client_file: Optional[str],
+    oauth_token_json: Optional[str],
+    oauth_token_file: Optional[str],
+) -> dict[str, Any]:
+    """Inspect a small URL sample through the official URL Inspection API."""
+    try:
+        import requests
+    except ImportError as exc:  # pragma: no cover - depends on Render install state
+        return {"status": "dependency_error", "results": [], "error": str(exc)}
+
+    credentials, auth_source = _load_search_console_credentials(
+        service_account_json=service_account_json,
+        service_account_file=service_account_file,
+        oauth_client_json=oauth_client_json,
+        oauth_client_file=oauth_client_file,
+        oauth_token_json=oauth_token_json,
+        oauth_token_file=oauth_token_file,
+        scopes=[SEARCH_CONSOLE_READ_SCOPE],
+    )
+    if credentials is None:
+        return {
+            "status": "auth_error",
+            "results": [],
+            "auth_source": auth_source,
+            "error": "credentials unavailable or refresh failed",
+        }
+
+    clean_urls = list(dict.fromkeys(
+        str(url or "").strip()
+        for url in urls
+        if str(url or "").strip().startswith(("https://", "http://"))
+    ))[:10]
+    if not clean_urls:
+        return {"status": "ok_empty", "results": [], "auth_source": auth_source, "requests": 0}
+
+    endpoint = "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect"
+    total_requests = 0
+    last_error = ""
+    last_status = None
+    for candidate_site_url in _search_console_site_candidates(site_url):
+        results: list[dict[str, Any]] = []
+        property_denied = False
+        for inspection_url in clean_urls:
+            try:
+                response = requests.post(
+                    endpoint,
+                    headers={
+                        "Authorization": f"Bearer {credentials.token}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "inspectionUrl": inspection_url,
+                        "siteUrl": candidate_site_url,
+                        "languageCode": "en-US",
+                    },
+                    timeout=20,
+                )
+            except requests.RequestException as exc:
+                last_error = str(exc)
+                continue
+
+            total_requests += 1
+            last_status = int(response.status_code or 0)
+            if response.status_code in {401, 403, 404} and not results:
+                last_error = response.text[:500] or f"HTTP {response.status_code}"
+                property_denied = True
+                break
+            if response.status_code >= 400:
+                results.append({
+                    "url": inspection_url,
+                    "error": response.text[:300] or f"HTTP {response.status_code}",
+                    "http_status": int(response.status_code or 0),
+                })
+                continue
+
+            try:
+                payload = response.json()
+            except (TypeError, ValueError) as exc:
+                results.append({"url": inspection_url, "error": f"invalid JSON response: {exc}"})
+                continue
+            inspection = payload.get("inspectionResult") or {}
+            index_status = inspection.get("indexStatusResult") or {}
+            rich_results = inspection.get("richResultsResult") or {}
+            results.append({
+                "url": inspection_url,
+                "verdict": str(index_status.get("verdict") or ""),
+                "coverage_state": str(index_status.get("coverageState") or ""),
+                "robots_txt_state": str(index_status.get("robotsTxtState") or ""),
+                "indexing_state": str(index_status.get("indexingState") or ""),
+                "page_fetch_state": str(index_status.get("pageFetchState") or ""),
+                "google_canonical": str(index_status.get("googleCanonical") or ""),
+                "user_canonical": str(index_status.get("userCanonical") or ""),
+                "last_crawl_time": str(index_status.get("lastCrawlTime") or ""),
+                "rich_results_verdict": str(rich_results.get("verdict") or ""),
+                "rich_results_issues": sum(
+                    len(item.get("issues") or [])
+                    + sum(
+                        len(instance.get("issues") or [])
+                        for instance in item.get("items") or []
+                        if isinstance(instance, dict)
+                    )
+                    for item in rich_results.get("detectedItems") or []
+                    if isinstance(item, dict)
+                ),
+            })
+
+        if property_denied:
+            continue
+        return {
+            "status": "ok" if results else "ok_empty",
+            "results": results,
+            "property_url": candidate_site_url,
+            "auth_source": auth_source,
+            "requests": total_requests,
+            "error": "",
+        }
+
+    return {
+        "status": "api_error",
+        "results": [],
+        "property_url": "",
+        "auth_source": auth_source,
+        "requests": total_requests,
+        "http_status": last_status,
+        "error": last_error or "all Search Console properties failed",
+    }
+
+
+async def inspect_search_console_urls(
+    *,
+    enabled: bool,
+    site_url: Optional[str],
+    urls: list[str],
+    service_account_json: Optional[str],
+    service_account_file: Optional[str],
+    oauth_client_json: Optional[str] = None,
+    oauth_client_file: Optional[str] = None,
+    oauth_token_json: Optional[str] = None,
+    oauth_token_file: Optional[str] = None,
+) -> dict[str, Any]:
+    """Return indexed-version health for at most ten representative URLs."""
+    if not is_search_console_configured(
+        enabled=enabled,
+        site_url=site_url,
+        service_account_json=service_account_json,
+        service_account_file=service_account_file,
+        oauth_client_json=oauth_client_json,
+        oauth_client_file=oauth_client_file,
+        oauth_token_json=oauth_token_json,
+        oauth_token_file=oauth_token_file,
+    ):
+        return {"status": "not_configured", "results": [], "error": "not configured"}
+
+    return await asyncio.to_thread(
+        _inspect_search_console_urls_sync,
+        site_url=str(site_url),
+        urls=urls,
+        service_account_json=service_account_json,
+        service_account_file=service_account_file,
+        oauth_client_json=oauth_client_json,
+        oauth_client_file=oauth_client_file,
+        oauth_token_json=oauth_token_json,
+        oauth_token_file=oauth_token_file,
+    )
+
+
 def submit_sitemap_sync(
     *,
     site_url: str,

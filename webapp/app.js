@@ -1760,6 +1760,13 @@
         const googleSitemap = seo.search_console_sitemap || {};
         const searchConsoleSetup = seo.search_console_setup || {};
         const seoRuntime = seo.runtime_status || {};
+        let searchConsoleInspectionDetails = [];
+        try {
+            const parsed = JSON.parse(seoRuntime.search_console_inspection_last_details || '[]');
+            searchConsoleInspectionDetails = Array.isArray(parsed) ? parsed : [];
+        } catch (_error) {
+            searchConsoleInspectionDetails = [];
+        }
         const metrics = data.metrics?.endpoints || {};
         const process = data.process || {};
         const mediaRuntime = data.media_runtime || {};
@@ -1814,6 +1821,7 @@
         appendAdminMetric(grid, 'Mapping changes 24h / 7d', `${formatAdminCount(seo.mappings_updated_24h)} / ${formatAdminCount(seo.mappings_updated_7d)}`);
         appendAdminMetric(grid, 'SEO workers', `${seoRuntime.seo_auto_learn_last_status || 'pending'} · trends ${seoRuntime.seo_trends_last_status || 'pending'} · Google ${searchConsoleSetup.configured ? (seoRuntime.search_console_import_last_status || 'configured') : 'not connected'}`);
         appendAdminMetric(grid, 'Indexing health', `Google ${googleSitemap.status || 'never'} · IndexNow ${formatAdminCount(indexnow.pending)} pending / ${formatAdminCount(indexnow.failed)} failed`);
+        appendAdminMetric(grid, 'Google URL checks', `${formatAdminCount(seoRuntime.search_console_inspection_last_indexed)}/${formatAdminCount(seoRuntime.search_console_inspection_last_inspected)} indexed · ${formatAdminCount(seoRuntime.search_console_inspection_last_issues)} issues · ${formatAdminCount(seoRuntime.search_console_inspection_last_canonical_mismatches)} canonical`);
         if (Number(data.webhook_401_total || 0) > 0) {
             appendAdminMetric(grid, 'Webhook 401 total', formatAdminCount(data.webhook_401_total));
         }
@@ -1905,6 +1913,13 @@
                 return `${item.status}: ${submitted}, ${target}${note}`;
             });
         }
+        appendAdminTextDetails(panel, 'admin-google-url-inspection', 'Google URL Inspection', 'Daily sample of what Google currently reports for important catalog URLs.', searchConsoleInspectionDetails, item => {
+            const status = item.error || item.coverage || item.verdict || 'unknown';
+            const flags = [];
+            if (item.fetch && item.fetch !== 'SUCCESSFUL') flags.push(`fetch ${item.fetch}`);
+            if (item.canonical_mismatch) flags.push('canonical mismatch');
+            return `${item.url || 'URL'}: ${status}${flags.length ? ` · ${flags.join(' · ')}` : ''}`;
+        }, 8);
         appendAdminTextDetails(panel, 'admin-top-locations', 'Top Visitor Locations', 'Human visitors only; crawler traffic is excluded.', data.top_visitor_locations || [], item => {
             const place = [item.city, item.region, item.country].filter(part => part && part !== 'Unknown').join(', ') || 'Unknown';
             return `${place}: ${formatAdminCount(item.visitors)} visitors, ${formatAdminCount(item.visits)} visits`;
@@ -1988,6 +2003,14 @@
                     at: seoRuntime.search_console_import_last_attempt_at,
                     extra: `${formatAdminCount(seoRuntime.search_console_import_last_rows)} rows, ${formatAdminCount(seoRuntime.search_console_import_last_media_rows)} media rows, ${formatAdminCount(seoRuntime.search_console_import_last_aggregates)} aggregates · ${seoRuntime.search_console_import_last_auth_source || 'no auth source'}`,
                     error: seoRuntime.search_console_import_last_error
+                },
+                {
+                    name: 'URL Inspection',
+                    status: seoRuntime.search_console_inspection_last_status,
+                    changed: seoRuntime.search_console_inspection_last_issues,
+                    at: seoRuntime.search_console_inspection_last_attempt_at,
+                    extra: `${formatAdminCount(seoRuntime.search_console_inspection_last_indexed)}/${formatAdminCount(seoRuntime.search_console_inspection_last_inspected)} indexed · ${formatAdminCount(seoRuntime.search_console_inspection_last_canonical_mismatches)} canonical, ${formatAdminCount(seoRuntime.search_console_inspection_last_soft_404s)} soft 404, ${formatAdminCount(seoRuntime.search_console_inspection_last_server_errors)} server, ${formatAdminCount(seoRuntime.search_console_inspection_last_blocked)} blocked`,
+                    error: seoRuntime.search_console_inspection_last_error
                 }
             ],
             item => {
