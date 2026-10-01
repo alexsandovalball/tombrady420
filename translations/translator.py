@@ -156,6 +156,37 @@ class TranslationService:
                 await asyncio.sleep(delay)
             self._next_request_at = loop.time() + self._min_request_interval
             return True
+
+    async def get_cached_translation(
+        self,
+        text: str,
+        target_lang: str,
+        source_lang: str = "en",
+    ) -> Optional[str]:
+        """Return a translation from memory or SQLite without network access."""
+        normalized_target = normalize_language_code(target_lang)
+        normalized_source = normalize_language_code(source_lang)
+        if normalized_target == normalized_source:
+            return text
+
+        cache_key = f"{normalized_source}:{normalized_target}:{text}"
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        if self._db:
+            try:
+                db_cached = await self._db.get_cached_translation(
+                    text,
+                    normalized_source,
+                    normalized_target,
+                )
+                if db_cached:
+                    self._cache.set(cache_key, db_cached)
+                    return db_cached
+            except Exception as exc:
+                logger.error("Error checking database translation cache: %s", exc)
+        return None
     
     async def translate(self, text: str, target_lang: str, source_lang: str = "en") -> str:
         """
@@ -182,22 +213,11 @@ class TranslationService:
             logger.warning(f"Invalid language code: {target_lang}, using default")
             return text
         
-        # Check in-memory cache first
-        cache_key = f"{normalized_source}:{normalized_target}:{text}"
-        cached = self._cache.get(cache_key)
+        cached = await self.get_cached_translation(text, normalized_target, normalized_source)
         if cached is not None:
             return cached
-        
-        # Check database cache if available
-        if self._db:
-            try:
-                db_cached = await self._db.get_cached_translation(text, normalized_source, normalized_target)
-                if db_cached:
-                    # Also update in-memory cache
-                    self._cache.set(cache_key, db_cached)
-                    return db_cached
-            except Exception as e:
-                logger.error(f"Error checking database translation cache: {e}")
+
+        cache_key = f"{normalized_source}:{normalized_target}:{text}"
         
         if not await self._reserve_request_slot():
             logger.debug(

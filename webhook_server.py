@@ -5243,6 +5243,24 @@ async def _translate_seo_lines(lines: Iterable[str], language: str) -> List[str]
     return normalized_values
 
 
+async def _cached_seo_lines(lines: Iterable[str], language: str) -> List[str]:
+    """Read persisted SEO translations without triggering provider traffic."""
+    values = [str(line) for line in lines if str(line or "").strip()]
+    language = _normalize_seo_language(language)
+    if language == "en" or not values:
+        return values
+
+    resolved: List[str] = []
+    for value in values:
+        cached = await translation_service.get_cached_translation(
+            value,
+            language,
+            source_lang="en",
+        )
+        resolved.append(cached or value)
+    return resolved
+
+
 def _configured_bot_username(bot_index: int) -> str:
     """Return the current runtime username for a configured bot slot."""
     apps = _bot_applications or getattr(app.state, "bot_apps", []) or []
@@ -5358,8 +5376,16 @@ def _product_related_search_terms(
 ) -> list[str]:
     """Build stable, product-specific related searches without title spam."""
     language = _normalize_seo_language(language)
-    category_display = get_category_display_name(category, language) if category else ""
-    subcategory_display = get_subcategory_display_name(subcategory, language) if subcategory else ""
+    category_display = (
+        _clean_seo_title_part(get_category_display_name(category, language))
+        if category
+        else ""
+    )
+    subcategory_display = (
+        _clean_seo_title_part(get_subcategory_display_name(subcategory, language))
+        if subcategory
+        else ""
+    )
 
     title_token_set = _seo_phrase_tokens(title)
     seo_pool = _dedupe_seo_phrases(
@@ -5481,8 +5507,16 @@ def _build_product_seo_description(title: str, desc: str, category: str = "", su
     """Create a concise, product-specific meta description without keyword stuffing."""
     parts: list[str] = []
     language = _normalize_seo_language(language)
-    category_display = get_category_display_name(category, language) if category else ""
-    subcategory_display = get_subcategory_display_name(subcategory, language) if subcategory else ""
+    category_display = (
+        _clean_seo_title_part(get_category_display_name(category, language))
+        if category
+        else ""
+    )
+    subcategory_display = (
+        _clean_seo_title_part(get_subcategory_display_name(subcategory, language))
+        if subcategory
+        else ""
+    )
     taxonomy_label = " ".join(part for part in [subcategory_display, category_display] if part).strip()
     localized_openers = {
         "en": f"{title} in our {taxonomy_label} menu." if taxonomy_label else f"{title} on the Top Shelf Cali Plug menu.",
@@ -6192,9 +6226,23 @@ async def _seo_side_note_terms(
     if language == "en":
         static_terms = file_terms
     else:
-        english_terms = list(get_terms_for_taxonomy(category, subcategory, language="en", limit=limit))
-        translated_terms = await _translate_seo_lines(english_terms, language)
-        static_terms = _dedupe_seo_phrases([*file_terms, *translated_terms], limit=limit)
+        # Curated localized vocabulary is both faster and more reliable than
+        # translating the full English pool on every taxonomy request. Only
+        # ask the provider for a small fallback when a locale has too little
+        # curated coverage to fill the primary visible slots.
+        static_terms = file_terms
+        minimum_curated_terms = min(3, limit)
+        if len(static_terms) < minimum_curated_terms:
+            english_terms = list(
+                get_terms_for_taxonomy(
+                    category,
+                    subcategory,
+                    language="en",
+                    limit=minimum_curated_terms - len(static_terms),
+                )
+            )
+            translated_terms = await _translate_seo_lines(english_terms, language)
+            static_terms = _dedupe_seo_phrases([*file_terms, *translated_terms], limit=limit)
     notes: list[dict[str, Any]] = []
     brand_notes: list[dict[str, Any]] = []
     try:
@@ -6314,8 +6362,16 @@ def _build_visible_taxonomy_intro(
 ) -> str:
     """Build a short, localized intro from the terms visible on this page."""
     language = _normalize_seo_language(language)
-    category_display = get_category_display_name(category, language) if category else "products"
-    subcategory_display = get_subcategory_display_name(subcategory, language) if subcategory else ""
+    category_display = (
+        _clean_seo_title_part(get_category_display_name(category, language))
+        if category
+        else "products"
+    )
+    subcategory_display = (
+        _clean_seo_title_part(get_subcategory_display_name(subcategory, language))
+        if subcategory
+        else ""
+    )
     label = " ".join(part for part in (subcategory_display, category_display) if part).strip()
     concise_terms = _dedupe_seo_phrases(
         [term for term in terms if len(normalize_term(term).split()) <= 4],
@@ -6519,11 +6575,13 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
             if use_product_schema:
                 catalog_item_schema["sku"] = str(schema_product_id)
         if product_category:
-            category_label = get_category_display_name(product_category, language)
+            category_label = _clean_seo_title_part(
+                get_category_display_name(product_category, language)
+            )
             if product_subcategory:
                 category_label = (
                     f"{category_label} > "
-                    f"{get_subcategory_display_name(product_subcategory, language)}"
+                    f"{_clean_seo_title_part(get_subcategory_display_name(product_subcategory, language))}"
                 )
             catalog_item_schema["category"] = category_label
         if product_images:
@@ -6561,14 +6619,14 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
             breadcrumb_items.append({
                 "@type": "ListItem",
                 "position": len(breadcrumb_items) + 1,
-                "name": get_category_display_name(product_category, language),
+                "name": _clean_seo_title_part(get_category_display_name(product_category, language)),
                 "item": _localized_url(_canonical_category_path(product_category), language),
             })
         if product_category and product_subcategory:
             breadcrumb_items.append({
                 "@type": "ListItem",
                 "position": len(breadcrumb_items) + 1,
-                "name": get_subcategory_display_name(product_subcategory, language),
+                "name": _clean_seo_title_part(get_subcategory_display_name(product_subcategory, language)),
                 "item": _localized_url(_canonical_subcategory_path(product_category, product_subcategory), language),
             })
         breadcrumb_items.append({
@@ -7737,7 +7795,10 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
     category = product.get("category") or ""
     subcategory = product.get("subcategory") or ""
     product_title, raw_seo_desc, description_lines = _caption_parts(caption)
-    localized_description_lines = await _translate_seo_lines(description_lines, language)
+    if _is_crawler_user_agent(request.headers.get("user-agent", "")):
+        localized_description_lines = await _cached_seo_lines(description_lines, language)
+    else:
+        localized_description_lines = await _translate_seo_lines(description_lines, language)
     localized_raw_desc = " ".join(
         line for line in localized_description_lines if isinstance(line, str) and line.strip()
     )[:160] or raw_seo_desc
@@ -8024,9 +8085,10 @@ async def _serve_category_page(category_name: str, request: Request, language: s
     ctx.update(order_context)
 
     # Build ItemList + BreadcrumbList schema
+    schema_display_name = _clean_seo_title_part(display_name)
     item_list_schema = {
         "@type": "ItemList",
-        "name": display_name,
+        "name": schema_display_name,
         "url": category_url,
         "inLanguage": language,
         "numberOfItems": total,
@@ -8050,7 +8112,7 @@ async def _serve_category_page(category_name: str, request: Request, language: s
         "@type": "BreadcrumbList",
         "itemListElement": [
             {"@type": "ListItem", "position": 1, "name": _seo_ui(language)["home"], "item": _localized_url("/", language)},
-            {"@type": "ListItem", "position": 2, "name": display_name, "item": category_url},
+            {"@type": "ListItem", "position": 2, "name": schema_display_name, "item": category_url},
         ],
     }
     collection_schema = {
@@ -8196,9 +8258,11 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
     ctx["next_url"] = _localized_path(_paginated_path(base_path, current_page + 1), language) if current_page < total_pages else ""
     ctx.update(order_context)
 
+    schema_category_display = _clean_seo_title_part(category_display)
+    schema_subcategory_display = _clean_seo_title_part(subcategory_display)
     item_list_schema = {
         "@type": "ItemList",
-        "name": f"{subcategory_display} {category_display}",
+        "name": f"{schema_subcategory_display} {schema_category_display}",
         "url": page_url,
         "inLanguage": language,
         "numberOfItems": total,
@@ -8222,8 +8286,8 @@ async def _serve_subcategory_page(category_name: str, subcategory_name: str, req
         "@type": "BreadcrumbList",
         "itemListElement": [
             {"@type": "ListItem", "position": 1, "name": _seo_ui(language)["home"], "item": _localized_url("/", language)},
-            {"@type": "ListItem", "position": 2, "name": category_display, "item": _localized_url(_canonical_category_path(matched_category), language)},
-            {"@type": "ListItem", "position": 3, "name": subcategory_display, "item": page_url},
+            {"@type": "ListItem", "position": 2, "name": schema_category_display, "item": _localized_url(_canonical_category_path(matched_category), language)},
+            {"@type": "ListItem", "position": 3, "name": schema_subcategory_display, "item": page_url},
         ],
     }
     collection_schema = {
