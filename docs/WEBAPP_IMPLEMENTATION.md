@@ -112,9 +112,10 @@ not split into "media without caption" versus "caption without media" behavior.
 
 The open-web routes render product/category HTML, metadata, related products,
 media thumbnails, canonical links, multilingual `hreflang` pages, sitemap,
-robots, favicon, and Open Graph
-assets. Deleted or missing product URLs should fall back to the product category
-when possible, otherwise to the home page.
+robots, `llms.txt`, favicon, Open Graph assets, and truthful structured data.
+Product offers are emitted only when a visible price and product image exist.
+Deleted or missing product URLs should fall back to the product category when
+possible, otherwise to the home page.
 
 SEO search-term expansion lives in:
 

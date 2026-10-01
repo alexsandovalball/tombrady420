@@ -177,6 +177,7 @@ The open web routes render product/category pages for crawlers:
 /category/<category>/<subcategory>
 /sitemap.xml
 /robots.txt
+/llms.txt
 ```
 
 Legacy `/learn`, localized `/learn`, `/learn/<slug>`, and `/guides-feed.xml`
@@ -188,8 +189,16 @@ page rather than showing a blank JSON error.
 Search expansion starts from `configs/seo_terms.json` and improves itself from
 real WebApp searches. The background SEO learner maps repeated no-result
 queries to existing catalog categories/subcategories only when confidence is
-high, then adds translated variants for the supported bot/WebApp languages. Use
-`/seostatus` to see what people searched and what mappings were learned.
+high, then adds curated and translated variants for the supported bot/WebApp
+languages. Product names and catalog-derived brands stay dynamic so removed
+inventory does not become a permanent keyword target. Use `/seostatus` to see
+what people searched and what mappings were learned.
+
+Category and subcategory pages use page-specific descriptions and pagination
+metadata. Product pages publish `Product`/`Offer` structured data only when the
+catalog contains a real product image and an explicit visible currency price;
+otherwise they remain accurately described as catalog items rather than
+inventing commerce data.
 
 Google Trends discovery runs twice daily by default with a bounded batch. Trend
 terms may use a slightly looser catalog score than internal searches, but they

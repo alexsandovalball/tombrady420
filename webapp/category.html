@@ -6,11 +6,13 @@
     <title>{{ seo_title }}</title>
     <meta name="description" content="{{ seo_desc }}">
     <link rel="canonical" href="{{ seo_url }}">
+    {% if previous_url %}<link rel="prev" href="{{ previous_url }}">{% endif %}
+    {% if next_url %}<link rel="next" href="{{ next_url }}">{% endif %}
     {% for alternate in seo_alternates or [] %}<link rel="alternate" hreflang="{{ alternate.language }}" href="{{ alternate.href }}">
     {% endfor %}
 
-    <meta name="robots" content="index, follow">
-    <meta name="googlebot" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
+    <meta name="robots" content="{{ seo_robots or 'index, follow' }}">
+    <meta name="googlebot" content="{{ seo_googlebot or 'index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1' }}">
     <meta name="author" content="Top Shelf Cali Plug">
     <meta name="theme-color" content="#2481cc">
 
@@ -172,7 +174,7 @@
         <header>
             <nav aria-label="Breadcrumb">
                 <a class="cat-nav-btn" href="{{ localized_home_url }}">🏈 {{ ui.menu }}</a>
-                <a class="cat-nav-btn" href="{{ localized_home_url }}?search=1#catalog-search">🔍 {{ ui.search }}</a>
+                <a class="cat-nav-btn" href="{{ localized_home_url }}#catalog-search">🔍 {{ ui.search }}</a>
                 {% if current_subcategory and parent_category_url %}
                 <span>/</span><a class="cat-nav-btn" href="{{ parent_category_url }}">{{ category_display }}</a>
                 {% endif %}

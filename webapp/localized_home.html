@@ -318,7 +318,7 @@
 
             var params = new URLSearchParams(window.location.search);
             var initialQuery = (params.get('q') || '').trim();
-            if (params.get('search') === '1' || initialQuery) {
+            if (params.get('search') === '1' || window.location.hash === '#catalog-search' || initialQuery) {
                 setOpen(true, !initialQuery);
                 if (initialQuery.length >= 2) {
                     input.value = initialQuery;

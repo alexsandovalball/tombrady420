@@ -57,7 +57,16 @@ def clear_seo_terms_cache() -> None:
 
 def _iter_file_mappings() -> Iterable[dict[str, Any]]:
     for mapping in load_seo_terms().get("mappings", []):
-        terms = _dedupe(mapping.get("terms", []))
+        localized_terms = mapping.get("localized_terms") or {}
+        terms = _dedupe([
+            *mapping.get("terms", []),
+            *(
+                term
+                for values in localized_terms.values()
+                if isinstance(values, list)
+                for term in values
+            ),
+        ])
         if not terms:
             continue
         yield {
@@ -156,16 +165,27 @@ def build_query_variants(
     return _dedupe(variants, limit=limit)
 
 
-def get_terms_for_taxonomy(category: str, subcategory: str = "", *, limit: int = 18) -> list[str]:
+def get_terms_for_taxonomy(
+    category: str,
+    subcategory: str = "",
+    *,
+    language: str = "en",
+    limit: int = 18,
+) -> list[str]:
     category_norm = normalize_term(category)
     subcategory_norm = normalize_term(subcategory)
+    language = str(language or "en").split("-", 1)[0].lower()
     terms = []
-    for mapping in _iter_file_mappings():
+    for mapping in load_seo_terms().get("mappings", []):
         if normalize_term(mapping.get("category", "")) != category_norm:
             continue
         if subcategory_norm and normalize_term(mapping.get("subcategory", "")) != subcategory_norm:
             continue
-        terms.extend(mapping.get("terms", []))
+        localized = (mapping.get("localized_terms") or {}).get(language, [])
+        if language != "en" and isinstance(localized, list):
+            terms.extend(localized)
+        elif language == "en":
+            terms.extend(mapping.get("terms", []))
     return _dedupe(terms, limit=limit)
 
 

@@ -1280,6 +1280,35 @@ class Database:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
 
+    async def count_products_with_title(self, title: str) -> int:
+        """Count active products whose first caption line matches ``title``."""
+        normalized_title = str(title or "").strip().lower()
+        if not normalized_title:
+            return 0
+        async with self.get_connection() as db:
+            async with db.execute(
+                """
+                WITH product_titles AS (
+                    SELECT LOWER(TRIM(
+                        CASE
+                            WHEN INSTR(REPLACE(COALESCE(caption, ''), CHAR(13), ''), CHAR(10)) > 0
+                            THEN SUBSTR(
+                                REPLACE(COALESCE(caption, ''), CHAR(13), ''),
+                                1,
+                                INSTR(REPLACE(COALESCE(caption, ''), CHAR(13), ''), CHAR(10)) - 1
+                            )
+                            ELSE REPLACE(COALESCE(caption, ''), CHAR(13), '')
+                        END
+                    )) AS title
+                    FROM products
+                )
+                SELECT COUNT(*) FROM product_titles WHERE title = ?
+                """,
+                (normalized_title,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return int(row[0] or 0) if row else 0
+
     async def get_product_by_public_or_internal_id(self, product_ref: int) -> Optional[Dict[str, Any]]:
         """Resolve public product number first, then legacy internal ID."""
         product = await self.get_product_by_public_id(product_ref)

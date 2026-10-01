@@ -32,7 +32,14 @@
         "exotic cannabis flower",
         "boutique flower",
         "top shelf weed"
-      ]
+      ],
+      "localized_terms": {
+        "de": ["Premium Cannabisblüten", "exotische Cannabisblüten", "Top Shelf Weed"],
+        "nl": ["premium cannabisbloemen", "exotische wiet", "top shelf wiet"],
+        "fr": ["fleurs de cannabis premium", "cannabis exotique", "top shelf weed"],
+        "it": ["fiori di cannabis premium", "cannabis esotica", "erba premium"],
+        "es": ["flor de cannabis premium", "cannabis exótico", "marihuana premium"]
+      }
     },
     {
       "category": "FLOWER",
@@ -99,7 +106,14 @@
         "dry sift hash",
         "solvent free",
         "solvent free concentrate"
-      ]
+      ],
+      "localized_terms": {
+        "de": ["lösungsmittelfreies Konzentrat", "Live Rosin", "Bubble Hash"],
+        "nl": ["oplosmiddelvrij concentraat", "live rosin", "bubble hasj"],
+        "fr": ["concentré sans solvant", "live rosin", "bubble hash"],
+        "it": ["concentrato senza solventi", "live rosin", "bubble hash"],
+        "es": ["concentrado sin solventes", "live rosin", "bubble hash"]
+      }
     },
     {
       "category": "CONCENTRATES",
@@ -167,7 +181,14 @@
         "smoked hash",
         "hashish",
         "charas"
-      ]
+      ],
+      "localized_terms": {
+        "de": ["L.A. Mousse", "Mousse Hasch", "Dry Sift Hasch", "Haschisch und Kief"],
+        "nl": ["dry sift hasj", "mousse hasj", "hasj en kief"],
+        "fr": ["hash dry sift", "mousse hash", "hash et kief"],
+        "it": ["hash dry sift", "mousse hash", "hash e kief"],
+        "es": ["hachís dry sift", "mousse hash", "hachís y kief"]
+      }
     },
     {
       "category": "CARTRIDGES",
@@ -177,6 +198,8 @@
         "cartridges",
         "cart",
         "carts",
+        "cali plug carts",
+        "cali plug cartridges",
         "vape cart",
         "vape cartridge",
         "vape cartridges",
@@ -200,7 +223,14 @@
         "oil cart",
         "distillate cart",
         "510 cart"
-      ]
+      ],
+      "localized_terms": {
+        "de": ["Cannabis Vape", "THC Kartusche", "Vape Cart"],
+        "nl": ["cannabis vape", "THC cartridge", "vape cart"],
+        "fr": ["vape cannabis", "cartouche THC", "cartouche vape"],
+        "it": ["vape cannabis", "cartuccia THC", "cartuccia vape"],
+        "es": ["vape de cannabis", "cartucho THC", "cartucho vape"]
+      }
     },
     {
       "category": "CONCENTRATES",
@@ -219,7 +249,14 @@
         "wholesale cat 3 thc distillate",
         "cannabis isolate",
         "cbd isolate"
-      ]
+      ],
+      "localized_terms": {
+        "de": ["RSO Öl", "Rick Simpson Öl", "Cannabisöl"],
+        "nl": ["RSO olie", "Rick Simpson olie", "cannabisolie"],
+        "fr": ["huile RSO", "huile Rick Simpson", "huile de cannabis"],
+        "it": ["olio RSO", "olio Rick Simpson", "olio di cannabis"],
+        "es": ["aceite RSO", "aceite Rick Simpson", "aceite de cannabis"]
+      }
     },
     {
       "category": "EDIBLES",
@@ -245,7 +282,14 @@
         "fruit chews",
         "soft chews",
         "sour gummies"
-      ]
+      ],
+      "localized_terms": {
+        "de": ["Cannabis Edibles", "THC Gummibärchen", "Cannabis Schokolade"],
+        "nl": ["cannabis edibles", "THC gummies", "cannabis chocolade"],
+        "fr": ["comestibles au cannabis", "gummies THC", "chocolat au cannabis"],
+        "it": ["edibili alla cannabis", "caramelle THC", "cioccolato alla cannabis"],
+        "es": ["comestibles de cannabis", "gominolas THC", "chocolate de cannabis"]
+      }
     },
     {
       "category": "PREROLLS",
@@ -269,7 +313,14 @@
         "infused pre-roll",
         "smoke pack",
         "ready rolled"
-      ]
+      ],
+      "localized_terms": {
+        "de": ["Cannabis Pre-Rolls", "vorgedrehte Joints", "Pre-Roll Pack"],
+        "nl": ["cannabis pre-rolls", "voorgedraaide joints", "pre-roll pack"],
+        "fr": ["pré-rolls cannabis", "joints pré-roulés", "pack pré-rolls"],
+        "it": ["pre-roll cannabis", "canne pre-rollate", "confezione pre-roll"],
+        "es": ["pre-rolls de cannabis", "porros preenrollados", "paquete de pre-rolls"]
+      }
     },
     {
       "category": "SHROOMS",
@@ -284,7 +335,14 @@
         "microdose",
         "microdosing",
         "psychedelic mushrooms"
-      ]
+      ],
+      "localized_terms": {
+        "de": ["Zauberpilze", "Psilocybin Pilze", "Mikrodosierung"],
+        "nl": ["paddo's", "psilocybine paddenstoelen", "microdosering"],
+        "fr": ["champignons magiques", "champignons psilocybine", "microdosage"],
+        "it": ["funghi magici", "funghi psilocibina", "microdosaggio"],
+        "es": ["hongos mágicos", "hongos de psilocibina", "microdosis"]
+      }
     },
     {
       "category": "EDIBLES",
@@ -296,7 +354,14 @@
         "psilocybin edibles",
         "magic mushroom chocolate",
         "mushroom candy"
-      ]
+      ],
+      "localized_terms": {
+        "de": ["Pilz Edibles", "Pilz Schokolade", "Pilz Gummibärchen"],
+        "nl": ["paddenstoel edibles", "paddenstoel chocolade", "paddenstoel gummies"],
+        "fr": ["comestibles aux champignons", "chocolat aux champignons", "gummies aux champignons"],
+        "it": ["edibili ai funghi", "cioccolato ai funghi", "caramelle ai funghi"],
+        "es": ["comestibles de hongos", "chocolate de hongos", "gominolas de hongos"]
+      }
     }
   ]
 }

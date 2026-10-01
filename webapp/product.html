@@ -230,7 +230,7 @@
         <a class="seo-back-link" href="{{ back_url }}">{{ back_label }}</a>
         <nav class="seo-nav" aria-label="Breadcrumb">
             <a href="{{ localized_home_url }}">{{ ui.home }}</a>
-            <a href="{{ localized_home_url }}?search=1#catalog-search">🔍 {{ ui.search }}</a>
+            <a href="{{ localized_home_url }}#catalog-search">🔍 {{ ui.search }}</a>
             {% if category_url %}<span>/</span><a href="{{ category_url }}">{{ category_display }}</a>{% endif %}
             {% if subcategory_url %}<span>/</span><a href="{{ subcategory_url }}">{{ subcategory_display }}</a>{% endif %}
         </nav>
