@@ -6511,7 +6511,15 @@ class Database:
                     (since_24h,),
                 ),
                 "webapp_errors_24h": await scalar(
-                    "SELECT COUNT(*) FROM webapp_events WHERE created_at >= ? AND (LOWER(COALESCE(status, '')) = 'error' OR TRIM(COALESCE(error, '')) <> '')",
+                    """SELECT COUNT(*) FROM webapp_events
+                       WHERE created_at >= ?
+                         AND (
+                           LOWER(COALESCE(status, '')) = 'error'
+                           OR (
+                             TRIM(COALESCE(error, '')) <> ''
+                             AND LOWER(COALESCE(status, '')) NOT IN ('warning', 'info', 'success')
+                           )
+                         )""",
                     (since_24h,),
                 ),
                 "visitor_events_24h": await scalar(

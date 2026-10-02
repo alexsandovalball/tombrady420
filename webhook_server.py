@@ -1132,9 +1132,7 @@ def _invalidate_seo_query_mapping_cache() -> None:
 
 
 def _invalidate_admin_status_cache() -> None:
-    global _bot_health_cache
     _admin_status_cache.clear()
-    _bot_health_cache = (0.0, [])
 
 
 def invalidate_bot_health_cache() -> None:
@@ -1162,6 +1160,7 @@ def _record_bot_startup_issue(
     _bot_startup_issues.setdefault(bot_index, []).append(issue)
     del _bot_startup_issues[bot_index][20:]
     _invalidate_admin_status_cache()
+    invalidate_bot_health_cache()
 
 
 async def _set_runtime_setting(key: str, value: Any) -> None:
@@ -2265,6 +2264,7 @@ async def reinitialize_bots(fastapi_app=None) -> dict:
     _bot_applications = new_bot_applications
     _webhook_secret_tokens = new_secret_tokens
     _invalidate_admin_status_cache()
+    invalidate_bot_health_cache()
 
     # Sync FastAPI app.state so webhook verification uses the new tokens.
     if fastapi_app is not None:
@@ -7166,11 +7166,12 @@ async def serve_sitemap_xml(request: Request):
     )
 
 
-async def _crawlable_page_snapshot(limit: int = 5000) -> Dict[str, Any]:
+async def _crawlable_page_snapshot(limit: int = 50, offset: int = 0) -> Dict[str, Any]:
     """Return the current sitemap-like URL set for the admin WebApp summary."""
     from datetime import date
 
-    limit = max(1, min(int(limit or 5000), 10000))
+    limit = max(1, min(int(limit or 50), 250))
+    offset = max(0, int(offset or 0))
     today = date.today().isoformat()
     products = await _catalog_db.get_all_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
     static_seo_lastmod = _static_seo_lastmod(today)
@@ -7260,10 +7261,14 @@ async def _crawlable_page_snapshot(limit: int = 5000) -> Dict[str, Any]:
             max(product_lastmod, product_mapping_lastmod),
         )
 
+    total = len(pages)
+    next_offset = offset + limit if offset + limit < total else None
     return {
-        "total": len(pages),
-        "shown": min(len(pages), limit),
-        "pages": pages[:limit],
+        "total": total,
+        "shown": min(max(total - offset, 0), limit),
+        "offset": offset,
+        "next_offset": next_offset,
+        "pages": pages[offset:offset + limit],
     }
 
 
@@ -7632,7 +7637,7 @@ async def webapp_admin_status(request: Request):
     cached = _admin_status_cache.get(admin_user_id)
     if cached and now - cached[0] < _ADMIN_STATUS_CACHE_SECONDS:
         payload = dict(cached[1])
-        runtime_bots = await _runtime_bot_health_snapshots(force=True)
+        runtime_bots = await _runtime_bot_health_snapshots(force=False)
         payload["runtime_bots"] = runtime_bots
         payload["bot_health_summary"] = _bot_health_summary(runtime_bots)
         payload["cache_age_seconds"] = round(now - cached[0], 1)
@@ -7650,12 +7655,12 @@ async def webapp_admin_status(request: Request):
 
     db_snapshot = await _safe_snapshot(
         "db_snapshot",
-        lambda: _catalog_db.get_admin_dashboard_snapshot(recent_limit=25),
+        lambda: _catalog_db.get_admin_dashboard_snapshot(recent_limit=15),
         {"summary": {}},
     )
     seo_snapshot = await _safe_snapshot(
         "seo_snapshot",
-        lambda: _catalog_db.get_search_intelligence_snapshot(limit=150),
+        lambda: _catalog_db.get_search_intelligence_snapshot(limit=50),
         {"runtime_status": {}, "recent_mappings": [], "recent_external_signals": []},
     )
     seo_snapshot["search_console_setup"] = describe_search_console_setup(
@@ -7668,18 +7673,13 @@ async def webapp_admin_status(request: Request):
         oauth_token_json=Config.SEARCH_CONSOLE_OAUTH_TOKEN_JSON,
         oauth_token_file=Config.SEARCH_CONSOLE_OAUTH_TOKEN_FILE,
     )
-    crawlable_snapshot = await _safe_snapshot(
-        "crawlable_snapshot",
-        lambda: _crawlable_page_snapshot(limit=5000),
-        {"pages": [], "total": 0},
-    )
     indexnow_snapshot = dict(db_snapshot.get("indexnow") or {})
     indexnow_snapshot.update({
         "enabled": _indexnow_enabled(),
         "endpoint": Config.INDEXNOW_ENDPOINT,
         "key_file_available": bool(_indexnow_key(create=False)),
     })
-    runtime_bots = await _runtime_bot_health_snapshots(force=True)
+    runtime_bots = await _runtime_bot_health_snapshots(force=False)
     payload = {
         "authorized": True,
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
@@ -7699,7 +7699,6 @@ async def webapp_admin_status(request: Request):
         "metrics": metrics.snapshot(),
         "webhook_monitor": _webhook_monitor.snapshot(),
         "seo": seo_snapshot,
-        "crawlable_pages": crawlable_snapshot,
         "errors": admin_errors,
         **db_snapshot,
         "indexnow": indexnow_snapshot,
@@ -7709,6 +7708,20 @@ async def webapp_admin_status(request: Request):
     while len(_admin_status_cache) > _ADMIN_STATUS_CACHE_MAX:
         _admin_status_cache.popitem(last=False)
     return _json_no_store(payload)
+
+
+@app.get("/api/webapp-admin/crawlable-pages")
+async def webapp_admin_crawlable_pages(request: Request, offset: int = 0, limit: int = 50):
+    """Return a paginated crawlable-page inventory to signed WebApp admins."""
+    user, _, init_data = _get_authenticated_webapp_user(request)
+    await _check_user_not_blocked(init_data, get_client_ip(request))
+    if int(user.id) not in {int(admin_id) for admin_id in Config.ADMIN_IDS}:
+        return _json_no_store(
+            {"authorized": False, "detail": "Admin access required"},
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    snapshot = await _crawlable_page_snapshot(limit=limit, offset=offset)
+    return _json_no_store({"authorized": True, **snapshot})
 
 
 

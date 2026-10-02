@@ -238,6 +238,17 @@ body.unified-storefront-ui .miniapp-shell .admin-page-meta {
     color: #555555;
 }
 
+body.unified-storefront-ui .miniapp-shell .admin-tab,
+body.unified-storefront-ui .miniapp-shell .admin-refresh,
+body.unified-storefront-ui .miniapp-shell .admin-load-more,
+body.unified-storefront-ui .miniapp-shell .admin-health-banner {
+    color: #111111;
+}
+
+body.unified-storefront-ui .miniapp-shell .admin-tab[aria-selected="true"] {
+    color: #111111;
+}
+
 body.unified-storefront-ui .miniapp-shell .footer-actions {
     border-top: 0;
     padding-top: 0;
@@ -413,7 +424,7 @@ h1 {
     margin-top: 16px;
     padding: 14px;
     border: 1px solid rgba(36, 129, 204, 0.25);
-    border-radius: 12px;
+    border-radius: 8px;
     background: rgba(36, 129, 204, 0.06);
 }
 
@@ -424,7 +435,7 @@ h1 {
 .admin-panel-header {
     display: flex;
     justify-content: space-between;
-    align-items: baseline;
+    align-items: center;
     gap: 10px;
     margin-bottom: 10px;
 }
@@ -440,6 +451,59 @@ h1 {
     white-space: nowrap;
 }
 
+.admin-panel-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.admin-refresh {
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid rgba(36, 129, 204, 0.28);
+    border-radius: 6px;
+    background: rgba(36, 129, 204, 0.1);
+    color: var(--tg-theme-text-color);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.admin-health-banner {
+    display: grid;
+    gap: 3px;
+    margin-bottom: 10px;
+    padding: 9px 10px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+}
+
+.admin-health-banner strong {
+    font-size: 13px;
+}
+
+.admin-health-banner span {
+    font-size: 11px;
+    line-height: 1.35;
+}
+
+.admin-health-ok {
+    border-color: rgba(35, 146, 86, 0.3);
+    background: rgba(35, 146, 86, 0.1);
+}
+
+.admin-health-warning {
+    border-color: rgba(196, 132, 22, 0.35);
+    background: rgba(196, 132, 22, 0.11);
+}
+
+.admin-health-critical {
+    border-color: rgba(196, 53, 53, 0.35);
+    background: rgba(196, 53, 53, 0.11);
+}
+
 .admin-metric-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -449,9 +513,52 @@ h1 {
 .admin-metric {
     min-height: 54px;
     padding: 9px;
-    border-radius: 10px;
+    border-radius: 8px;
     background: rgba(0, 0, 0, 0.04);
     border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.admin-tabs {
+    display: flex;
+    gap: 4px;
+    margin-top: 12px;
+    padding-bottom: 6px;
+    overflow-x: auto;
+    scrollbar-width: thin;
+}
+
+.admin-tab {
+    flex: 0 0 auto;
+    min-height: 32px;
+    padding: 6px 9px;
+    border: 1px solid rgba(36, 129, 204, 0.22);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--tg-theme-hint-color);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.admin-tab[aria-selected="true"] {
+    border-color: rgba(36, 129, 204, 0.5);
+    background: rgba(36, 129, 204, 0.14);
+    color: var(--tg-theme-text-color);
+    font-weight: 700;
+}
+
+.admin-tab-pane[hidden] {
+    display: none !important;
+}
+
+.admin-load-more {
+    margin-top: 8px;
+    padding: 7px 10px;
+    border: 1px solid rgba(36, 129, 204, 0.28);
+    border-radius: 6px;
+    background: rgba(36, 129, 204, 0.1);
+    color: var(--tg-theme-text-color);
+    font-size: 12px;
+    cursor: pointer;
 }
 
 .admin-metric-label {
