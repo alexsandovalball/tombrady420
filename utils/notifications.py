@@ -1469,14 +1469,12 @@ class NotificationService:
         message_text: str
     ):
         """
-        Send a custom message to a specific user with rate limiting.
-        Only runs on the primary bot instance to avoid duplicate sends.
+        Send an admin-triggered custom message to a specific user with rate limiting.
+
+        Admin commands are available on every active bot, so the bot receiving
+        the command must be allowed to trigger the process-wide shared queue.
+        Delivery still resolves each user's assigned bot before sending.
         """
-        # Check if this is the primary bot instance
-        if not self._is_primary_instance(context):
-            logger.info(f"Skipping custom message to user {user_id} - not primary instance")
-            return False
-        
         try:
             # Check if user is blocked
             is_blocked = await self.db.is_user_blocked(user_id)
@@ -1488,9 +1486,12 @@ class NotificationService:
             await self.db.queue_custom_message(user_id, message_text)
             
             # Process the queue
-            await self.process_custom_message_queue(context)
+            stats = await self.process_custom_message_queue(
+                context,
+                allow_non_primary_trigger=True,
+            )
             
-            return True
+            return bool(stats.get("sent", 0))
             
         except Exception as e:
             logger.error(f"Error sending custom message to user {user_id}: {e}", exc_info=True)
@@ -1504,8 +1505,11 @@ class NotificationService:
         admin_user_id: Optional[int] = None
     ):
         """
-        Broadcast a custom message to all users with rate limiting.
-        Only runs on the primary bot instance to avoid duplicate queuing.
+        Broadcast an admin-triggered custom message to all users with rate limiting.
+
+        The shared database queue provides the delivery boundary. An admin may
+        start this workflow from any active bot; automatic notification entry
+        points remain primary-only.
         Returns a dictionary with delivery statistics.
         
         Args:
@@ -1517,11 +1521,6 @@ class NotificationService:
         Returns:
             dict with keys: queued, sent, failed, blocked, not_found, rate_limited, markdown_errors
         """
-        # Check if this is the primary bot instance
-        if not self._is_primary_instance(context):
-            logger.info(f"Skipping broadcast - not primary instance")
-            return {"queued": 0, "sent": 0, "failed": 0}
-        
         try:
             # Get all users
             all_users = await self.db.get_all_users()
@@ -1559,7 +1558,10 @@ class NotificationService:
             logger.info(f"Queued {queued} custom messages (skipped {skipped_blocked} blocked, {skipped_admin} admins)")
             
             # Process the queue and get statistics
-            stats = await self.process_custom_message_queue(context)
+            stats = await self.process_custom_message_queue(
+                context,
+                allow_non_primary_trigger=True,
+            )
             stats["queued"] = queued
             stats["skipped_blocked"] = skipped_blocked
             stats["skipped_admin"] = skipped_admin
@@ -1574,19 +1576,26 @@ class NotificationService:
             logger.error(f"Error broadcasting custom message: {e}", exc_info=True)
             return {"queued": 0, "sent": 0, "failed": 0, "error": str(e)}
     
-    async def process_custom_message_queue(self, context: ContextTypes.DEFAULT_TYPE):
+    async def process_custom_message_queue(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        *,
+        allow_non_primary_trigger: bool = False,
+    ):
         """
         Process pending custom messages from the queue with rate limiting.
         Uses bot-first grouping: messages are grouped by bot_username BEFORE processing,
         then each bot's messages are processed simultaneously via asyncio.gather.
-        Only runs on the primary bot instance to avoid duplicate processing.
+        Scheduled/background callers remain primary-only. Explicit admin sends
+        may opt in from a secondary bot because they are a single webhook action
+        against the same shared queue.
         Returns statistics about the delivery.
         Processes all pending messages in batches until the queue is empty.
         """
         # Check if this is the primary bot instance
-        if not self._is_primary_instance(context):
-            logger.info(f"Skipping custom message queue processing - not primary instance")
-            return {"sent": 0, "failed": 0}
+        if not allow_non_primary_trigger and not self._is_primary_instance(context):
+            logger.info("Skipping custom message queue processing - not primary instance")
+            return {"sent": 0, "failed": 0, "skipped_non_primary": True}
         
         # Initialize statistics
         stats = {

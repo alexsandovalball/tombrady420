@@ -280,7 +280,10 @@ async def _handle_broadcast_confirm_all(update, context, query, user_id, parts):
         context, message_text, exclude_blocked=True, admin_user_id=user_id
     )
     total_failures = (
-        stats.get("blocked", 0) + stats.get("not_found", 0) + stats.get("unexpected_errors", 0)
+        stats.get("failed", 0)
+        + stats.get("blocked", 0)
+        + stats.get("not_found", 0)
+        + stats.get("unexpected_errors", 0)
     )
     logger.info(
         f"Admin {user_id} broadcast complete: {stats.get('sent', 0)} sent, {total_failures} failed"
