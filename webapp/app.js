@@ -2140,9 +2140,9 @@
                     name: 'Search Console',
                     status: seoRuntime.search_console_import_last_status,
                     changed: seoRuntime.search_console_import_last_signals,
-                    unit: 'signals refreshed',
+                    unit: 'signals changed',
                     at: seoRuntime.search_console_import_last_attempt_at,
-                    extra: `${formatAdminCount(seoRuntime.search_console_import_last_rows)} rows, ${formatAdminCount(seoRuntime.search_console_import_last_media_rows)} media rows, ${formatAdminCount(seoRuntime.search_console_import_last_aggregates)} aggregates · ${seoRuntime.search_console_import_last_auth_source || 'no auth source'}`,
+                    extra: `${formatAdminCount(seoRuntime.search_console_import_last_rows)} rows, ${formatAdminCount(seoRuntime.search_console_import_last_signal_candidates)} signal candidates, ${formatAdminCount(seoRuntime.search_console_import_last_media_rows)} media rows, ${formatAdminCount(seoRuntime.search_console_import_last_aggregates)} aggregates · ${seoRuntime.search_console_import_last_auth_source || 'no auth source'}`,
                     error: seoRuntime.search_console_import_last_error
                 },
                 {
@@ -2323,7 +2323,7 @@
 
         appendAdminDetailsList(panel, 'admin-external-signals', 'Recent Approved SEO Signals', 'Search Console and Google Trends signals admitted by the relevance safeguards.', seo.recent_external_signals || [], item => {
             const li = document.createElement('li');
-            li.textContent = `${item.term || 'term'} -> ${item.category || 'catalog'}${item.subcategory ? ` / ${item.subcategory}` : ''} · ${item.provider || item.source || 'unknown'} · ${item.language || 'en'} · confidence ${formatAdminCount(item.confidence)} · evidence ${formatAdminCount(item.evidence_count)}`;
+            li.textContent = `${item.term || 'term'} -> ${item.category || 'catalog'}${item.subcategory ? ` / ${item.subcategory}` : ''} · ${item.provider || item.source || 'unknown'} · ${item.language || 'en'} · confidence ${formatAdminCount(item.confidence)} · evidence ${formatAdminCount(item.evidence_count)} · changed ${item.updated_at || '-'}`;
             return li;
         });
 

@@ -9,8 +9,8 @@
     {% for alternate in seo_alternates or [] %}<link rel="alternate" hreflang="{{ alternate.language }}" href="{{ alternate.href }}">
     {% endfor %}
 
-    <meta name="robots" content="index, follow">
-    <meta name="googlebot" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
+    <meta name="robots" content="{{ seo_robots or 'index, follow' }}">
+    <meta name="googlebot" content="{{ seo_googlebot or 'index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1' }}">
     <meta name="author" content="Top Shelf Cali Plug">
     <meta name="theme-color" content="#2481cc">
 

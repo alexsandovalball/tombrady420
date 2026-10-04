@@ -3282,6 +3282,54 @@ class Database:
                     return row[0]
                 
                 return None
+
+    async def get_cached_translation_coverage(
+        self,
+        source_texts: List[str],
+        *,
+        source_lang: str = "en",
+        target_languages: Optional[List[str]] = None,
+    ) -> Dict[str, set[str]]:
+        """Return target languages with persisted translations for each source text.
+
+        This is intentionally read-only: sitemap and crawler requests must never
+        trigger translation-provider traffic merely to decide whether a localized
+        URL is ready to be indexed.
+        """
+        texts = list(dict.fromkeys(str(text) for text in source_texts if str(text or "").strip()))
+        languages = list(dict.fromkeys(
+            str(language).strip().lower()
+            for language in (target_languages or [])
+            if str(language or "").strip()
+        ))
+        coverage: Dict[str, set[str]] = {text: set() for text in texts}
+        if not texts or not languages:
+            return coverage
+
+        # Keep well below SQLite's common 999-variable limit.
+        text_batch_size = max(1, 900 - len(languages) - 1)
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            for start in range(0, len(texts), text_batch_size):
+                batch = texts[start:start + text_batch_size]
+                text_placeholders = ",".join("?" * len(batch))
+                language_placeholders = ",".join("?" * len(languages))
+                async with db.execute(
+                    f"""
+                    SELECT source_text, target_lang
+                    FROM translation_cache
+                    WHERE source_lang = ?
+                      AND translated_text != ''
+                      AND source_text IN ({text_placeholders})
+                      AND target_lang IN ({language_placeholders})
+                    """,
+                    (source_lang, *batch, *languages),
+                ) as cursor:
+                    for row in await cursor.fetchall():
+                        source_text = str(row["source_text"])
+                        if source_text in coverage:
+                            coverage[source_text].add(str(row["target_lang"]).lower())
+        return coverage
     
     async def cache_translation(
         self,
@@ -5551,6 +5599,49 @@ class Database:
             return 0
 
         async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            providers = sorted({row[3] for row in rows})
+            provider_placeholders = ",".join("?" * len(providers))
+            existing_by_key: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+            async with db.execute(
+                f"""
+                SELECT term, normalized_term, term_type, provider, source, language,
+                       category, subcategory, confidence, approved, evidence_count
+                FROM external_seo_signals
+                WHERE provider IN ({provider_placeholders})
+                """,
+                tuple(providers),
+            ) as cursor:
+                for existing_row in await cursor.fetchall():
+                    existing = dict(existing_row)
+                    existing_by_key[(
+                        str(existing["provider"]),
+                        str(existing["normalized_term"]),
+                        str(existing["category"] or ""),
+                        str(existing["subcategory"] or ""),
+                    )] = existing
+
+            material_changes = 0
+            for row in rows:
+                key = (row[3], row[1], row[6], row[7])
+                existing = existing_by_key.get(key)
+                if existing is None:
+                    material_changes += 1
+                    continue
+                effective_approved = int(bool(existing["approved"])) or int(
+                    bool(row[9]) and row[3] != "google_trends"
+                )
+                if (
+                    str(existing["term"] or "") != row[0]
+                    or str(existing["term_type"] or "") != row[2]
+                    or str(existing["source"] or "") != row[4]
+                    or str(existing["language"] or "") != row[5]
+                    or int(existing["confidence"] or 0) != max(int(existing["confidence"] or 0), row[8])
+                    or int(existing["approved"] or 0) != effective_approved
+                    or int(existing["evidence_count"] or 0) != max(int(existing["evidence_count"] or 0), row[10])
+                ):
+                    material_changes += 1
+
             await db.executemany(
                 """
                 INSERT INTO external_seo_signals (
@@ -5578,12 +5669,22 @@ class Database:
                     END,
                     notes_json = excluded.notes_json,
                     last_seen = CURRENT_TIMESTAMP,
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = CASE
+                        WHEN external_seo_signals.term IS NOT excluded.term
+                          OR external_seo_signals.term_type IS NOT excluded.term_type
+                          OR external_seo_signals.source IS NOT excluded.source
+                          OR external_seo_signals.language IS NOT excluded.language
+                          OR excluded.confidence > external_seo_signals.confidence
+                          OR (external_seo_signals.approved = 0 AND excluded.approved = 1 AND excluded.provider != 'google_trends')
+                          OR excluded.evidence_count > external_seo_signals.evidence_count
+                        THEN CURRENT_TIMESTAMP
+                        ELSE external_seo_signals.updated_at
+                    END
                 """,
                 rows,
             )
             await db.commit()
-        return len(rows)
+        return material_changes
 
     async def get_approved_external_seo_signals_without_mapping(
         self,
@@ -5624,10 +5725,10 @@ class Database:
             async with db.execute(
                 """
                 SELECT term, provider, source, language, category, subcategory, confidence,
-                       evidence_count, last_seen
+                       evidence_count, last_seen, updated_at
                 FROM external_seo_signals
                 WHERE approved = 1
-                ORDER BY last_seen DESC, confidence DESC
+                ORDER BY updated_at DESC, confidence DESC
                 LIMIT ?
                 """,
                 (limit,),
@@ -6043,6 +6144,7 @@ class Database:
                 "search_console_import_last_status",
                 "search_console_import_last_rows",
                 "search_console_import_last_signals",
+                "search_console_import_last_signal_candidates",
                 "search_console_import_last_auth_source",
                 "search_console_import_last_property",
                 "search_console_import_last_requests",

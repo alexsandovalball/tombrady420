@@ -22,7 +22,7 @@ import weakref
 from collections import OrderedDict
 from pathlib import Path
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse, HTMLResponse, RedirectResponse, JSONResponse
@@ -3917,6 +3917,7 @@ async def _import_search_console_signals(
             "search_console_import_last_status": "not_configured",
             "search_console_import_last_rows": 0,
             "search_console_import_last_signals": 0,
+            "search_console_import_last_signal_candidates": 0,
             "search_console_import_last_media_rows": 0,
             "search_console_import_last_requests": 0,
             "search_console_import_last_property": "",
@@ -3962,6 +3963,7 @@ async def _import_search_console_signals(
             "search_console_import_last_status": fetch_status,
             "search_console_import_last_rows": 0,
             "search_console_import_last_signals": 0,
+            "search_console_import_last_signal_candidates": 0,
             "search_console_import_last_media_rows": 0,
             "search_console_import_last_dimension_rows": 0,
             "search_console_import_last_requests": fetch_requests,
@@ -4009,6 +4011,7 @@ async def _import_search_console_signals(
             "search_console_import_last_status": "ok_empty",
             "search_console_import_last_rows": 0,
             "search_console_import_last_signals": 0,
+            "search_console_import_last_signal_candidates": 0,
             "search_console_import_last_media_rows": imported_media_rows,
             "search_console_import_last_dimension_rows": imported_dimension_rows,
             "search_console_import_last_requests": fetch_requests,
@@ -4040,10 +4043,11 @@ async def _import_search_console_signals(
     if imported_signals:
         _invalidate_admin_status_cache()
     logger.info(
-        "[search_console] rows=%d stored=%d aggregates=%d approved_signals=%d media_rows=%d page_mismatches=%d property=%s auth=%s requests=%d partial=%s",
+        "[search_console] rows=%d stored=%d aggregates=%d signal_candidates=%d changed_signals=%d media_rows=%d page_mismatches=%d property=%s auth=%s requests=%d partial=%s",
         len(rows),
         imported_rows,
         aggregate_count,
+        len(signals),
         imported_signals,
         imported_media_rows,
         page_mismatches,
@@ -4057,6 +4061,7 @@ async def _import_search_console_signals(
         "search_console_import_last_status": "ok",
         "search_console_import_last_rows": imported_rows,
         "search_console_import_last_signals": imported_signals,
+        "search_console_import_last_signal_candidates": len(signals),
         "search_console_import_last_media_rows": imported_media_rows,
         "search_console_import_last_dimension_rows": imported_dimension_rows,
         "search_console_import_last_requests": fetch_requests,
@@ -5202,20 +5207,70 @@ def _set_webapp_search_cache(key: str, payload: dict) -> None:
         _webapp_search_cache_bytes -= old_bytes
 
 
-def _seo_alternate_links(path: str) -> List[Dict[str, str]]:
+def _seo_alternate_links(
+    path: str,
+    languages: Optional[Iterable[str]] = None,
+) -> List[Dict[str, str]]:
+    requested_languages = SUPPORTED_LANGUAGES if languages is None else languages
+    available = {
+        _normalize_seo_language(language)
+        for language in requested_languages
+    }
+    available.add("en")
     links = [
         {"language": language, "href": _localized_url(path, language)}
         for language in SUPPORTED_LANGUAGES
+        if language in available
     ]
     links.append({"language": "x-default", "href": _localized_url(path, "en")})
     return links
 
 
-def _sitemap_alternate_xml(path: str) -> str:
+def _sitemap_alternate_xml(
+    path: str,
+    languages: Optional[Iterable[str]] = None,
+) -> str:
     return "".join(
         f'    <xhtml:link rel="alternate" hreflang="{html.escape(item["language"])}" href="{html.escape(item["href"])}" />\n'
-        for item in _seo_alternate_links(path)
+        for item in _seo_alternate_links(path, languages)
     )
+
+
+async def _product_translation_languages(products: Iterable[dict]) -> Dict[int, set[str]]:
+    """Return indexable languages whose product descriptions are fully cached."""
+    product_lines: Dict[int, list[str]] = {}
+    all_lines: list[str] = []
+    for product in products:
+        product_id = int(product.get("id") or product.get("product_id") or 0)
+        if not product_id:
+            continue
+        _title, _desc, lines = _caption_parts(product.get("caption") or "")
+        clean_lines = [str(line) for line in lines if str(line or "").strip()]
+        product_lines[product_id] = clean_lines
+        all_lines.extend(clean_lines)
+
+    translated_languages = [language for language in SUPPORTED_LANGUAGES if language != "en"]
+    try:
+        coverage = await _catalog_db.get_cached_translation_coverage(
+            all_lines,
+            source_lang="en",
+            target_languages=translated_languages,
+        )
+    except Exception as exc:
+        logger.warning("Could not load product translation coverage: %s", exc)
+        coverage = {}
+    result: Dict[int, set[str]] = {}
+    for product_id, lines in product_lines.items():
+        available = {"en"}
+        # An empty caption has no prose that could create an English fallback.
+        if not lines:
+            available.update(translated_languages)
+        else:
+            for language in translated_languages:
+                if all(language in coverage.get(line, set()) for line in lines):
+                    available.add(language)
+        result[product_id] = available
+    return result
 
 
 async def _translate_seo_text(text: str, language: str) -> str:
@@ -5769,14 +5824,25 @@ def _seo_preferred_fallback_media_index(product: dict, media_index: int) -> Opti
     return None
 
 
-def _schema_date(value: Any, fallback: str = "") -> str:
+def _schema_datetime(value: Any, fallback: str = "") -> str:
+    """Return an RFC 3339 timestamp with an explicit timezone for schema.org."""
+    parsed: Optional[datetime] = None
     if isinstance(value, datetime):
-        return value.date().isoformat()
-    if isinstance(value, str) and value:
-        normalized = value.replace("T", " ").split(" ", 1)[0]
-        if re.match(r"^\d{4}-\d{2}-\d{2}$", normalized):
-            return normalized
-    return fallback
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        candidate = value.strip().replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError:
+            try:
+                parsed = datetime.strptime(candidate[:10], "%Y-%m-%d")
+            except ValueError:
+                return fallback
+    if parsed is None:
+        return fallback
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.isoformat(timespec="seconds")
 
 
 _VISIBLE_PRICE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -6327,6 +6393,7 @@ async def _seo_side_note_terms(
 async def _search_console_sitemap_fingerprint() -> str:
     """Fingerprint meaningful sitemap inputs so unchanged maps are not resubmitted."""
     products = await _catalog_db.get_all_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
+    product_languages = await _product_translation_languages(products)
     digest = hashlib.sha256()
     digest.update(str(Config.SEARCH_CONSOLE_SITE_URL or "").encode())
     digest.update(str(Config.SEARCH_CONSOLE_SITEMAP_URL or "").encode())
@@ -6340,6 +6407,9 @@ async def _search_console_sitemap_fingerprint() -> str:
                     "category", "subcategory", "caption",
                 )
             ).encode("utf-8", errors="ignore")
+        )
+        digest.update(
+            ",".join(sorted(product_languages.get(int(product.get("id") or 0), {"en"}))).encode()
         )
         digest.update(b"\x1e")
     for row in await _catalog_db.get_seo_mapping_lastmods():
@@ -6540,7 +6610,8 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
                         product: Optional[dict] = None, deep_link: str = "",
                         category: str = "", og_type: str = "website",
                         schema_title: str = "",
-                        language: str = "en", alternate_path: str = "") -> dict:
+                        language: str = "en", alternate_path: str = "",
+                        alternate_languages: Optional[Iterable[str]] = None) -> dict:
     """Build template context dict for SSR SEO pages."""
     language = _normalize_seo_language(language)
     ui = _seo_ui(language)
@@ -6558,8 +6629,8 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
             product_images.insert(0, image)
         primary_image = product_images[0] if product_images else image or _DEFAULT_OG_IMAGE
         product_videos = _product_video_urls(product, absolute=True, limit=6)
-        date_published = _schema_date(product.get("created_at"))
-        date_modified = _schema_date(product.get("updated_at") or product.get("created_at"), date_published)
+        date_published = _schema_datetime(product.get("created_at"))
+        date_modified = _schema_datetime(product.get("updated_at") or product.get("created_at"), date_published)
         offer = _schema_offer_for_product(product, product_url)
         use_product_schema = bool(offer and product_images)
         catalog_item_schema: dict = {
@@ -6705,7 +6776,7 @@ def _build_seo_context(*, title: str, desc: str, image: str = "", url: str = "",
         "telegram_deep_link": deep_link or f"https://t.me/{_STOREFRONT_BOT_USERNAME}",
         "seo_lang": language,
         "seo_locale": _SEO_OG_LOCALES.get(language, "en_US"),
-        "seo_alternates": _seo_alternate_links(alternate_path),
+        "seo_alternates": _seo_alternate_links(alternate_path, alternate_languages),
         "language_switch": _seo_alternate_links(alternate_path)[:-1],
         "ui": ui,
     }
@@ -7039,6 +7110,7 @@ async def serve_sitemap_xml(request: Request):
     from datetime import date
     today = date.today().isoformat()
     products = await _catalog_db.get_all_products_excluding_categories(EXCLUDED_FROM_ALL_PRODUCTS)
+    product_languages = await _product_translation_languages(products)
     newest_product_lastmod = _newest_lastmod(products, today)
     static_seo_lastmod = _static_seo_lastmod(today)
     mapping_lastmod, mapping_by_category, mapping_by_taxonomy = await _seo_mapping_freshness(today)
@@ -7126,7 +7198,10 @@ async def serve_sitemap_xml(request: Request):
             for image_url in _product_photo_image_urls(p, absolute=True, limit=4)
         )
         thumbnail_url = _product_video_thumbnail_url(p)
+        available_languages = product_languages.get(int(p.get("id") or 0), {"en"})
         for language in SUPPORTED_LANGUAGES:
+            if language not in available_languages:
+                continue
             loc = _localized_url(product_path, language)
             video_xml = "".join(
                 f"    <video:video>\n"
@@ -7141,7 +7216,7 @@ async def serve_sitemap_xml(request: Request):
             urls.append(
                 f"  <url>\n"
                 f"    <loc>{html.escape(loc)}</loc>\n"
-                f"{_sitemap_alternate_xml(product_path)}"
+                f"{_sitemap_alternate_xml(product_path, available_languages)}"
                 f"    <lastmod>{lastmod}</lastmod>\n"
                 f"{image_xml}"
                 f"{video_xml}"
@@ -7815,6 +7890,10 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
     localized_raw_desc = " ".join(
         line for line in localized_description_lines if isinstance(line, str) and line.strip()
     )[:160] or raw_seo_desc
+    product_languages = (
+        await _product_translation_languages([product])
+    ).get(internal_product_id, {"en"})
+    localized_is_indexable = language in product_languages
     seo_desc = _build_product_seo_description(product_title, localized_raw_desc, category, subcategory, language)
     duplicate_title_count = 0
     if hasattr(_catalog_db, "count_products_with_title"):
@@ -7831,7 +7910,10 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
     )
     seo_image = _product_primary_image_url(product)
     product_path = _canonical_product_path(seo_product_id, caption)
-    product_url = _localized_url(product_path, language)
+    product_url = _localized_url(
+        product_path,
+        language if localized_is_indexable else "en",
+    )
     deep_link = _public_product_bot_url(public_product_id)
     public_product_bot_username = _public_product_bot_username()
     webapp_link = build_webapp_product_url(Config.WEB_APP_URL, public_product_id)
@@ -7922,11 +8004,15 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
         category=category,
         language=language,
         alternate_path=product_path,
+        alternate_languages=product_languages,
     )
     ctx["request"] = request
     ctx["product"] = product
     ctx["product_id"] = public_product_id
     ctx["product_title"] = product_title
+    if not localized_is_indexable:
+        ctx["seo_robots"] = "noindex, follow"
+        ctx["seo_googlebot"] = "noindex, follow"
     ctx["stock_status"] = str(product.get("stock_status") or "active").lower()
     ctx["is_available"] = ctx["stock_status"] == "active"
     ctx["description_lines"] = localized_description_lines

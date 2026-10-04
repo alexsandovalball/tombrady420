@@ -118,7 +118,8 @@ def main() -> int:
         require("<h1" in html, "product page missing h1")
         require('rel="canonical"' in html, "product page missing canonical")
         require('property="og:image"' in html, "product page missing og:image")
-        require('hreflang="de"' in html, "product page missing localized alternates")
+        require('hreflang="en"' in html, "product page missing English alternate")
+        require('hreflang="x-default"' in html, "product page missing x-default alternate")
         require("/media/products/" in html, "product page missing public photo media URL")
         media_match = re.search(r"/media/products/\d+/\d+", html)
         if media_match:

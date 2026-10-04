@@ -326,6 +326,8 @@ def _format_search_console_status(snapshot: dict) -> list[str]:
     import_requests = runtime.get("search_console_import_last_requests", 0)
     import_media_rows = runtime.get("search_console_import_last_media_rows", 0)
     import_aggregates = runtime.get("search_console_import_last_aggregates", 0)
+    import_signal_candidates = runtime.get("search_console_import_last_signal_candidates", 0)
+    import_signal_changes = runtime.get("search_console_import_last_signals", 0)
     import_mismatches = runtime.get("search_console_import_last_page_mismatches", 0)
     import_error = runtime.get("search_console_import_last_error") or ""
     inspection_status = runtime.get("search_console_inspection_last_status") or "pending"
@@ -347,6 +349,7 @@ def _format_search_console_status(snapshot: dict) -> list[str]:
         f"• Last import health: {import_status}",
         f"• Property used: {import_property}",
         f"• API requests/aggregates: {_fmt_count(import_requests)}/{_fmt_count(import_aggregates)}",
+        f"• Signal candidates/real changes: {_fmt_count(import_signal_candidates)}/{_fmt_count(import_signal_changes)}",
         f"• Image/video rows: {_fmt_count(import_media_rows)}",
         f"• Page mismatches rejected: {_fmt_count(import_mismatches)}",
         f"• Daily URL inspection: {inspection_status}",
@@ -474,11 +477,12 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         recent_external = snapshot.get("recent_external_signals") or []
         if recent_external:
-            lines.extend(["", "New External/Google Signals"])
+            lines.extend(["", "Recently Changed External/Google Signals"])
             for item in recent_external[:5]:
                 lines.append(
                     f"• {item.get('term')} → {_format_seo_target(item)} "
-                    f"({item.get('provider')}, confidence {item.get('confidence')})"
+                    f"({item.get('provider')}, confidence {item.get('confidence')}, "
+                    f"changed {item.get('updated_at') or 'unknown'})"
                 )
 
         unmapped = snapshot.get("unmapped") or []
