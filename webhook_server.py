@@ -127,6 +127,13 @@ from configs.logging_config import configure_logging
 configure_logging()
 logger = logging.getLogger(__name__)
 
+_TELEGRAM_BOT_TOKEN_RE = re.compile(r"^\d{6,}:[A-Za-z0-9_-]{20,}$")
+
+
+def _is_plausible_telegram_bot_token(token: Any) -> bool:
+    """Reject usernames/placeholders without exposing or contacting Telegram."""
+    return bool(_TELEGRAM_BOT_TOKEN_RE.fullmatch(str(token or "").strip()))
+
 
 def _json_no_store(payload: Any, status_code: int = status.HTTP_200_OK) -> JSONResponse:
     """Return private JSON without allowing browser/proxy caching."""
@@ -2239,6 +2246,14 @@ async def reinitialize_bots(fastapi_app=None) -> dict:
         # history[idx] = [previous, current]; store prev before we know the new current
         _webhook_secret_history[idx] = [prev_token, None]
 
+        if not _is_plausible_telegram_bot_token(token):
+            message = "invalid Telegram bot token format; expected the token from BotFather, not a username"
+            logger.warning("Bot reinitialisation skipped index=%d reason=invalid_token_format", idx)
+            summary["failed"].append(idx)
+            summary["errors"][str(idx)] = message
+            _record_bot_startup_issue(idx, "reinit_config", message, error_type="InvalidTokenFormat")
+            continue
+
         try:
             bot_app, webhook_secret_token = await setup_application(token, bot_index=idx)
             # Now rotate: previous = what was current, current = new token
@@ -2290,6 +2305,11 @@ async def setup_application(bot_token: str, bot_index: int = 0):
         deterministic value derived from bot_token registered with Telegram for
         this bot, or None if webhook mode is not active.
     """
+    if not _is_plausible_telegram_bot_token(bot_token):
+        raise ConfigError(
+            "Invalid Telegram bot token format; use the token issued by BotFather, not @username"
+        )
+
     slot_id = _slot_id_for_bot_index(bot_index)
     slot_name = f"bot_token_{slot_id}"
     token_suffix = bot_token[-6:] if bot_token else "empty"
@@ -3863,6 +3883,16 @@ async def _inspect_search_console_health_once(
             server_errors,
             blocked,
         )
+        for issue in issue_rows[:8]:
+            logger.warning(
+                "[search_console_inspection_issue] url=%s verdict=%s coverage=%s fetch=%s canonical_mismatch=%s error=%s",
+                issue.get("url") or "",
+                issue.get("verdict") or "",
+                issue.get("coverage") or "",
+                issue.get("fetch") or "",
+                bool(issue.get("canonical_mismatch")),
+                str(issue.get("error") or "")[:180],
+            )
     else:
         logger.info(
             "[search_console_inspection] inspected=%d indexed=%d issues=0 property=%s",
@@ -4516,6 +4546,13 @@ async def lifespan(app: FastAPI):
             startup_summary["skipped"].append(idx)
             webhook_secret_tokens.append(None)
             _record_bot_startup_issue(idx, "startup_skipped", "empty token")
+            continue
+        if not _is_plausible_telegram_bot_token(token):
+            message = "invalid Telegram bot token format; expected the token from BotFather, not a username"
+            logger.warning("Bot startup skipped index=%d reason=invalid_token_format", idx)
+            startup_summary["failed"].append(idx)
+            webhook_secret_tokens.append(None)
+            _record_bot_startup_issue(idx, "startup_config", message, error_type="InvalidTokenFormat")
             continue
         try:
             bot_app, webhook_secret_token = await setup_application(token, idx)
@@ -8988,7 +9025,41 @@ async def get_product_detail(request: Request, product_id: int, lang: str = "en"
     else:
         product = await _catalog_db.get_product(product_id)
     if not product:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+        redirect_meta = None
+        try:
+            if hasattr(_catalog_db, "get_deleted_product_redirect_by_public_id"):
+                redirect_meta = await _catalog_db.get_deleted_product_redirect_by_public_id(product_id)
+            if not redirect_meta and hasattr(_catalog_db, "get_deleted_product_redirect"):
+                redirect_meta = await _catalog_db.get_deleted_product_redirect(product_id)
+        except Exception as exc:
+            logger.debug("Failed to resolve API product fallback product_id=%s: %s", product_id, exc)
+
+        category = str((redirect_meta or {}).get("category") or "")
+        subcategory = str((redirect_meta or {}).get("subcategory") or "")
+        matched_category = _resolve_category_name(category) if category else None
+        matched_subcategory = (
+            _resolve_subcategory_name(matched_category, subcategory)
+            if matched_category and subcategory
+            else None
+        )
+        fallback_path = "/"
+        if matched_category and matched_subcategory:
+            fallback_path = _canonical_subcategory_path(matched_category, matched_subcategory)
+        elif matched_category:
+            fallback_path = _canonical_category_path(matched_category)
+
+        return _json_no_store(
+            {
+                "detail": "Product not found",
+                "product_id": product_id,
+                "fallback": {
+                    "category": matched_category or "",
+                    "subcategory": matched_subcategory or "",
+                    "path": fallback_path,
+                },
+            },
+            status_code=status.HTTP_410_GONE,
+        )
     internal_product_id = int(product.get("id") or product_id)
     public_product_id = _product_public_id(product) or internal_product_id
 

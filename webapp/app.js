@@ -1083,11 +1083,32 @@
             const responseTime = Date.now() - startTime;
 
             if (!response.ok) {
+                let fallback = null;
+                if (response.status === 404 || response.status === 410) {
+                    try {
+                        const payload = await response.json();
+                        fallback = payload?.fallback || null;
+                    } catch (_err) {
+                        fallback = null;
+                    }
+                }
                 logger.apiCall('load_deep_link_product', 'error', {
                     product_id: productId,
                     status: response.status,
-                    response_time_ms: responseTime
+                    response_time_ms: responseTime,
+                    fallback_path: fallback?.path || '/'
                 });
+                if (fallback?.category) {
+                    await loadProducts(
+                        fallback.category,
+                        fallback.subcategory || null,
+                        true,
+                        false,
+                        'replace'
+                    );
+                    return true;
+                }
+                showWelcome(false, 'replace');
                 return false;
             }
 
