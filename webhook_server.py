@@ -3796,13 +3796,30 @@ async def _inspect_search_console_health_once(
         page_impressions[page] = page_impressions.get(page, 0) + max(0, int(row.get("impressions") or 0))
 
     urls = [_absolute_storefront_url("/")]
+    try:
+        newest_products = await _catalog_db.get_all_products_excluding_categories(
+            EXCLUDED_FROM_ALL_PRODUCTS,
+            limit=3,
+        )
+    except Exception as exc:
+        logger.debug("Could not add current products to URL inspection sample: %s", exc)
+        newest_products = []
+    for product in newest_products:
+        product_id = _product_seo_id(product)
+        if product_id is None:
+            continue
+        urls.append(
+            _absolute_storefront_url(
+                _canonical_product_path(product_id, product.get("caption") or "")
+            )
+        )
     urls.extend(
         page
         for page, _impressions in sorted(
             page_impressions.items(),
             key=lambda item: (-item[1], item[0]),
         )
-        if page != urls[0]
+        if page not in urls
     )
     urls = list(dict.fromkeys(urls))[:8]
     attempted_at = datetime.now().isoformat(sep=" ", timespec="seconds")
@@ -5576,6 +5593,26 @@ def _fit_branded_seo_title(prefix: str) -> str:
     return f"{prefix}{suffix}"
 
 
+def _fit_product_seo_title(core: str, expanded: str) -> str:
+    """Keep the exact product name intact before adding taxonomy or branding."""
+    core = _clean_seo_title_part(core)
+    expanded = _clean_seo_title_part(expanded)
+    suffix = f" | {_SEO_BRAND_NAME}"
+    if len(expanded) + len(suffix) <= _SEO_TITLE_MAX_LENGTH:
+        return f"{expanded}{suffix}"
+    if len(core) + len(suffix) <= _SEO_TITLE_MAX_LENGTH:
+        return f"{core}{suffix}"
+
+    # Long exact product names are more useful to searchers than a truncated
+    # name followed by repeated site branding. Google can display a shorter
+    # title when needed without losing the product's identifying words here.
+    product_title_max = 78
+    if len(core) <= product_title_max:
+        return core
+    shortened = core[:product_title_max].rsplit(" ", 1)[0].rstrip(" -_|,.")
+    return shortened or core[:product_title_max].rstrip(" -_|,.")
+
+
 def _build_product_seo_title(
     title: str,
     category: str = "",
@@ -5583,16 +5620,17 @@ def _build_product_seo_title(
     language: str = "en",
     differentiator: str = "",
 ) -> str:
-    parts = [_clean_seo_title_part(title)]
+    core_parts = [_clean_seo_title_part(title)]
     if differentiator:
-        parts.append(_clean_seo_title_part(differentiator))
+        core_parts.append(_clean_seo_title_part(differentiator))
+    parts = list(core_parts)
     language = _normalize_seo_language(language)
     for value in (get_subcategory_display_name(subcategory, language) if subcategory else "",
                   get_category_display_name(category, language) if category else ""):
         cleaned = _clean_seo_title_part(value)
         if cleaned and cleaned != "Product" and not _title_already_contains(" ".join(parts), cleaned):
             parts.append(cleaned)
-    return _fit_branded_seo_title(" ".join(parts))
+    return _fit_product_seo_title(" ".join(core_parts), " ".join(parts))
 
 
 def _build_product_seo_description(title: str, desc: str, category: str = "", subcategory: str = "", language: str = "en") -> str:
@@ -7220,11 +7258,11 @@ async def serve_sitemap_xml(request: Request):
         if pid is None:
             continue
         product_lastmod = _product_lastmod(p, today)
-        product_mapping_lastmod = mapping_by_taxonomy.get(
-            _seo_taxonomy_key(p.get("category") or "", p.get("subcategory") or ""),
-            product_lastmod,
-        )
-        lastmod = max(product_lastmod, product_mapping_lastmod)
+        # Learned related-search terms are supporting content, not a product
+        # inventory change. Advancing every product's lastmod for a taxonomy
+        # mapping update creates noisy mass-recrawl signals, so product URLs
+        # only advertise their own real modification date.
+        lastmod = product_lastmod
         product_path = _canonical_product_path(pid, p.get("caption") or "")
         title = _caption_parts(p.get("caption") or "")[0]
         image_xml = "".join(
@@ -7673,7 +7711,13 @@ async def serve_localized_learn_index(language: str, request: Request):
 
 @app.get("/learn/{slug}", response_class=HTMLResponse)
 async def serve_learn_page(slug: str, request: Request):
-    return RedirectResponse(url="/", status_code=status.HTTP_301_MOVED_PERMANENTLY)
+    legacy_targets = {
+        "cartridges-vapes": _canonical_category_path("CARTRIDGES"),
+    }
+    return RedirectResponse(
+        url=legacy_targets.get(_taxonomy_slug(slug), "/"),
+        status_code=status.HTTP_301_MOVED_PERMANENTLY,
+    )
 
 
 @app.get("/guides-feed.xml", response_class=Response)
@@ -7684,8 +7728,11 @@ async def serve_learn_feed():
 @app.get("/{language}/learn/{slug}", response_class=HTMLResponse)
 async def serve_localized_learn_page(language: str, slug: str, request: Request):
     language = _require_localized_language(language)
+    legacy_targets = {
+        "cartridges-vapes": _canonical_category_path("CARTRIDGES"),
+    }
     return RedirectResponse(
-        url=_localized_path("/", language),
+        url=_localized_path(legacy_targets.get(_taxonomy_slug(slug), "/"), language),
         status_code=status.HTTP_301_MOVED_PERMANENTLY,
     )
 

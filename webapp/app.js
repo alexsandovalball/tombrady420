@@ -2085,9 +2085,22 @@
         });
         appendAdminTextDetails(
             panel,
+            'admin-google-declines',
+            'Google Rankings To Recover',
+            'Queries that lost impressions or dropped by at least five positions in the latest 28-day period versus the previous 28 days.',
+            seo.search_console_declining_queries || [],
+            item => {
+                const recentPosition = item.recent_position || 'not ranking';
+                const previousPosition = item.previous_position || '-';
+                return `${item.query || 'query'}: ${formatAdminCount(item.previous_impressions)}→${formatAdminCount(item.recent_impressions)} impressions, position ${previousPosition}→${recentPosition} · ${item.page || '/'}`;
+            },
+            10
+        );
+        appendAdminTextDetails(
+            panel,
             'admin-google-opportunities',
             'Google Ranking Opportunities',
-            'Queries with impressions where stronger relevance or click-through may help.',
+            'Low-click queries currently ranking between positions 3 and 80 where stronger relevance or click-through may help.',
             seo.search_console_opportunities || [],
             item => `${item.query || 'query'}: ${formatAdminCount(item.impressions)} impressions, ${formatAdminCount(item.clicks)} clicks, CTR ${Math.round(Number(item.ctr || 0) * 1000) / 10}%, avg pos ${item.avg_position || '-'} · ${item.page || '/'}`,
             10

@@ -368,6 +368,22 @@ async def _handle_delete(update, context, query, user_id, parts):
     if len(title) > 120:
         title = title[:117] + "..."
 
+    google_note = ""
+    try:
+        google_summary = await db.get_product_search_console_summary(product_id)
+        impressions = int(google_summary.get("impressions") or 0)
+        clicks = int(google_summary.get("clicks") or 0)
+        if impressions:
+            last_seen = str(google_summary.get("last_seen") or "unknown")
+            google_note = (
+                "\n\nGoogle history detected: "
+                f"{impressions} impression(s), {clicks} click(s), last seen {last_seen}. "
+                "Deleting removes this product page from the sitemap. If it may return, "
+                "cancel and mark it Sold out instead to preserve the URL."
+            )
+    except Exception as exc:
+        logger.debug("Could not load Google history for product %s: %s", product_id, exc)
+
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ Yes, delete", callback_data=f"confirm_delete_product|{product_id}"),
@@ -384,6 +400,7 @@ async def _handle_delete(update, context, query, user_id, parts):
             f"Product: {title}\n"
             f"ID: {product_id}\n\n"
             "This removes the listing, queued notifications for it, and stored media-group rows."
+            f"{google_note}"
         ),
         reply_markup=keyboard,
         parse_mode=None,

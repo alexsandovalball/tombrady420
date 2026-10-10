@@ -1338,6 +1338,40 @@ class Database:
             """, (public_id,)) as cursor:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
+
+    async def get_product_search_console_summary(self, product_id: int) -> Dict[str, Any]:
+        """Return retained Google performance for a canonical product URL."""
+        product_id = int(product_id)
+        path_fragment = f"%/product/{product_id}/%"
+        path_without_slug = f"%/product/{product_id}"
+        async with self.get_connection() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT
+                    COALESCE(SUM(clicks), 0) AS clicks,
+                    COALESCE(SUM(impressions), 0) AS impressions,
+                    ROUND(
+                        SUM(position * impressions) / NULLIF(SUM(impressions), 0),
+                        1
+                    ) AS avg_position,
+                    MAX(source_date) AS last_seen,
+                    COUNT(DISTINCT page) AS page_count,
+                    COUNT(DISTINCT normalized_query) AS query_count
+                FROM search_console_query_events
+                WHERE page LIKE ? OR page LIKE ?
+                """,
+                (path_fragment, path_without_slug),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else {
+                    "clicks": 0,
+                    "impressions": 0,
+                    "avg_position": None,
+                    "last_seen": None,
+                    "page_count": 0,
+                    "query_count": 0,
+                }
     
     async def get_all_products(self, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
         """Get all products with pagination."""
@@ -6507,10 +6541,84 @@ class Database:
                     FROM search_console_query_events
                     WHERE source_date >= ?
                     GROUP BY normalized_query, page
-                    HAVING SUM(impressions) >= 2
-                       AND SUM(position * impressions) / NULLIF(SUM(impressions), 0) BETWEEN 4 AND 40
-                       AND 1.0 * SUM(clicks) / NULLIF(SUM(impressions), 0) < 0.15
+                    HAVING SUM(impressions) >= 1
+                       AND SUM(position * impressions) / NULLIF(SUM(impressions), 0) BETWEEN 3 AND 80
+                       AND 1.0 * SUM(clicks) / NULLIF(SUM(impressions), 0) < 0.20
                     ORDER BY SUM(impressions) DESC, avg_position ASC
+                    LIMIT ?
+                    """,
+                    (search_console_since, min(limit, 25)),
+                ),
+                "search_console_declining_queries": await rows(
+                    """
+                    WITH bounds AS (
+                        SELECT MAX(source_date) AS max_date
+                        FROM search_console_query_events
+                        WHERE source_date >= ?
+                    ),
+                    comparison AS (
+                        SELECT
+                            MIN(query) AS query,
+                            normalized_query,
+                            page,
+                            SUM(CASE
+                                WHEN source_date >= date(bounds.max_date, '-27 day')
+                                THEN clicks ELSE 0 END) AS recent_clicks,
+                            SUM(CASE
+                                WHEN source_date >= date(bounds.max_date, '-27 day')
+                                THEN impressions ELSE 0 END) AS recent_impressions,
+                            SUM(CASE
+                                WHEN source_date BETWEEN date(bounds.max_date, '-55 day')
+                                                     AND date(bounds.max_date, '-28 day')
+                                THEN clicks ELSE 0 END) AS previous_clicks,
+                            SUM(CASE
+                                WHEN source_date BETWEEN date(bounds.max_date, '-55 day')
+                                                     AND date(bounds.max_date, '-28 day')
+                                THEN impressions ELSE 0 END) AS previous_impressions,
+                            ROUND(
+                                SUM(CASE
+                                    WHEN source_date >= date(bounds.max_date, '-27 day')
+                                    THEN position * impressions ELSE 0 END)
+                                / NULLIF(SUM(CASE
+                                    WHEN source_date >= date(bounds.max_date, '-27 day')
+                                    THEN impressions ELSE 0 END), 0),
+                                1
+                            ) AS recent_position,
+                            ROUND(
+                                SUM(CASE
+                                    WHEN source_date BETWEEN date(bounds.max_date, '-55 day')
+                                                         AND date(bounds.max_date, '-28 day')
+                                    THEN position * impressions ELSE 0 END)
+                                / NULLIF(SUM(CASE
+                                    WHEN source_date BETWEEN date(bounds.max_date, '-55 day')
+                                                         AND date(bounds.max_date, '-28 day')
+                                    THEN impressions ELSE 0 END), 0),
+                                1
+                            ) AS previous_position,
+                            MAX(source_date) AS last_seen
+                        FROM search_console_query_events
+                        CROSS JOIN bounds
+                        WHERE bounds.max_date IS NOT NULL
+                          AND source_date >= date(bounds.max_date, '-55 day')
+                        GROUP BY normalized_query, page
+                    )
+                    SELECT *, recent_impressions - previous_impressions AS impression_change
+                    FROM comparison
+                    WHERE previous_impressions >= 1
+                      AND (
+                          recent_impressions = 0
+                          OR recent_impressions < previous_impressions
+                          OR (
+                              recent_position IS NOT NULL
+                              AND previous_position IS NOT NULL
+                              AND recent_position >= previous_position + 5
+                          )
+                      )
+                    ORDER BY
+                        CASE WHEN recent_impressions = 0 THEN 0 ELSE 1 END,
+                        (previous_impressions - recent_impressions) DESC,
+                        previous_impressions DESC,
+                        last_seen DESC
                     LIMIT ?
                     """,
                     (search_console_since, min(limit, 25)),

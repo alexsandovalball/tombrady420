@@ -429,6 +429,16 @@ async def seostatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
 
         opportunities = snapshot.get("search_console_opportunities") or []
+        declining_queries = snapshot.get("search_console_declining_queries") or []
+        if declining_queries:
+            lines.extend(["", "Google Rankings To Recover"])
+            for item in declining_queries[:5]:
+                recent_position = item.get("recent_position") or "not ranking"
+                lines.append(
+                    f"• {item.get('query')}: impressions "
+                    f"{_fmt_count(item.get('previous_impressions'))}→{_fmt_count(item.get('recent_impressions'))}, "
+                    f"position {item.get('previous_position') or '-'}→{recent_position}"
+                )
         if opportunities:
             lines.extend(["", "Google Ranking Opportunities"])
             for item in opportunities[:5]:
