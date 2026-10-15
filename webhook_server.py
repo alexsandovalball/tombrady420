@@ -6917,6 +6917,7 @@ def _seo_cached_response(request: Request, cache_key: str) -> Optional[Response]
         media_type=media_type,
         max_age=max_age,
         etag=etag,
+        extra_headers={"Cache-Control": "public, no-cache"} if media_type.startswith("text/html") else None,
     )
 
 
@@ -6971,6 +6972,7 @@ def _render_seo_template(
         content,
         media_type="text/html; charset=utf-8",
         max_age=max_age,
+        extra_headers={"Cache-Control": "public, no-cache"},
     )
 
 
@@ -7563,7 +7565,7 @@ async def _serve_storefront_index(
         request,
         "localized_home.html",
         ctx,
-        cache_key=f"localized-home-public-search-media-retry-v1:{language}:{len(ctx['seo_recent_products'])}:{_newest_lastmod(recent_products, datetime.now().date().isoformat())}",
+        cache_key=f"localized-home-public-search-media-retry-v2:{language}:{len(ctx['seo_recent_products'])}:{_newest_lastmod(recent_products, datetime.now().date().isoformat())}:{ctx.get('order_fingerprint')}",
     )
 
 
@@ -8850,6 +8852,14 @@ async def _public_order_context(telegram_bot_url: str = "") -> Dict[str, Any]:
             "label": str(item.get("label") or "Contact")[:40],
             "url": str(item.get("url") or "")[:500],
         }
+        for item in order_links
+        if item.get("url")
+    ]
+    extra_links = [
+        {
+            "label": str(item.get("label") or "Contact")[:40],
+            "url": str(item.get("url") or "")[:500],
+        }
         for item in channels["extra_links"]
     ]
     fingerprint = hashlib.sha256(
@@ -8857,6 +8867,7 @@ async def _public_order_context(telegram_bot_url: str = "") -> Dict[str, Any]:
             {
                 "order_contact": order_contact,
                 "order_links": clean_links,
+                "telegram_bot_url": telegram_bot_url,
             },
             sort_keys=True,
             ensure_ascii=False,
@@ -8872,6 +8883,7 @@ async def _public_order_context(telegram_bot_url: str = "") -> Dict[str, Any]:
         "telegram_link": channels["telegram_link"],
         "bot_link": channels["bot_link"],
         "order_links": clean_links,
+        "extra_order_links": extra_links,
         "order_fingerprint": fingerprint,
     }
 
