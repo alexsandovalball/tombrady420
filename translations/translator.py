@@ -142,10 +142,12 @@ class TranslationService:
         """Set the database instance for persistent caching."""
         self._db = db
 
-    async def _reserve_request_slot(self) -> bool:
-        """Space uncached provider calls and return False during backoff."""
+    async def _reserve_request_slot(self, *, wait_for_slot: bool = False) -> bool:
+        """Space provider calls, optionally waiting for an active request gate."""
         loop = asyncio.get_running_loop()
-        if loop.time() < self._rate_limit_until or self._request_gate.locked():
+        if loop.time() < self._rate_limit_until:
+            return False
+        if self._request_gate.locked() and not wait_for_slot:
             return False
         async with self._request_gate:
             now = loop.time()
@@ -188,7 +190,14 @@ class TranslationService:
                 logger.error("Error checking database translation cache: %s", exc)
         return None
     
-    async def translate(self, text: str, target_lang: str, source_lang: str = "en") -> str:
+    async def translate(
+        self,
+        text: str,
+        target_lang: str,
+        source_lang: str = "en",
+        *,
+        wait_for_slot: bool = False,
+    ) -> str:
         """
         Translate text from source language to target language asynchronously.
         
@@ -219,7 +228,7 @@ class TranslationService:
 
         cache_key = f"{normalized_source}:{normalized_target}:{text}"
         
-        if not await self._reserve_request_slot():
+        if not await self._reserve_request_slot(wait_for_slot=wait_for_slot):
             logger.debug(
                 "Translation provider cooling down (%s -> %s); using source text",
                 normalized_source,
@@ -377,5 +386,8 @@ async def translate_text_async(text: str, target_lang: str) -> str:
     Returns:
         Translated text
     """
-    return await translation_service.translate(text, target_lang)
+    # User-facing Telegram interactions take priority over background SEO and
+    # WebApp warm-up traffic. Waiting here is bounded by the short request
+    # spacing gate; provider cooldowns still fail open immediately.
+    return await translation_service.translate(text, target_lang, wait_for_slot=True)
 
