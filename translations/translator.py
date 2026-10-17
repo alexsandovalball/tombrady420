@@ -129,35 +129,10 @@ class TranslationService:
         self._cache = BoundedCache(max_size=cache_size)
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         self._db = db
-        # deep-translator uses an upstream endpoint that rate-limits bursts.
-        # Serialize request starts across every bot instance and fail open while
-        # the provider is cooling down so Telegram callbacks never wait on it.
-        self._request_gate = asyncio.Lock()
-        self._next_request_at = 0.0
-        self._rate_limit_until = 0.0
-        self._min_request_interval = 0.30
-        self._rate_limit_cooldown = 60.0
     
     def set_database(self, db):
         """Set the database instance for persistent caching."""
         self._db = db
-
-    async def _reserve_request_slot(self, *, wait_for_slot: bool = False) -> bool:
-        """Space provider calls, optionally waiting for an active request gate."""
-        loop = asyncio.get_running_loop()
-        if loop.time() < self._rate_limit_until:
-            return False
-        if self._request_gate.locked() and not wait_for_slot:
-            return False
-        async with self._request_gate:
-            now = loop.time()
-            if now < self._rate_limit_until:
-                return False
-            delay = self._next_request_at - now
-            if delay > 0:
-                await asyncio.sleep(delay)
-            self._next_request_at = loop.time() + self._min_request_interval
-            return True
 
     async def get_cached_translation(
         self,
@@ -165,7 +140,7 @@ class TranslationService:
         target_lang: str,
         source_lang: str = "en",
     ) -> Optional[str]:
-        """Return a translation from memory or SQLite without network access."""
+        """Read an existing translation without triggering provider traffic."""
         normalized_target = normalize_language_code(target_lang)
         normalized_source = normalize_language_code(source_lang)
         if normalized_target == normalized_source:
@@ -190,14 +165,7 @@ class TranslationService:
                 logger.error("Error checking database translation cache: %s", exc)
         return None
     
-    async def translate(
-        self,
-        text: str,
-        target_lang: str,
-        source_lang: str = "en",
-        *,
-        wait_for_slot: bool = False,
-    ) -> str:
+    async def translate(self, text: str, target_lang: str, source_lang: str = "en") -> str:
         """
         Translate text from source language to target language asynchronously.
         
@@ -222,26 +190,29 @@ class TranslationService:
             logger.warning(f"Invalid language code: {target_lang}, using default")
             return text
         
-        cached = await self.get_cached_translation(text, normalized_target, normalized_source)
+        # Check in-memory cache first
+        cache_key = f"{normalized_source}:{normalized_target}:{text}"
+        cached = self._cache.get(cache_key)
         if cached is not None:
             return cached
-
-        cache_key = f"{normalized_source}:{normalized_target}:{text}"
         
-        if not await self._reserve_request_slot(wait_for_slot=wait_for_slot):
-            logger.debug(
-                "Translation provider cooling down (%s -> %s); using source text",
-                normalized_source,
-                normalized_target,
-            )
-            return text
+        # Check database cache if available
+        if self._db:
+            try:
+                db_cached = await self._db.get_cached_translation(text, normalized_source, normalized_target)
+                if db_cached:
+                    # Also update in-memory cache
+                    self._cache.set(cache_key, db_cached)
+                    return db_cached
+            except Exception as e:
+                logger.error(f"Error checking database translation cache: {e}")
 
         try:
             # Protect placeholders before translation
             protected_text, placeholder_map = protect_placeholders(text)
             
             # Run translation in thread pool to avoid blocking event loop
-            loop = asyncio.get_running_loop()
+            loop = asyncio.get_event_loop()
             
             def _translate_sync():
                 translator = GoogleTranslator(source=normalized_source, target=normalized_target)
@@ -264,25 +235,7 @@ class TranslationService:
             
             return translated
         except Exception as e:
-            error_text = str(e)
-            if "too many requests" in error_text.lower() or "429" in error_text:
-                self._rate_limit_until = max(
-                    self._rate_limit_until,
-                    asyncio.get_running_loop().time() + self._rate_limit_cooldown,
-                )
-                logger.warning(
-                    "Translation provider rate-limited (%s -> %s); backing off for %.0fs",
-                    normalized_source,
-                    normalized_target,
-                    self._rate_limit_cooldown,
-                )
-            else:
-                logger.error(
-                    "Translation error (%s -> %s): %s",
-                    normalized_source,
-                    normalized_target,
-                    error_text,
-                )
+            logger.error(f"Translation error ({normalized_source} -> {normalized_target}): {e}")
             return text  # Return original text if translation fails
     
     async def get_string(self, key: str, lang: str = DEFAULT_LANGUAGE, **kwargs) -> str:
@@ -386,8 +339,5 @@ async def translate_text_async(text: str, target_lang: str) -> str:
     Returns:
         Translated text
     """
-    # User-facing Telegram interactions take priority over background SEO and
-    # WebApp warm-up traffic. Waiting here is bounded by the short request
-    # spacing gate; provider cooldowns still fail open immediately.
-    return await translation_service.translate(text, target_lang, wait_for_slot=True)
+    return await translation_service.translate(text, target_lang)
 

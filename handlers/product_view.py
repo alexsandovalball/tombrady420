@@ -11,7 +11,7 @@ from utils.safe_send import safe_send_message
 from utils.media_resolver import MediaResolver, collect_product_media
 from utils.pagination import paginate_items
 from utils.categories import canonicalize_subcategory, format_category_info, get_catalog_ui_text
-from translations.translator import translate_text_async, translation_service
+from translations.translator import translate_text_async
 
 logger = logging.getLogger(__name__)
 db = Database()
@@ -85,26 +85,6 @@ def _build_media_caption(
             normalized_caption += "..."
 
     return f"{normalized_caption}\n\n{suffix}"
-
-
-async def _cached_caption_segments(caption: str, language: str) -> str | None:
-    """Rebuild a caption from translations cached by localized WebApp pages."""
-    resolved_lines = []
-    translated_any = False
-    missing_translation = False
-    for line in caption.splitlines():
-        source_line = line.strip()
-        if not source_line:
-            resolved_lines.append(line)
-            continue
-        cached = await translation_service.get_cached_translation(source_line, language, source_lang="en")
-        if cached:
-            resolved_lines.append(cached)
-            translated_any = translated_any or cached != source_line
-        else:
-            resolved_lines.append(line)
-            missing_translation = True
-    return "\n".join(resolved_lines) if translated_any and not missing_translation else None
 
 
 def _build_admin_action_buttons(
@@ -251,19 +231,17 @@ async def show_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE,
         if user_lang and user_lang not in ["en", "en-US"]:
             try:
                 translated_caption = await translate_text_async(original_caption, user_lang)
-                if translated_caption and translated_caption != original_caption:
+                if len(translated_caption) <= 1024 or len(original_caption) > 1024:
                     caption = translated_caption
                 else:
-                    cached_segments = await _cached_caption_segments(original_caption, user_lang)
-                    if cached_segments:
-                        caption = cached_segments
-                    else:
-                        logger.warning(
-                            "Product caption translation unavailable; using source text "
-                            "product_id=%s language=%s",
-                            product_id,
-                            user_lang,
-                        )
+                    logger.info(
+                        "Translated caption exceeds Telegram limit; using complete original "
+                        "product_id=%s language=%s translated_length=%s original_length=%s",
+                        product_id,
+                        user_lang,
+                        len(translated_caption),
+                        len(original_caption),
+                    )
             except Exception as e:
                 logger.error(f"Error translating caption: {e}")
                 # Keep original caption if translation fails

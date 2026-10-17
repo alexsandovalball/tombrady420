@@ -202,7 +202,7 @@ _SEO_AUTO_LEARN_STARTUP_DELAY_SECONDS = _bounded_int_env(
 )
 _SEO_TRANSLATION_WARMUP_STARTUP_SECONDS = 240
 _SEO_TRANSLATION_WARMUP_INTERVAL_SECONDS = 1800
-_SEO_TRANSLATION_WARMUP_BATCH_SIZE = 1
+_SEO_TRANSLATION_WARMUP_BATCH_SIZE = 4
 _SEO_ROBOTS_CACHE_SECONDS = _bounded_int_env("SEO_ROBOTS_CACHE_SECONDS", 3600, 60, 86400)
 _SEO_SITEMAP_CACHE_SECONDS = _bounded_int_env("SEO_SITEMAP_CACHE_SECONDS", 300, 60, 3600)
 _SEO_PAGE_CACHE_SECONDS = _bounded_int_env("SEO_PAGE_CACHE_SECONDS", 300, 30, 3600)
@@ -4441,7 +4441,7 @@ async def _seo_trends_loop():
 
 
 async def _seo_translation_warmup_once() -> int:
-    """Warm one product/language pair without starving live bot translations."""
+    """Warm a small rotating batch of persistent product-page translations."""
     raw_offset = await _catalog_db.get_bot_setting("seo_translation_warmup_offset")
     try:
         offset = max(0, int(raw_offset or 0))
@@ -4462,31 +4462,26 @@ async def _seo_translation_warmup_once() -> int:
     if not products:
         return 0
 
-    target_languages = [language for language in SUPPORTED_LANGUAGES if language != "en"]
-    if not target_languages:
-        return 0
-    raw_language_index = await _catalog_db.get_bot_setting("seo_translation_warmup_language_index")
-    try:
-        language_index = max(0, int(raw_language_index or 0)) % len(target_languages)
-    except (TypeError, ValueError):
-        language_index = 0
-    language = target_languages[language_index]
-    caption = str(products[0].get("caption") or "").strip()
-    if caption:
-        await translation_service.translate(caption, language, source_lang="en")
-        cached = await translation_service.get_cached_translation(caption, language, source_lang="en")
-        if not cached:
-            logger.info(
-                "[seo_translation] deferred product_id=%s language=%s reason=provider_unavailable",
-                products[0].get("id") or products[0].get("product_id"),
-                language,
-            )
-            return 0
-
-    next_language_index = (language_index + 1) % len(target_languages)
-    next_offset = offset + len(products) if next_language_index == 0 else offset
-    await _catalog_db.set_bot_setting("seo_translation_warmup_language_index", str(next_language_index))
-    await _catalog_db.set_bot_setting("seo_translation_warmup_offset", str(next_offset))
+    texts: List[str] = []
+    warmed_taxonomies = set()
+    for product in products:
+        _title, _desc, lines = _caption_parts(product.get("caption") or "")
+        texts.extend(lines)
+        taxonomy = (product.get("category") or "", product.get("subcategory") or "")
+        if taxonomy not in warmed_taxonomies and taxonomy[0]:
+            warmed_taxonomies.add(taxonomy)
+            texts.extend(get_terms_for_taxonomy(*taxonomy, limit=Config.SEO_SIDE_NOTE_LIMIT))
+            texts.append(build_taxonomy_intro(*taxonomy))
+    texts = list(dict.fromkeys(text for text in texts if text))
+    if texts:
+        for language in SUPPORTED_LANGUAGES:
+            if language == "en" or _memory_pressure_level() != "normal":
+                continue
+            await translation_service.translate_batch(texts, language, source_lang="en")
+    await _catalog_db.set_bot_setting(
+        "seo_translation_warmup_offset",
+        str(offset + len(products)),
+    )
     return len(products)
 
 
