@@ -129,10 +129,26 @@ class TranslationService:
         self._cache = BoundedCache(max_size=cache_size)
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         self._db = db
+        # The unofficial Google endpoint rejects bursts above roughly five
+        # requests per second. Pace only provider starts; cache hits remain
+        # immediate and uncached user requests wait instead of falling back to
+        # untranslated source text.
+        self._request_gate = asyncio.Lock()
+        self._next_request_at = 0.0
+        self._min_request_interval = 0.30
     
     def set_database(self, db):
         """Set the database instance for persistent caching."""
         self._db = db
+
+    async def _wait_for_request_slot(self) -> None:
+        """Reserve a provider call while keeping starts below its burst limit."""
+        loop = asyncio.get_running_loop()
+        async with self._request_gate:
+            delay = self._next_request_at - loop.time()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._next_request_at = loop.time() + self._min_request_interval
 
     async def get_cached_translation(
         self,
@@ -210,9 +226,11 @@ class TranslationService:
         try:
             # Protect placeholders before translation
             protected_text, placeholder_map = protect_placeholders(text)
+
+            await self._wait_for_request_slot()
             
             # Run translation in thread pool to avoid blocking event loop
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             
             def _translate_sync():
                 translator = GoogleTranslator(source=normalized_source, target=normalized_target)
