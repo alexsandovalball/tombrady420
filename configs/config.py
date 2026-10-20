@@ -97,20 +97,10 @@ class ConfigClass:
         except UndefinedValueError:
             self.BOT_TOKEN = None
 
-        # BOT_TOKENS (comma-separated list) takes priority over individual token vars.
-        # This is useful when all tokens are known upfront or managed by an orchestrator.
-        try:
-            bot_tokens_raw = config('BOT_TOKENS')
-            self.BOT_TOKENS = [t.strip() for t in bot_tokens_raw.split(',') if t.strip()]
-            self.BOT_TOKEN = self.BOT_TOKENS[0] if self.BOT_TOKENS else None
-            if not self.BOT_TOKENS:
-                logger.warning("BOT_TOKENS is set but contains no valid tokens (check for extra commas or whitespace).")
-            self._load_remaining_config()
-            return
-        except UndefinedValueError:
-            pass
-
-        # Build BOT_TOKENS from individual env vars:
+        # Build BOT_TOKENS from individual env vars first. This is the canonical
+        # deployment format because each runtime slot has an unambiguous variable.
+        # BOT_TOKENS remains only as a backward-compatible fallback for older
+        # deployments that have not migrated their Render environment yet.
         #   index 0 = BOT_TOKEN (primary bot)
         #   index 1 = BOT_TOKEN_1, index 2 = BOT_TOKEN_2, … (additional bots)
         # Gaps in numbering are skipped but do NOT stop scanning; later indices
@@ -139,6 +129,30 @@ class ConfigClass:
                 continue
 
         self.BOT_TOKENS = bot_tokens
+
+        if self.BOT_TOKENS:
+            try:
+                config('BOT_TOKENS')
+                logger.warning(
+                    "BOT_TOKENS is also configured but individual BOT_TOKEN variables "
+                    "are taking precedence; remove BOT_TOKENS from the deployment environment."
+                )
+            except UndefinedValueError:
+                pass
+        else:
+            # Compatibility fallback for deployments that still provide only the
+            # legacy comma-separated variable.
+            try:
+                bot_tokens_raw = config('BOT_TOKENS')
+                self.BOT_TOKENS = [t.strip() for t in bot_tokens_raw.split(',') if t.strip()]
+                self.BOT_TOKEN = self.BOT_TOKENS[0] if self.BOT_TOKENS else None
+                if not self.BOT_TOKENS:
+                    logger.warning(
+                        "BOT_TOKENS is set but contains no valid tokens "
+                        "(check for extra commas or whitespace)."
+                    )
+            except UndefinedValueError:
+                pass
 
         self._load_remaining_config()
 
