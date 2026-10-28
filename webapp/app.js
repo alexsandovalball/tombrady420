@@ -1915,7 +1915,8 @@
         const webhookBotStats = webhookMonitor.bots || {};
         const runtimeBots = Array.isArray(data.runtime_bots) ? data.runtime_bots : [];
         const botHealthSummary = data.bot_health_summary || {};
-        const activeBots = runtimeBots.filter(bot => bot.running && bot.telegram_ok && bot.webhook_ok && bot.telegram_health === 'ok');
+        const activeBots = runtimeBots.filter(bot => bot.running && bot.telegram_ok);
+        const operationalBots = runtimeBots.filter(bot => bot.running && bot.telegram_ok && bot.webhook_ok && bot.telegram_health === 'ok');
         const unhealthyBots = runtimeBots.filter(bot => bot.telegram_health && !['ok', 'webhook_warning'].includes(bot.telegram_health));
         const webhookWarningBots = runtimeBots.filter(bot => bot.telegram_health === 'webhook_warning');
         const setupWarningBots = runtimeBots.filter(bot => Number(bot.startup_issue_count || 0) > 0);
@@ -1979,7 +1980,8 @@
 
         const grid = document.createElement('div');
         grid.className = 'admin-metric-grid';
-        appendAdminMetric(grid, 'Bots online', `${formatAdminCount(botHealthSummary.online ?? activeBots.length)}/${formatAdminCount(botHealthSummary.configured ?? data.configured_bot_count)}`);
+        appendAdminMetric(grid, 'Active bots', `${formatAdminCount(botHealthSummary.active ?? activeBots.length)}/${formatAdminCount(botHealthSummary.configured ?? data.configured_bot_count)}`);
+        appendAdminMetric(grid, 'Operational bots', `${formatAdminCount(botHealthSummary.online ?? operationalBots.length)}/${formatAdminCount(botHealthSummary.configured ?? data.configured_bot_count)}`);
         appendAdminMetric(grid, 'Pending work', formatAdminCount(Number(summary.pending_notifications || 0) + Number(summary.queued_custom_messages || 0)));
         appendAdminMetric(grid, 'Human visitors 24h', formatAdminCount(summary.unique_visitors_24h));
         appendAdminMetric(grid, 'Searches / no-result 24h', `${formatAdminCount(summary.search_queries_24h)} / ${formatAdminCount(summary.search_no_result_24h)}`);
@@ -1999,7 +2001,7 @@
 
         appendAdminTextDetails(panel, 'admin-runtime-bots', 'Runtime Bots', 'Live Telegram and webhook health for every configured bot.', data.runtime_bots || [], item => {
             const username = item.username ? `@${item.username}` : 'not started';
-            const health = item.telegram_health || (item.running ? 'running' : 'stopped');
+            const health = item.active === false ? 'inactive' : (item.telegram_health || (item.running ? 'active' : 'inactive'));
             const slot = item.slot_name || (item.slot_id !== null && item.slot_id !== undefined ? `slot ${item.slot_id}` : 'slot -');
             let detail = `#${item.index} ${username}: ${health}, ${slot}, Telegram id ${item.telegram_bot_id || '-'}, app ${item.running ? 'running' : 'stopped'}`;
             if (item.webhook_pending !== null && item.webhook_pending !== undefined) {

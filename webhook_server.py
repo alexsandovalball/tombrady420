@@ -1780,6 +1780,8 @@ def _runtime_bot_snapshots() -> List[Dict[str, object]]:
             "startup_issues": [dict(item) for item in _bot_startup_issues.get(idx, [])],
             "startup_issue_count": len(_bot_startup_issues.get(idx, [])),
             "setup_ok": len(_bot_startup_issues.get(idx, [])) == 0,
+            "active": False,
+            "operational": False,
         })
     return snapshots
 
@@ -1821,6 +1823,8 @@ async def _probe_runtime_bot_health(idx: int, base: Dict[str, object]) -> Dict[s
         "webhook_pending": None,
         "webhook_last_error": None,
         "webhook_last_error_date": None,
+        "active": False,
+        "operational": False,
     })
     if bot is None:
         return snapshot
@@ -1866,6 +1870,8 @@ async def _probe_runtime_bot_health(idx: int, base: Dict[str, object]) -> Dict[s
             "webhook_pending": pending_count,
             "webhook_last_error": last_error or None,
             "webhook_last_error_date": last_error_date.isoformat() if hasattr(last_error_date, "isoformat") else last_error_date,
+            "active": bool(snapshot.get("running")),
+            "operational": bool(snapshot.get("running")) and webhook_ok and health == "ok",
         })
     except Exception as exc:
         health, reason = _classify_bot_health_error(exc)
@@ -1900,6 +1906,8 @@ async def _runtime_bot_health_snapshots(*, force: bool = False) -> List[Dict[str
                 "telegram_ok": False,
                 "telegram_error": reason[:240],
                 "webhook_ok": False,
+                "active": False,
+                "operational": False,
             })
             health_snapshots.append(failed)
         else:
@@ -1942,6 +1950,17 @@ def _is_bot_online(snapshot: Dict[str, object]) -> bool:
     )
 
 
+def _is_bot_active(snapshot: Dict[str, object]) -> bool:
+    """Return whether the runtime and Telegram identity are currently alive.
+
+    Webhook diagnostics are intentionally separate from liveness. Telegram can
+    report a historical webhook error while ``getMe`` still succeeds and the
+    application is running. That is an active but degraded bot, not an
+    inactive bot.
+    """
+    return bool(snapshot.get("running")) and bool(snapshot.get("telegram_ok"))
+
+
 async def _download_telegram_media_to_drive(tg_file: Any, destination: Path) -> None:
     """Bound cold Telegram downloads and reject new work before an OOM."""
     global _media_downloads_active
@@ -1972,12 +1991,10 @@ async def _download_telegram_media_to_drive(tg_file: Any, destination: Path) -> 
 
 
 def _bot_health_summary(snapshots: List[Dict[str, object]]) -> Dict[str, int]:
+    active = sum(1 for item in snapshots if _is_bot_active(item))
     online = sum(1 for item in snapshots if _is_bot_online(item))
-    down = sum(
-        1
-        for item in snapshots
-        if item.get("telegram_health") in {"deleted_or_invalid", "not_loaded", "app_stopped"}
-    )
+    inactive = sum(1 for item in snapshots if not _is_bot_active(item))
+    degraded = sum(1 for item in snapshots if _is_bot_active(item) and not _is_bot_online(item))
     unhealthy = sum(
         1
         for item in snapshots
@@ -1986,8 +2003,11 @@ def _bot_health_summary(snapshots: List[Dict[str, object]]) -> Dict[str, int]:
     webhook_warning = sum(1 for item in snapshots if item.get("telegram_health") == "webhook_warning")
     setup_warning = sum(1 for item in snapshots if int(item.get("startup_issue_count") or 0) > 0)
     return {
+        "active": active,
+        "inactive": inactive,
+        "degraded": degraded,
         "online": online,
-        "down": down,
+        "down": inactive,
         "unhealthy": unhealthy,
         "webhook_warning": webhook_warning,
         "setup_warning": setup_warning,

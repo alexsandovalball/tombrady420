@@ -131,7 +131,8 @@
     const webhookWarningBots = runtimeBots.filter(bot => bot.telegram_health === "webhook_warning");
     const setupWarningBots = runtimeBots.filter(bot => Number(bot.startup_issue_count || 0) > 0);
     const items = [
-      ["Runtime Bots", `${botHealthSummary.online ?? healthyBots.length}/${botHealthSummary.configured ?? runtimeBots.length}`],
+      ["Active Bots", `${botHealthSummary.active ?? healthyBots.length}/${botHealthSummary.configured ?? runtimeBots.length}`],
+      ["Operational Bots", `${botHealthSummary.online ?? healthyBots.length}/${botHealthSummary.configured ?? runtimeBots.length}`],
       ["Bot Warnings", `${botHealthSummary.unhealthy ?? unhealthyBots.length} bad / ${botHealthSummary.webhook_warning ?? webhookWarningBots.length} hook / ${botHealthSummary.setup_warning ?? setupWarningBots.length} setup`],
       ["Products", s.products],
       ["Users", s.bot_users],
@@ -153,7 +154,9 @@
   function renderRuntimeBots(bots) {
     els.botCount.textContent = `${bots.length} configured`;
     els.runtimeBots.innerHTML = bots.length ? bots.map(bot => {
-      const health = bot.telegram_health || (bot.running ? "running" : "stopped");
+      const health = bot.active === false
+        ? "inactive"
+        : (bot.telegram_health || (bot.running ? "active" : "inactive"));
       const tone = health !== "ok" || bot.telegram_ok === false || bot.webhook_ok === false || bot.setup_ok === false || !bot.username ? "warn" : "good";
       const runtime = pill(health, tone);
       const botDetail = [
