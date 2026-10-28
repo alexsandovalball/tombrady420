@@ -338,7 +338,7 @@
                 <li class="related-card">
                     <a href="{{ item.url }}">
                         {% if item.media_type == 'video' and item.media_url %}
-                        <video class="related-thumb related-thumb-video seo-card-video" muted playsinline preload="metadata" data-src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
+                        <video class="related-thumb related-thumb-video seo-card-video" muted playsinline preload="metadata"{% if item.image_url %} poster="{{ item.image_url }}"{% endif %} data-src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
                         {% elif item.media_url %}
                         <img class="related-thumb" src="{{ item.media_url }}" alt="{{ item.title }}" loading="lazy" decoding="async" data-fallback-src="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2">
                         {% else %}

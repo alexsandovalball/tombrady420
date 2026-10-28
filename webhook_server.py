@@ -5841,8 +5841,8 @@ def _product_card_preview_media(product: dict, *, absolute: bool = False) -> dic
     """Return the best lightweight media URL for product cards.
 
     Cards should show a real photo when possible. For video-only products, use
-    the Mini App media stream directly so the browser can render the media
-    instead of caching a crawler-oriented fallback image as the card preview.
+    the public media stream so SSR pages and crawlers use the same crawlable
+    URL as the image/video sitemap.
     """
     product_id = product.get("id") or product.get("product_id")
     if product_id is None:
@@ -5851,18 +5851,12 @@ def _product_card_preview_media(product: dict, *, absolute: bool = False) -> dic
     media_info = _collect_media_info(product)
     for idx, media in enumerate(media_info):
         if media.get("type") == "photo":
-            path = _versioned_media_path(
-                f"/api/catalog/{product_id}/media/{idx}",
-                str(media.get("version") or ""),
-            )
+            path = _product_public_media_path(product_id, idx, str(media.get("version") or ""))
             return {"type": "photo", "url": _absolute_storefront_url(path) if absolute else path}
 
     for idx, media in enumerate(media_info):
         if media.get("type") == "video":
-            path = _versioned_media_path(
-                f"/api/catalog/{product_id}/media/{idx}",
-                str(media.get("version") or ""),
-            )
+            path = _product_public_media_path(product_id, idx, str(media.get("version") or ""))
             return {"type": "video", "url": _absolute_storefront_url(path) if absolute else path}
 
     return {"type": "", "url": ""}
@@ -8067,15 +8061,16 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
         {
             "index": idx,
             "type": media.get("type") or "document",
-            "url": _versioned_media_path(
-                f"/api/catalog/{internal_product_id}/media/{idx}",
+            "url": _product_public_media_path(
+                internal_product_id,
+                idx,
                 str(media.get("version") or ""),
             ),
             "seo_url": _product_public_media_path(
-                public_product_id,
+                internal_product_id,
                 idx,
                 str(media.get("version") or ""),
-            ) if media.get("type") == "photo" else "",
+            ),
             "label": f"{product_title} {_seo_ui(language)['media']} {idx + 1}",
         }
         for idx, media in enumerate(_collect_media_info(product))
@@ -8097,6 +8092,7 @@ async def _serve_product_page_with_slug(product_id: int, slug: str, request: Req
                     "id": _product_public_id(p) or p.get("id") or p.get("product_id"),
                     "title": _caption_parts(p.get("caption") or "")[0],
                     "url": _localized_path(_canonical_product_path(_product_seo_id(p), p.get("caption") or ""), language),
+                    "image_url": _product_primary_image_url(p, absolute=True),
                     "media_type": preview_media.get("type") or "",
                     "media_url": preview_media.get("url") or "",
                     "stock_status": str(p.get("stock_status") or "active").lower(),

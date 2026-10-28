@@ -122,12 +122,12 @@
         </nav>
         {% if seo_recent_products %}
         <section>
-            <h2>{{ ui.new_products or ui.related_products }}</h2>
+            <h2>{{ ui.new_products or 'New Products' }}</h2>
             <ul class="product-grid">
                 {% for item in seo_recent_products %}
                 <li><a href="{{ item.url }}">
                     {% if item.media_type == 'video' and item.media_url %}
-                    <video class="seo-card-video" muted playsinline preload="metadata" data-src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
+                    <video class="seo-card-video" muted playsinline preload="metadata"{% if item.image_url %} poster="{{ item.image_url }}"{% endif %} data-src="{{ item.media_url }}#t=0.2" aria-label="{{ item.title }}"></video>
                     {% elif item.media_url %}
                     <img src="{{ item.media_url }}" alt="{{ item.title }}" loading="{% if loop.index <= 6 %}eager{% else %}lazy{% endif %}" fetchpriority="{% if loop.index <= 2 %}high{% else %}auto{% endif %}" decoding="async" data-fallback-src="/assets/site-icon.svg?v=20260805-football-emoji-canonical-v2">
                     {% else %}

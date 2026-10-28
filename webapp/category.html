@@ -201,7 +201,7 @@
                 <li>
                     <a href="{{ p.url }}">
                         {% if p.media_type == 'video' and p.media_url %}
-                        <video class="product-thumb seo-card-video" muted playsinline preload="metadata" data-src="{{ p.media_url }}#t=0.2" aria-label="{{ p.title }}"></video>
+                        <video class="product-thumb seo-card-video" muted playsinline preload="metadata"{% if p.image_url %} poster="{{ p.image_url }}"{% endif %} data-src="{{ p.media_url }}#t=0.2" aria-label="{{ p.title }}"></video>
                         {% elif p.media_url %}
                         <img class="product-thumb" src="{{ p.media_url }}" data-media-src="{{ p.media_url }}" alt="{{ p.title }}" loading="{% if loop.index <= 6 %}eager{% else %}lazy{% endif %}" fetchpriority="{% if loop.index <= 2 %}high{% else %}auto{% endif %}" decoding="async" onerror="retryProductPreview(this);">
                         {% else %}
