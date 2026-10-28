@@ -201,8 +201,9 @@ _SEO_AUTO_LEARN_STARTUP_DELAY_SECONDS = _bounded_int_env(
     3600,
 )
 _SEO_TRANSLATION_WARMUP_STARTUP_SECONDS = 240
-_SEO_TRANSLATION_WARMUP_INTERVAL_SECONDS = 1800
+_SEO_TRANSLATION_WARMUP_INTERVAL_SECONDS = 300
 _SEO_TRANSLATION_WARMUP_BATCH_SIZE = 1
+_SEO_TRANSLATION_CACHE_CLEANUP_INTERVAL_SECONDS = 86400
 _SEO_ROBOTS_CACHE_SECONDS = _bounded_int_env("SEO_ROBOTS_CACHE_SECONDS", 3600, 60, 86400)
 _SEO_SITEMAP_CACHE_SECONDS = _bounded_int_env("SEO_SITEMAP_CACHE_SECONDS", 300, 60, 3600)
 _SEO_PAGE_CACHE_SECONDS = _bounded_int_env("SEO_PAGE_CACHE_SECONDS", 300, 30, 3600)
@@ -4492,6 +4493,7 @@ async def _seo_translation_warmup_once() -> int:
         language_index = 0
     language = target_languages[language_index]
     caption = str(products[0].get("caption") or "").strip()
+    translation_ready = not caption
     if caption:
         await translation_service.translate(caption, language, source_lang="en")
         cached = await translation_service.get_cached_translation(caption, language, source_lang="en")
@@ -4501,7 +4503,8 @@ async def _seo_translation_warmup_once() -> int:
                 products[0].get("id") or products[0].get("product_id"),
                 language,
             )
-            return 0
+        else:
+            translation_ready = True
 
     next_language_index = (language_index + 1) % len(target_languages)
     next_offset = offset + len(products) if next_language_index == 0 else offset
@@ -4513,11 +4516,12 @@ async def _seo_translation_warmup_once() -> int:
         "seo_translation_warmup_offset",
         str(next_offset),
     )
-    return len(products)
+    return len(products) if translation_ready else 0
 
 
 async def _seo_translation_warmup_loop():
     await asyncio.sleep(_SEO_TRANSLATION_WARMUP_STARTUP_SECONDS)
+    last_cache_cleanup = 0.0
     while True:
         try:
             maintenance_lock = _get_seo_maintenance_lock()
@@ -4530,6 +4534,10 @@ async def _seo_translation_warmup_loop():
                 async with maintenance_lock:
                     warmed = await _seo_translation_warmup_once()
                 logger.info("[seo_translation] warmed_products=%d", warmed)
+                now = _time.monotonic()
+                if now - last_cache_cleanup >= _SEO_TRANSLATION_CACHE_CLEANUP_INTERVAL_SECONDS:
+                    await _catalog_db.cleanup_old_translations(days_old=90)
+                    last_cache_cleanup = now
         except Exception as exc:
             logger.warning("[seo_translation] warmup_error error=%s", exc)
         await asyncio.sleep(_SEO_TRANSLATION_WARMUP_INTERVAL_SECONDS)

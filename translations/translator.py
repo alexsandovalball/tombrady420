@@ -136,6 +136,11 @@ class TranslationService:
         self._request_gate = asyncio.Lock()
         self._next_request_at = 0.0
         self._min_request_interval = 0.30
+        # Do not immediately hammer a provider after it rejects a request.
+        # This is separate from the pacing gate: it only suppresses retries
+        # for the exact failed text/language pair.
+        self._failure_backoff: OrderedDict[str, float] = OrderedDict()
+        self._provider_backoff_seconds = 3600.0
     
     def set_database(self, db):
         """Set the database instance for persistent caching."""
@@ -223,6 +228,14 @@ class TranslationService:
             except Exception as e:
                 logger.error(f"Error checking database translation cache: {e}")
 
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        retry_at = self._failure_backoff.get(cache_key)
+        if retry_at is not None:
+            if retry_at > now:
+                return text
+            self._failure_backoff.pop(cache_key, None)
+
         try:
             # Protect placeholders before translation
             protected_text, placeholder_map = protect_placeholders(text)
@@ -251,9 +264,22 @@ class TranslationService:
                 except Exception as e:
                     logger.error(f"Error saving translation to database: {e}")
             
+            self._failure_backoff.pop(cache_key, None)
             return translated
         except Exception as e:
-            logger.error(f"Translation error ({normalized_source} -> {normalized_target}): {e}")
+            # Provider throttling is recoverable. Keep the original text for
+            # this request and defer only this pair instead of retrying it on
+            # every warmup cycle or user request.
+            self._failure_backoff[cache_key] = loop.time() + self._provider_backoff_seconds
+            while len(self._failure_backoff) > 2048:
+                self._failure_backoff.popitem(last=False)
+            logger.warning(
+                "Translation deferred (%s -> %s); retry deferred for %.0fs: %s",
+                normalized_source,
+                normalized_target,
+                self._provider_backoff_seconds,
+                e,
+            )
             return text  # Return original text if translation fails
     
     async def get_string(self, key: str, lang: str = DEFAULT_LANGUAGE, **kwargs) -> str:
