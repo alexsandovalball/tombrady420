@@ -3220,8 +3220,8 @@ async def _import_google_trends_signals(
     if not Config.SEO_TRENDS_ENABLED:
         return 0
     # Trends is discovery evidence, so accept slightly broader matches than
-    # internal auto-learning while retaining the audience-intent gates below.
-    trend_signal_score = max(65, Config.SEO_EXTERNAL_SIGNAL_SCORE - 2)
+    # internal auto-learning. Repeated observations still gate promotion.
+    trend_signal_score = max(60, Config.SEO_EXTERNAL_SIGNAL_SCORE - 8)
 
     trend_rows = await asyncio.to_thread(
         fetch_seeded_queries_for_supported_locales,
@@ -3247,6 +3247,7 @@ async def _import_google_trends_signals(
             "seo_trends_last_snapshots": 0,
             "seo_trends_last_scored": 0,
             "seo_trends_last_rejected_below_score": 0,
+            "seo_trends_last_rejection_reasons": "{}",
             "seo_trends_last_brand_candidates": 0,
             "seo_trends_last_source_mode": "unavailable",
         })
@@ -3291,29 +3292,42 @@ async def _import_google_trends_signals(
 
     snapshot_rows = []
     inferred_rows: List[tuple[Dict[str, Any], Dict[str, Any], bool, bool]] = []
+    rejection_reasons: Dict[str, int] = {
+        "not_useful": 0,
+        "off_audience": 0,
+        "no_catalog_mapping": 0,
+    }
+    brand_index = _catalog_brand_terms_by_taxonomy(products)
     for row in candidate_rows:
         term = str(row.get("term") or "").strip()
         if not _is_useful_auto_seo_term(term):
+            rejection_reasons["not_useful"] += 1
             continue
         cannabis_intent = has_cannabis_search_intent(term)
         mushroom_intent = has_mushroom_search_intent(term)
-        if not (cannabis_intent or mushroom_intent):
-            continue
-        if not has_search_audience_intent(term):
-            continue
-        snapshot_rows.append(row)
         inferred = await asyncio.to_thread(
             infer_seo_query_mapping,
             term,
             products,
             min_score=max(
-                62,
+                60,
                 trend_signal_score - (8 if cannabis_intent or mushroom_intent else 0)
             ),
             profiles=profiles,
         )
         if not inferred:
+            rejection_reasons["no_catalog_mapping"] += 1
             continue
+        taxonomy = (str(inferred.get("category") or ""), str(inferred.get("subcategory") or ""))
+        brand_match = _match_catalog_brand_term(term, taxonomy, brand_index)
+        # A catalog brand is relevant even when the trend phrase omits a
+        # generic cannabis word. It must still map confidently to one of our
+        # active taxonomies, which prevents unrelated trending phrases from
+        # becoming SEO pages.
+        if not (cannabis_intent or mushroom_intent or brand_match):
+            rejection_reasons["off_audience"] += 1
+            continue
+        snapshot_rows.append(row)
         inferred_rows.append((row, inferred, cannabis_intent, mushroom_intent))
 
     snapshots = await _catalog_db.upsert_seo_signal_snapshots(
@@ -3325,8 +3339,6 @@ async def _import_google_trends_signals(
         lookback_days=90,
     )
     behavior_by_taxonomy = await _catalog_db.get_taxonomy_behavior_metrics(lookback_days=28)
-    brand_index = _catalog_brand_terms_by_taxonomy(products)
-
     signals = []
     rejected_below_score = 0
     for row, inferred, cannabis_intent, mushroom_intent in inferred_rows:
@@ -3385,9 +3397,12 @@ async def _import_google_trends_signals(
 
     if not signals:
         logger.info(
-            "[seo_trends] rows=%d candidates=%d imported=0 promoted=0",
+            "[seo_trends] rows=%d candidates=%d scored=%d imported=0 promoted=0 rejected_below_score=%d rejection_reasons=%s",
             len(trend_rows),
             len(candidate_rows),
+            len(inferred_rows),
+            rejected_below_score,
+            rejection_reasons,
         )
         await _set_runtime_settings({
             "seo_trends_last_fetch_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
@@ -3398,6 +3413,7 @@ async def _import_google_trends_signals(
             "seo_trends_last_snapshots": snapshots,
             "seo_trends_last_scored": len(inferred_rows),
             "seo_trends_last_rejected_below_score": rejected_below_score,
+            "seo_trends_last_rejection_reasons": json.dumps(rejection_reasons, sort_keys=True),
             "seo_trends_last_brand_candidates": 0,
             "seo_trends_last_source_mode": source_mode,
         })
@@ -3427,7 +3443,7 @@ async def _import_google_trends_signals(
     if imported:
         _invalidate_admin_status_cache()
     logger.info(
-        "[seo_trends] mode=%s rows=%d candidates=%d snapshots=%d scored=%d relevant=%d brands=%d rejected_below_score=%d imported=%d matured=%d fast_matured=%d",
+        "[seo_trends] mode=%s rows=%d candidates=%d snapshots=%d scored=%d relevant=%d brands=%d rejected_below_score=%d imported=%d matured=%d fast_matured=%d rejection_reasons=%s",
         source_mode,
         len(trend_rows),
         len(candidate_rows),
@@ -3439,6 +3455,7 @@ async def _import_google_trends_signals(
         imported,
         matured,
         fast_matured,
+        rejection_reasons,
     )
     await _set_runtime_settings({
         "seo_trends_last_fetch_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
@@ -3449,6 +3466,7 @@ async def _import_google_trends_signals(
         "seo_trends_last_snapshots": snapshots,
         "seo_trends_last_scored": len(inferred_rows),
         "seo_trends_last_rejected_below_score": rejected_below_score,
+        "seo_trends_last_rejection_reasons": json.dumps(rejection_reasons, sort_keys=True),
         "seo_trends_last_brand_candidates": brand_signals,
         "seo_trends_last_source_mode": source_mode,
     })

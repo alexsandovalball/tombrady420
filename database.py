@@ -6171,6 +6171,7 @@ class Database:
                 "seo_trends_last_snapshots",
                 "seo_trends_last_scored",
                 "seo_trends_last_rejected_below_score",
+                "seo_trends_last_rejection_reasons",
                 "seo_trends_last_source_mode",
                 "seo_trends_last_duration_ms",
                 "seo_trends_last_error",
