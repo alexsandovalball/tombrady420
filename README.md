@@ -39,6 +39,10 @@ DB_PATH=/data/catalog.db
 missing, the app derives public URLs from `WEBHOOK_URL`. On Render, `DB_PATH`
 defaults to `/data/catalog.db` automatically when a persistent disk is mounted.
 
+The service trusts `X-Forwarded-For` and `X-Real-IP` by default because Render
+terminates the public proxy connection. Set `TRUST_PROXY_HEADERS=false` when
+running directly on the internet without a trusted reverse proxy.
+
 `BOT_TOKENS` is exclusive when set. Do not also rely on stale `BOT_TOKEN_N`
 values. If `BOT_TOKENS` is absent, individual `BOT_TOKEN`, `BOT_TOKEN_`, and
 `BOT_TOKEN_1..10` values are loaded.
@@ -87,11 +91,11 @@ main.py                Polling entry point and bot command setup
 webhook_server.py      FastAPI app, startup, webhooks, API, SEO, media streaming
 ```
 
-Test files were intentionally removed after a full verification pass to keep the
-deployment package small. The last pre-cleanup run passed:
+Focused regression tests live in `tests/` and cover bot health contracts and
+runtime safety boundaries. Run them in the project environment with:
 
-```text
-229 passed
+```powershell
+python -m pytest -q
 ```
 
 ## Core Behavior

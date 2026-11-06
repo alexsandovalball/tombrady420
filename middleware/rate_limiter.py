@@ -42,6 +42,7 @@ _AUTO_BLOCK_WINDOW: int = int(os.getenv("AUTO_BLOCK_WINDOW", "600"))  # 10 minut
 _AUTO_BLOCK_DURATION: int = int(os.getenv("AUTO_BLOCK_DURATION", "3600"))  # 1 hour
 
 _MAX_BUCKETS: int = 10_000  # LRU eviction threshold
+_TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 # Malicious probe path patterns - paths commonly probed by bots/scrapers
 _MALICIOUS_PROBE_PATTERNS = {
@@ -62,12 +63,15 @@ _permanent_ip_blocks: set = set()
 
 def get_client_ip(request: Request) -> str:
     """Extract the real client IP from a Starlette Request."""
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
+    if _TRUST_PROXY_HEADERS:
+        forwarded_for = request.headers.get("X-Forwarded-For")
+        if forwarded_for:
+            return forwarded_for.split(",")[0].strip()
+        real_ip = request.headers.get("X-Real-IP")
+        if real_ip:
+            return real_ip.strip()
     return (
-        request.headers.get("X-Real-IP")
-        or (request.client.host if request.client else "unknown")
+        request.client.host if request.client else "unknown"
     )
 
 

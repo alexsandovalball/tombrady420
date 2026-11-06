@@ -128,6 +128,7 @@ configure_logging()
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_BOT_TOKEN_RE = re.compile(r"^\d{6,}:[A-Za-z0-9_-]{20,}$")
+_TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _is_plausible_telegram_bot_token(token: Any) -> bool:
@@ -179,6 +180,7 @@ _WEBHOOK_UPDATE_CONCURRENCY = _bounded_int_env("WEBHOOK_UPDATE_CONCURRENCY", 3, 
 _webhook_processing_semaphores: Dict[str, asyncio.Semaphore] = {}
 _bot_applications_by_registry_id: Dict[str, Application] = {}
 _runtime_index_to_registry_id: Dict[int, str] = {}
+_bot_reinit_lock = asyncio.Lock()
 _VISITOR_EVENT_QUEUE_MAX = _bounded_int_env("VISITOR_EVENT_QUEUE_MAX", 256, 100, 5000)
 _VISITOR_EVENT_LOG_EVERY = _bounded_int_env("VISITOR_EVENT_LOG_EVERY", 500, 50, 10000)
 _visitor_event_queue: Optional[asyncio.Queue] = None
@@ -243,6 +245,7 @@ _PROCESS_STARTED_AT = datetime.utcnow()
 _PROCESS_STARTED_MONOTONIC = _time.monotonic()
 _startup_ready = False
 _startup_phase = "booting"
+_bg_tasks: List[asyncio.Task] = []
 
 # Per-process counter for webhook 401 rejections (in-memory, not persisted).
 # Useful for setting alerts: check logs for [WEBHOOK_401] or watch this counter
@@ -1171,6 +1174,13 @@ def _record_bot_startup_issue(
     invalidate_bot_health_cache()
 
 
+def _clear_bot_startup_issues(bot_index: int) -> None:
+    """Clear stale setup warnings after a slot has recovered successfully."""
+    if _bot_startup_issues.pop(bot_index, None) is not None:
+        _invalidate_admin_status_cache()
+        invalidate_bot_health_cache()
+
+
 async def _set_runtime_setting(key: str, value: Any) -> None:
     try:
         await _catalog_db.set_bot_setting(key, str(value if value is not None else ""))
@@ -1354,12 +1364,15 @@ def _secret_fingerprint(value: Optional[str]) -> str:
 
 def get_client_ip(request: Request) -> str:
     """Return the original client IP when the app is behind a proxy."""
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
+    if _TRUST_PROXY_HEADERS:
+        forwarded_for = request.headers.get("X-Forwarded-For")
+        if forwarded_for:
+            return forwarded_for.split(",")[0].strip()
+        real_ip = request.headers.get("X-Real-IP")
+        if real_ip:
+            return real_ip.strip()
     return (
-        request.headers.get("X-Real-IP")
-        or (request.client.host if request.client else "unknown")
+        request.client.host if request.client else "unknown"
     )
 
 
@@ -2054,6 +2067,10 @@ def _runtime_process_snapshot() -> Dict[str, object]:
         "telegram_fetch": get_telegram_fetch_snapshot(),
         "memory_limit_bytes": _RUNTIME_MEMORY_LIMIT_MB * 1024 * 1024,
         "memory_warning_threshold_bytes": _RUNTIME_MEMORY_WARN_BYTES,
+        "background_tasks": [
+            {"name": task.get_name(), "done": task.done(), "cancelled": task.cancelled()}
+            for task in _bg_tasks
+        ],
     }
     try:
         status_text = Path("/proc/self/status").read_text(encoding="utf-8")
@@ -2172,31 +2189,74 @@ def _media_runtime_snapshot() -> Dict[str, object]:
     }
 
 
+async def _source_channel_health_snapshot() -> Dict[str, object]:
+    """Probe the configured source chat without making it part of startup."""
+    target = Config.CHANNEL_ID or Config.CHANNEL_USERNAME
+    if not target:
+        return {"configured": False, "status": "not_configured"}
+
+    apps = _bot_applications or getattr(app.state, "bot_apps", []) or []
+    candidates = [
+        (index, getattr(bot_app, "bot", None))
+        for index, bot_app in enumerate(apps)
+        if bot_app is not None and getattr(bot_app, "bot", None) is not None
+    ]
+    checked = len(candidates)
+    if not candidates:
+        return {
+            "configured": True,
+            "status": "no_running_bot",
+            "target": str(target),
+            "checked_bots": 0,
+            "failures": [],
+        }
+
+    async def _probe(index: int, bot: Any) -> tuple[int, Any, Optional[str]]:
+        try:
+            chat = await asyncio.wait_for(bot.get_chat(chat_id=target), timeout=3)
+            return index, chat, None
+        except Exception as exc:
+            return index, None, redact_sensitive_text(exc)[:180]
+
+    probe_results = await asyncio.gather(
+        *[_probe(index, bot) for index, bot in candidates],
+        return_exceptions=False,
+    )
+    failures: list[dict[str, object]] = []
+    for index, chat, error in probe_results:
+        if chat is not None:
+            failed_bots = [
+                {"bot_index": failed_index, "error": failed_error or "unknown error"}
+                for failed_index, failed_chat, failed_error in probe_results
+                if failed_chat is None
+            ]
+            return {
+                "configured": True,
+                "status": "accessible",
+                "checked_bot_index": index,
+                "chat_id": getattr(chat, "id", target),
+                "title": getattr(chat, "title", None),
+                "username": getattr(chat, "username", None),
+                "checked_bots": checked,
+                "failed_bots": failed_bots[:10],
+            }
+        failures.append({"bot_index": index, "error": error or "unknown error"})
+
+    status_name = "unavailable" if checked else "no_running_bot"
+    if failures and any("forbidden" in str(item.get("error", "")).lower() for item in failures):
+        status_name = "forbidden"
+    return {
+        "configured": True,
+        "status": status_name,
+        "target": str(target),
+        "checked_bots": checked,
+        "failures": failures[:10],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Bot reinitialisation helpers
 # ---------------------------------------------------------------------------
-
-async def _stop_existing_bots() -> None:
-    """Gracefully stop all running Application objects in _bot_applications.
-
-    Clears both the module-level registry and FastAPI app.state.bot_apps so
-    the server can start fresh. Safe to call even when no bots are running.
-    """
-    global _bot_applications
-    if not _bot_applications:
-        return
-    for bot_app in list(_bot_applications):
-        if bot_app is None:
-            continue
-        try:
-            if hasattr(bot_app, "stop"):
-                await bot_app.stop()
-            if hasattr(bot_app, "shutdown"):
-                await bot_app.shutdown()
-        except Exception:
-            logger.exception("Error stopping bot application during reinitialisation")
-    _bot_applications = []
-
 
 async def reset_bot_identity(slot_id: int) -> dict:
     """Reset runtime/cache state for one permanent bot slot only."""
@@ -2223,102 +2283,120 @@ async def reset_bot_identity(slot_id: int) -> dict:
     }
 
 
+async def _stop_bot_application(bot_app: Optional[Application]) -> None:
+    """Stop one application without disturbing the other bot slots."""
+    if bot_app is None:
+        return
+    try:
+        if hasattr(bot_app, "stop"):
+            await bot_app.stop()
+        if hasattr(bot_app, "shutdown"):
+            await bot_app.shutdown()
+    except Exception:
+        logger.exception("Error stopping one bot application during reinitialisation")
+
+
 async def reinitialize_bots(fastapi_app=None) -> dict:
-    """Stop existing bot Applications and recreate them from Config.BOT_TOKENS.
+    """Refresh bot slots independently while keeping healthy slots online.
 
-    This is the primary runtime reinitialisation entry point.  It is called by:
-    - the admin /reinitbots command
-    - optionally the _bots_config_reload_loop when AUTO_REINIT_ON_BOTS_CONFIG is set
-
-    Args:
-        fastapi_app: Optional FastAPI application instance.  When provided,
-                     app.state.bot_apps and app.state.webhook_secret_tokens are
-                     kept in sync with the newly created applications.
-
-    Returns:
-        A dict with keys ``created`` (list of indices), ``failed`` (list of
-        indices) and ``errors`` (dict mapping str(index) → error message).
+    A replacement is started and its webhook is repaired before the previous
+    application in that slot is stopped. If replacement startup fails, the
+    previous application remains installed and continues serving updates.
     """
-    import traceback
-    global _bot_applications, _webhook_secret_tokens, _webhook_secret_history, _bot_slots
+    global _bot_applications, _webhook_secret_tokens, _webhook_secret_history
     global _bot_applications_by_registry_id, _runtime_index_to_registry_id
 
-    summary: dict = {"created": [], "failed": [], "errors": {}}
-    logger.info("Starting bot reinitialisation (stop → setup)")
+    if fastapi_app is None:
+        # Telegram admin commands do not carry the FastAPI app reference, but
+        # the module-level app is available after startup. Keep both runtime
+        # registries synchronized when reinit is requested from a bot.
+        fastapi_app = globals().get("app")
 
-    # Snapshot the current runtime tokens before teardown so we can preserve
-    # them as "previous" tokens in the history map.
-    old_runtime_tokens: List[Optional[str]] = list(_webhook_secret_tokens)
+    async with _bot_reinit_lock:
+        summary: dict = {"created": [], "failed": [], "kept_previous": [], "errors": {}}
+        tokens = list(getattr(Config, "BOT_TOKENS", []) or [])
+        if not tokens:
+            logger.warning("No BOT_TOKENS found in Config during reinitialisation")
+            return {"created": [], "failed": [], "kept_previous": [], "errors": {"no_tokens": "No BOT_TOKENS configured"}}
 
-    try:
-        await _stop_existing_bots()
-    except Exception:
-        logger.exception("Unexpected error while stopping existing bot applications")
+        old_apps = list(_bot_applications or getattr(getattr(fastapi_app, "state", None), "bot_apps", []) or [])
+        old_secrets = list(_webhook_secret_tokens)
+        applications: List[Optional[Application]] = [
+            old_apps[idx] if idx < len(old_apps) else None for idx in range(len(tokens))
+        ]
+        secrets_for_slots: List[Optional[str]] = [
+            old_secrets[idx] if idx < len(old_secrets) else None for idx in range(len(tokens))
+        ]
 
-    clear_bot_runtime_state()
+        logger.info("Starting per-slot bot reinitialisation slots=%d", len(tokens))
+        for idx, token in enumerate(tokens):
+            old_app = applications[idx]
+            old_registry_id = None
+            if old_app is not None:
+                old_registry_id = (getattr(old_app, "bot_data", {}) or {}).get("bot_registry_id")
+            previous_secret = secrets_for_slots[idx]
+            _webhook_secret_history[idx] = [previous_secret, None]
 
-    tokens = getattr(Config, "BOT_TOKENS", []) or []
-    if not tokens:
-        logger.warning("No BOT_TOKENS found in Config during reinitialisation")
-        return {"created": [], "failed": [], "errors": {"no_tokens": "No BOT_TOKENS configured"}}
+            if not _is_plausible_telegram_bot_token(token):
+                message = "invalid Telegram bot token format; expected the token from BotFather, not a username"
+                summary["failed"].append(idx)
+                summary["errors"][str(idx)] = message
+                _record_bot_startup_issue(idx, "reinit_config", message, error_type="InvalidTokenFormat")
+                if old_app is not None:
+                    summary["kept_previous"].append(idx)
+                continue
 
-    new_bot_applications: List[Optional[Application]] = [None] * len(tokens)
-    new_secret_tokens: List[Optional[str]] = [None] * len(tokens)
-    _bot_slots = {}
-    _bot_applications_by_registry_id = {}
-    _runtime_index_to_registry_id = {}
-    for idx, token in enumerate(tokens):
-        # Preserve the previous webhook secret in history so in-flight requests
-        # using the old token are not immediately rejected.
-        prev_token: Optional[str] = old_runtime_tokens[idx] if idx < len(old_runtime_tokens) else None
-        # history[idx] = [previous, current]; store prev before we know the new current
-        _webhook_secret_history[idx] = [prev_token, None]
+            try:
+                replacement, webhook_secret_token = await setup_application(token, bot_index=idx)
+                new_registry_id = _runtime_index_to_registry_id.get(idx)
+                _webhook_secret_history[idx] = [previous_secret, webhook_secret_token]
+                if new_registry_id:
+                    _webhook_secret_history[new_registry_id] = [previous_secret, webhook_secret_token]
 
-        if not _is_plausible_telegram_bot_token(token):
-            message = "invalid Telegram bot token format; expected the token from BotFather, not a username"
-            logger.warning("Bot reinitialisation skipped index=%d reason=invalid_token_format", idx)
-            summary["failed"].append(idx)
-            summary["errors"][str(idx)] = message
-            _record_bot_startup_issue(idx, "reinit_config", message, error_type="InvalidTokenFormat")
-            continue
+                # Publish the replacement before stopping the old app. The
+                # webhook path is stable, so in-flight requests remain routable.
+                applications[idx] = replacement
+                secrets_for_slots[idx] = webhook_secret_token
+                if old_registry_id and old_registry_id != new_registry_id:
+                    _bot_applications_by_registry_id.pop(old_registry_id, None)
+                await _stop_bot_application(old_app)
+                _clear_bot_startup_issues(idx)
+                summary["created"].append(idx)
+                logger.info("Reinitialised bot slot=%d without stopping other slots", idx)
+            except Exception as exc:
+                logger.exception("Failed to reinitialise bot slot %d: %s", idx, exc)
+                summary["failed"].append(idx)
+                summary["errors"][str(idx)] = str(exc)[:300]
+                _record_bot_startup_issue(idx, "reinit_startup", exc)
+                if old_app is not None:
+                    summary["kept_previous"].append(idx)
+                    secrets_for_slots[idx] = previous_secret
 
-        try:
-            bot_app, webhook_secret_token = await setup_application(token, bot_index=idx)
-            # Now rotate: previous = what was current, current = new token
-            _webhook_secret_history[idx] = [prev_token, webhook_secret_token]
-            registry_id = _runtime_index_to_registry_id.get(idx)
-            if registry_id:
-                _webhook_secret_history[registry_id] = [prev_token, webhook_secret_token]
-            new_bot_applications[idx] = bot_app
-            new_secret_tokens[idx] = webhook_secret_token
-            logger.info(
-                "Re-initialised bot %d (webhook secret prefix=%s)",
-                idx,
-                (webhook_secret_token or "")[:8],
+        # If the deployment removed trailing token slots, retire only those
+        # applications and their routing entries; healthy configured slots stay
+        # untouched.
+        for idx in range(len(tokens), len(old_apps)):
+            removed_app = old_apps[idx]
+            removed_registry_id = (
+                (getattr(removed_app, "bot_data", {}) or {}).get("bot_registry_id")
+                if removed_app is not None else None
             )
-            summary["created"].append(idx)
-        except Exception as exc:
-            logger.exception("Failed to reinitialise bot %d: %s", idx, exc)
-            summary["failed"].append(idx)
-            summary["errors"][str(idx)] = str(exc)[:300]
-            _record_bot_startup_issue(idx, "reinit_startup", exc)
+            await _stop_bot_application(removed_app)
+            if removed_registry_id:
+                _bot_applications_by_registry_id.pop(removed_registry_id, None)
+            _runtime_index_to_registry_id.pop(idx, None)
+            _bot_slots.pop(idx, None)
 
-    # Update module-level global so process_webhook_request always uses fresh tokens.
-    _bot_applications = new_bot_applications
-    _webhook_secret_tokens = new_secret_tokens
-    _invalidate_admin_status_cache()
-    invalidate_bot_health_cache()
+        _bot_applications = applications
+        _webhook_secret_tokens = secrets_for_slots
+        if fastapi_app is not None:
+            fastapi_app.state.bot_apps = applications
+            fastapi_app.state.webhook_secret_tokens = secrets_for_slots
+        _invalidate_admin_status_cache()
+        invalidate_bot_health_cache()
 
-    # Sync FastAPI app.state so webhook verification uses the new tokens.
-    if fastapi_app is not None:
-        try:
-            fastapi_app.state.bot_apps = _bot_applications
-            fastapi_app.state.webhook_secret_tokens = new_secret_tokens
-        except Exception:
-            logger.exception("Could not update FastAPI app.state after reinitialisation")
-
-    logger.info("Bot reinitialisation complete: %s", summary)
-    return summary
+        logger.info("Per-slot bot reinitialisation complete: %s", summary)
+        return summary
 
 
 async def setup_application(bot_token: str, bot_index: int = 0):
@@ -4587,12 +4665,33 @@ async def _deferred_startup_diagnostics() -> None:
     await _log_setup_check()
 
 
+def _log_background_task_exit(task: asyncio.Task) -> None:
+    """Surface unexpected maintenance-task exits instead of losing them."""
+    if task.cancelled():
+        return
+    try:
+        error = task.exception()
+    except Exception as exc:
+        logger.error("[background_task] status_unavailable name=%s error=%s", task.get_name(), exc)
+        return
+    if error is not None:
+        logger.error(
+            "[background_task] stopped_unexpectedly name=%s type=%s error=%s",
+            task.get_name(),
+            error.__class__.__name__,
+            redact_sensitive_text(error)[:300],
+            exc_info=(type(error), error, error.__traceback__),
+        )
+    else:
+        logger.warning("[background_task] stopped_early name=%s", task.get_name())
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan - startup and shutdown."""
     global _bot_applications, _webhook_secret_tokens
     global _bot_applications_by_registry_id, _runtime_index_to_registry_id
-    global _visitor_event_queue
+    global _visitor_event_queue, _bg_tasks
     global _startup_ready, _startup_phase
 
     # Startup
@@ -4742,6 +4841,8 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_indexnow_loop(), name="indexnow"),
         asyncio.create_task(_search_console_sitemap_loop(), name="search_console_sitemap"),
     ]
+    for task in _bg_tasks:
+        task.add_done_callback(_log_background_task_exit)
 
     # Load permanently blocked IPs from the database into the in-memory registry
     try:
@@ -4857,11 +4958,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
 
         if blocked:
             _wp_block_counter += 1
-            client_ip = (
-                request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-                or request.headers.get("X-Real-IP")
-                or (request.client.host if request.client else "unknown")
-            )
+            client_ip = get_client_ip(request)
             ua = request.headers.get("User-Agent", "-")
             logger_security.warning(
                 f"WordPress scan blocked – ip={client_ip} path={path} "
@@ -7820,11 +7917,13 @@ async def admin_dashboard_overview(request: Request):
     metrics_snapshot = metrics.snapshot()
     webhook_snapshot = _webhook_monitor.snapshot()
     runtime_bots = await _runtime_bot_health_snapshots(force=True)
+    source_channel = await _source_channel_health_snapshot()
     return _json_no_store({
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "configured_bot_count": len(Config.BOT_TOKENS),
         "runtime_bots": runtime_bots,
         "bot_health_summary": _bot_health_summary(runtime_bots),
+        "source_channel": source_channel,
         "cache_state": _cache_state_snapshot(),
         "process": _runtime_process_snapshot(),
         "media_runtime": _media_runtime_snapshot(),
@@ -7904,6 +8003,7 @@ async def webapp_admin_status(request: Request):
     # Keep the authenticated admin monitor authoritative rather than showing
     # a stale 60-second health snapshot after a bot token/status changes.
     runtime_bots = await _runtime_bot_health_snapshots(force=True)
+    source_channel = await _source_channel_health_snapshot()
     payload = {
         "authorized": True,
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
@@ -7912,6 +8012,7 @@ async def webapp_admin_status(request: Request):
         "configured_bot_count": len(Config.BOT_TOKENS),
         "runtime_bots": runtime_bots,
         "bot_health_summary": _bot_health_summary(runtime_bots),
+        "source_channel": source_channel,
         "cache_state": _cache_state_snapshot(),
         "process": _runtime_process_snapshot(),
         "media_runtime": _media_runtime_snapshot(),

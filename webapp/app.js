@@ -1913,6 +1913,7 @@
         const diskUsage = resourceUsage.cache || {};
         const webhookMonitor = data.webhook_monitor || {};
         const webhookBotStats = webhookMonitor.bots || {};
+        const sourceChannel = data.source_channel || {};
         const runtimeBots = Array.isArray(data.runtime_bots) ? data.runtime_bots : [];
         const botHealthSummary = data.bot_health_summary || {};
         const activeBots = runtimeBots.filter(bot => bot.running && bot.telegram_ok);
@@ -1968,6 +1969,8 @@
         if (Number(webhookTotals.failure || 0) > 0) warningAlerts.push(`${formatAdminCount(webhookTotals.failure)} webhook failures`);
         if (webhookWarningBots.length > 0) warningAlerts.push(`${formatAdminCount(webhookWarningBots.length)} bot webhook warnings`);
         if (setupWarningBots.length > 0) warningAlerts.push(`${formatAdminCount(setupWarningBots.length)} bot setup warnings`);
+        if (sourceChannel.configured && sourceChannel.status !== 'accessible') warningAlerts.push(`Source channel ${sourceChannel.status || 'unavailable'}`);
+        if (Array.isArray(sourceChannel.failed_bots) && sourceChannel.failed_bots.length) warningAlerts.push(`Source channel failed for ${sourceChannel.failed_bots.length} bot${sourceChannel.failed_bots.length === 1 ? '' : 's'}`);
         if (Number(indexnow.failed || 0) > 0) warningAlerts.push(`${formatAdminCount(indexnow.failed)} IndexNow failures`);
         if (!searchConsoleSetup.configured) warningAlerts.push('Search Console not connected');
         if (Array.isArray(data.errors) && data.errors.length) warningAlerts.push(`${formatAdminCount(data.errors.length)} monitor data errors`);
@@ -1985,6 +1988,7 @@
         grid.className = 'admin-metric-grid';
         appendAdminMetric(grid, 'Active bots', `${formatAdminCount(botHealthSummary.active ?? activeBots.length)}/${formatAdminCount(botHealthSummary.configured ?? data.configured_bot_count)}`);
         appendAdminMetric(grid, 'Operational bots', `${formatAdminCount(botHealthSummary.online ?? operationalBots.length)}/${formatAdminCount(botHealthSummary.configured ?? data.configured_bot_count)}`);
+        appendAdminMetric(grid, 'Source channel', sourceChannel.configured ? (sourceChannel.status || 'unknown') : 'not configured');
         appendAdminMetric(grid, 'Pending work', formatAdminCount(Number(summary.pending_notifications || 0) + Number(summary.queued_custom_messages || 0)));
         appendAdminMetric(grid, 'Human visitors 24h', formatAdminCount(summary.unique_visitors_24h));
         appendAdminMetric(grid, 'Searches / no-result 24h', `${formatAdminCount(summary.search_queries_24h)} / ${formatAdminCount(summary.search_no_result_24h)}`);

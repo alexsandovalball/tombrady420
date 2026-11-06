@@ -66,6 +66,7 @@ def _format_admin_status_message(snapshot: dict) -> str:
     google_trends_signals = seo.get("google_trends_signals", 0)
     google_trends_latest_seen = seo.get("google_trends_latest_seen") or "none yet"
     bot_health_summary = snapshot.get("bot_health_summary") or {}
+    source_channel = snapshot.get("source_channel") or {}
 
     # Match webhook_server._is_bot_online: a historical Telegram webhook
     # warning does not make an otherwise reachable bot inactive.
@@ -96,6 +97,16 @@ def _format_admin_status_message(snapshot: dict) -> str:
         f"• Down/unhealthy: {_fmt_count(bot_health_summary.get('down'))}/{_fmt_count(bot_health_summary.get('unhealthy', len(unhealthy_bots)))}",
         f"• Registry active: {_fmt_count(summary.get('bot_registry_active'))}",
     ]
+    if source_channel.get("status") == "accessible":
+        channel_label = source_channel.get("title") or source_channel.get("username") or "configured source"
+        lines.append(f"• Source channel: accessible ({str(channel_label)[:60]})")
+        if source_channel.get("failed_bots"):
+            failed_slots = ", ".join(str(item.get("bot_index")) for item in source_channel["failed_bots"][:8])
+            lines.append(f"• Source channel failed for bot slots: {failed_slots}")
+    elif source_channel.get("configured"):
+        lines.append(f"• Source channel: {source_channel.get('status', 'unavailable')}")
+    else:
+        lines.append("• Source channel: not configured")
     if missing_bots:
         lines.append(f"• Missing/unloaded: {_fmt_count(len(missing_bots))}")
     if unhealthy_bots:
@@ -2157,11 +2168,12 @@ async def reinitbots_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     Usage:
       /reinitbots           — show confirmation instructions
       /reinitbots dryrun    — show current & previous webhook secret prefixes (no changes)
-      /reinitbots confirm   — stop and recreate all bot Applications
+      /reinitbots confirm   — refresh each bot slot independently
 
     This is useful when a Telegram bot token has been replaced or rotated.
     The reinitialisation reads the current Config.BOT_TOKENS values and calls
-    setup_application() for each token so new webhooks are registered.
+    setup_application() for each token so new webhooks are registered. Healthy
+    slots remain online while a replacement slot is being tested.
     """
     args = context.args or []
     subcommand = args[0].lower() if args else ""
@@ -2207,9 +2219,9 @@ async def reinitbots_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Acknowledge immediately; the reinit runs in the background so that
         # the Telegram reply is returned before the current bot app is restarted.
         await update.message.reply_text(
-            "🔄 Bot reinitialisation scheduled. All bot instances will be stopped "
-            "and recreated from the current token configuration. Check service logs "
-            "for progress and any errors."
+            "🔄 Bot reinitialisation scheduled. Each bot slot will be refreshed "
+            "independently; healthy bots remain online while replacements are "
+            "tested. Check service logs for any failed slots."
         )
         try:
             # Deferred import to avoid circular import at module load time.
@@ -2217,14 +2229,6 @@ async def reinitbots_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
             async def _run_reinit():
                 try:
-                    # Pass None for fastapi_app: the Telegram handler doesn't have a
-                    # reference to the FastAPI app instance.  reinitialize_bots will
-                    # update _bot_applications (the module-level global), but
-                    # app.state.bot_apps won't be refreshed.  On the next webhook
-                    # request FastAPI will still use the old state reference.
-                    # Operators can restart the service to fully synchronize state,
-                    # or call reinitialize_bots with the FastAPI app from a custom
-                    # startup/admin HTTP endpoint.
                     result = await reinitialize_bots(None)
                     logger.info("Background reinitialisation complete: %s", result)
                 except Exception:
@@ -2249,11 +2253,11 @@ async def reinitbots_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # No args or unexpected args — show instructions.
     await update.message.reply_text(
         "⚠️ *Bot Reinitialisation*\n\n"
-        "This command stops all running bot instances and recreates them from "
-        "the current `BOT_TOKENS` configuration.  Use it after replacing a "
-        "Telegram bot token.\n\n"
+        "This command refreshes each bot slot independently from the current "
+        "`BOT_TOKENS` configuration. Healthy slots stay online if another "
+        "token fails. Use it after replacing a Telegram bot token.\n\n"
         "• `/reinitbots dryrun` — show expected webhook secret prefixes (no changes)\n"
-        "• `/reinitbots confirm` — stop and recreate all bots",
+        "• `/reinitbots confirm` — refresh each bot slot independently",
         parse_mode="Markdown",
     )
 
