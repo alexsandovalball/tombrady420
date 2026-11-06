@@ -677,16 +677,17 @@
                 var setupIssues = [];
                 runtimeBots.forEach(function (bot) {
                     var issues = Array.isArray(bot.startup_issues) ? bot.startup_issues : [];
-                    issues.forEach(function (issue) {
+                    if (issues.length) {
+                        var issue = issues[0];
                         setupIssues.push({
                             index: bot.index,
                             username: bot.username,
-                            stage: issue.stage,
+                            stage: issue.stage || 'setup',
                             admin_id: issue.admin_id,
-                            error: issue.error,
+                            error: issue.error || '',
                             recorded_at: issue.recorded_at
                         });
-                    });
+                    }
                 });
                 appendTextDetails(panel, 'admin-bot-setup-warnings', 'Bot Setup Warnings', 'Startup and command-registration issues that may require attention.', setupIssues, function (item) {
                     var label = '#' + item.index + ' ' + (item.username ? '@' + item.username : 'not started');

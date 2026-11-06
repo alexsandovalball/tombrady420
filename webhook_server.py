@@ -1168,8 +1168,21 @@ def _record_bot_startup_issue(
     }
     if admin_id is not None:
         issue["admin_id"] = str(admin_id)
-    _bot_startup_issues.setdefault(bot_index, []).append(issue)
-    del _bot_startup_issues[bot_index][20:]
+    # Keep the latest state for each startup stage. Retries and reinitialise
+    # attempts must update one warning, not create a growing history that makes
+    # one unhealthy bot look like many separate incidents in the monitor.
+    issues = _bot_startup_issues.setdefault(bot_index, [])
+    stage_key = (issue["stage"], issue.get("admin_id") or "")
+    replaced = False
+    for position, previous in enumerate(issues):
+        previous_key = (previous.get("stage"), previous.get("admin_id") or "")
+        if previous_key == stage_key:
+            issues[position] = issue
+            replaced = True
+            break
+    if not replaced:
+        issues.append(issue)
+    del issues[20:]
     _invalidate_admin_status_cache()
     invalidate_bot_health_cache()
 
@@ -1948,7 +1961,7 @@ async def get_active_runtime_bot_entries(*, force_health: bool = False) -> List[
         username = str(snapshot.get("username") or "").strip()
         if (
             not username
-            or not snapshot.get("running")
+            or not _is_bot_online(snapshot)
             or snapshot.get("telegram_health") in excluded_health
             or username.lower() in seen
         ):
@@ -5635,6 +5648,83 @@ def _is_near_duplicate_product_phrase(phrase: str, title: str) -> bool:
 _PRODUCT_RELATED_SEARCH_LIMIT = 10
 
 
+_SEO_INTENT_WORDS = {
+    "en": {
+        "menu": "menu",
+        "products": "products",
+        "selection": "selection",
+        "catalog": "catalog",
+        "guide": "guide",
+    },
+    "de": {
+        "menu": "Menü",
+        "products": "Produkte",
+        "selection": "Auswahl",
+        "catalog": "Katalog",
+        "guide": "Ratgeber",
+    },
+    "nl": {
+        "menu": "menu",
+        "products": "producten",
+        "selection": "selectie",
+        "catalog": "catalogus",
+        "guide": "gids",
+    },
+    "it": {
+        "menu": "menu",
+        "products": "prodotti",
+        "selection": "selezione",
+        "catalog": "catalogo",
+        "guide": "guida",
+    },
+    "es": {
+        "menu": "menú",
+        "products": "productos",
+        "selection": "selección",
+        "catalog": "catálogo",
+        "guide": "guía",
+    },
+    "fr": {
+        "menu": "menu",
+        "products": "produits",
+        "selection": "sélection",
+        "catalog": "catalogue",
+        "guide": "guide",
+    },
+}
+
+
+def _taxonomy_intent_terms(
+    category_display: str,
+    subcategory_display: str,
+    language: str,
+) -> list[str]:
+    """Return concise category-intent phrases for related-search chips.
+
+    These are query-shaped variations of taxonomy already present on the page,
+    not new landing pages or unsupported product claims.
+    """
+    words = _SEO_INTENT_WORDS.get(language, _SEO_INTENT_WORDS["en"])
+    category = _clean_seo_title_part(category_display)
+    subcategory = _clean_seo_title_part(subcategory_display)
+    phrases: list[str] = []
+    if subcategory:
+        phrases.extend([
+            f"{subcategory} {words['menu']}",
+            f"{subcategory} {words['products']}",
+            f"{subcategory} {words['selection']}",
+            f"{subcategory} {words['guide']}",
+        ])
+    if category:
+        phrases.extend([
+            f"{category} {words['menu']}",
+            f"{category} {words['products']}",
+            f"{category} {words['catalog']}",
+            f"{category} {words['guide']}",
+        ])
+    return _dedupe_seo_phrases(phrases, limit=12)
+
+
 def _product_related_search_terms(
     *,
     title: str,
@@ -5693,6 +5783,12 @@ def _product_related_search_terms(
         candidates.append(f"{entity} {subcategory_display}")
     if entity and category_display:
         candidates.append(f"{entity} {category_display}")
+
+    # Add taxonomy-shaped intent phrases before the raw learned pool. This
+    # prevents a product page from spending all ten slots on near-identical
+    # copies of its title, while keeping every phrase grounded in its page
+    # category/subcategory.
+    candidates.extend(_taxonomy_intent_terms(category_display, subcategory_display, language))
 
     # Taxonomy phrases remain as a dependable fallback when a category has
     # too little approved/search-backed vocabulary to fill the bar.

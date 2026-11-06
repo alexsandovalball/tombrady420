@@ -137,7 +137,10 @@ def _format_admin_status_message(snapshot: dict) -> str:
             if error:
                 detail += f", {str(error)[:90]}"
             lines.append(detail)
-            for issue in (bot.get("startup_issues") or [])[:3]:
+            # Startup issues are already stage-deduplicated by the runtime;
+            # show one current issue per bot here so retries do not flood the
+            # admin chat with repeated copies of the same warning.
+            for issue in (bot.get("startup_issues") or [])[:1]:
                 stage = issue.get("stage") or "setup"
                 admin_id = issue.get("admin_id")
                 issue_error = str(issue.get("error") or "")[:90]

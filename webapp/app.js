@@ -2032,16 +2032,17 @@
         const setupIssues = [];
         runtimeBots.forEach(bot => {
             const issues = Array.isArray(bot.startup_issues) ? bot.startup_issues : [];
-            issues.forEach(issue => {
+            if (issues.length) {
+                const issue = issues[0];
                 setupIssues.push({
                     index: bot.index,
                     username: bot.username,
-                    stage: issue.stage,
+                    stage: issue.stage || 'setup',
                     admin_id: issue.admin_id,
-                    error: issue.error,
+                    error: issue.error || '',
                     recorded_at: issue.recorded_at
                 });
-            });
+            }
         });
         appendAdminTextDetails(panel, 'admin-bot-setup-warnings', 'Bot Setup Warnings', 'Startup and command-registration issues that may require attention.', setupIssues, item => {
             const label = `#${item.index} ${item.username ? `@${item.username}` : 'not started'}`;
