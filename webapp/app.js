@@ -1916,7 +1916,10 @@
         const runtimeBots = Array.isArray(data.runtime_bots) ? data.runtime_bots : [];
         const botHealthSummary = data.bot_health_summary || {};
         const activeBots = runtimeBots.filter(bot => bot.running && bot.telegram_ok);
-        const operationalBots = runtimeBots.filter(bot => bot.running && bot.telegram_ok && bot.webhook_ok && bot.telegram_health === 'ok');
+        // Telegram's last webhook error may be historical. A reachable bot
+        // with the expected webhook remains online, while the warning stays
+        // visible in the detailed health section.
+        const operationalBots = runtimeBots.filter(bot => bot.running && bot.telegram_ok && bot.webhook_ok);
         const unhealthyBots = runtimeBots.filter(bot => bot.telegram_health && !['ok', 'webhook_warning'].includes(bot.telegram_health));
         const webhookWarningBots = runtimeBots.filter(bot => bot.telegram_health === 'webhook_warning');
         const setupWarningBots = runtimeBots.filter(bot => Number(bot.startup_issue_count || 0) > 0);

@@ -1863,6 +1863,12 @@ async def _probe_runtime_bot_health(idx: int, base: Dict[str, object]) -> Dict[s
         if not snapshot.get("running"):
             health = "app_stopped"
 
+        # A webhook warning can be historical: Telegram keeps the last error
+        # message even after the webhook is reachable again.  Keep that
+        # warning visible, but do not treat it as bot liveness failure when
+        # getMe() succeeds and the current webhook URL is correct.
+        is_active = bool(snapshot.get("running"))
+        is_online = is_active and bool(webhook_ok)
         snapshot.update({
             "telegram_health": health,
             "telegram_ok": True,
@@ -1871,8 +1877,9 @@ async def _probe_runtime_bot_health(idx: int, base: Dict[str, object]) -> Dict[s
             "webhook_pending": pending_count,
             "webhook_last_error": last_error or None,
             "webhook_last_error_date": last_error_date.isoformat() if hasattr(last_error_date, "isoformat") else last_error_date,
-            "active": bool(snapshot.get("running")),
-            "operational": bool(snapshot.get("running")) and webhook_ok and health == "ok",
+            "active": is_active,
+            "online": is_online,
+            "operational": is_online,
         })
     except Exception as exc:
         health, reason = _classify_bot_health_error(exc)
@@ -1947,7 +1954,7 @@ def _is_bot_online(snapshot: Dict[str, object]) -> bool:
         bool(snapshot.get("running"))
         and bool(snapshot.get("telegram_ok"))
         and bool(snapshot.get("webhook_ok"))
-        and snapshot.get("telegram_health") == "ok"
+        and snapshot.get("telegram_health") in {"ok", "webhook_warning"}
     )
 
 
@@ -7849,7 +7856,10 @@ async def webapp_admin_status(request: Request):
     cached = _admin_status_cache.get(admin_user_id)
     if cached and now - cached[0] < _ADMIN_STATUS_CACHE_SECONDS:
         payload = dict(cached[1])
-        runtime_bots = await _runtime_bot_health_snapshots(force=False)
+        # This endpoint is admin-only and is explicitly a live monitor. Do not
+        # reuse the normal health cache here: token replacement, Telegram
+        # disablement, and webhook repair must appear on the next refresh.
+        runtime_bots = await _runtime_bot_health_snapshots(force=True)
         payload["runtime_bots"] = runtime_bots
         payload["bot_health_summary"] = _bot_health_summary(runtime_bots)
         payload["cache_age_seconds"] = round(now - cached[0], 1)
@@ -7891,7 +7901,9 @@ async def webapp_admin_status(request: Request):
         "endpoint": Config.INDEXNOW_ENDPOINT,
         "key_file_available": bool(_indexnow_key(create=False)),
     })
-    runtime_bots = await _runtime_bot_health_snapshots(force=False)
+    # Keep the authenticated admin monitor authoritative rather than showing
+    # a stale 60-second health snapshot after a bot token/status changes.
+    runtime_bots = await _runtime_bot_health_snapshots(force=True)
     payload = {
         "authorized": True,
         "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",

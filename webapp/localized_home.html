@@ -587,7 +587,7 @@
                     return bot && bot.running && bot.telegram_ok;
                 });
                 var operationalBots = runtimeBots.filter(function (bot) {
-                    return bot && bot.running && bot.telegram_ok && bot.webhook_ok && bot.telegram_health === 'ok';
+                    return bot && bot.running && bot.telegram_ok && bot.webhook_ok;
                 });
                 var unhealthyBots = runtimeBots.filter(function (bot) {
                     return bot && bot.telegram_health && ['ok', 'webhook_warning'].indexOf(bot.telegram_health) === -1;

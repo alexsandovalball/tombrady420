@@ -67,9 +67,11 @@ def _format_admin_status_message(snapshot: dict) -> str:
     google_trends_latest_seen = seo.get("google_trends_latest_seen") or "none yet"
     bot_health_summary = snapshot.get("bot_health_summary") or {}
 
+    # Match webhook_server._is_bot_online: a historical Telegram webhook
+    # warning does not make an otherwise reachable bot inactive.
     active_bots = [
         bot for bot in runtime_bots
-        if bot.get("running") and bot.get("telegram_ok") and bot.get("webhook_ok") and bot.get("telegram_health") == "ok"
+        if bot.get("running") and bot.get("telegram_ok") and bot.get("webhook_ok")
     ]
     unhealthy_bots = [
         bot for bot in runtime_bots
@@ -90,6 +92,7 @@ def _format_admin_status_message(snapshot: dict) -> str:
         "",
         "🤖 Bots",
         f"• Online: {_fmt_count(bot_health_summary.get('online', len(active_bots)))}/{_fmt_count(bot_health_summary.get('configured', len(runtime_bots)))} configured",
+        f"• Active Telegram sessions: {_fmt_count(bot_health_summary.get('active', len(active_bots)))}/{_fmt_count(bot_health_summary.get('configured', len(runtime_bots)))}",
         f"• Down/unhealthy: {_fmt_count(bot_health_summary.get('down'))}/{_fmt_count(bot_health_summary.get('unhealthy', len(unhealthy_bots)))}",
         f"• Registry active: {_fmt_count(summary.get('bot_registry_active'))}",
     ]
