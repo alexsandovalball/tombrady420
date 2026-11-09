@@ -1306,8 +1306,9 @@ async def _handle_confirm_deleteallbot(update, context, query, user_id, parts):
 
 @admin_required
 async def _handle_confirm_prunebots(update, context, query, user_id, parts):
-    from webhook_server import get_bot_usernames
-    active_bots = get_bot_usernames()
+    from webhook_server import get_active_runtime_bot_entries
+    active_entries = await get_active_runtime_bot_entries(force_health=True)
+    active_bots = [entry["username"] for entry in active_entries]
     if not active_bots:
         await query.answer("⚠️ No active bots found!", show_alert=True)
         return

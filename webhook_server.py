@@ -109,7 +109,7 @@ from utils.resource_manager import (
     get_tmp_usage,
     startup_cleanup,
 )
-from utils.webhook_identity import BotSlot, build_bot_slot, build_registry_webhook_secret
+from utils.webhook_identity import BotSlot, build_bot_slot, build_registry_webhook_secret, build_token_hash
 from middleware.request_deduplicator import RequestDeduplicator
 from configs.telegram_ip_whitelist import is_telegram_ip
 from utils.deeplinks import build_bot_product_url, build_bot_start_url, build_webapp_product_url
@@ -307,9 +307,9 @@ MEDIA_CACHE_MAX_FILE_BYTES = _bounded_int_env("MEDIA_CACHE_MAX_FILE_MB", 25, 1, 
 MEDIA_TEMP_MAX_BYTES = _bounded_int_env("MEDIA_TEMP_MAX_MB", 250, 50, 1200) * 1024 * 1024
 _RUNTIME_TELEMETRY_INTERVAL_SECONDS = _bounded_int_env("RUNTIME_TELEMETRY_INTERVAL_SECONDS", 300, 60, 900)
 _RUNTIME_MEMORY_LIMIT_MB = _detected_memory_limit_mb()
-_RUNTIME_MEMORY_WARN_BYTES = _bounded_int_env("RUNTIME_MEMORY_WARN_MB", int(_RUNTIME_MEMORY_LIMIT_MB * 0.68), 128, 4096) * 1024 * 1024
-_RUNTIME_MEMORY_SOFT_BYTES = _bounded_int_env("RUNTIME_MEMORY_SOFT_MB", int(_RUNTIME_MEMORY_LIMIT_MB * 0.70), 128, 4096) * 1024 * 1024
-_RUNTIME_MEMORY_HARD_BYTES = _bounded_int_env("RUNTIME_MEMORY_HARD_MB", int(_RUNTIME_MEMORY_LIMIT_MB * 0.84), 192, 4096) * 1024 * 1024
+_RUNTIME_MEMORY_WARN_BYTES = _bounded_int_env("RUNTIME_MEMORY_WARN_MB", int(_RUNTIME_MEMORY_LIMIT_MB * 0.62), 128, 4096) * 1024 * 1024
+_RUNTIME_MEMORY_SOFT_BYTES = _bounded_int_env("RUNTIME_MEMORY_SOFT_MB", int(_RUNTIME_MEMORY_LIMIT_MB * 0.68), 128, 4096) * 1024 * 1024
+_RUNTIME_MEMORY_HARD_BYTES = _bounded_int_env("RUNTIME_MEMORY_HARD_MB", int(_RUNTIME_MEMORY_LIMIT_MB * 0.80), 192, 4096) * 1024 * 1024
 if _RUNTIME_MEMORY_HARD_BYTES <= _RUNTIME_MEMORY_SOFT_BYTES:
     _RUNTIME_MEMORY_HARD_BYTES = _RUNTIME_MEMORY_SOFT_BYTES + 32 * 1024 * 1024
 _MEMORY_SHED_COOLDOWN_SECONDS = 300
@@ -1804,10 +1804,16 @@ def _runtime_bot_snapshots() -> List[Dict[str, object]]:
             "slot_name": slot.slot_name if slot else None,
             "identity_hash": slot.identity_hash if slot else None,
             "webhook_secret_fp": _secret_fingerprint(slot.webhook_secret if slot else None),
+            "token_config_match": bool(
+                slot
+                and idx < len(Config.BOT_TOKENS)
+                and slot.token_hash == build_token_hash(Config.BOT_TOKENS[idx])
+            ),
             "startup_issues": [dict(item) for item in _bot_startup_issues.get(idx, [])],
             "startup_issue_count": len(_bot_startup_issues.get(idx, [])),
             "setup_ok": len(_bot_startup_issues.get(idx, [])) == 0,
             "active": False,
+            "online": False,
             "operational": False,
         })
     return snapshots
@@ -1851,6 +1857,7 @@ async def _probe_runtime_bot_health(idx: int, base: Dict[str, object]) -> Dict[s
         "webhook_last_error": None,
         "webhook_last_error_date": None,
         "active": False,
+        "online": False,
         "operational": False,
     })
     if bot is None:
@@ -1861,6 +1868,15 @@ async def _probe_runtime_bot_health(idx: int, base: Dict[str, object]) -> Dict[s
     if Config.WEBHOOK_URL and registry_bot_id:
         expected_webhook_url = f"{Config.WEBHOOK_URL.rstrip('/')}/webhook/{registry_bot_id}"
     snapshot["webhook_expected_url"] = expected_webhook_url
+
+    # A failed token replacement can leave the previous application object
+    # alive. Do not report that old bot as healthy for the new token slot.
+    if snapshot.get("token_config_match") is False:
+        snapshot.update({
+            "telegram_health": "config_mismatch",
+            "telegram_error": "running bot does not match the configured token for this slot",
+        })
+        return snapshot
 
     try:
         me, webhook_info = await asyncio.gather(
@@ -1913,6 +1929,7 @@ async def _probe_runtime_bot_health(idx: int, base: Dict[str, object]) -> Dict[s
             "telegram_health": health,
             "telegram_ok": False,
             "webhook_ok": False,
+            "online": False,
             "telegram_error": reason[:240],
         })
     return snapshot
@@ -1954,7 +1971,7 @@ async def _runtime_bot_health_snapshots(*, force: bool = False) -> List[Dict[str
 async def get_active_runtime_bot_entries(*, force_health: bool = False) -> List[Dict[str, object]]:
     """Return configured runtime bots except ones Telegram confirms are unusable."""
     snapshots = await _runtime_bot_health_snapshots(force=force_health)
-    excluded_health = {"deleted_or_invalid", "not_loaded", "app_stopped"}
+    excluded_health = {"deleted_or_invalid", "not_loaded", "app_stopped", "config_mismatch"}
     entries: List[Dict[str, object]] = []
     seen: set[str] = set()
     for snapshot in snapshots:
@@ -1980,6 +1997,7 @@ def _is_bot_online(snapshot: Dict[str, object]) -> bool:
         bool(snapshot.get("running"))
         and bool(snapshot.get("telegram_ok"))
         and bool(snapshot.get("webhook_ok"))
+        and bool(snapshot.get("token_config_match"))
         and snapshot.get("telegram_health") in {"ok", "webhook_warning"}
     )
 
@@ -1992,7 +2010,11 @@ def _is_bot_active(snapshot: Dict[str, object]) -> bool:
     application is running. That is an active but degraded bot, not an
     inactive bot.
     """
-    return bool(snapshot.get("running")) and bool(snapshot.get("telegram_ok"))
+    return (
+        bool(snapshot.get("running"))
+        and bool(snapshot.get("telegram_ok"))
+        and bool(snapshot.get("token_config_match"))
+    )
 
 
 async def _download_telegram_media_to_drive(tg_file: Any, destination: Path) -> None:
@@ -4945,11 +4967,40 @@ _WP_SUBSTR_PATTERNS = (
     "wlwmanifest.xml",
 )
 
+# Common secret/configuration probes that are not part of this application.
+# Reject them before canonical redirects or route handling can do work.
+_SENSITIVE_SCAN_PREFIXES = (
+    "/.env",
+    "/.git",
+    "/.idea",
+    "/.vscode",
+    "/.npmrc",
+    "/.netrc",
+    "/dockerfile",
+    "/docker-compose",
+    "/database.sql",
+    "/secrets",
+    "/auth.json",
+    "/settings.php",
+    "/phpinfo",
+    "/info.php",
+    "/server-info",
+    "/actuator",
+    "/vendor/composer",
+    "/storage/logs",
+    "/runtime-config",
+    "/env-config",
+    "/aws-exports",
+    "/web.config",
+)
+
 # Metrics counter – approximate (per-process, not shared across workers).
 # In a single asyncio event loop the increment is safe; in multi-worker
 # deployments each process maintains its own count, which is acceptable for
 # monitoring purposes.
 _wp_block_counter: int = 0
+_sensitive_scan_log_last_seen: Dict[str, float] = {}
+_SENSITIVE_SCAN_LOG_INTERVAL_SECONDS = 900
 
 
 class SecurityMiddleware(BaseHTTPMiddleware):
@@ -4965,18 +5016,33 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         path_lower = path.lower()
 
-        blocked = path_lower.startswith(_WP_PREFIX_PATTERNS) or any(
-            s in path_lower for s in _WP_SUBSTR_PATTERNS
+        blocked = (
+            path_lower.startswith(_WP_PREFIX_PATTERNS)
+            or any(s in path_lower for s in _WP_SUBSTR_PATTERNS)
+            or path_lower.startswith(_SENSITIVE_SCAN_PREFIXES)
         )
 
         if blocked:
             _wp_block_counter += 1
             client_ip = get_client_ip(request)
-            ua = request.headers.get("User-Agent", "-")
-            logger_security.warning(
-                f"WordPress scan blocked – ip={client_ip} path={path} "
-                f"ua={ua!r} total_blocked={_wp_block_counter}"
-            )
+            now = _time.monotonic()
+            last_seen = _sensitive_scan_log_last_seen.get(client_ip, 0.0)
+            if now - last_seen >= _SENSITIVE_SCAN_LOG_INTERVAL_SECONDS:
+                ua = request.headers.get("User-Agent", "-")
+                logger_security.warning(
+                    "Scanner request blocked – ip=%s path=%s ua=%r total_blocked=%d",
+                    client_ip,
+                    path,
+                    ua,
+                    _wp_block_counter,
+                )
+                _sensitive_scan_log_last_seen[client_ip] = now
+                if len(_sensitive_scan_log_last_seen) > 2048:
+                    oldest_ip = min(
+                        _sensitive_scan_log_last_seen,
+                        key=_sensitive_scan_log_last_seen.get,
+                    )
+                    _sensitive_scan_log_last_seen.pop(oldest_ip, None)
             return Response(status_code=410)
 
         try:
@@ -11106,7 +11172,7 @@ async def _build_setup_check() -> Dict[str, Any]:
     """Return a safe, token-free deployment readiness report for reused installs."""
     warnings: List[str] = []
     notes: List[str] = []
-    running_bots = get_bot_usernames()
+    running_bots: List[str] = []
     runtime_bot_health: List[Dict[str, object]] = []
     product_count = 0
     public_product_count = 0
@@ -11123,7 +11189,12 @@ async def _build_setup_check() -> Dict[str, Any]:
         warnings.append(f"Database check failed: {exc}")
 
     try:
-        runtime_bot_health = await _runtime_bot_health_snapshots()
+        runtime_bot_health = await _runtime_bot_health_snapshots(force=True)
+        running_bots = [
+            str(bot.get("username"))
+            for bot in runtime_bot_health
+            if _is_bot_active(bot) and bot.get("username")
+        ]
     except Exception as exc:
         warnings.append(f"Telegram bot health check failed: {exc}")
 

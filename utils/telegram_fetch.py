@@ -27,7 +27,9 @@ def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int
 TELEGRAM_FILE_FETCH_CONCURRENCY = _bounded_int_env("TELEGRAM_FILE_FETCH_CONCURRENCY", 3, 1, 8)
 TELEGRAM_FILE_FETCH_TIMEOUT_SECONDS = float(_bounded_int_env("TELEGRAM_FILE_FETCH_TIMEOUT_SECONDS", 8, 2, 30))
 TELEGRAM_FILE_FETCH_CACHE_TTL_SECONDS = float(_bounded_int_env("TELEGRAM_FILE_FETCH_CACHE_TTL_SECONDS", 90, 5, 600))
-TELEGRAM_FILE_FETCH_CACHE_MAX = _bounded_int_env("TELEGRAM_FILE_FETCH_CACHE_MAX", 512, 64, 4096)
+# Disk media caching handles repeated public delivery; keep this in-memory
+# Telegram metadata cache smaller to leave headroom on the 512 MiB service.
+TELEGRAM_FILE_FETCH_CACHE_MAX = _bounded_int_env("TELEGRAM_FILE_FETCH_CACHE_MAX", 256, 64, 4096)
 TELEGRAM_FILE_FETCH_FAILURE_COOLDOWN_SECONDS = float(
     _bounded_int_env("TELEGRAM_FILE_FETCH_FAILURE_COOLDOWN_SECONDS", 8, 1, 30)
 )

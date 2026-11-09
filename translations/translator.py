@@ -135,25 +135,46 @@ class TranslationService:
         # untranslated source text.
         self._request_gate = asyncio.Lock()
         self._next_request_at = 0.0
-        self._min_request_interval = 0.30
+        # Keep a comfortable margin below the unofficial provider burst limit.
+        # A shared cooldown below handles throttling across different texts.
+        self._min_request_interval = 0.50
         # Do not immediately hammer a provider after it rejects a request.
         # This is separate from the pacing gate: it only suppresses retries
         # for the exact failed text/language pair.
         self._failure_backoff: OrderedDict[str, float] = OrderedDict()
         self._provider_backoff_seconds = 3600.0
+        self._provider_cooldown_until = 0.0
+        self._provider_cooldown_log_at = 0.0
+        self._provider_cooldown_seconds = 300.0
     
     def set_database(self, db):
         """Set the database instance for persistent caching."""
         self._db = db
 
-    async def _wait_for_request_slot(self) -> None:
+    async def _wait_for_request_slot(self) -> bool:
         """Reserve a provider call while keeping starts below its burst limit."""
         loop = asyncio.get_running_loop()
         async with self._request_gate:
+            if self._provider_cooldown_until > loop.time():
+                return False
             delay = self._next_request_at - loop.time()
             if delay > 0:
                 await asyncio.sleep(delay)
             self._next_request_at = loop.time() + self._min_request_interval
+            return True
+
+    def _is_provider_throttling_error(self, error: Exception) -> bool:
+        message = str(error).lower()
+        return any(
+            marker in message
+            for marker in (
+                "too many requests",
+                "5 requests per second",
+                "rate limit",
+                "429",
+                "throttl",
+            )
+        )
 
     async def get_cached_translation(
         self,
@@ -240,7 +261,8 @@ class TranslationService:
             # Protect placeholders before translation
             protected_text, placeholder_map = protect_placeholders(text)
 
-            await self._wait_for_request_slot()
+            if not await self._wait_for_request_slot():
+                return text
             
             # Run translation in thread pool to avoid blocking event loop
             loop = asyncio.get_running_loop()
@@ -273,6 +295,18 @@ class TranslationService:
             self._failure_backoff[cache_key] = loop.time() + self._provider_backoff_seconds
             while len(self._failure_backoff) > 2048:
                 self._failure_backoff.popitem(last=False)
+            if self._is_provider_throttling_error(e):
+                cooldown_until = loop.time() + self._provider_cooldown_seconds
+                self._provider_cooldown_until = max(
+                    self._provider_cooldown_until,
+                    cooldown_until,
+                )
+                if loop.time() >= self._provider_cooldown_log_at:
+                    logger.warning(
+                        "Translation provider cooldown active for %.0fs after throttling",
+                        self._provider_cooldown_seconds,
+                    )
+                    self._provider_cooldown_log_at = cooldown_until
             logger.warning(
                 "Translation deferred (%s -> %s); retry deferred for %.0fs: %s",
                 normalized_source,

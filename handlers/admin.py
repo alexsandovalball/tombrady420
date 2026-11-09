@@ -72,7 +72,9 @@ def _format_admin_status_message(snapshot: dict) -> str:
     # warning does not make an otherwise reachable bot inactive.
     active_bots = [
         bot for bot in runtime_bots
-        if bot.get("running") and bot.get("telegram_ok") and bot.get("webhook_ok")
+        if bot.get("active") is True
+        and bot.get("telegram_ok") is True
+        and bot.get("token_config_match") is True
     ]
     unhealthy_bots = [
         bot for bot in runtime_bots
@@ -260,7 +262,10 @@ async def adminstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                 _indexnow_key,
                 metrics,
             )
-            snapshot["runtime_bots"] = await _runtime_bot_health_snapshots()
+            runtime_bots = await _runtime_bot_health_snapshots(force=True)
+            snapshot["runtime_bots"] = runtime_bots
+            from webhook_server import _bot_health_summary
+            snapshot["bot_health_summary"] = _bot_health_summary(runtime_bots)
             snapshot["cache_state"] = _cache_state_snapshot()
             snapshot["process"] = _runtime_process_snapshot()
             snapshot["media_runtime"] = _media_runtime_snapshot()
@@ -2028,8 +2033,9 @@ async def prunebots_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         # Get active bot usernames from webhook server
-        from webhook_server import get_bot_usernames
-        active_bots = get_bot_usernames()
+        from webhook_server import get_active_runtime_bot_entries
+        active_entries = await get_active_runtime_bot_entries(force_health=True)
+        active_bots = [entry["username"] for entry in active_entries]
         
         if not active_bots:
             try:
